@@ -9,7 +9,5 @@ Range:
 locations:
   Home: 0
   Local_1: 62
-  Local_2: 237
-  Local_3: 375
-  Local_4: 550
-  Local_5: 700
+  Local_2: 237 # + 175mm 
+  Local_3: 412 # + 175mm 
