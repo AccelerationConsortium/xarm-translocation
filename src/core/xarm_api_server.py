@@ -25,9 +25,31 @@ import uvicorn
 try:
     from .xarm_controller import XArmController, SafetyLevel, ComponentState
     from .xarm_utils import load_config
+    from .models import (
+        EquipmentStatus,
+        HealthResponse,
+        ProbeResponse,
+        PROTOCOL_VERSION,
+    )
+    from .status_builder import (
+        EQUIPMENT_ID,
+        EQUIPMENT_NAME,
+        build_status,
+    )
 except ImportError:
     from core.xarm_controller import XArmController, SafetyLevel, ComponentState
     from core.xarm_utils import load_config
+    from core.models import (
+        EquipmentStatus,
+        HealthResponse,
+        ProbeResponse,
+        PROTOCOL_VERSION,
+    )
+    from core.status_builder import (
+        EQUIPMENT_ID,
+        EQUIPMENT_NAME,
+        build_status,
+    )
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -248,28 +270,41 @@ app.add_middleware(
 ws_handler = WebSocketLogHandler()
 logger.addHandler(ws_handler)
 
-# Mount static files
+# Mount static files. The browser UI lives at /web/ -- the bare HTML page is
+# no longer served from /, since GET / is the STATUS_SPEC v1.0 probe endpoint.
+WEB_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web")
 try:
-    web_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web")
-    if os.path.exists(web_dir):
-        app.mount("/static", StaticFiles(directory=web_dir), name="static")
+    if os.path.exists(WEB_DIR):
+        app.mount(
+            "/web",
+            StaticFiles(directory=WEB_DIR, html=True),
+            name="web",
+        )
+        # Keep /static/* for legacy bookmarks; harmless duplicate mount.
+        app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 except Exception as e:
     logger.warning(f"Could not mount static files: {e}")
 
-# Root endpoint to serve the main page
-@app.get("/")
-async def read_root():
-    """Serve the main HTML page."""
-    try:
-        web_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "web")
-        html_path = os.path.join(web_dir, "index.html")
-        if os.path.exists(html_path):
-            return FileResponse(html_path)
-        else:
-            return {"message": "xArm Controller API", "docs": "/docs"}
-    except Exception as e:
-        logger.error(f"Error serving root page: {e}")
-        return {"message": "xArm Controller API", "docs": "/docs"}
+
+# ---------------------------------------------------------------------------
+# STATUS_SPEC v1.0 endpoints (GET /, GET /health, GET /status)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/", response_model=ProbeResponse, tags=["spec"])
+async def probe() -> ProbeResponse:
+    """Cheapest possible identity probe. Always 200 unless the process is broken."""
+    return ProbeResponse(
+        equipment_id=EQUIPMENT_ID,
+        equipment_name=EQUIPMENT_NAME,
+        protocol_version=PROTOCOL_VERSION,
+    )
+
+
+@app.get("/health", response_model=HealthResponse, tags=["spec"])
+async def health() -> HealthResponse:
+    """Service liveness from the dashboard's perspective."""
+    return HealthResponse()
 
 # Periodic task to broadcast queued logs
 async def broadcast_logs():
@@ -310,45 +345,20 @@ def create_error_response(message: str, status_code: int = 500) -> JSONResponse:
     )
 
 async def broadcast_status_update():
-    """Broadcast status update to all connected WebSocket clients"""
-    global controller
-    if controller:
-        try:
-            # More detailed status
-            is_connected = controller.is_alive and controller.arm.connected if hasattr(controller, 'arm') and controller.arm else False
-            
-            # Standardize connection details
-            connection_details = None
-            if is_connected:
-                connection_details = {
-                    "host": controller.host,
-                    "port": controller.xarm_config.get('port', 18333),
-                    "profile_name": getattr(controller, 'profile_name', 'unknown'),
-                    "simulation_mode": controller.simulation_mode,
-                    "gripper_type": controller.gripper_type if hasattr(controller, 'gripper_type') else 'N/A',
-                    "gripper_config": getattr(controller, 'current_gripper_config', {})
-                }
-            
-            system_status = controller.get_system_status()
-            
-            status_info = {
-                "connection_status": "Connected" if is_connected else "Disconnected",
-                "connection_details": connection_details,
-                "system_status": system_status,
-                "is_alive": controller.is_alive,
-                "component_states": controller.get_component_states(),
-                "current_position": controller.get_current_position(),
-                "current_joints": controller.get_current_joints(),
-                "track_position": controller.get_track_position() if controller.has_track() else None,
-                "timestamp": datetime.now().isoformat()
-            }
-            status = {
-                "type": "status_update",
-                "data": status_info
-            }
-            await manager.broadcast(json.dumps(status))
-        except Exception as e:
-            logger.error(f"Error broadcasting status: {e}")
+    """Broadcast a STATUS_SPEC v1.0 envelope to all connected WebSocket clients.
+
+    The browser UI in ``src/web/main.js`` consumes the same shape as the
+    HTTP ``GET /status`` response so push and poll are interchangeable.
+    """
+    try:
+        envelope = build_status(controller)
+        message = {
+            "type": "status_update",
+            "data": envelope.model_dump(mode="json"),
+        }
+        await manager.broadcast(json.dumps(message))
+    except Exception as e:
+        logger.error(f"Error broadcasting status: {e}")
 
 # API Routes
 
@@ -462,75 +472,24 @@ async def disconnect_robot():
         finally:
             controller = None
     
-    # Broadcast a final disconnected status to all clients to sync the UI
-    await manager.broadcast(json.dumps({
-        "type": "status_update",
-        "data": {
-            "connection_status": "Disconnected",
-            "connection_details": None,
-            "system_status": {"connection": {"alive": False}},
-            "is_alive": False,
-            "component_states": {
-                "arm": "disabled",
-                "gripper": "disabled",
-                "track": "disabled"
-            },
-            "current_position": None,
-            "current_joints": None,
-            "track_position": None
-        }
-    }))
+    # Broadcast the post-disconnect spec envelope so the UI re-syncs.
+    await broadcast_status_update()
     
     return {
         "message": message,
         "connection_details": connection_info
     }
 
-@app.get("/status")
-async def get_status():
-    """Get the current status of the robot and all components."""
-    global controller
-    
-    logger.info("Status requested via API")
-    
-    # Handle disconnected state gracefully
-    if not controller:
-        return {
-            "connection_state": "disconnected",
-            "connection_details": None,
-            "arm_state": "disabled",
-            "gripper_state": "disabled", 
-            "track_state": "disabled",
-            "is_alive": False,
-            "current_position": None,
-            "current_joints": None,
-            "last_error": None,
-        }
-    
-    # Include connection details if connected
-    connection_details = None
-    if controller.is_alive:
-        connection_details = {
-            "host": controller.host,
-            "port": controller.xarm_config.get('port', 18333),
-            "profile_name": getattr(controller, 'profile_name', 'unknown'),
-            "simulation_mode": controller.simulation_mode,
-            "gripper_type": controller.gripper_type if hasattr(controller, 'gripper_type') else 'N/A',
-            "gripper_config": getattr(controller, 'current_gripper_config', {})
-        }
-    
-    return {
-        "connection_state": controller.states.get('connection').value if hasattr(controller.states.get('connection'), 'value') else str(controller.states.get('connection', 'unknown')),
-        "connection_details": connection_details,
-        "arm_state": controller.states.get('arm').value if hasattr(controller.states.get('arm'), 'value') else str(controller.states.get('arm', 'unknown')),
-        "gripper_state": controller.states.get('gripper').value if hasattr(controller.states.get('gripper'), 'value') else str(controller.states.get('gripper', 'unknown')),
-        "track_state": controller.states.get('track').value if hasattr(controller.states.get('track'), 'value') else str(controller.states.get('track', 'unknown')),
-        "is_alive": controller.is_alive,
-        "current_position": controller.get_current_position(),
-        "current_joints": controller.get_current_joints(),
-        "track_position": controller.get_track_position() if controller.has_track() else None,
-        "last_error": getattr(controller, 'last_error', None),
-    }
+@app.get("/status", response_model=EquipmentStatus, tags=["spec"])
+async def get_status() -> EquipmentStatus:
+    """Return the spec v1.0 ``EquipmentStatus`` envelope.
+
+    Side-effect-free: only cached controller state is read (see
+    ``status_builder.build_status``). Always HTTP 200 unless the process
+    itself is broken; ``requires_init``, ``error``, ``busy``, etc. are all
+    *states*, not failures.
+    """
+    return build_status(controller)
 
 @app.get("/status/performance")
 async def get_performance_status():

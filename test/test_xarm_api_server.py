@@ -46,26 +46,28 @@ def client(monkeypatch, mock_controller):
 
 
 def test_read_root(client):
-    """Test the root endpoint to ensure it returns the main page."""
+    """Test the spec ``GET /`` probe endpoint.
+
+    The HTML page used to live at ``/``; it now lives at ``/web/`` so that
+    ``/`` can return the STATUS_SPEC v1.0 ``ProbeResponse``.
+    """
     response = client.get("/")
     assert response.status_code == 200
-    assert "Robotic Control" in response.text
+    body = response.json()
+    assert body["equipment_id"] == "xarm_translocation"
+    assert body["protocol_version"] == "1.0"
 
 
 def test_get_status_not_connected(client, monkeypatch):
-    """Test the status endpoint when the controller is not connected."""
-    mock_controller = MagicMock()
-    mock_controller.is_alive = False
-    mock_controller.states = {'connection': 'disabled', 'arm': 'disabled', 'gripper': 'disabled', 'track': 'disabled'}
-    mock_controller.get_current_position.return_value = []
-    mock_controller.get_current_joints.return_value = []
-    mock_controller.last_error = 0
-    monkeypatch.setattr('src.core.xarm_api_server.controller', mock_controller)
-    
+    """``GET /status`` returns the spec envelope with ``requires_init`` when
+    no controller is initialized."""
+    monkeypatch.setattr('src.core.xarm_api_server.controller', None)
+
     response = client.get("/status")
     assert response.status_code == 200
     data = response.json()
-    assert data['connection_state'] == 'disabled'
+    assert data['equipment_status'] == 'requires_init'
+    assert data['required_actions'] == ['connect']
 
 
 def test_connect_success(client, monkeypatch):

@@ -140,30 +140,50 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- Status Fetching ---
+    // The backend now returns a STATUS_SPEC v1.0 ``EquipmentStatus`` envelope.
+    // Pull the per-component state, metrics and details out of that shape and
+    // pass a UI-shaped object into updateStatusUI.
+    function envelopeToUiShape(envelope) {
+        const components = envelope.components || {};
+        const metrics = envelope.metrics || {};
+        const details = envelope.details || {};
+        const lastError = envelope.last_error;
+        const trackMetric = metrics.track_position;
+
+        // Treat ``ready``, ``busy``, ``dry_run``, ``degraded`` as "controller
+        // is up and the UI's control buttons should be live". ``requires_init``
+        // and ``error`` mean disabled controls.
+        const status = envelope.equipment_status;
+        const isAlive = ['ready', 'busy', 'dry_run', 'degraded', 'e_stop'].includes(status);
+
+        return {
+            equipment_status: status,
+            is_alive: isAlive,
+            connection_details: details.connection_details || null,
+            system_status: {
+                last_error: lastError ? lastError.message : 'None',
+            },
+            component_states: {
+                arm: components.arm ? components.arm.state : 'N/A',
+                gripper: components.gripper ? components.gripper.state : 'N/A',
+                track: components.track ? components.track.state : 'N/A',
+            },
+            current_position: details.current_position,
+            current_joints: details.current_joints,
+            track_position: trackMetric ? trackMetric.value : null,
+        };
+    }
+
     async function fetchAndUpdateStatus() {
         // Check if DOM is ready before proceeding
         if (document.readyState !== 'complete') {
             return;
         }
-        
+
         try {
-            const statusData = await apiRequest('/status', 'GET', null, true); // Skip error display
-            if (statusData) {
-                // Transform the /status response to match updateStatusUI format
-                const transformedData = {
-                    is_alive: statusData.is_alive,
-                    connection_details: statusData.connection_details,
-                    system_status: { last_error: statusData.last_error || 'None' },
-                    component_states: {
-                        arm: statusData.arm_state || 'N/A',
-                        gripper: statusData.gripper_state || 'N/A', 
-                        track: statusData.track_state || 'N/A'
-                    },
-                    current_position: statusData.current_position,
-                    current_joints: statusData.current_joints,
-                    track_position: statusData.track_position
-                };
-                updateStatusUI(transformedData);
+            const envelope = await apiRequest('/status', 'GET', null, true); // Skip error display
+            if (envelope) {
+                updateStatusUI(envelopeToUiShape(envelope));
             }
         } catch (error) {
             console.error('Failed to fetch status:', error);
@@ -199,18 +219,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             
-            // The `is_alive` flag is now the source of truth from the backend.
+            // The `is_alive` flag is now derived from STATUS_SPEC equipment_status.
             const isConnected = data.is_alive === true;
+            const equipmentStatus = data.equipment_status; // ready/busy/dry_run/error/...
 
             // Update connection text and light
             try {
-                if (isConnected && data.connection_details) {
-                    updateStatusText('Connected');
-                    const details = data.connection_details;
-                    const subtext = `${details.host}:${details.port} (${details.profile_name}${details.simulation_mode ? ' - Simulation' : ''})`;
-                    showMessage(subtext, 'info');
+                if (isConnected) {
+                    // Surface the spec state in the title (e.g. "Connected (busy)").
+                    const label = equipmentStatus ? `Connected (${equipmentStatus})` : 'Connected';
+                    updateStatusText(label);
+                    if (data.connection_details) {
+                        const details = data.connection_details;
+                        const subtext = `${details.host}:${details.port} (${details.profile_name}${details.simulation_mode ? ' - Simulation' : ''})`;
+                        showMessage(subtext, 'info');
+                    } else {
+                        clearMessage();
+                    }
                 } else {
-                    updateStatusText('Disconnected');
+                    const label = equipmentStatus ? `Disconnected (${equipmentStatus})` : 'Disconnected';
+                    updateStatusText(label);
                     clearMessage();
                 }
             } catch (error) {
@@ -390,9 +418,11 @@ document.addEventListener('DOMContentLoaded', () => {
         
         if (statusLight) {
             try {
-                // Set status light based on connection state
+                // Set status light based on connection state. The label may be
+                // "Connected", "Connected (busy)", "Disconnected (requires_init)",
+                // etc., so we just look at the first word.
                 const lowerText = text.toLowerCase();
-                if (lowerText === 'connected') {
+                if (lowerText.startsWith('connected')) {
                     statusLight.className = 'status-light online';
                 } else {
                     statusLight.className = 'status-light offline';
@@ -506,11 +536,13 @@ document.addEventListener('DOMContentLoaded', () => {
             console.log('WebSocket message received:', message); // Debug logging
             
             if (message.type === 'status_update') {
-                // Only update UI if DOM is ready
+                // ``message.data`` is now a STATUS_SPEC v1.0 ``EquipmentStatus``
+                // envelope; convert into the UI shape consumed by updateStatusUI.
+                const uiData = envelopeToUiShape(message.data);
                 if (document.readyState === 'complete') {
-                    updateStatusUI(message.data);
+                    updateStatusUI(uiData);
                 } else {
-                    setTimeout(() => updateStatusUI(message.data), 100);
+                    setTimeout(() => updateStatusUI(uiData), 100);
                 }
             } else if (message.type === 'log') {
                 // Handle incoming log messages from API server
