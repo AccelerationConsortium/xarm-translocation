@@ -69,7 +69,7 @@ if __name__ == '__main__':
             return True
             
         except Exception as e:
-            print(f"❌ Failed to start API server process: {e}")
+            print(f"Failed to start API server process: {e}")
             return False
     
     def cleanup_existing_servers(self, port: int):
@@ -83,7 +83,7 @@ if __name__ == '__main__':
                     if connections:
                         for conn in connections:
                             if conn.laddr.port == port:
-                                print(f"🧹 Cleaning up existing process on port {port} (PID: {proc.info['pid']})")
+                                print(f"Cleaning up existing process on port {port} (PID: {proc.info['pid']})")
                                 proc.terminate()
                                 proc.wait(timeout=3)
                                 break
@@ -93,7 +93,7 @@ if __name__ == '__main__':
             # psutil not available, try simple approach
             self._simple_port_cleanup(port)
         except Exception as e:
-            print(f"⚠️ Error during cleanup: {e}")
+            print(f"Warning: Error during cleanup: {e}")
     
     def _simple_port_cleanup(self, port: int):
         """Simple port cleanup without psutil dependency."""
@@ -110,41 +110,37 @@ if __name__ == '__main__':
                     pids = result.stdout.strip().split('\n')
                     for pid in pids:
                         if pid.isdigit():
-                            print(f"🧹 Cleaning up process PID {pid} on port {port}")
+                            print(f"Cleaning up process PID {pid} on port {port}")
                             subprocess.run(["kill", "-TERM", pid], timeout=3)
         except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.CalledProcessError):
             # lsof not available or other error, skip cleanup
             pass
         except Exception as e:
-            print(f"⚠️ Error during simple cleanup: {e}")
+            print(f"Warning: Error during simple cleanup: {e}")
     
     def shutdown_api_server(self):
         """Gracefully shutdown the API server."""
         if self.api_process:
-            print("🛑 Shutting down API server...")
+            print("Shutting down API server...")
             try:
-                # Try graceful shutdown first
                 self.api_process.terminate()
-                
-                # Wait for process to terminate gracefully
                 try:
                     self.api_process.wait(timeout=5)
-                    print("✅ API server shut down gracefully")
+                    print("API server shut down gracefully")
                 except subprocess.TimeoutExpired:
-                    print("⚠️ API server didn't respond to SIGTERM, forcing shutdown...")
+                    print("API server didn't respond to SIGTERM, forcing shutdown...")
                     self.api_process.kill()
                     self.api_process.wait()
-                    print("✅ API server forcefully shut down")
-                    
+                    print("API server forcefully shut down")
             except Exception as e:
-                print(f"❌ Error shutting down API server: {e}")
+                print(f"Error shutting down API server: {e}")
             finally:
                 self.api_process = None
     
     def setup_signal_handlers(self):
         """Setup signal handlers for graceful shutdown."""
         def signal_handler(signum, frame):
-            print(f"\n🛑 Received signal {signum}, shutting down...")
+            print(f"\nReceived signal {signum}, shutting down...")
             self.shutdown_event.set()
             self.shutdown_api_server()
             
@@ -154,7 +150,7 @@ if __name__ == '__main__':
             
             def force_exit():
                 time.sleep(3)  # Give 3 seconds for cleanup
-                print("⚠️ Forcing exit due to timeout...")
+                print("Warning: Forcing exit due to timeout...")
                 os._exit(0)
             
             threading.Thread(target=force_exit, daemon=True).start()
@@ -175,9 +171,9 @@ server_manager = ServerManager()
 
 def start_api_server(host: str = "0.0.0.0", port: int = 8000):
     """Start the API server only."""
-    print(f"🚀 Starting PyxArm API Server...")
-    print(f"📡 Server: http://{host}:{port}")
-    print(f"📖 API Docs: http://{host}:{port}/docs")
+    print(f"Starting PyxArm API Server...")
+    print(f"Server: http://{host}:{port}")
+    print(f"API Docs: http://{host}:{port}/docs")
     print("=" * 50)
     
     # Only setup signal handlers if this is the main thread
@@ -199,21 +195,21 @@ def start_api_server(host: str = "0.0.0.0", port: int = 8000):
         )
         
     except KeyboardInterrupt:
-        print("\n🛑 API Server stopped by user")
+        print("\nAPI Server stopped by user")
     except ImportError as e:
-        print(f"❌ Error importing API server: {e}")
+        print(f"Error importing API server: {e}")
         print("Make sure you're in the correct directory and dependencies are installed.")
         sys.exit(1)
     except Exception as e:
-        print(f"❌ Error starting API server: {e}")
+        print(f"Error starting API server: {e}")
         sys.exit(1)
 
 
 def start_web_server(host: str = "0.0.0.0", port: int = 6001):
     """Start the web interface with API server."""
-    print(f"🚀 Starting PyxArm Web Interface...")
-    print(f"🌐 Web UI: http://{host}:{port}")
-    print(f"📡 API Server: http://localhost:8000 (starting automatically)")
+    print(f"Starting PyxArm Web Interface...")
+    print(f"Web UI: http://{host}:{port}")
+    print(f"API Server: http://localhost:8000 (starting automatically)")
     print("=" * 50)
     
     import threading
@@ -223,13 +219,13 @@ def start_web_server(host: str = "0.0.0.0", port: int = 6001):
     server_manager.setup_signal_handlers()
     
     # Start API server in a separate thread (simpler approach)
-    print("⏳ Starting API server...")
+    print("Starting API server...")
     api_thread = threading.Thread(target=start_api_server, args=("0.0.0.0", 8000), daemon=False)
     api_thread.start()
     
     # Wait a moment for API server to start
     time.sleep(3)
-    print("✅ API server started")
+    print("API server started")
     
     try:
         # Import and run the web server
@@ -237,16 +233,16 @@ def start_web_server(host: str = "0.0.0.0", port: int = 6001):
         run_web_server(port)
         
     except KeyboardInterrupt:
-        print("\n🛑 Web server stopped by user")
+        print("\nWeb server stopped by user")
     except ImportError as e:
-        print(f"❌ Error importing web server: {e}")
+        print(f"Error importing web server: {e}")
         print("Make sure you're in the correct directory and web files exist.")
         sys.exit(1)
     except Exception as e:
-        print(f"❌ Error starting web server: {e}")
+        print(f"Error starting web server: {e}")
         sys.exit(1)
     finally:
-        print("🛑 Shutting down servers...")
+        print("Shutting down servers...")
         # The signal handler will take care of cleanup
 
 
@@ -329,8 +325,8 @@ def main(args: Optional[List[str]] = None):
     elif parsed_args.command == "web":
         start_web_server(host=parsed_args.host, port=parsed_args.port)
     else:
-        print(f"❌ Unknown command: {parsed_args.command}")
-        print("💡 Use 'pyxarm --help' for available commands")
+        print(f"Unknown command: {parsed_args.command}")
+        print("Use 'pyxarm --help' for available commands")
         sys.exit(1)
 
 

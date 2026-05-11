@@ -8,8 +8,8 @@ document.addEventListener('DOMContentLoaded', () => {
         statusContainer.appendChild(connectionDetails);
     }
     
-    const API_BASE_URL = 'http://localhost:8000';
-    const WS_URL = 'ws://localhost:8000/ws';
+    const API_BASE_URL = `${window.location.protocol}//${window.location.host}`;
+    const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
 
     const connectBtn = document.getElementById('connect-btn');
     const disconnectBtn = document.getElementById('disconnect-btn');

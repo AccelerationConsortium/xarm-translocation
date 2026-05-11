@@ -383,12 +383,13 @@ async def get_configurations():
     ]
     
     for config_path in possible_paths:
+        resolved = os.path.abspath(config_path)
+        if not os.path.exists(resolved):
+            continue
         try:
             full_config = load_config(config_path)
             profiles = full_config.get('profiles', {})
             return sorted(list(profiles.keys()))
-        except FileNotFoundError:
-            continue
         except Exception as e:
             logger.error(f"Failed to read profiles from {config_path}: {e}")
             continue
