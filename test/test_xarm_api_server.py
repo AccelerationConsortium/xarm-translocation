@@ -22,6 +22,10 @@ def mock_controller():
     mc.initialize.return_value = True
     mc.disconnect.return_value = True
     mc.move_to_position.return_value = True
+    mc.stop_motion.return_value = True
+    mc.open_gripper.return_value = True
+    mc.set_gripper_force.return_value = True
+    mc.move_gripper_to_stroke.return_value = True
     mc.get_system_status.return_value = {
         'connection': {'connected': True},
         'arm': {'robot_state': 0}
@@ -108,6 +112,34 @@ def test_move_to_position(client, mock_controller):
     assert response.status_code == 200
     assert response.json() == {"message": "Move to position command accepted."}
     mock_controller.move_to_position.assert_called_once()
+
+
+def test_stop_movement_returns_failure_when_controller_rejects(client, mock_controller):
+    """STOP should report controller failure instead of claiming success."""
+    mock_controller.stop_motion.return_value = False
+
+    response = client.post("/move/stop")
+
+    assert response.status_code == 500
+    assert "Stop command failed" in response.json()["detail"]
+
+
+def test_open_gripper_accepts_empty_body(client, mock_controller):
+    """The web button sends `{}` today, but the endpoint should also tolerate no body."""
+    response = client.post("/gripper/open")
+
+    assert response.status_code == 200
+    assert response.json() == {"message": "Open gripper command completed."}
+    mock_controller.open_gripper.assert_called_once_with(speed=None, force=None, wait=True)
+
+
+def test_set_gripper_force(client, mock_controller):
+    """BioGripper Gen2 force control is exposed through the API."""
+    response = client.post("/gripper/force", json={"force": 75})
+
+    assert response.status_code == 200
+    assert response.json() == {"message": "Gripper force set to 75.0."}
+    mock_controller.set_gripper_force.assert_called_once_with(75.0)
 
 def test_get_configs(client):
     """Test the endpoint for listing available configuration files."""

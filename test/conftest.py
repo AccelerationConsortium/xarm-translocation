@@ -50,6 +50,10 @@ def mock_xarm_api():
     mock_arm.set_bio_gripper_enable.return_value = 0
     mock_arm.open_bio_gripper.return_value = 0
     mock_arm.close_bio_gripper.return_value = 0
+    mock_arm.set_bio_gripper_g2_position.return_value = 0
+    mock_arm.set_bio_gripper_force.return_value = 0
+    mock_arm.set_bio_gripper_speed.return_value = 0
+    mock_arm.get_bio_gripper_g2_position.return_value = (0, 0)
     mock_arm.set_gripper_enable.return_value = 0
     mock_arm.set_gripper_position.return_value = 0
     mock_arm.robotiq_reset.return_value = 0
@@ -91,7 +95,30 @@ def mock_config_files(monkeypatch):
                 }
             }
         },
-        'gripper_config': {'GRIPPER_SPEED': 300},
+        'gripper_config': {
+            'GRIPPER_SPEED': 300,
+            'bio': {
+                'name': 'BioGripper Gen1',
+                'type': 'bio',
+                'has_stroke_control': False,
+                'has_force_control': False,
+                'speed': 300,
+            },
+            'bio_gen2': {
+                'name': 'BioGripper Gen2',
+                'type': 'bio_gen2',
+                'has_stroke_control': True,
+                'has_force_control': True,
+                'speed': 1000,
+                'force': 50,
+                'timeout': 5,
+                'stroke_range': {'min': 71, 'max': 150},
+                'speed_range': {'min': 0, 'max': 4000},
+                'force_range': {'min': 1, 'max': 100},
+                'open_position': 150,
+                'close_position': 71,
+            },
+        },
         'position_config': {
             'positions': {
         'home': {'x': 300, 'y': 0, 'z': 300, 'roll': 180, 'pitch': 0, 'yaw': 0},

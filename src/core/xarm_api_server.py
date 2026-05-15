@@ -71,7 +71,8 @@ class ConnectionManager:
         self.active_connections.append(websocket)
 
     def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
 
     async def send_personal_message(self, message: str, websocket: WebSocket):
         await websocket.send_text(message)
@@ -126,6 +127,7 @@ class ConnectionRequest(BaseModel):
     profile_name: Optional[str] = Field(default=None, description="Name of the connection profile to use.")
     host: Optional[str] = Field(default=None, description="IP address of the robot. Overrides profile.")
     model: Optional[int] = Field(default=None, description="Robot model: 5, 6, 7. Overrides profile.")
+    gripper_type: Optional[str] = Field(default=None, description="Installed gripper type, e.g. bio_gen2.")
     simulation_mode: bool = Field(default=False, description="Enable software simulation mode (no hardware required).")
     safety_level: str = Field(default="MEDIUM", description="Set the safety validation level: LOW, MEDIUM, HIGH.")
 
@@ -188,7 +190,19 @@ class TrackLocationRequest(BaseModel):
 class GripperRequest(BaseModel):
     """Request model for gripper operations."""
     speed: Optional[float] = Field(default=None, description="Gripper speed (1-5000)")
+    force: Optional[float] = Field(default=None, description="Gripper force, when supported")
     wait: bool = Field(default=True, description="Wait for operation to complete.")
+
+class GripperStrokeRequest(BaseModel):
+    """Request model for gripper stroke/position control."""
+    stroke: float = Field(description="Target gripper stroke/position")
+    speed: Optional[float] = Field(default=None, description="Gripper movement speed")
+    force: Optional[float] = Field(default=None, description="Gripper force, when supported")
+    wait: bool = Field(default=True, description="Wait for operation to complete.")
+
+class GripperForceRequest(BaseModel):
+    """Request model for setting gripper force."""
+    force: float = Field(description="Target gripper force")
 
 class VelocityRequest(BaseModel):
     """Request model for Cartesian velocity control."""
@@ -416,6 +430,7 @@ async def connect_robot(request: ConnectionRequest, background_tasks: Background
             profile_name=request.profile_name,
             host=request.host,
             model=request.model,
+            gripper_type=request.gripper_type,
             simulation_mode=request.simulation_mode,
             safety_level=request.get_safety_level_enum()
         )
@@ -501,6 +516,45 @@ async def get_performance_status():
     return {
         "performance_metrics": c.get_performance_metrics(),
         "maintenance_status": c.get_maintenance_status(),
+    }
+
+@app.get("/positions")
+async def get_all_positions():
+    """Read-only snapshot of every position sensor: joints, Cartesian pose,
+    linear track, and gripper — no movement is performed."""
+    c = get_controller()
+
+    # Joints
+    joints_raw = c.get_current_joints()
+    joints = joints_raw[:c.num_joints] if joints_raw else None
+
+    # Cartesian pose
+    cart_raw = c.get_current_position()
+    if cart_raw and len(cart_raw) >= 6:
+        cartesian = {"x": cart_raw[0], "y": cart_raw[1], "z": cart_raw[2],
+                     "roll": cart_raw[3], "pitch": cart_raw[4], "yaw": cart_raw[5]}
+    else:
+        cartesian = None
+
+    # Linear track
+    if c.has_track():
+        track_pos = c.get_track_position()
+        track = {"available": True, "position": track_pos}
+    else:
+        track = {"available": False, "position": None}
+
+    # Gripper
+    gripper_pos = c.get_gripper_position()
+    gripper = {
+        "available": gripper_pos is not None,
+        "position": gripper_pos,
+    }
+
+    return {
+        "joints": joints,
+        "cartesian": cartesian,
+        "track": track,
+        "gripper": gripper,
     }
 
 @app.get("/locations")
@@ -636,10 +690,17 @@ async def move_home(background_tasks: BackgroundTasks):
 async def stop_movement(background_tasks: BackgroundTasks):
     """Stop all robot motion immediately."""
     c = get_controller()
-    
-    # Execute stop immediately (not in background) for fastest response
-    c.stop_motion()
-    logger.info("Stop command issued immediately.")
+
+    try:
+        # Execute stop immediately (not in background) for fastest response.
+        if not c.stop_motion():
+            raise HTTPException(status_code=500, detail="Stop command failed.")
+        logger.info("Stop command issued immediately.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Stop command failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Stop command failed: {str(e)}")
     
     # Only use background task for status update
     async def status_update_task():
@@ -665,8 +726,10 @@ async def clear_errors(background_tasks: BackgroundTasks):
         else:
             raise HTTPException(status_code=500, detail="Failed to clear all errors")
             
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Clear errors failed: {e}")
+        logger.error(f"Clear errors failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Clear errors failed: {str(e)}")
 
 @app.post("/robot/enable")
@@ -754,50 +817,80 @@ async def set_cartesian_velocity(request: VelocityRequest):
 
 # Gripper endpoints
 @app.post("/gripper/open")
-async def open_gripper(request: GripperRequest, background_tasks: BackgroundTasks):
+async def open_gripper(request: Optional[GripperRequest] = None):
     """Open the attached gripper."""
     c = get_controller()
+    request = request or GripperRequest()
 
-    async def gripper_task():
-        success = c.open_gripper(speed=request.speed, wait=request.wait)
-        if not success:
-            logger.error("Failed to open gripper.")
+    try:
+        success = c.open_gripper(speed=request.speed, force=request.force, wait=request.wait)
         await broadcast_status_update()
-
-    background_tasks.add_task(gripper_task)
-    return {"message": "Open gripper command accepted."}
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to open gripper.")
+        return {"message": "Open gripper command completed."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Open gripper failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Open gripper failed: {str(e)}")
 
 @app.post("/gripper/close")
-async def close_gripper(request: GripperRequest, background_tasks: BackgroundTasks):
+async def close_gripper(request: Optional[GripperRequest] = None):
     """Close the attached gripper."""
     c = get_controller()
+    request = request or GripperRequest()
 
-    async def gripper_task():
-        success = c.close_gripper(speed=request.speed, wait=request.wait)
-        if not success:
-            logger.error("Failed to close gripper.")
+    try:
+        success = c.close_gripper(speed=request.speed, force=request.force, wait=request.wait)
         await broadcast_status_update()
-    
-    background_tasks.add_task(gripper_task)
-    return {"message": "Close gripper command accepted."}
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to close gripper.")
+        return {"message": "Close gripper command completed."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Close gripper failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Close gripper failed: {str(e)}")
 
 @app.post("/gripper/move/stroke")
-async def move_gripper_stroke(request: dict, background_tasks: BackgroundTasks):
-    """Move gripper to specific stroke position (for non-bio grippers)."""
+async def move_gripper_stroke(request: GripperStrokeRequest):
+    """Move gripper to a specific stroke position."""
     c = get_controller()
-    
-    stroke = request.get('stroke')
-    if stroke is None:
-        raise HTTPException(status_code=400, detail="Stroke value is required")
 
-    async def gripper_task():
-        success = c.move_gripper_to_stroke(stroke=stroke)
-        if not success:
-            logger.error(f"Failed to move gripper to stroke {stroke}.")
+    try:
+        success = c.move_gripper_to_stroke(
+            stroke=request.stroke,
+            speed=request.speed,
+            force=request.force,
+            wait=request.wait,
+        )
         await broadcast_status_update()
-    
-    background_tasks.add_task(gripper_task)
-    return {"message": f"Move gripper to stroke {stroke} command accepted."}
+        if not success:
+            raise HTTPException(status_code=500, detail=f"Failed to move gripper to stroke {request.stroke}.")
+        return {"message": f"Move gripper to stroke {request.stroke} command completed."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Move gripper to stroke failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Move gripper to stroke failed: {str(e)}")
+
+@app.post("/gripper/force")
+async def set_gripper_force(request: GripperForceRequest):
+    """Set gripping force for grippers that support force control."""
+    c = get_controller()
+    if not c.set_gripper_force(request.force):
+        raise HTTPException(status_code=500, detail="Failed to set gripper force.")
+    await broadcast_status_update()
+    return {"message": f"Gripper force set to {request.force}."}
+
+@app.get("/gripper/position")
+async def get_gripper_position():
+    """Get gripper stroke/position when supported by the installed gripper."""
+    c = get_controller()
+    position = c.get_gripper_position()
+    if position is None:
+        raise HTTPException(status_code=404, detail="Gripper position is not available.")
+    return {"position": position}
 
 # Linear track endpoints
 @app.post("/track/move")

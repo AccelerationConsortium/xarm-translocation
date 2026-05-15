@@ -458,8 +458,8 @@ HARDWARE_LIMITS = {
     'max_tcp_speed': 1500,  # mm/s
     'max_joint_speed': 200, # deg/s
     'temperature_limits': {
-        'warning': 80, # °C
-        'critical': 95  # °C
+        'warning': 80, # deg C
+        'critical': 95  # deg C
     },
     'collision_sensitivity': (0, 5) # min/max range
 }
@@ -484,8 +484,8 @@ DEFAULT_PERFORMANCE_THRESHOLDS = {
 
 # Default temperature thresholds for predictive maintenance
 DEFAULT_TEMPERATURE_THRESHOLDS = {
-    'warning': 60,  # °C
-    'critical': 75  # °C
+    'warning': 60,  # deg C
+    'critical': 75  # deg C
 }
 
 # Safety multipliers for different safety levels
@@ -563,7 +563,7 @@ def validate_and_apply_safety_config(user_config: Dict[str, Any]) -> Dict[str, A
         user_val = user_temps.get(level, hw_max)
         safe_val = min(user_val, hw_max)
         if safe_val != user_val:
-            print(f"Warning: Temperature limit '{level}' clamped from {user_val}°C to {safe_val}°C (hardware limit).")
+            print(f"Warning: Temperature limit '{level}' clamped from {user_val} deg C to {safe_val} deg C (hardware limit).")
         safe_temps[level] = safe_val
     validated_config['temperature_limits'] = safe_temps
 

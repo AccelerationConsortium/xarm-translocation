@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Robotic Control</title>
+    <title>xArm Control</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -11,7 +11,8 @@
         <header>
             <div class="header-content">
                 <div class="title-status-container">
-                    <h1>Robotic Control</h1>
+                    <p class="eyebrow">xArm Translocation</p>
+                    <h1>Web Control Interface</h1>
                     <div id="status-container">
                         <div id="status-main">
                             <div id="status-light" class="status-light offline"></div>
@@ -27,7 +28,11 @@
         </header>
 
         <main class="dashboard-layout">
+
+            <!-- ── LEFT COLUMN ─────────────────────────────────────── -->
             <div class="column-left">
+
+                <!-- Connection -->
                 <div class="card">
                     <h2>Connection</h2>
                     <div class="form-group">
@@ -44,119 +49,162 @@
                     </div>
                     <div class="form-group-checkbox">
                         <input type="checkbox" id="simulation-mode">
-                                                    <label for="simulation-mode">Software Simulation</label>
+                        <label for="simulation-mode">Software Simulation</label>
                     </div>
                     <button id="connect-btn" class="btn">Connect</button>
                     <button id="disconnect-btn" class="btn btn-danger" disabled>Disconnect</button>
                 </div>
 
+                <!-- Gripper -->
                 <div class="card">
-                    <h2>System Status</h2>
-                    <div class="status-grid">
-                        <div>Arm:</div><div id="arm-state">N/A</div>
-                        <div>Gripper:</div><div id="gripper-state">N/A</div>
-                        <div>Track:</div><div id="track-state">N/A</div>
-                        <div>Mode:</div><div id="robot-mode">N/A</div>
-                        <div>X,Y,Z:</div><div id="current-xyz">[...]</div>
-                        <div>Rx,Ry,Rz:</div><div id="current-rpy">[...]</div>
-                        <div>Last Error:</div><div id="last-error">None</div>
+                    <h2>Gripper</h2>
+                    <div class="gripper-controls">
+                        <button id="open-gripper-btn" class="btn">Open</button>
+                        <button id="close-gripper-btn" class="btn">Close</button>
+                        <button id="enable-gripper-btn" class="btn btn-success">Enable</button>
+                    </div>
+                    <div class="stroke-control-row">
+                        <label for="gripper-stroke">Stroke:<br><span id="gripper-stroke-range" class="label-range"></span></label>
+                        <input type="number" id="gripper-stroke" placeholder="" disabled>
+                        <button id="move-to-stroke-btn" class="btn move-button" disabled>Move</button>
+                    </div>
+                    <div class="force-control-row">
+                        <label for="gripper-force">Force:<br><span id="gripper-force-range" class="label-range"></span></label>
+                        <input type="number" id="gripper-force" placeholder="" disabled>
+                        <button id="set-gripper-force-btn" class="btn move-button" disabled>Set</button>
                     </div>
                 </div>
-            </div>
 
+                <!-- Linear Track -->
+                <div class="card">
+                    <h2>Linear Track</h2>
+                    <div class="track-controls">
+                        <div class="track-speed-group">
+                            <label for="track-speed">Speed (mm/s):</label>
+                            <input type="number" id="track-speed" placeholder="1-1000" min="1" max="1000" value="200">
+                        </div>
+                    </div>
+                    <div class="track-location-control">
+                        <select id="track-location-select"></select>
+                        <button id="move-track-loc-btn" class="btn move-button">Move</button>
+                    </div>
+                    <div id="track-info" class="component-info">
+                        <div class="info-left">Range: <span id="track-range-display">0-700 mm</span></div>
+                        <div class="info-right">Current: <span id="track-position-display">N/A</span></div>
+                    </div>
+                </div>
+
+            </div><!-- /column-left -->
+
+            <!-- ── RIGHT COLUMN ────────────────────────────────────── -->
             <div class="column-right">
+
+                <!-- System Control card -->
                 <div class="card">
                     <h2>System Control</h2>
-                    <div class="control-layout-vertical">
-                        <div class="xarm-section">
-                            <div class="component-control">
-                                <h3>xArm</h3>
-                                <div class="xarm-buttons">
-                                    <button id="home-btn" class="btn">Home</button>
-                                    <button id="stop-btn" class="btn btn-danger">STOP</button>
-                                    <button id="clear-errors-btn" class="btn btn-warning">Clear</button>
+
+                    <!-- Two-column body: xArm controls (left) + XYZ jog (right) -->
+                    <div class="sc-body">
+
+                        <!-- Left: xArm controls -->
+                        <div class="sc-left">
+                            <h3>xArm</h3>
+                            <div class="xarm-buttons">
+                                <button id="home-btn" class="btn">Home</button>
+                                <button id="stop-btn" class="btn btn-danger">STOP</button>
+                                <button id="clear-errors-btn" class="btn btn-warning">Clear Errors</button>
+                            </div>
+                            <div class="position-controls-row">
+                                <select id="predefined-position-select" class="position-dropdown"></select>
+                            </div>
+                            <div class="joint-move-row">
+                                <button id="move-predefined-btn" class="btn move-position-button">Joint Move</button>
+                                <span class="inline-label">Speed:</span>
+                                <input type="number" id="joint-speed" placeholder="10" min="1" max="200" value="10" class="inline-input">
+                                <span class="inline-unit">°/s</span>
+                            </div>
+                            <div class="linear-move-row">
+                                <button id="move-linear-btn" class="btn btn-primary move-linear-button">Linear Move</button>
+                                <span class="inline-label">Speed:</span>
+                                <input type="number" id="linear-speed" placeholder="50" min="1" max="1000" value="50" class="inline-input">
+                                <span class="inline-unit">mm/s</span>
+                                <span class="inline-label">Steps:</span>
+                                <input type="number" id="linear-steps" placeholder="1" min="1" max="100" value="1" class="inline-input">
+                            </div>
+                            <div class="enable-row">
+                                <button id="enable-robot-btn" class="btn btn-success enable-button">Enable</button>
+                                <button id="test-log-btn" class="btn btn-secondary">Test Logs</button>
+                            </div>
+                        </div>
+
+                        <!-- Right: XYZ jog pad -->
+                        <div class="sc-right">
+                            <h3>Jog</h3>
+                            <div class="jog-panel">
+                                <!-- Z buttons -->
+                                <div class="jog-z-row">
+                                    <button id="jog-z-minus" class="btn jog-btn" disabled>Z−</button>
+                                    <button id="jog-z-plus"  class="btn jog-btn" disabled>Z+</button>
                                 </div>
-                                <div class="position-controls-row">
-                                    <select id="predefined-position-select" class="position-dropdown"></select>
-                                    <input type="text" id="realtime-joints" placeholder="Current Joint Angles" readonly class="joints-display">
+                                <!-- XY circular pad -->
+                                <div class="jog-xy-pad">
+                                    <button class="jog-btn-xy" id="jog-x-plus"  disabled>X+</button>
+                                    <button class="jog-btn-xy" id="jog-y-plus"  disabled>Y+</button>
+                                    <span class="jog-center">XYZ</span>
+                                    <button class="jog-btn-xy" id="jog-y-minus" disabled>Y−</button>
+                                    <button class="jog-btn-xy" id="jog-x-minus" disabled>X−</button>
                                 </div>
-                                
-                                <!-- Joint Movement Row -->
-                                <div class="joint-move-row">
-                                    <button id="move-predefined-btn" class="btn move-position-button">Joint Move</button>
-                                    <span class="inline-label">Speed:</span>
-                                    <input type="number" id="joint-speed" placeholder="20" min="1" max="200" value="20" class="inline-input">
-                                    <span class="inline-unit">°/s</span>
+                                <!-- Step size -->
+                                <div class="jog-step-row">
+                                    <span class="inline-label">Step</span>
+                                    <input type="number" id="jog-step" value="10" min="1" max="500" class="inline-input" disabled>
+                                    <span class="inline-unit">mm</span>
                                 </div>
-                                
-                                <!-- Linear Movement Row -->
-                                <div class="linear-move-row">
-                                    <button id="move-linear-btn" class="btn btn-primary move-linear-button">Linear Move</button>
-                                    <span class="inline-label">Speed:</span>
-                                    <input type="number" id="linear-speed" placeholder="100" min="1" max="1000" value="100" class="inline-input">
-                                    <span class="inline-unit">mm/s</span>
-                                    <span class="inline-label">Steps:</span>
-                                    <input type="number" id="linear-steps" placeholder="1" min="1" max="100" value="1" class="inline-input">
-                                </div>
-                                
-                                <!-- Enable Button Row -->
-                                                    <div class="enable-row">
-                        <button id="enable-robot-btn" class="btn btn-success enable-button">Enable</button>
-                        <button id="test-log-btn" class="btn btn-secondary" style="margin-left: 10px;">Test Logs</button>
+                            </div>
+                        </div>
+
+                    </div><!-- /sc-body -->
+                </div><!-- /System Control card -->
+
+                <!-- Joint Angles card — horizontal, below System Control -->
+                <div class="card">
+                    <h2>Joint Angles <span class="panel-unit">live · direct control</span></h2>
+                    <div class="joint-inputs-h">
+                        <div class="joint-col"><label>J1</label><input type="number" id="j1-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J2</label><input type="number" id="j2-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J3</label><input type="number" id="j3-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J4</label><input type="number" id="j4-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J5</label><input type="number" id="j5-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col" id="j6-col"><label>J6</label><input type="number" id="j6-input" step="0.1" placeholder="—"></div>
                     </div>
-                            </div>
-                        </div>
-                        <div class="components-section">
-                            <div class="component-control">
-                                <h3>Gripper</h3>
-                                <div class="gripper-controls">
-                                    <button id="open-gripper-btn" class="btn">Open</button>
-                                    <button id="close-gripper-btn" class="btn">Close</button>
-                                    <button id="enable-gripper-btn" class="btn btn-success">Enable</button>
-                                </div>
-                                <div class="stroke-control">
-                                    <div class="stroke-control-row">
-                                        <label for="gripper-stroke">Stroke:</label>
-                                        <input type="number" id="gripper-stroke" placeholder="" disabled>
-                                    </div>
-                                    <button id="move-to-stroke-btn" class="btn move-button" disabled>Move</button>
-                                </div>
-                                <div id="gripper-info" class="component-info">
-                                    <div class="info-left">
-                                        Gripper: <span id="gripper-type-display">N/A</span>
-                                    </div>
-                                    <div class="info-right">
-                                        State: <span id="gripper-state-display">N/A</span>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="component-control">
-                                <h3>Linear Track</h3>
-                                <div class="track-controls">
-                                    <div class="track-speed-group">
-                                        <label for="track-speed">Speed (mm/s):</label>
-                                        <input type="number" id="track-speed" placeholder="1-1000" min="1" max="1000" value="200">
-                                    </div>
-                                </div>
-                                <div class="track-location-control">
-                                    <select id="track-location-select"></select>
-                                    <button id="move-track-loc-btn" class="btn move-button">Move</button>
-                                </div>
-                                <div id="track-info" class="component-info">
-                                    <div class="info-left">
-                                        Range: <span id="track-range-display">0-700 mm</span>
-                                    </div>
-                                    <div class="info-right">
-                                        Current: <span id="track-position-display">N/A</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
+                    <div class="joint-action-row">
+                        <span class="inline-label">Speed</span>
+                        <input type="number" id="direct-joint-speed" value="10" min="1" max="200" class="inline-input" disabled>
+                        <span class="inline-unit">°/s</span>
+                        <button id="move-joints-btn" class="btn btn-primary" disabled>Move Joints</button>
                     </div>
                 </div>
-            </div>
+
+                <!-- System Status bar — pinned to bottom of right column -->
+                <div class="card status-bar-card">
+                    <h2>System Status</h2>
+                    <div class="status-bar-line">
+                        <span>Arm: <strong id="arm-state">N/A</strong></span>
+                        <span class="sep">|</span>
+                        <span>Gripper: <strong id="gripper-state">N/A</strong></span>
+                        <span class="sep">|</span>
+                        <span>Track: <strong id="track-state">N/A</strong></span>
+                        <span class="sep">|</span>
+                        <span>Mode: <strong id="robot-mode">N/A</strong></span>
+                        <span class="sep">|</span>
+                        <span>Error: <strong id="last-error">None</strong></span>
+                    </div>
+                </div>
+
+            </div><!-- /column-right -->
+
         </main>
     </div>
-    <script src="main.js?v=20241222"></script>
+    <script src="main.js?v=20250515b"></script>
 </body>
-</html> 
+</html>

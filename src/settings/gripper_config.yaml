@@ -8,6 +8,7 @@ bio:
   name: "BioGripper Gen1"
   type: "bio"
   has_stroke_control: false
+  has_force_control: false
   speed: 300
   open_position: 850
   close_position: 0
@@ -15,11 +16,42 @@ bio:
     - "open_close"
   description: "UFACTORY Bio Gripper without stroke control"
 
+# BioGripper Gen2 Configuration
+# Official UFACTORY BioGripper Gen2 SDK parameter ranges:
+#   Position : 71–150  (71 = fully closed, 150 = fully open)
+#   Speed    : 0–4000  (motor speed, unit: rpm-like SDK unit)
+#   Force    : 1–100   (percentage of maximum gripping force)
+bio_gen2:
+  name: "BioGripper Gen2"
+  type: "bio_gen2"
+  has_stroke_control: true
+  has_force_control: true
+  speed: 1000          # default movement speed (0–4000)
+  force: 50            # default gripping force % (1–100)
+  timeout: 5           # seconds to wait for motion completion
+  stroke_range:
+    min: 71            # fully closed
+    max: 150           # fully open
+  speed_range:
+    min: 0
+    max: 4000
+  force_range:
+    min: 1
+    max: 100           # percentage
+  open_position: 150   # fully open
+  close_position: 71   # fully closed
+  capabilities:
+    - "open_close"
+    - "stroke_control"
+    - "force_control"
+  description: "UFACTORY BioGripper Gen2 with stroke distance and force control"
+
 # Standard Gripper Configuration  
 standard:
   name: "xArm Gripper"
   type: "standard"
   has_stroke_control: true
+  has_force_control: false
   speed: 300
   stroke_range:
     min: 0
@@ -36,6 +68,7 @@ robotiq:
   name: "RobotIQ 2F-85"
   type: "robotiq"
   has_stroke_control: true
+  has_force_control: true
   speed: 255
   stroke_range:
     min: 0
@@ -53,6 +86,7 @@ vacuum:
   name: "Vacuum Gripper Pro"
   type: "vacuum"
   has_stroke_control: false
+  has_force_control: false
   speed: 100
   capabilities:
     - "suction_control"
@@ -63,6 +97,7 @@ default:
   name: "Unknown Gripper"
   type: "unknown"
   has_stroke_control: false
+  has_force_control: false
   speed: 300
   capabilities: []
   description: "Unknown or unsupported gripper type" 

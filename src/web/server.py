@@ -107,18 +107,18 @@ def start_web_server(port=6001):
         httpd.allow_reuse_address = True
         httpd.socket.setsockopt(socketserver.socket.SOL_SOCKET, socketserver.socket.SO_REUSEADDR, 1)
         
-        print(f"🌐 xArm Web Interface running at http://localhost:{port}")
-        print(f"📡 Proxying API requests to http://localhost:8000")
+        print(f"xArm Web Interface running at http://localhost:{port}")
+        print("Proxying API requests to http://localhost:8000")
         print("Press Ctrl+C to stop the server")
         
         try:
             httpd.serve_forever()
         except KeyboardInterrupt:
-            print("\n🛑 Web server stopping...")
+            print("\nWeb server stopping...")
             httpd.shutdown()
-            print("✅ Web server stopped gracefully")
+            print("Web server stopped gracefully")
         except Exception as e:
-            print(f"❌ Web server error: {e}")
+            print(f"Web server error: {e}")
             httpd.shutdown()
             raise
         finally:
@@ -126,10 +126,10 @@ def start_web_server(port=6001):
             
     except OSError as e:
         if e.errno == 48:  # Address already in use
-            print(f"❌ Error starting web server: Port {port} is already in use")
-            print(f"💡 Try using a different port: pyxarm web --port {port + 1}")
+            print(f"Error starting web server: Port {port} is already in use")
+            print(f"Try using a different port: pyxarm web --port {port + 1}")
         else:
-            print(f"❌ Error starting web server: {e}")
+            print(f"Error starting web server: {e}")
         raise
 
 if __name__ == "__main__":

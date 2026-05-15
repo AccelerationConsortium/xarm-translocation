@@ -61,10 +61,14 @@ PyxArm includes comprehensive support for the 6-axis force torque sensor with th
 
 ## Gripper & Linear Track
 
-| Component Feature         | Description                                                                                                                                                            |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Universal Gripper API** | `open_gripper()` and `close_gripper()` work seamlessly with any configured gripper type (**Bio Gripper, Standard Gripper, or Robotiq**).                                   |
-| **Linear Track Control**  | If `enable_track=True`, the controller provides validated motion control for the linear track, including position and speed limits defined in `linear_track_config.yaml`. |
+| Component Feature              | Description                                                                                                                                                               |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Universal Gripper API**      | `open_gripper()` and `close_gripper()` work seamlessly with any configured gripper type (**BioGripper Gen1, BioGripper Gen2, Standard, or RobotIQ**).                     |
+| **BioGripper Gen2 Support**    | Full stroke and force control via `move_gripper_to_stroke()` and `set_gripper_force()`. Official SDK parameter ranges: Position 71–150, Speed 0–4000, Force 1–100 %. Position 71 = fully closed; 150 = fully open. Default speed: 1000. |
+| **Input Validation**           | Stroke and force values are validated against configured ranges (`stroke_range`, `force_range` in `gripper_config.yaml`) before any SDK call is made.                     |
+| **Integer Coercion**           | Float inputs for position, speed, force, and timeout are automatically rounded to integers before being passed to the xArm SDK (which requires integer arguments).        |
+| **Linear Track Control**       | If `enable_track=True`, the controller provides validated motion control for the linear track, including position and speed limits defined in `linear_track_config.yaml`.  |
+| **Position Snapshot**          | `GET /positions` returns joint angles, Cartesian pose, track position, and gripper position in a single read-only call — no movement triggered.                           |
 
 ---
 

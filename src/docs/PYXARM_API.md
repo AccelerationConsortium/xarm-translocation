@@ -34,9 +34,14 @@ The API server runs on `http://127.0.0.1:6001` by default.
 ## Table of Contents
 
 - [Server & Connection](#server--connection-management)
+- [Position Snapshot](#get-positions)
 - [Robot Arm Movement](#robot-arm-movement)
 - [Components](#components)
   - [Gripper](#gripper)
+    - [Open / Close](#post-gripperopen)
+    - [Stroke control (Gen2)](#post-gripperstroke)
+    - [Force control (Gen2)](#post-gripperforce)
+    - [Position readback (Gen2)](#get-gripperposition)
   - [Linear Track](#linear-track)
 - [System & Safety](#system--safety)
 - [WebSocket Interface](#websocket-interface)
@@ -164,6 +169,32 @@ Retrieves the current status of the robot and controller.
 curl -X GET "http://127.0.0.1:6001/status"
 ```
 
+### `GET /positions`
+
+Returns a read-only snapshot of **all position sensors** — joint angles, Cartesian pose, linear track, and gripper — in a single call. No movement is performed.
+
+**Response `200 OK`**
+```json
+{
+    "joints": [0.0, -30.2, 12.4, 0.0, 17.8, 0.0],
+    "cartesian": {
+        "x": 305.1, "y": 0.0, "z": 210.4,
+        "roll": 180.0, "pitch": 0.0, "yaw": 0.0
+    },
+    "track": { "available": true, "position": 452.0 },
+    "gripper": { "available": true, "position": 110 }
+}
+```
+*   `joints`: List of current joint angles in degrees (length matches the robot model: 5, 6, or 7).
+*   `cartesian`: End-effector pose in mm and degrees.
+*   `track.available`: `false` if no linear track is configured; `position` will be `null`.
+*   `gripper.available`: `false` for grippers without position feedback (e.g. BioGripper Gen1); `position` will be `null`.
+
+**Example**
+```bash
+curl -X GET "http://127.0.0.1:6001/positions"
+```
+
 ---
 ## Robot Arm Movement
 
@@ -274,48 +305,113 @@ These endpoints control attached components like the gripper and linear track.
 
 ### Gripper
 
+All gripper endpoints accept an optional JSON body. Omitting the body uses config defaults.
+
 #### `POST /gripper/open`
 
-Opens the gripper.
+Opens the gripper to its fully open position.
+
+**Request Body** (optional)
+```json
+{
+    "speed": 1000,
+    "force": 50,
+    "wait": true
+}
+```
+*   `speed` (optional): Movement speed. BioGripper Gen2 range: 0–4000. Default: 1000.
+*   `force` (optional): Gripping force %. BioGripper Gen2 range: 1–100. Default: 50.
+*   `wait` (optional, default `true`): Wait for motion to complete before returning.
 
 **Response `200 OK`**
 ```json
-{ "status": "success", "message": "Gripper opened" }
+{ "message": "Open gripper command completed." }
 ```
 **Example**
 ```bash
 curl -X POST "http://127.0.0.1:6001/gripper/open"
+# With explicit speed and force:
+curl -X POST "http://127.0.0.1:6001/gripper/open" -H "Content-Type: application/json" -d '{
+    "speed": 800, "force": 30
+}'
 ```
 
 #### `POST /gripper/close`
 
-Closes the gripper.
+Closes the gripper to its fully closed position.
+
+**Request Body** (optional) — same fields as `/gripper/open`.
 
 **Response `200 OK`**
 ```json
-{ "status": "success", "message": "Gripper closed" }
+{ "message": "Close gripper command completed." }
 ```
 **Example**
 ```bash
 curl -X POST "http://127.0.0.1:6001/gripper/close"
 ```
 
-#### `GET /gripper/status`
+#### `POST /gripper/stroke`
 
-Retrieves the current status of the gripper.
+*BioGripper Gen2 / Standard / RobotIQ only.* Moves the gripper to a specific absolute stroke position.
+
+**BioGripper Gen2 position range: 71 (fully closed) – 150 (fully open).**
+
+**Request Body**
+```json
+{
+    "stroke": 110,
+    "speed": 1000,
+    "force": 50,
+    "wait": true
+}
+```
+*   `stroke` (required): Target position in SDK units.
+*   `speed`, `force`, `wait`: same as open/close.
 
 **Response `200 OK`**
 ```json
-{
-    "position": 850.0,
-    "is_open": true
-}
+{ "message": "Gripper moved to stroke 110." }
 ```
-*   `position`: Raw position value from the gripper motor.
+**Example**
+```bash
+curl -X POST "http://127.0.0.1:6001/gripper/stroke" -H "Content-Type: application/json" -d '{
+    "stroke": 110
+}'
+```
+
+#### `POST /gripper/force`
+
+*BioGripper Gen2 only.* Sets the gripping force independently of any position command.
+
+**Request Body**
+```json
+{ "force": 60 }
+```
+*   `force` (required): Force percentage, range 1–100.
+
+**Response `200 OK`**
+```json
+{ "message": "Gripper force set to 60." }
+```
+**Example**
+```bash
+curl -X POST "http://127.0.0.1:6001/gripper/force" -H "Content-Type: application/json" -d '{"force": 60}'
+```
+
+#### `GET /gripper/position`
+
+*BioGripper Gen2 / Standard only.* Returns the current gripper stroke position without moving.
+
+**Response `200 OK`**
+```json
+{ "position": 110 }
+```
+**Response `404`** if the installed gripper does not support position readback.
 
 **Example**
 ```bash
-curl -X GET "http://127.0.0.1:6001/gripper/status"
+curl -X GET "http://127.0.0.1:6001/gripper/position"
 ```
 
 ### Linear Track

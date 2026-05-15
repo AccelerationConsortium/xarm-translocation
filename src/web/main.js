@@ -9,7 +9,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     const API_BASE_URL = `${window.location.protocol}//${window.location.host}`;
-    const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`;
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const wsHost = window.location.port === '8000'
+        ? window.location.host
+        : `${window.location.hostname}:8000`;
+    const WS_URL = `${wsProtocol}://${wsHost}/ws`;
 
     const connectBtn = document.getElementById('connect-btn');
     const disconnectBtn = document.getElementById('disconnect-btn');
@@ -37,6 +41,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const enableRobotBtn = document.getElementById('enable-robot-btn');
     const moveToStrokeBtn = document.getElementById('move-to-stroke-btn');
     const gripperStrokeInput = document.getElementById('gripper-stroke');
+    const gripperStrokeRange = document.getElementById('gripper-stroke-range');
+    const setGripperForceBtn = document.getElementById('set-gripper-force-btn');
+    const gripperForceInput = document.getElementById('gripper-force');
+    const gripperForceRange = document.getElementById('gripper-force-range');
     
     // Linear movement controls
     const linearStepsInput = document.getElementById('linear-steps');
@@ -50,6 +58,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- API Helper ---
     async function apiRequest(endpoint, method = 'GET', body = null, skipErrorDisplay = false) {
+        const requestLabel = `${method} ${endpoint}`;
+        if (method !== 'GET') {
+            addLogEntry(`API ${requestLabel}`, 'info');
+        }
+
         try {
             const options = {
                 method,
@@ -60,8 +73,13 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             const response = await fetch(`${API_BASE_URL}${endpoint}`, options);
             if (!response.ok) {
-                const errorData = await response.json();
-                let errorMessage = errorData.detail || `HTTP error! status: ${response.status}`;
+                let errorData = {};
+                try {
+                    errorData = await response.json();
+                } catch {
+                    errorData = {};
+                }
+                let errorMessage = errorData.detail || errorData.error || `HTTP error! status: ${response.status}`;
                 
                 // Simplify connection error messages
                 if (endpoint === '/connect' && response.status >= 500) {
@@ -70,9 +88,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 
                 throw new Error(errorMessage);
             }
-            return response.json();
+            const data = await response.json();
+            if (method !== 'GET') {
+                addLogEntry(`OK ${requestLabel}`, 'info');
+            }
+            return data;
         } catch (error) {
             console.error(`API request failed: ${error.message}`);
+            if (method !== 'GET') {
+                addLogEntry(`FAILED ${requestLabel}: ${error.message}`, 'error');
+            }
             
             // For connection errors, show error below status (unless skipped)
             if (!skipErrorDisplay) {
@@ -204,8 +229,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Check if all required DOM elements exist
             const requiredElements = [
-                'arm-state', 'gripper-state', 'track-state', 'robot-mode', 
-                'current-xyz', 'current-rpy', 'last-error'
+                'arm-state', 'gripper-state', 'track-state', 'robot-mode', 'last-error'
             ];
             
             const missingElements = requiredElements.filter(id => {
@@ -264,6 +288,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             };
 
+            const setInputHelp = (element, text, disabled = false) => {
+                if (!element) return;
+                element.textContent = text;
+                element.classList.toggle('is-disabled', disabled);
+            };
+
             safeSetText('arm-state', componentStates.arm || 'N/A');
             
             // Update gripper state and name - show name regardless of state
@@ -271,6 +301,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const gripperConfig = data.connection_details?.gripper_config || {};
             const gripperName = gripperConfig.name || data.connection_details?.gripper_type || 'N/A';
             const hasStrokeControl = gripperConfig.has_stroke_control || false;
+            const hasForceControl = gripperConfig.has_force_control || false;
             
             // Always show gripper name in the info section
             safeSetText('gripper-type-display', gripperName);
@@ -291,6 +322,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         gripperStrokeInput.min = minStroke.toString();
                         gripperStrokeInput.max = maxStroke.toString();
                     }
+                    setInputHelp(gripperStrokeRange, `(${minStroke}–${maxStroke})`, false);
                     if (moveToStrokeBtn) {
                         moveToStrokeBtn.disabled = false;
                         moveToStrokeBtn.classList.remove('btn-secondary');
@@ -303,10 +335,45 @@ document.addEventListener('DOMContentLoaded', () => {
                         gripperStrokeInput.placeholder = "";
                         gripperStrokeInput.value = "";
                     }
+                    setInputHelp(gripperStrokeRange, '', true);
                     if (moveToStrokeBtn) {
                         moveToStrokeBtn.disabled = true;
                         moveToStrokeBtn.classList.remove('btn-primary');
                         moveToStrokeBtn.classList.add('btn-secondary');
+                    }
+                }
+
+                if (hasForceControl) {
+                    const forceRange = gripperConfig.force_range || {};
+                    const minForce = forceRange.min || 1;
+                    const maxForce = forceRange.max || 100;
+
+                    if (gripperForceInput) {
+                        gripperForceInput.disabled = false;
+                        gripperForceInput.placeholder = `${minForce}-${maxForce}`;
+                        gripperForceInput.min = minForce.toString();
+                        gripperForceInput.max = maxForce.toString();
+                        if (!gripperForceInput.value && gripperConfig.force) {
+                            gripperForceInput.value = gripperConfig.force.toString();
+                        }
+                    }
+                    setInputHelp(gripperForceRange, `(${minForce}–${maxForce})`, false);
+                    if (setGripperForceBtn) {
+                        setGripperForceBtn.disabled = false;
+                        setGripperForceBtn.classList.remove('btn-secondary');
+                        setGripperForceBtn.classList.add('btn-primary');
+                    }
+                } else {
+                    if (gripperForceInput) {
+                        gripperForceInput.disabled = true;
+                        gripperForceInput.placeholder = "";
+                        gripperForceInput.value = "";
+                    }
+                    setInputHelp(gripperForceRange, '', true);
+                    if (setGripperForceBtn) {
+                        setGripperForceBtn.disabled = true;
+                        setGripperForceBtn.classList.remove('btn-primary');
+                        setGripperForceBtn.classList.add('btn-secondary');
                     }
                 }
             } else {
@@ -316,10 +383,22 @@ document.addEventListener('DOMContentLoaded', () => {
                     gripperStrokeInput.placeholder = "";
                     gripperStrokeInput.value = "";
                 }
+                setInputHelp(gripperStrokeRange, '', true);
                 if (moveToStrokeBtn) {
                     moveToStrokeBtn.disabled = true;
                     moveToStrokeBtn.classList.remove('btn-primary');
                     moveToStrokeBtn.classList.add('btn-secondary');
+                }
+                if (gripperForceInput) {
+                    gripperForceInput.disabled = true;
+                    gripperForceInput.placeholder = "";
+                    gripperForceInput.value = "";
+                }
+                setInputHelp(gripperForceRange, '', true);
+                if (setGripperForceBtn) {
+                    setGripperForceBtn.disabled = true;
+                    setGripperForceBtn.classList.remove('btn-primary');
+                    setGripperForceBtn.classList.add('btn-secondary');
                 }
             }
 
@@ -351,34 +430,34 @@ document.addEventListener('DOMContentLoaded', () => {
             
             safeSetText('robot-mode', data.connection_details?.simulation_mode ? 'Simulation' : 'Hardware');
 
-            const formatArray = (arr) => arr ? `[${arr.map(n => n.toFixed(2)).join(', ')}]` : '[...]';
-            
-            // Split position into X,Y,Z and Rx,Ry,Rz
-            if (data.current_position && data.current_position.length >= 6) {
-                const xyz = data.current_position.slice(0, 3);
-                const rpy = data.current_position.slice(3, 6);
-                safeSetText('current-xyz', formatArray(xyz));
-                safeSetText('current-rpy', formatArray(rpy));
-            } else {
-                safeSetText('current-xyz', '[...]');
-                safeSetText('current-rpy', '[...]');
-            }
             safeSetText('last-error', systemStatus.last_error || 'None');
-            
-            // Update real-time joints display
-            // TODO: The real-time xArm joint position display is very slow - needs optimization
-            if (realtimeJointsDisplay) {
-                if (data.current_joints && Array.isArray(data.current_joints) && data.current_joints.length > 0) {
-                    const jointsText = data.current_joints.map(n => Number(n).toFixed(1)).join(', ');
-                    const movingIndicator = isRobotMoving ? ' ●' : '';
-                    realtimeJointsDisplay.value = `[${jointsText}]${movingIndicator}`;
-                    
-                    // Update refresh rate based on movement detection
-                    updateRefreshRate(data.current_joints);
-                } else {
-                    realtimeJointsDisplay.value = '[No data]';
+
+            // Live-feed joint angles into J1–Jn inputs (skip if user is focused on one)
+            if (data.current_joints && Array.isArray(data.current_joints) && data.current_joints.length > 0) {
+                const joints = data.current_joints;
+                const numJoints = joints.length;
+
+                // Show/hide J6 column based on robot model
+                const j6col = document.getElementById('j6-col');
+                if (j6col) j6col.style.display = numJoints >= 6 ? '' : 'none';
+
+                jointInputIds.forEach((id, i) => {
+                    if (i >= numJoints) return; // skip joints the robot doesn't have
+                    const el = document.getElementById(id);
+                    if (el && document.activeElement !== el) {
+                        el.value = parseFloat(joints[i]).toFixed(2);
+                    }
+                });
+
+                // Update the compact realtime display
+                if (realtimeJointsDisplay) {
+                    realtimeJointsDisplay.value = `[${joints.map(n => Number(n).toFixed(1)).join(', ')}]`;
                 }
+                updateRefreshRate(joints);
+            } else if (realtimeJointsDisplay) {
+                realtimeJointsDisplay.value = '[No data]';
             }
+
             
             // Set the state of all controls based on the connection status
             try {
@@ -408,7 +487,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         if (statusText) {
             try {
-                statusText.innerHTML = text;
+                statusText.textContent = text;
             } catch (error) {
                 console.error('Error setting status text:', error);
             }
@@ -456,16 +535,27 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // --- Direct Motion Control refs ---
+    const moveJointsBtn    = document.getElementById('move-joints-btn');
+    const directJointSpeed = document.getElementById('direct-joint-speed');
+    const jogStepInput     = document.getElementById('jog-step');
+    const jogBtnIds = ['jog-x-plus','jog-x-minus','jog-y-plus','jog-y-minus','jog-z-plus','jog-z-minus'];
+    const jointInputIds = ['j1-input','j2-input','j3-input','j4-input','j5-input','j6-input'];
+
     function setControlsState(enabled) {
         // Enable/disable control buttons based on connection state
         const controlButtons = [
-            homeBtn, stopBtn, clearErrorsBtn, openGripperBtn, closeGripperBtn, enableGripperBtn, moveTrackLocBtn, 
-            movePredefinedBtn, moveToStrokeBtn, moveLinearBtn
+            homeBtn, stopBtn, clearErrorsBtn, openGripperBtn, closeGripperBtn, enableGripperBtn, moveTrackLocBtn,
+            movePredefinedBtn, moveToStrokeBtn, setGripperForceBtn, moveLinearBtn,
+            moveJointsBtn,
+            ...jogBtnIds.map(id => document.getElementById(id))
         ];
-        
+
         // Enable/disable input fields
         const controlInputs = [
-            jointSpeedInput, linearSpeedInput, trackSpeedInput, gripperStrokeInput, linearStepsInput
+            jointSpeedInput, linearSpeedInput, trackSpeedInput, gripperStrokeInput, gripperForceInput, linearStepsInput,
+            directJointSpeed, jogStepInput,
+            ...jointInputIds.map(id => document.getElementById(id))
         ];
         
         // Enable/disable select dropdowns  
@@ -659,13 +749,23 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Test log button  
     const testLogBtn = document.getElementById('test-log-btn');
-    testLogBtn.addEventListener('click', () => {
-        console.log('Test log button clicked');
-        apiRequest('/test/log', 'POST');
-    });
+    if (testLogBtn) {
+        testLogBtn.addEventListener('click', () => {
+            console.log('Test log button clicked');
+            apiRequest('/test/log', 'POST');
+        });
+    }
 
-    openGripperBtn.addEventListener('click', () => apiRequest('/gripper/open', 'POST', {}));
-    closeGripperBtn.addEventListener('click', () => apiRequest('/gripper/close', 'POST', {}));
+    function currentGripperForce() {
+        if (!gripperForceInput || gripperForceInput.disabled || !gripperForceInput.value) {
+            return null;
+        }
+        const force = parseFloat(gripperForceInput.value);
+        return Number.isNaN(force) ? null : force;
+    }
+
+    openGripperBtn.addEventListener('click', () => apiRequest('/gripper/open', 'POST', { force: currentGripperForce() }));
+    closeGripperBtn.addEventListener('click', () => apiRequest('/gripper/close', 'POST', { force: currentGripperForce() }));
     
     enableGripperBtn.addEventListener('click', () => {
         apiRequest('/component/enable', 'POST', { component: 'gripper' });
@@ -722,9 +822,70 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         
-        apiRequest('/gripper/move/stroke', 'POST', { stroke });
+        apiRequest('/gripper/move/stroke', 'POST', { stroke, force: currentGripperForce() });
+    });
+
+    setGripperForceBtn.addEventListener('click', () => {
+        const force = parseFloat(gripperForceInput.value);
+        const min = parseFloat(gripperForceInput.min) || 1;
+        const max = parseFloat(gripperForceInput.max) || 100;
+
+        if (isNaN(force)) {
+            showMessage('Please enter a valid gripper force.', 'error');
+            return;
+        }
+
+        if (force < min || force > max) {
+            showMessage(`Force value must be between ${min} and ${max}.`, 'error');
+            return;
+        }
+
+        apiRequest('/gripper/force', 'POST', { force });
     });
     
+    // --- Direct Motion Control handlers ---
+
+    if (moveJointsBtn) {
+        moveJointsBtn.addEventListener('click', () => {
+            // Only collect joints that are visible (respects num_joints from robot)
+            const j6col = document.getElementById('j6-col');
+            const j6hidden = j6col && j6col.style.display === 'none';
+            const activeIds = j6hidden ? jointInputIds.slice(0, 5) : jointInputIds;
+
+            const angles = activeIds.map(id => {
+                const v = parseFloat(document.getElementById(id)?.value);
+                return Number.isNaN(v) ? null : v;
+            });
+            if (angles.some(v => v === null)) {
+                showMessage('Enter all joint angles before moving.', 'error');
+                return;
+            }
+            const speed = parseFloat(directJointSpeed?.value) || 10;
+            apiRequest('/move/joints', 'POST', { angles, speed });
+        });
+    }
+
+    // --- XYZ Jog handlers ---
+    function jog(dx, dy, dz) {
+        const step = parseFloat(jogStepInput?.value) || 10;
+        const speed = parseFloat(linearSpeedInput?.value) || 100;
+        apiRequest('/move/relative', 'POST', { dx: dx * step, dy: dy * step, dz: dz * step, speed });
+    }
+
+    const jogMap = {
+        'jog-x-plus':  [  1,  0,  0 ],
+        'jog-x-minus': [ -1,  0,  0 ],
+        'jog-y-plus':  [  0,  1,  0 ],
+        'jog-y-minus': [  0, -1,  0 ],
+        'jog-z-plus':  [  0,  0,  1 ],
+        'jog-z-minus': [  0,  0, -1 ],
+    };
+
+    Object.entries(jogMap).forEach(([id, [dx, dy, dz]]) => {
+        const btn = document.getElementById(id);
+        if (btn) btn.addEventListener('click', () => jog(dx, dy, dz));
+    });
+
     // --- Initialization ---
     // Set initial disconnected state explicitly
     updateStatusText('Disconnected');
@@ -751,7 +912,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const timestamp = new Date().toLocaleTimeString();
         const logEntry = document.createElement('div');
         logEntry.className = `log-entry log-${type}`;
-        logEntry.innerHTML = `<span class="log-time">[${timestamp}]</span> ${message}`;
+        const timeSpan = document.createElement('span');
+        timeSpan.className = 'log-time';
+        timeSpan.textContent = `[${timestamp}]`;
+        logEntry.appendChild(timeSpan);
+        logEntry.appendChild(document.createTextNode(` ${message}`));
         
         // Add to top (newest first)
         logStream.insertBefore(logEntry, logStream.firstChild);
@@ -766,16 +931,5 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize logging
     addLogEntry('System initialized', 'info');
     
-    // Add logging to existing functions
-    const originalApiRequest = apiRequest;
-    window.apiRequest = function(endpoint, method, data) {
-        addLogEntry(`API ${method} ${endpoint}`, 'info');
-        return originalApiRequest(endpoint, method, data).then(response => {
-            addLogEntry(`✓ ${method} ${endpoint} success`, 'info');
-            return response;
-        }).catch(error => {
-            addLogEntry(`✗ ${method} ${endpoint} failed: ${error.message}`, 'error');
-            throw error;
-        });
-    };
+    window.apiRequest = apiRequest;
 }); 

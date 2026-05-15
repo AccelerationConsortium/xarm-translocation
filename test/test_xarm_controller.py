@@ -133,6 +133,33 @@ class TestSimulationMode:
         assert controller.open_gripper() is True
         assert controller.close_gripper() is True
 
+    def test_biogripper_gen2_stroke_and_force_control(self, mock_config_files, mock_xarm_api, monkeypatch):
+        """BioGripper Gen2 should expose stroke distance and force control."""
+        monkeypatch.setattr('src.core.xarm_controller.XArmAPI', lambda *args, **kwargs: mock_xarm_api)
+        controller = XArmController(
+            profile_name='test_profile',
+            simulation_mode=False,
+            auto_enable=False,
+            gripper_type='bio_gen2',
+        )
+        assert controller.initialize() is True
+        assert controller.enable_gripper_component() is True
+
+        # 110 is within the official Gen2 range 71-150
+        assert controller.move_gripper_to_stroke(110, speed=1500, force=80) is True
+        mock_xarm_api.set_bio_gripper_g2_position.assert_called_with(
+            110, speed=1500, force=80, wait=True, timeout=5
+        )
+
+        # close_position = 71 (fully closed); force float is coerced to int; speed from config default
+        assert controller.close_gripper(force=75.0) is True
+        mock_xarm_api.set_bio_gripper_g2_position.assert_called_with(
+            71, speed=1000, force=75, wait=True, timeout=5
+        )
+
+        assert controller.set_gripper_force(60.0) is True
+        mock_xarm_api.set_bio_gripper_force.assert_called_with(60)
+
     def test_simulation_track_control(self, simulation_controller):
         """Test track control in simulation mode."""
         controller = simulation_controller

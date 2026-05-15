@@ -31,8 +31,27 @@ class XArmController:
     xArm controller with intelligent error recovery, improved safety validation,
     better configuration management, state tracking, and performance monitoring.
     """
+    @staticmethod
+    def _normalize_gripper_type(gripper_type: Optional[str]) -> str:
+        """Normalize user/config aliases to the controller's gripper type keys."""
+        value = (gripper_type or 'bio_gen2').lower().replace('-', '_').replace(' ', '_')
+        aliases = {
+            'bio_g2': 'bio_gen2',
+            'biogripper_g2': 'bio_gen2',
+            'biogripper_gen2': 'bio_gen2',
+            'bio_gripper_gen2': 'bio_gen2',
+            'bio_gripper_g2': 'bio_gen2',
+            'biogripper': 'bio',
+            'bio_gripper': 'bio',
+        }
+        normalized = aliases.get(value, value)
+        valid_grippers = ['bio', 'bio_gen2', 'standard', 'robotiq', 'none']
+        if normalized not in valid_grippers:
+            raise ValueError(f"Invalid gripper type '{gripper_type}'. Must be one of {valid_grippers}")
+        return normalized
+
     def __init__(self, host: Optional[str] = None, profile_name: Optional[str] = None,
-                 gripper_type: str = 'bio', enable_track: bool = True,
+                 gripper_type: Optional[str] = None, enable_track: bool = True,
                  auto_enable: bool = True, model: Optional[int] = None,
                  simulation_mode: bool = False, safety_level: SafetyLevel = SafetyLevel.MEDIUM):
         """
@@ -40,23 +59,18 @@ class XArmController:
             host (str, optional): The IP address of the xArm. If provided, this
                                 overrides any host in the config file. Defaults to None.
             profile_name (str, optional): The name of the connection profile from xarm_config.yaml.
-            gripper_type (str): Type of gripper ('bio', 'standard', 'robotiq', or 'none')
+            gripper_type (str): Type of gripper ('bio', 'bio_gen2', 'standard', 'robotiq', or 'none')
             enable_track (bool): Whether to enable the linear track
             auto_enable (bool): Whether to automatically enable components during initialization
             model (int): xArm model (5, 6, 7). If None, will be detected from config
             simulation_mode (bool): Enable simulation mode (no hardware required)
             safety_level (SafetyLevel): Safety level for validation strictness
         """
-        # Validate gripper type
-        valid_grippers = ['bio', 'standard', 'robotiq', 'none']
-        if gripper_type not in valid_grippers:
-            raise ValueError(f"Invalid gripper type '{gripper_type}'. Must be one of {valid_grippers}")
-
         # The provided simulation_mode parameter is the source of truth.
         self.simulation_mode = simulation_mode
         
         self.safety_level = safety_level
-        self.gripper_type = gripper_type
+        self.gripper_type = self._normalize_gripper_type(gripper_type)
         self.enable_track = enable_track
         self.auto_enable = auto_enable
         self.profile_name = profile_name
@@ -71,6 +85,14 @@ class XArmController:
 
         # Configuration loading
         self._load_configurations()
+
+        # Let a connection profile choose the installed gripper unless an
+        # explicit constructor value was provided.
+        if gripper_type is None:
+            self.gripper_type = self._normalize_gripper_type(
+                self.xarm_config.get('gripper_type', 'bio_gen2')
+            )
+        self.current_gripper_config = self._resolve_current_gripper_config()
 
         # Determine the connection host with clear priority
         # 1. Direct `host` parameter
@@ -172,6 +194,51 @@ class XArmController:
             else:
                 setattr(self, config_attr, {})
 
+    def _resolve_current_gripper_config(self):
+        """Return the active gripper's config while tolerating legacy shapes."""
+        if self.gripper_type == 'none':
+            return {}
+
+        config = self.gripper_config or {}
+        defaults = config.get('default', {}) if isinstance(config, dict) else {}
+        active = {}
+        if isinstance(config, dict):
+            active = config.get(self.gripper_type, {})
+            if not active and self.gripper_type == 'bio_gen2':
+                active = config.get('bio_g2', {}) or config.get('biogripper_gen2', {})
+            if not active and any(key in config for key in ('GRIPPER_SPEED', 'GRIPPER_FORCE')):
+                active = config
+
+        merged = {**defaults, **(active or {})}
+        merged.setdefault('type', self.gripper_type)
+        merged.setdefault('name', self.gripper_type.replace('_', ' ').title())
+        merged.setdefault('speed', config.get('GRIPPER_SPEED', 300) if isinstance(config, dict) else 300)
+        merged.setdefault('force', config.get('GRIPPER_FORCE', 100) if isinstance(config, dict) else 100)
+        merged.setdefault('open_position', 0 if self.gripper_type == 'bio_gen2' else 850)
+        merged.setdefault('close_position', 850 if self.gripper_type == 'bio_gen2' else 0)
+        return merged
+
+    def _gripper_setting(self, key, default=None):
+        """Read active gripper settings with legacy uppercase fallbacks."""
+        active = getattr(self, 'current_gripper_config', {}) or {}
+        if key in active:
+            return active[key]
+        legacy_key = {
+            'speed': 'GRIPPER_SPEED',
+            'force': 'GRIPPER_FORCE',
+            'open_position': 'OPEN_POSITION',
+            'close_position': 'CLOSE_POSITION',
+        }.get(key, key.upper())
+        return (self.gripper_config or {}).get(legacy_key, default)
+
+    @staticmethod
+    def _coerce_int(value, name):
+        """The xArm Gen2 gripper SDK packs command values as integers."""
+        try:
+            return int(round(float(value)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must be numeric") from exc
+
     def _initialize_state_management(self):
         """Initialize state management system with callbacks."""
         # Component states
@@ -193,6 +260,9 @@ class XArmController:
         self.last_position = [300, 0, 300, 180, 0, 0]  # Default position
         self.last_joints = [0] * self.num_joints
         self.last_track_position = 0
+        self.last_gripper_position = self._gripper_setting('open_position', 0)
+        self.last_gripper_force = self._gripper_setting('force', 100)
+        self.last_gripper_speed = self._gripper_setting('speed', 300)
 
         # Force torque sensor tracking
         self.force_torque_history = deque(maxlen=1000)
@@ -404,6 +474,21 @@ class XArmController:
 
             def close_bio_gripper(self, speed=None, wait=True):
                 return 0
+
+            def set_bio_gripper_g2_position(self, pos, speed=2000, force=100, wait=True, timeout=5, **kwargs):
+                self.controller.last_gripper_position = pos
+                return 0
+
+            def set_bio_gripper_force(self, force):
+                self.controller.last_gripper_force = force
+                return 0
+
+            def set_bio_gripper_speed(self, speed):
+                self.controller.last_gripper_speed = speed
+                return 0
+
+            def get_bio_gripper_g2_position(self, **kwargs):
+                return [0, getattr(self.controller, 'last_gripper_position', 0)]
 
             # Standard gripper methods
             def set_gripper_enable(self, enable):
@@ -892,7 +977,7 @@ class XArmController:
                 success = True
                 print(f"Simulation mode: {self.gripper_type.title()} gripper enabled (simulated)")
             else:
-                if self.gripper_type == 'bio':
+                if self.gripper_type in ('bio', 'bio_gen2'):
                     success = self._enable_bio_gripper_internal()
                 elif self.gripper_type == 'standard':
                     success = self._enable_standard_gripper_internal()
@@ -953,7 +1038,7 @@ class XArmController:
 
         try:
             # Different grippers have different disable methods
-            if self.gripper_type == 'bio':
+            if self.gripper_type in ('bio', 'bio_gen2'):
                 code = self.arm.set_bio_gripper_enable(False)
             elif self.gripper_type == 'standard':
                 code = self.arm.set_gripper_enable(False)
@@ -1230,7 +1315,7 @@ class XArmController:
             # Reset alive state if errors were cleared successfully
             if error_clear_code == 0 and warn_clear_code == 0:
                 self.alive = True
-                print("✅ All errors and warnings cleared successfully")
+                print("[OK] All errors and warnings cleared successfully")
 
                 # Check if we need to re-enable components
                 if self.auto_enable:
@@ -1244,11 +1329,11 @@ class XArmController:
 
                 return True
             else:
-                print(f"⚠️ Error clearing partially failed: error_clear={error_clear_code}, warn_clear={warn_clear_code}")
+                print(f"[WARN] Error clearing partially failed: error_clear={error_clear_code}, warn_clear={warn_clear_code}")
                 return False
 
         except Exception as e:
-            print(f"❌ Failed to clear errors: {e}")
+            print(f"[ERROR] Failed to clear errors: {e}")
             return False
 
     # =============================================================================
@@ -1416,7 +1501,7 @@ class XArmController:
         Args:
             angles (list): Joint angles in degrees
             speed (float, optional): Joint movement speed (degrees/second)
-            acceleration (float, optional): Joint acceleration (degrees/second²)
+            acceleration (float, optional): Joint acceleration (degrees/second^2)
             wait (bool): Wait for movement completion
             check_collision (bool): Enable collision detection and validation
 
@@ -1533,7 +1618,7 @@ class XArmController:
         return self.gripper_type != 'none'
 
     # Universal Gripper Methods
-    def open_gripper(self, speed=None, wait=True):
+    def open_gripper(self, speed=None, force=None, wait=True):
         """Open the gripper (works with any configured gripper type)."""
         if not self.is_component_enabled('gripper'):
             print("Gripper is not enabled")
@@ -1541,12 +1626,20 @@ class XArmController:
 
         if self.simulation_mode:
             print(f"[SIM] {self.gripper_type.title()} gripper opened")
+            self.last_gripper_position = self._gripper_setting('open_position', 0)
             return True
 
         if self.gripper_type == 'bio':
             return self._open_bio_gripper_internal(speed=speed, wait=wait)
+        elif self.gripper_type == 'bio_gen2':
+            return self._set_bio_gripper_g2_position_internal(
+                self._gripper_setting('open_position', 0),
+                speed=speed,
+                force=force,
+                wait=wait,
+            )
         elif self.gripper_type == 'standard':
-            max_position = self.gripper_config.get('MAX_POSITION', 850)
+            max_position = self._gripper_setting('open_position', 850)
             return self._set_gripper_position_internal(max_position, speed=speed, wait=wait)
         elif self.gripper_type == 'robotiq':
             if not self.simulation_mode:
@@ -1557,7 +1650,7 @@ class XArmController:
             print("No gripper configured")
             return False
 
-    def close_gripper(self, speed=None, wait=True):
+    def close_gripper(self, speed=None, force=None, wait=True):
         """Close the gripper (works with any configured gripper type)."""
         if not self.is_component_enabled('gripper'):
             print("Gripper is not enabled")
@@ -1565,10 +1658,18 @@ class XArmController:
 
         if self.simulation_mode:
             print(f"[SIM] {self.gripper_type.title()} gripper closed")
+            self.last_gripper_position = self._gripper_setting('close_position', 850)
             return True
 
         if self.gripper_type == 'bio':
             return self._close_bio_gripper_internal(speed=speed, wait=wait)
+        elif self.gripper_type == 'bio_gen2':
+            return self._set_bio_gripper_g2_position_internal(
+                self._gripper_setting('close_position', 850),
+                speed=speed,
+                force=force,
+                wait=wait,
+            )
         elif self.gripper_type == 'standard':
             return self._set_gripper_position_internal(0, speed=speed, wait=wait)
         elif self.gripper_type == 'robotiq':
@@ -1580,6 +1681,73 @@ class XArmController:
             print("No gripper configured")
             return False
 
+    def move_gripper_to_stroke(self, stroke, speed=None, force=None, wait=True):
+        """Move a stroke-capable gripper to an absolute stroke position."""
+        if not self.is_component_enabled('gripper'):
+            print("Gripper is not enabled")
+            return False
+
+        if not self._validate_gripper_stroke(stroke):
+            return False
+
+        if self.simulation_mode:
+            self.last_gripper_position = stroke
+            if force is not None:
+                self.last_gripper_force = force
+            print(f"[SIM] {self.gripper_type.title()} gripper moved to stroke {stroke}")
+            return True
+
+        if self.gripper_type == 'bio_gen2':
+            return self._set_bio_gripper_g2_position_internal(
+                stroke, speed=speed, force=force, wait=wait
+            )
+        elif self.gripper_type == 'standard':
+            return self._set_gripper_position_internal(stroke, speed=speed, wait=wait)
+        elif self.gripper_type == 'robotiq':
+            return self._set_robotiq_position_internal(stroke, speed=speed, force=force, wait=wait)
+
+        print(f"{self.gripper_type} gripper does not support stroke control")
+        return False
+
+    def set_gripper_force(self, force):
+        """Set gripping force for force-capable grippers."""
+        if not self.is_component_enabled('gripper'):
+            print("Gripper is not enabled")
+            return False
+
+        if not self._validate_gripper_force(force):
+            return False
+
+        if self.simulation_mode:
+            self.last_gripper_force = force
+            print(f"[SIM] {self.gripper_type.title()} gripper force set to {force}")
+            return True
+
+        if self.gripper_type == 'bio_gen2':
+            force = self._coerce_int(force, 'force')
+            code = self.arm.set_bio_gripper_force(force)
+            return self.check_code(code, f'set_bio_gripper_force({force})')
+
+        print(f"{self.gripper_type} gripper does not support standalone force control")
+        return False
+
+    def get_gripper_position(self):
+        """Return the latest gripper position/stroke when available."""
+        if self.simulation_mode:
+            return self.last_gripper_position
+
+        if self.gripper_type == 'bio_gen2' and hasattr(self.arm, 'get_bio_gripper_g2_position'):
+            ret = self.arm.get_bio_gripper_g2_position()
+            if ret[0] == 0:
+                self.last_gripper_position = ret[1]
+                return ret[1]
+        elif self.gripper_type == 'standard' and hasattr(self.arm, 'get_gripper_position'):
+            ret = self.arm.get_gripper_position()
+            if ret[0] == 0:
+                self.last_gripper_position = ret[1]
+                return ret[1]
+        return None
+
     # =============================================================================
     # LINEAR TRACK CONTROL (Optional)
     # =============================================================================
@@ -1587,6 +1755,34 @@ class XArmController:
     def has_track(self):
         """Check if linear track is enabled."""
         return self.enable_track
+
+    def _validate_gripper_stroke(self, stroke):
+        """Validate a requested gripper stroke against active config limits."""
+        config = getattr(self, 'current_gripper_config', {}) or {}
+        if not config.get('has_stroke_control', False):
+            print(f"{self.gripper_type} gripper does not support stroke control")
+            return False
+        stroke_range = config.get('stroke_range', {})
+        min_stroke = stroke_range.get('min', 0)
+        max_stroke = stroke_range.get('max', 850)
+        if stroke < min_stroke or stroke > max_stroke:
+            print(f"Gripper stroke {stroke} outside allowed range {min_stroke}-{max_stroke}")
+            return False
+        return True
+
+    def _validate_gripper_force(self, force):
+        """Validate a requested gripper force against active config limits."""
+        config = getattr(self, 'current_gripper_config', {}) or {}
+        if not config.get('has_force_control', False):
+            print(f"{self.gripper_type} gripper does not support force control")
+            return False
+        force_range = config.get('force_range', {})
+        min_force = force_range.get('min', 1)
+        max_force = force_range.get('max', 100)
+        if force < min_force or force > max_force:
+            print(f"Gripper force {force} outside allowed range {min_force}-{max_force}")
+            return False
+        return True
 
     def enable_linear_track(self):
         """Enable the linear track."""
@@ -1941,7 +2137,7 @@ class XArmController:
             # Reduce speed limits by 20%
             self.angle_speed = int(self.angle_speed * 0.8)
             self.angle_acc = int(self.angle_acc * 0.8)
-            print(f"Reduced joint speed to {self.angle_speed}°/s, acceleration to {self.angle_acc}°/s²")
+            print(f"Reduced joint speed to {self.angle_speed} deg/s, acceleration to {self.angle_acc} deg/s^2")
 
             if self.arm:
                 self.arm.clean_error()
@@ -1957,7 +2153,7 @@ class XArmController:
             # Reduce TCP speed limits by 20%
             self.tcp_speed = int(self.tcp_speed * 0.8)
             self.tcp_acc = int(self.tcp_acc * 0.8)
-            print(f"Reduced TCP speed to {self.tcp_speed}mm/s, acceleration to {self.tcp_acc}mm/s²")
+            print(f"Reduced TCP speed to {self.tcp_speed}mm/s, acceleration to {self.tcp_acc}mm/s^2")
 
             if self.arm:
                 self.arm.clean_error()
@@ -1997,7 +2193,7 @@ class XArmController:
     # Bio Gripper Methods (Internal use - prefer universal methods)
     def _enable_bio_gripper_internal(self):
         """Internal method for enabling bio gripper."""
-        if self.gripper_type != 'bio':
+        if self.gripper_type not in ('bio', 'bio_gen2'):
             return False
         code = self.arm.set_bio_gripper_enable(True)
         return self.check_code(code, 'enable_bio_gripper')
@@ -2005,16 +2201,43 @@ class XArmController:
     def _open_bio_gripper_internal(self, speed=None, wait=True):
         """Internal method for opening bio gripper."""
         if speed is None:
-            speed = self.gripper_config.get('GRIPPER_SPEED', 300)
+            speed = self._gripper_setting('speed', 300)
         code = self.arm.open_bio_gripper(speed=speed, wait=wait)
         return self.check_code(code, 'open_bio_gripper')
 
     def _close_bio_gripper_internal(self, speed=None, wait=True):
         """Internal method for closing bio gripper."""
         if speed is None:
-            speed = self.gripper_config.get('GRIPPER_SPEED', 300)
+            speed = self._gripper_setting('speed', 300)
         code = self.arm.close_bio_gripper(speed=speed, wait=wait)
         return self.check_code(code, 'close_bio_gripper')
+
+    def _set_bio_gripper_g2_position_internal(self, position, speed=None, force=None, wait=True):
+        """Internal method for BioGripper Gen2 position/stroke control."""
+        if self.gripper_type != 'bio_gen2':
+            return False
+        if speed is None:
+            speed = self._gripper_setting('speed', 1000)
+        if force is None:
+            force = self._gripper_setting('force', 80)
+        # Clamp speed to official range 0-4000
+        config = getattr(self, 'current_gripper_config', {}) or {}
+        speed_range = config.get('speed_range', {'min': 0, 'max': 4000})
+        speed = max(speed_range['min'], min(speed_range['max'], speed))
+        timeout = self._gripper_setting('timeout', 5)
+        position = self._coerce_int(position, 'position')
+        speed = self._coerce_int(speed, 'speed')
+        force = self._coerce_int(force, 'force')
+        timeout = self._coerce_int(timeout, 'timeout')
+        code = self.arm.set_bio_gripper_g2_position(
+            position, speed=speed, force=force, wait=wait, timeout=timeout
+        )
+        success = self.check_code(code, f'set_bio_gripper_g2_position({position})')
+        if success:
+            self.last_gripper_position = position
+            self.last_gripper_force = force
+            self.last_gripper_speed = speed
+        return success
 
     # Standard Gripper Methods (Internal use - prefer universal methods)
     def _enable_standard_gripper_internal(self):
@@ -2027,7 +2250,7 @@ class XArmController:
     def _set_gripper_position_internal(self, position, speed=None, wait=True):
         """Internal method for setting standard gripper position."""
         if speed is None:
-            speed = self.gripper_config.get('GRIPPER_SPEED', 5000)
+            speed = self._gripper_setting('speed', 5000)
         code = self.arm.set_gripper_position(position, speed=speed, wait=wait)
         return self.check_code(code, f'set_gripper_position({position})')
 
@@ -2046,9 +2269,9 @@ class XArmController:
     def _set_robotiq_position_internal(self, position, speed=None, force=None, wait=True):
         """Internal method for setting RobotIQ gripper position."""
         if speed is None:
-            speed = self.gripper_config.get('GRIPPER_SPEED', 255)
+            speed = self._gripper_setting('speed', 255)
         if force is None:
-            force = self.gripper_config.get('GRIPPER_FORCE', 255)
+            force = self._gripper_setting('force', 255)
         code = self.arm.robotiq_set_position(position, speed=speed, force=force, wait=wait)
         return self.check_code(code, f'set_robotiq_position({position})')
 
@@ -2299,7 +2522,7 @@ class XArmController:
             message += f"Torques: {', '.join(torque_violations)}\n"
         message += f"Current data: {[f'{x:.2f}' for x in data]}"
 
-        print(f"🚨 {message}")
+        print(f"[ALERT] {message}")
 
         # Trigger callbacks
         self._trigger_callbacks('safety_violation', {
@@ -2417,7 +2640,7 @@ class XArmController:
         torque_threshold = torque_threshold or joint_torque_config.get(f'j{joint_id}', 2.0)
         speed = speed or self.angle_speed
 
-        print(f"Moving joint {joint_id} to {target_angle}° until torque reaches {torque_threshold}Nm")
+        print(f"Moving joint {joint_id} to {target_angle} deg until torque reaches {torque_threshold}Nm")
 
         start_time = time.time()
         
@@ -2464,7 +2687,7 @@ class XArmController:
                 if current_joints and abs(current_joints[joint_id - 1] - target_angle) < 1.0:
                     self.arm.vc_set_joint_velocity([0] * self.num_joints)
                     self.arm.set_mode(0)  # Return to position control mode
-                    print(f"Target angle {target_angle}° reached for joint {joint_id}")
+                    print(f"Target angle {target_angle} deg reached for joint {joint_id}")
                     return True
 
                 time.sleep(0.01)  # 100Hz monitoring
@@ -2579,13 +2802,13 @@ class XArmController:
                 print(f"Error: Failed at step {i}/{num_steps}")
                 return False
                 
-            print(f"✓ Step {i}/{num_steps}: {interp_pos[:3]}")
+            print(f"[OK] Step {i}/{num_steps}: {interp_pos[:3]}")
                 
             # Wait between steps if specified
             if wait_between_steps > 0 and i < num_steps:
                 time.sleep(wait_between_steps)
                 
-        print(f"✓ Successfully completed linear movement to '{target_location}'")
+        print(f"[OK] Successfully completed linear movement to '{target_location}'")
         return True
 
     def _position_to_cartesian(self, location_name, position_data, speed=None):
@@ -2628,7 +2851,7 @@ class XArmController:
                         ret = self.arm.get_forward_kinematics(position_data)
                         if ret[0] == 0:
                             cartesian = ret[1][:6]  # [x, y, z, roll, pitch, yaw]
-                            print(f"✓ Forward kinematics result: {cartesian}")
+                            print(f"[OK] Forward kinematics result: {cartesian}")
                             return cartesian
                         else:
                             print("Forward kinematics failed, using position sampling")
@@ -2653,7 +2876,7 @@ class XArmController:
                     ):
                         print("Warning: Could not restore to original position")
                     
-                    print(f"✓ Position sampling result: {cartesian}")
+                    print(f"[OK] Position sampling result: {cartesian}")
                     return cartesian
                     
                 except Exception as e:
@@ -2670,18 +2893,18 @@ class XArmController:
 if __name__ == '__main__':
     print("XArmController with streamlined API!")
     print("=" * 50)
-    print("✅ METHODS (Recommended):")
-    print("   • move_to_position() - Cartesian movement with collision detection and alternative planning")
-    print("   • move_joints() - Joint movement with comprehensive safety validation")
-    print("   • open_gripper() / close_gripper() - Universal gripper support")
-    print("   • enable_gripper_component() - Component-based gripper control")
+    print("[OK] METHODS (Recommended):")
+    print("   - move_to_position() - Cartesian movement with collision detection and alternative planning")
+    print("   - move_joints() - Joint movement with comprehensive safety validation")
+    print("   - open_gripper() / close_gripper() - Universal gripper support")
+    print("   - enable_gripper_component() - Component-based gripper control")
     print()
-    print("📊 PERFORMANCE TRACKING:")
-    print("   • Real-time cycle time monitoring")
-    print("   • Position accuracy tracking")
-    print("   • Component utilization metrics")
-    print("   • Speed limit enforcement")
-    print("   • Automatic error recovery")
+    print("PERFORMANCE TRACKING:")
+    print("   - Real-time cycle time monitoring")
+    print("   - Position accuracy tracking")
+    print("   - Component utilization metrics")
+    print("   - Speed limit enforcement")
+    print("   - Automatic error recovery")
     print()
     print("Usage Example:")
     print("  # Modern API (recommended):")
