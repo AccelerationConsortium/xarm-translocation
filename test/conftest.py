@@ -73,11 +73,10 @@ def mock_xarm_api():
     mock_arm.vc_set_joint_velocity.return_value = 0
     mock_arm.set_only_check_type.return_value = 0
 
-    # Mock attributes for predictive maintenance
-    mock_arm.temperatures = [30.0] * 8
-    mock_arm.joints_torque = [0.0] * 8
-    mock_arm.currents = [0.0] * 8
-    
+    # Mock force torque sensor methods
+    mock_arm.ft_sensor_enable.return_value = 0
+    mock_arm.get_ft_sensor_data.return_value = (0, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+
     return mock_arm
 
 
@@ -182,9 +181,6 @@ def initialized_controller(mock_config_files, mock_xarm_api, monkeypatch):
 
     # Dynamically set mock properties based on controller's model
     mock_xarm_api.get_servo_angle.return_value = (0, [0] * controller.num_joints)
-    mock_xarm_api.temperatures = [30.0] * controller.num_joints
-    mock_xarm_api.joints_torque = [0.0] * controller.num_joints
-    mock_xarm_api.currents = [0.0] * controller.num_joints
 
     # Safely initialize the controller
     success = controller.initialize()

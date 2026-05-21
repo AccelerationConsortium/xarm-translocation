@@ -370,18 +370,12 @@ def main():
     
     try:
         # Initialize controller
-        if simulate:
-            controller = XArmController(
-                simulation_mode=True,
-                auto_enable=True
-            )
-        else:
-            controller = XArmController(
-                profile_name='real_hw',
-                simulation_mode=False,
-                auto_enable=True
-            )
-        
+        controller = XArmController(
+            profile_name='real_hw',
+            auto_enable=True,
+        )
+
+
         if not controller.initialize():
             print("❌ Failed to initialize controller")
             return

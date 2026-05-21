@@ -93,11 +93,10 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     State precedence (top-most match wins):
 
     1. ``controller is None`` -> ``requires_init``.
-    2. ``controller.simulation_mode`` -> ``dry_run``.
-    3. controller has an active error code or string -> ``error``.
-    4. ``controller._motion_in_progress`` -> ``busy``.
-    5. ``controller.alive`` and arm enabled -> ``ready``.
-    6. otherwise -> ``degraded``.
+    2. controller has an active error code or string -> ``error``.
+    3. ``controller._motion_in_progress`` -> ``busy``.
+    4. ``controller.alive`` and arm enabled -> ``ready``.
+    5. otherwise -> ``degraded``.
     """
     if controller is None:
         return _disconnected_envelope()
@@ -116,16 +115,12 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
 
     motion_in_progress = bool(getattr(controller, "_motion_in_progress", False))
     alive = bool(getattr(controller, "alive", False))
-    simulation_mode = bool(getattr(controller, "simulation_mode", False))
 
     # State derivation.
     last_error: ErrorInfo | None = None
     required_actions: list[str] = []
 
-    if simulation_mode:
-        equipment_status = "dry_run"
-        message = "Software simulation mode (no hardware connected)."
-    elif last_error_code != 0 or last_error_text:
+    if last_error_code != 0 or last_error_text:
         equipment_status = "error"
         message = (
             f"Controller reports error: {last_error_text}"
@@ -210,13 +205,12 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     details: dict[str, Any] = {
         "current_position": list(getattr(controller, "last_position", []) or []) or None,
         "current_joints": list(getattr(controller, "last_joints", []) or []) or None,
-        "simulation_mode": simulation_mode,
         "model_name": getattr(controller, "model_name", None),
         "num_joints": getattr(controller, "num_joints", None),
         "gripper_type": getattr(controller, "gripper_type", None),
     }
     # Carry connection details for the local web UI's panel. Not contracted.
-    details["connection_details"] = _build_connection_details(controller, simulation_mode)
+    details["connection_details"] = _build_connection_details(controller)
 
     return EquipmentStatus(
         protocol_version=PROTOCOL_VERSION,
@@ -236,9 +230,7 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     )
 
 
-def _build_connection_details(
-    controller: XArmController, simulation_mode: bool
-) -> dict[str, Any] | None:
+def _build_connection_details(controller: XArmController) -> dict[str, Any] | None:
     """Best-effort connection panel data for the local web UI.
 
     Lives under ``details`` (not contracted by STATUS_SPEC) to keep the
@@ -253,7 +245,6 @@ def _build_connection_details(
         "host": host,
         "port": cfg.get("port", 18333),
         "profile_name": getattr(controller, "profile_name", None) or "unknown",
-        "simulation_mode": simulation_mode,
         "gripper_type": getattr(controller, "gripper_type", None) or "N/A",
         "gripper_config": getattr(controller, "current_gripper_config", {}),
     }

@@ -246,7 +246,6 @@ def get_default_config(config_type: str) -> Dict[str, Any]:
             'max_tcp_speed': 1000,
             'max_joint_speed': 180,
             'collision_sensitivity': DEFAULT_COLLISION_SENSITIVITY,
-            'temperature_limits': DEFAULT_TEMPERATURE_THRESHOLDS
         }
     }
     
@@ -357,52 +356,6 @@ def validate_track_speed(speed: float, limits: Tuple[float, float]) -> Tuple[boo
 
 
 # =============================================================================
-# COLLISION DETECTION UTILITIES
-# =============================================================================
-
-def check_joint_collision_simulation(angles: List[float], model_joint_limits: List[Tuple[Any, Any]]) -> bool:
-    """
-    Check for joint collisions in simulation mode.
-    
-    Args:
-        angles: Joint angles to check
-        model_joint_limits: List of (min, max) tuples for the specific model's joints
-        
-    Returns:
-        True if collision detected, False otherwise
-    """
-    # Simple collision check - uses joint limits validation
-    is_valid, _ = validate_joint_angles(angles, model_joint_limits)
-    return not is_valid
-
-
-def check_workspace_collision_simulation(pose: List[float], collision_zones: List[Dict[str, Any]]) -> Tuple[bool, Optional[str]]:
-    """
-    Check for workspace collisions in simulation mode.
-    
-    Args:
-        pose: Target pose [x, y, z, roll, pitch, yaw]
-        collision_zones: List of collision zone definitions
-        
-    Returns:
-        Tuple of (collision_detected, zone_name)
-    """
-    if len(pose) < 6:
-        return False, None
-        
-    x, y, z, roll, pitch, yaw = pose[:6]
-    
-    for zone in collision_zones:
-        bounds = zone['bounds']
-        if (bounds['x'][0] <= x <= bounds['x'][1] and
-            bounds['y'][0] <= y <= bounds['y'][1] and
-            bounds['z'][0] <= z <= bounds['z'][1]):
-            return True, zone['name']
-    
-    return False, None
-
-
-# =============================================================================
 # SPEED AND ACCELERATION UTILITIES
 # =============================================================================
 
@@ -473,19 +426,6 @@ DEFAULT_JOINT_LIMITS = {
     5: [(-360, 360), (-118, 120), (-225, 11), (-97, 180), (-360, 360)],
     6: [(-360, 360), (-118, 120), (-225, 11), (-360, 360), (-97, 180), (-360, 360)],
     7: [(-360, 360), (-118, 120), (-360, 360), (-11, 225),(-360, 360), (-97, 180), (-360, 360)],
-}
-
-# Default performance thresholds
-DEFAULT_PERFORMANCE_THRESHOLDS = {
-    'max_cycle_time': 30.0,  # seconds - increased for realistic robot movements
-    'max_accuracy_error': 1.0,  # mm
-    'max_utilization': 85.0  # percentage
-}
-
-# Default temperature thresholds for predictive maintenance
-DEFAULT_TEMPERATURE_THRESHOLDS = {
-    'warning': 60,  # deg C
-    'critical': 75  # deg C
 }
 
 # Safety multipliers for different safety levels
@@ -618,24 +558,6 @@ def apply_movement_parameter_limits(tcp_speed: float, tcp_acc: float, angle_spee
     return validated_tcp_speed, validated_tcp_acc, validated_angle_speed, validated_angle_acc
 
 
-def create_default_performance_metrics() -> Dict[str, Any]:
-    """
-    Create default performance metrics structure.
-    
-    Returns:
-        Dictionary with performance metrics structure
-    """
-    from collections import deque
-    
-    return {
-        'cycle_times': deque(maxlen=100),
-        'accuracy_errors': deque(maxlen=100),
-        'tcp_utilization': deque(maxlen=100),
-        'joint_utilization': deque(maxlen=100),
-        'command_success_rate': deque(maxlen=100)
-    }
-
-
 def get_joint_limits_for_model(model: int) -> List[Tuple[int, int]]:
     """
     Get joint limits for a specific xArm model.
@@ -649,27 +571,22 @@ def get_joint_limits_for_model(model: int) -> List[Tuple[int, int]]:
     return DEFAULT_JOINT_LIMITS.get(model, DEFAULT_JOINT_LIMITS[7])
 
 
-def check_operation_result(code: int, operation_name: str, arm_state: Optional[int] = None, 
-                          error_code: Optional[int] = None, is_simulation: bool = False) -> bool:
+def check_operation_result(code: int, operation_name: str, arm_state: Optional[int] = None,
+                          error_code: Optional[int] = None) -> bool:
     """
     Check if an operation was successful and handle errors.
-    
+
     Args:
         code: Return code from operation (None or 0 typically means success)
         operation_name: Name of the operation for logging
         arm_state: Current arm state (optional)
         error_code: Current error code (optional)
-        is_simulation: Whether running in simulation mode
-        
+
     Returns:
         True if operation was successful, False otherwise
     """
-    if is_simulation:
-        # In simulation mode, assume success if code is 0 or None
-        return code == 0 or code is None
-    
     # For xArm SDK, None or 0 typically indicates success
     if code is None or code == 0:
         return True
-        
+
     return check_return_code(code, operation_name, arm_state, error_code)

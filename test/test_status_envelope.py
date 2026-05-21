@@ -47,7 +47,6 @@ def _fake_controller(**overrides):
     ENABLED, no errors, no motion in progress). Override fields per test.
     """
     mc = MagicMock()
-    mc.simulation_mode = False
     mc.alive = True
     mc._motion_in_progress = False
     mc.last_error_code = 0
@@ -141,17 +140,6 @@ def test_status_returns_requires_init_when_no_controller(client):
     assert parsed.equipment_id == EQUIPMENT_ID
     assert parsed.equipment_kind == 'robot_arm'
     assert parsed.protocol_version == PROTOCOL_VERSION
-
-
-def test_status_returns_dry_run_when_simulation(client_with_controller):
-    controller = _fake_controller(simulation_mode=True)
-    test_client = client_with_controller(controller)
-
-    response = test_client.get('/status')
-    assert response.status_code == 200
-    parsed = EquipmentStatus(**response.json())
-    assert parsed.equipment_status == 'dry_run'
-    assert parsed.last_error is None
 
 
 def test_status_returns_error_when_controller_has_error_code(client_with_controller):

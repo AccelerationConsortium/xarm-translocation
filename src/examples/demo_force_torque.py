@@ -192,39 +192,22 @@ def demo_force_torque_data_analysis(controller):
 
 def main():
     parser = argparse.ArgumentParser(description="Force Torque Sensor Demo")
-    parser.add_argument("--real", action="store_true", help="Use real hardware")
-    parser.add_argument("--simulation", action="store_true", help="Use simulation mode")
     parser.add_argument("--demo", choices=["1", "2", "3", "4", "all"], default="all",
                        help="Which demo to run (1=safety, 2=linear, 3=joint, 4=analysis, all=all)")
-    
+
     args = parser.parse_args()
-    
-    # Determine mode
-    if args.real and args.simulation:
-        print("❌ Cannot use both --real and --simulation")
-        return
-    
-    simulation_mode = args.simulation or not args.real
-    
+
     print("🤖 xArm Force Torque Sensor Demo")
     print("=" * 50)
-    print(f"Mode: {'Simulation' if simulation_mode else 'Real Hardware'}")
     print(f"Demo: {args.demo}")
-    
-    # Initialize controller
+
+    # Initialize controller against real hardware via the real_hw profile.
     try:
-        if simulation_mode:
-            controller = XArmController(
-                simulation_mode=True,
-                auto_enable=True
-            )
-        else:
-            controller = XArmController(
-                profile_name='real_hw',  # Use real_hw profile (192.168.1.237)
-                simulation_mode=False,
-                auto_enable=True
-            )
-        
+        controller = XArmController(
+            profile_name='real_hw',
+            auto_enable=True,
+        )
+
         if not controller.initialize():
             print("❌ Failed to initialize controller")
             return

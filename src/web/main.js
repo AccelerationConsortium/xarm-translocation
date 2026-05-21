@@ -19,7 +19,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const disconnectBtn = document.getElementById('disconnect-btn');
     const configSelect = document.getElementById('config-select');
     const safetyLevelSelect = document.getElementById('safety-level-select');
-    const simulationModeCheckbox = document.getElementById('simulation-mode');
     const logStream = document.getElementById('log-stream');
 
     const homeBtn = document.getElementById('home-btn');
@@ -175,11 +174,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const lastError = envelope.last_error;
         const trackMetric = metrics.track_position;
 
-        // Treat ``ready``, ``busy``, ``dry_run``, ``degraded`` as "controller
-        // is up and the UI's control buttons should be live". ``requires_init``
-        // and ``error`` mean disabled controls.
+        // Treat ``ready``, ``busy``, ``degraded`` as "controller is up and the
+        // UI's control buttons should be live". ``requires_init`` and ``error``
+        // mean disabled controls.
         const status = envelope.equipment_status;
-        const isAlive = ['ready', 'busy', 'dry_run', 'degraded', 'e_stop'].includes(status);
+        const isAlive = ['ready', 'busy', 'degraded', 'e_stop'].includes(status);
 
         return {
             equipment_status: status,
@@ -245,7 +244,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // The `is_alive` flag is now derived from STATUS_SPEC equipment_status.
             const isConnected = data.is_alive === true;
-            const equipmentStatus = data.equipment_status; // ready/busy/dry_run/error/...
+            const equipmentStatus = data.equipment_status; // ready/busy/error/...
 
             // Update connection text and light
             try {
@@ -255,7 +254,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     updateStatusText(label);
                     if (data.connection_details) {
                         const details = data.connection_details;
-                        const subtext = `${details.host}:${details.port} (${details.profile_name}${details.simulation_mode ? ' - Simulation' : ''})`;
+                        const subtext = `${details.host}:${details.port} (${details.profile_name})`;
                         showMessage(subtext, 'info');
                     } else {
                         clearMessage();
@@ -428,7 +427,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 safeSetText('track-position-display', 'N/A');
             }
             
-            safeSetText('robot-mode', data.connection_details?.simulation_mode ? 'Simulation' : 'Hardware');
+            safeSetText('robot-mode', 'Hardware');
 
             safeSetText('last-error', systemStatus.last_error || 'None');
 
@@ -683,25 +682,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     // --- Event Listeners ---
-    configSelect.addEventListener('change', () => {
-        const selectedProfile = configSelect.value;
-        // Auto-enable simulation mode for Docker profiles
-        if (selectedProfile.includes('docker')) {
-            simulationModeCheckbox.checked = true;
-        } else {
-            simulationModeCheckbox.checked = false;
-        }
-    });
-
     connectBtn.addEventListener('click', async () => {
         const selectedProfile = configSelect.value;
-        
+
         // Disable connect button during connection attempt
         connectBtn.disabled = true;
-        
+
         const body = {
             profile_name: selectedProfile,
-            simulation_mode: simulationModeCheckbox.checked,
             safety_level: safetyLevelSelect.value,
         };
 

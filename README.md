@@ -1,6 +1,6 @@
 # PyxArm - xArm Robot Control Package
 
-A comprehensive Python package for controlling UFACTORY xArm robotic arms with integrated gripper, linear track, and force torque sensor support. Features unified control, multiple simulation modes, and a professional three-stage testing strategy.
+A comprehensive Python package for controlling UFACTORY xArm robotic arms with integrated gripper, linear track, and force torque sensor support. Speaks STATUS_SPEC v1.0 for dashboard integration; the Docker simulator is the supported path for off-hardware testing.
 
 ## Lab Status Spec Conformance
 
@@ -22,8 +22,7 @@ The contract is defined in `ac-organic-lab/docs/STATUS_SPEC.md`.
 
 - **Multi-Model Support**: xArm5, xArm6, xArm7, and xArm850 with auto-detection
 - **Unified Control**: Single controller for arm, gripper, linear track, and force torque sensor
-- **Multiple Simulation Modes**: Software simulation with collision detection + Docker simulation with 3D physics
-- **Professional Testing Strategy**: Three-stage methodology from simulation to production
+- **Docker Simulator Support**: Drive the official UFACTORY Docker simulator through the same controller path used for hardware
 - **REST API**: FastAPI server for web-based control and monitoring
 - **Flexible Configuration**: Model-specific configs with component auto-enable
 - **6-Axis Force Torque Sensor**: Safety monitoring, force-controlled movement, and torque-controlled joint operations
@@ -57,20 +56,16 @@ if controller.initialize():
     controller.disconnect()
 ```
 
-### Simulation Modes
+### Running against the Docker simulator
 ```bash
-# Run software simulation
-python src/examples/demo_software_sim.py
-
-# Run Docker simulation (after starting container, in this case "5" for xArm5)
+# Start the simulator (e.g. "5" for xArm5)
 src/docker/docker_setup.sh start 5
-python src/examples/demo_docker_sim.py
 
-# Run force torque sensor demo
-python src/examples/demo_force_torque.py --simulation
+# Drive it with the demo using the `docker_local` profile
+python src/examples/demo_docker_sim.py
 ```
 
-For detailed instructions on simulation and hardware setup, see the [Simulation README](src/docs/PYXARM_TESTING.md).
+The in-process software simulation has been removed; use the Docker simulator for all simulator-mode work. See [PYXARM_TESTING.md](src/docs/PYXARM_TESTING.md) for setup details.
 
 ### Web Interface & API Server
 ```bash
@@ -107,11 +102,10 @@ pyxarm web --host 127.0.0.1 --port 8080
 pyxarm --version
 ```
 
-## 🎯 Three-Stage Testing Strategy
+## 🎯 Testing Strategy
 
-1. **Software Simulation** → Logic validation, error handling, collision detection
-2. **Docker Simulation** → Physics validation, 3D visualization, realistic dynamics  
-3. **Real Hardware** → Production validation, safety systems, performance optimization
+1. **Docker Simulator** → run the official UFACTORY simulator via the `docker_local` profile for off-hardware validation
+2. **Real Hardware** → production validation against the configured `real_hw` profile
 
 ## 📚 Documentation
 
@@ -155,4 +149,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ---
 
-**Get started in minutes with our three-stage testing strategy - from safe simulation to production deployment!**
+**Get started in minutes against the Docker simulator, then move to real hardware when ready.**

@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-PnpDevice *)",
+      "PowerShell(Test-Path *)",
+      "Bash(C:/SDL_Tools/uv.exe sync *)",
+      "PowerShell(C:\\\\SDL_Tools\\\\nssm.exe get cytation Application 2>&1; C:\\\\SDL_Tools\\\\nssm.exe get cytation AppDirectory 2>&1; Write-Output '---'; & \"C:\\\\Users\\\\sdl2\\\\Projects\\\\agilent-cytation-server\\\\.venv\\\\Scripts\\\\python.exe\" --version 2>&1; Write-Output '---available pythons---'; C:\\\\SDL_Tools\\\\uv.exe python list --only-installed 2>&1)",
+      "PowerShell(C:\\\\SDL_Tools\\\\nssm.exe get cytation AppParameters 2>&1)",
+      "Bash(C:/SDL_Tools/uv.exe venv *)",
+      "PowerShell(Get-ChildItem *)",
+      "Bash(C:/SDL_Tools/uv.exe pip *)",
+      "Bash(C:/SDL_Tools/uv.exe run *)",
+      "PowerShell(C:\\\\SDL_Tools\\\\nssm.exe start cytation 2>&1; Start-Sleep -Seconds 2; C:\\\\SDL_Tools\\\\nssm.exe status cytation 2>&1)"
+    ]
+  }
+}

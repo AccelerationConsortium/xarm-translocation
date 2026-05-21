@@ -128,7 +128,6 @@ class ConnectionRequest(BaseModel):
     host: Optional[str] = Field(default=None, description="IP address of the robot. Overrides profile.")
     model: Optional[int] = Field(default=None, description="Robot model: 5, 6, 7. Overrides profile.")
     gripper_type: Optional[str] = Field(default=None, description="Installed gripper type, e.g. bio_gen2.")
-    simulation_mode: bool = Field(default=False, description="Enable software simulation mode (no hardware required).")
     safety_level: str = Field(default="MEDIUM", description="Set the safety validation level: LOW, MEDIUM, HIGH.")
 
     def get_safety_level_enum(self) -> SafetyLevel:
@@ -413,11 +412,10 @@ async def get_configurations():
 
 @app.post("/connect")
 async def connect_robot(request: ConnectionRequest, background_tasks: BackgroundTasks):
-    """
-    Connect to the robot controller.
+    """Connect to the robot controller.
 
-    This endpoint initializes the `XArmController`, allowing you to choose
-    between hardware and simulation modes, and set the initial safety level.
+    Initializes the ``XArmController`` against the configured profile and
+    sets the initial safety level.
     """
     global controller
     
@@ -431,19 +429,17 @@ async def connect_robot(request: ConnectionRequest, background_tasks: Background
             host=request.host,
             model=request.model,
             gripper_type=request.gripper_type,
-            simulation_mode=request.simulation_mode,
             safety_level=request.get_safety_level_enum()
         )
-        
+
         if controller.initialize():
             background_tasks.add_task(broadcast_status_update)
             return {
-                "message": f"Successfully connected in {'Simulation' if request.simulation_mode else 'Hardware'} mode.",
+                "message": "Successfully connected.",
                 "connection_details": {
                     "host": controller.host,
                     "port": controller.xarm_config.get('port', 18333),
                     "profile_name": request.profile_name or 'custom',
-                    "simulation_mode": request.simulation_mode
                 },
                 "model": controller.model_name,
                 "num_joints": controller.num_joints,
@@ -506,17 +502,6 @@ async def get_status() -> EquipmentStatus:
     *states*, not failures.
     """
     return build_status(controller)
-
-@app.get("/status/performance")
-async def get_performance_status():
-    """Get detailed performance and maintenance status (hardware only)."""
-    c = get_controller()
-    if c.simulation_mode:
-        raise HTTPException(status_code=400, detail="Performance monitoring is not available in simulation mode.")
-    return {
-        "performance_metrics": c.get_performance_metrics(),
-        "maintenance_status": c.get_maintenance_status(),
-    }
 
 @app.get("/positions")
 async def get_all_positions():
@@ -736,28 +721,23 @@ async def clear_errors(background_tasks: BackgroundTasks):
 async def enable_robot():
     """Re-enable robot motion after emergency stop."""
     c = get_controller()
-    
-    if c.simulation_mode:
-        logger.info("Simulation mode: Robot motion re-enabled")
-        c.alive = True
-        c.states['arm'] = ComponentState.ENABLED
-    else:
-        # Clear any errors first
-        if hasattr(c.arm, 'clean_error'):
-            c.arm.clean_error()
-        if hasattr(c.arm, 'clean_warn'):
-            c.arm.clean_warn()
-        
-        # Re-enable motion
-        if hasattr(c.arm, 'motion_enable'):
-            result = c.arm.motion_enable(enable=True)
-            if result != 0 and result is not None:
-                logger.warning(f"Motion enable returned code: {result}")
-        
-        # Reset alive state
-        c.alive = True
-        c.states['arm'] = ComponentState.ENABLED
-        logger.info("Robot motion re-enabled after emergency stop")
+
+    # Clear any errors first
+    if hasattr(c.arm, 'clean_error'):
+        c.arm.clean_error()
+    if hasattr(c.arm, 'clean_warn'):
+        c.arm.clean_warn()
+
+    # Re-enable motion
+    if hasattr(c.arm, 'motion_enable'):
+        result = c.arm.motion_enable(enable=True)
+        if result != 0 and result is not None:
+            logger.warning(f"Motion enable returned code: {result}")
+
+    # Reset alive state
+    c.alive = True
+    c.states['arm'] = ComponentState.ENABLED
+    logger.info("Robot motion re-enabled after emergency stop")
     
     await broadcast_status_update()
     return {"message": "Robot motion enabled successfully."}

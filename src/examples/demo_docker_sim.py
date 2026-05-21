@@ -104,9 +104,8 @@ def main():
         # We explicitly disable auto_enable to control initialization manually.
         controller = XArmController(
             profile_name='docker_local',
-            simulation_mode=False,
-            safety_level=SafetyLevel.LOW, # Use LOW for less restrictive simulation
-            auto_enable=False # Prevent initialization within the constructor
+            safety_level=SafetyLevel.LOW,
+            auto_enable=False  # Prevent initialization within the constructor
         )
         
         # The initialize method handles the connection and setup.
