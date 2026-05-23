@@ -22,7 +22,9 @@
       "Bash(python *)",
       "PowerShell(Test-NetConnection *)",
       "PowerShell(docker ps *)",
-      "PowerShell(Get-NetTCPConnection *)"
+      "PowerShell(Get-NetTCPConnection *)",
+      "Bash(\"===\")",
+      "Bash(.venv/Scripts/python.exe *)"
     ]
   }
 }

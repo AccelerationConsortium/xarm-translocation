@@ -1,0 +1,108 @@
+# Motion-graph interlock data — Phase 1 (advisory mode only).
+#
+# Nodes = (arm_pose_name, rail_location_name, gripper_state_name, payload_name).
+# Edges = whitelisted directional transitions; speed differences belong on
+# the move call, not as parallel edges. Loader enforces three coherence
+# rules at startup (see src/core/motion_graph.py::_validate_topology).
+#
+# This Phase 1 sample covers only the UPLC drawer open/close subgraph
+# (gripper open, no payload throughout). Phase 4 will add plate-pickup
+# nodes that exercise gripper-state and payload changes.
+
+schema_version: "0.1"
+
+# ── Gripper states: commanded mechanical positions only.
+#    Stroke is the bio_gen2 SDK position value (range 71-150).
+#    No payload knowledge here; that's the separate `payloads` dimension.
+gripper_states:
+  open:    { stroke: 150 }   # fully open
+  closed:  { stroke: 71 }    # fully closed (empty)
+
+# ── Payloads: held-item identities. `empty` is the no-payload sentinel.
+payloads:
+  empty: {}
+
+# ── Nodes: enumerate only the meaningful combinations, not the cartesian.
+#    Anything not listed here resolves to UNKNOWN_NODE at runtime.
+nodes:
+  - id: home
+    arm: robot_home
+    rail: Home
+    gripper: open
+    payload: empty
+    tags: [home, safe_parking]
+
+  - id: uplc_draw_approach
+    arm: uplc_draw_home
+    rail: Home
+    gripper: open
+    payload: empty
+    tags: [uplc, approach]
+
+  - id: uplc_draw_open_max
+    arm: uplc_draw_open_max
+    rail: Home
+    gripper: open
+    payload: empty
+    tags: [uplc, drawer_open]
+
+  - id: uplc_draw_open_min
+    arm: uplc_draw_open_min
+    rail: Home
+    gripper: open
+    payload: empty
+    tags: [uplc, drawer_open]
+
+  - id: uplc_draw_close_click
+    arm: uplc_draw_open_close
+    rail: Home
+    gripper: open
+    payload: empty
+    tags: [uplc, drawer_click]
+
+# ── Edges: directional. Mode overrides the preset's storage form
+#    (a joint-list preset can still be driven linearly by an edge).
+edges:
+  - from: home
+    to:   uplc_draw_approach
+    mode: joint
+    speed: 30
+    comment: "Pre-position for UPLC drawer interaction."
+
+  - from: uplc_draw_approach
+    to:   home
+    mode: joint
+    speed: 30
+    comment: "Retreat from UPLC drawer."
+
+  - from: uplc_draw_approach
+    to:   uplc_draw_open_max
+    mode: linear
+    speed: 20
+    comment: "Approach fully-open drawer position."
+
+  - from: uplc_draw_open_max
+    to:   uplc_draw_open_min
+    mode: linear
+    speed: 15
+    preconditions: [gripper_empty]
+    comment: "Close drawer to almost-shut position (slow)."
+
+  - from: uplc_draw_open_min
+    to:   uplc_draw_close_click
+    mode: linear
+    speed: 5
+    preconditions: [gripper_empty]
+    comment: "Final close — you should hear a click."
+
+  - from: uplc_draw_close_click
+    to:   uplc_draw_open_min
+    mode: linear
+    speed: 5
+    comment: "Re-open drawer from click position."
+
+  - from: uplc_draw_open_min
+    to:   uplc_draw_open_max
+    mode: linear
+    speed: 15
+    comment: "Open drawer fully."

@@ -13,6 +13,9 @@ from core.xarm_utils import (
     get_safety_speed_limits, apply_movement_parameter_limits,
     get_joint_limits_for_model, check_operation_result, validate_and_apply_safety_config
 )
+from core.motion_graph import (
+    DEFAULT_PRECONDITIONS, GraphError, GraphMode, MotionGraph,
+)
 
 class ComponentState(Enum):
     """Enum for component states"""
@@ -173,6 +176,22 @@ class XArmController:
             else:
                 setattr(self, config_attr, {})
 
+        # Motion graph (Phase 1: advisory only, soft-fails to OFF mode
+        # when the YAML is missing or invalid so the controller still
+        # boots on unmigrated configs).
+        self.motion_graph: Optional[MotionGraph] = None
+        self.graph_mode: GraphMode = GraphMode.OFF
+        graph_path = os.path.join('src', 'settings', 'motion_graph.yaml')
+        try:
+            self.motion_graph = MotionGraph.from_yaml(
+                graph_path, preconditions=DEFAULT_PRECONDITIONS,
+            )
+            self.graph_mode = GraphMode.ADVISORY
+        except FileNotFoundError:
+            print(f"Info: {graph_path} not found, motion-graph layer disabled.")
+        except GraphError as exc:
+            print(f"Warning: motion_graph.yaml failed validation: {exc}. Disabling graph.")
+
     def _resolve_current_gripper_config(self):
         """Return the active gripper's config while tolerating legacy shapes."""
         if self.gripper_type == 'none':
@@ -253,6 +272,16 @@ class XArmController:
 
         # Motion state tracking
         self._motion_in_progress = False
+
+        # Motion-graph named-coordinate tracking (Phase 1). These are the
+        # named values that, when combined with the current gripper
+        # stroke and declared payload, resolve to a graph node. Any raw
+        # cartesian / joint / track move clears the relevant one — it
+        # is the operator's job to call a *named* move (or declare via
+        # recover_to(...) in a later phase) to re-pin position.
+        self.last_arm_pose_name: Optional[str] = None
+        self.last_rail_location_name: Optional[str] = None
+        self.declared_payload: str = "empty"
 
         # State tracking
         self.alive = True
@@ -718,6 +747,11 @@ class XArmController:
             print("Warning: Arm is not enabled. Cannot perform movement.")
             return False
 
+        # A raw cartesian move invalidates any pinned named arm pose.
+        # The named-move wrapper (move_to_named_location / move_plate_linear)
+        # restores it after this call on success.
+        self.last_arm_pose_name = None
+
         # Set defaults
         if roll is None: roll = 180
         if pitch is None: pitch = 0
@@ -790,11 +824,11 @@ class XArmController:
                 angles.append(0.0)  # Pad with zeros for missing joints
 
             print(f"Moving to location '{location_name}' using joint angles: {angles[:self.num_joints]}")
-            return self.move_joints(angles=angles[:self.num_joints], speed=speed)
+            success = self.move_joints(angles=angles[:self.num_joints], speed=speed)
         elif isinstance(location, dict):
             # Cartesian-based location (e.g., {x: 300, y: 0, z: 300, ...})
             print(f"Moving to location '{location_name}' using Cartesian coordinates")
-            return self.move_to_position(
+            success = self.move_to_position(
                 x=location['x'], y=location['y'], z=location['z'],
                 roll=location.get('roll'), pitch=location.get('pitch'), yaw=location.get('yaw'),
                 speed=speed
@@ -802,6 +836,12 @@ class XArmController:
         else:
             print(f"Error: Invalid location format for '{location_name}'. Expected list (joint angles) or dict (Cartesian coordinates)")
             return False
+
+        # Inner call cleared last_arm_pose_name; restore it on success so
+        # the motion graph can pin the new node.
+        if success:
+            self.last_arm_pose_name = location_name
+        return success
 
     def move_relative(self, dx=0.0, dy=0.0, dz=0.0, droll=0.0, dpitch=0.0, dyaw=0.0, speed=None):
         """
@@ -813,6 +853,9 @@ class XArmController:
 
         if speed is None:
             speed = self.tcp_speed
+
+        # Jog/relative moves go off-grid by definition.
+        self.last_arm_pose_name = None
 
         code = self.arm.set_position(x=dx, y=dy, z=dz, roll=droll, pitch=dpitch, yaw=dyaw,
                                    speed=speed, relative=True, wait=True)
@@ -850,6 +893,10 @@ class XArmController:
         # Validate joint angles
         if not self._validate_joint_angles(angles):
             return False
+
+        # Raw joint move invalidates any pinned named pose; the named-move
+        # wrapper restores it after this returns successfully.
+        self.last_arm_pose_name = None
 
         # Execute movement
         self._motion_in_progress = True
@@ -920,6 +967,10 @@ class XArmController:
 
     def stop_motion(self):
         """Stop all motion immediately."""
+        # After an emergency stop, the arm froze somewhere between named
+        # poses. The graph must report unknown until re-pinned.
+        self.last_arm_pose_name = None
+        self.last_rail_location_name = None
         code = self.arm.emergency_stop()
         return self.check_code(code, 'emergency_stop')
 
@@ -1106,6 +1157,9 @@ class XArmController:
         if not self._validate_track_speed(speed):
             return False
 
+        # Raw rail move invalidates any pinned named rail location.
+        self.last_rail_location_name = None
+
         self._motion_in_progress = True
 
         try:
@@ -1168,7 +1222,11 @@ class XArmController:
             self.last_error = f"No position for track location '{location_name}'."
             return False
 
-        return self.move_track_to_position(position, speed=speed, wait=wait)
+        success = self.move_track_to_position(position, speed=speed, wait=wait)
+        # Inner call cleared the named rail tracker; restore it on success.
+        if success:
+            self.last_rail_location_name = location_name
+        return success
 
     def _validate_track_position(self, position):
         """Validation for track position."""
@@ -1242,9 +1300,15 @@ class XArmController:
         if not self.is_component_enabled('arm'):
             print("Arm is not enabled")
             return False
-            
+
         if speed is None: speed = self.angle_speed
         if mvacc is None: mvacc = self.angle_acc
+
+        # SDK move_gohome targets the firmware's home (typically joint zeros),
+        # which is not necessarily our named `robot_home` preset. Clear the
+        # named tracker so the graph reports unknown until the operator
+        # invokes an explicit named move.
+        self.last_arm_pose_name = None
 
         # Use the SDK's dedicated go_home method
         code = self.arm.move_gohome(speed=speed, mvacc=mvacc, wait=wait)
@@ -1255,6 +1319,51 @@ class XArmController:
         if self.position_config and 'positions' in self.position_config:
             return list(self.position_config['positions'].keys())
         return []
+
+    # =============================================================================
+    # MOTION GRAPH (Phase 1: introspection only — no enforcement)
+    # =============================================================================
+
+    def _gripper_state_name(self) -> Optional[str]:
+        """Match the current commanded gripper stroke to a named gripper_state.
+
+        Returns the name (e.g., 'open', 'closed') or None if no named
+        state matches the current stroke within tolerance. Tolerance is
+        small because gripper SDK commands are integers.
+        """
+        if self.motion_graph is None:
+            return None
+        stroke = getattr(self, 'last_gripper_position', None)
+        if not isinstance(stroke, (int, float)):
+            return None
+        for state in self.motion_graph.gripper_states:
+            if abs(float(state.stroke) - float(stroke)) < 1.0:
+                return state.name
+        return None
+
+    @property
+    def current_node(self) -> Optional[str]:
+        """Graph node id matching the controller's current 4-tuple, or None.
+
+        Returns None when the graph is OFF, when any of the four
+        coordinates is unpinned (e.g., after a raw move or before the
+        first named move), or when no node matches the tuple.
+        """
+        if self.motion_graph is None:
+            return None
+        node = self.motion_graph.find_node(
+            arm=self.last_arm_pose_name,
+            rail=self.last_rail_location_name,
+            gripper=self._gripper_state_name(),
+            payload=self.declared_payload,
+        )
+        return node.id if node else None
+
+    def reachable_node_ids(self) -> list[str]:
+        """Outgoing target node ids from the current node (empty if off-grid)."""
+        if self.motion_graph is None:
+            return []
+        return self.motion_graph.allowed_targets(self.current_node)
 
     def get_system_info(self):
         """Get information about the configured system."""
@@ -1895,6 +2004,9 @@ class XArmController:
                 time.sleep(wait_between_steps)
                 
         print(f"[OK] Successfully completed linear movement to '{target_location}'")
+        # Inner move_to_position calls cleared the named pose tracker;
+        # we arrived at target_location, so pin it.
+        self.last_arm_pose_name = target_location
         return True
 
     def _position_to_cartesian(self, location_name, position_data, speed=None):
