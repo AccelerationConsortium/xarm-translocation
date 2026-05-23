@@ -581,12 +581,15 @@ async def move_to_position(request: PositionRequest, background_tasks: Backgroun
     c = get_controller()
     
     async def move_task():
-        success = c.move_to_position(
+        # Run the blocking SDK call in a worker thread so the event loop
+        # stays free to handle STOP and status polls while the arm moves.
+        success = await asyncio.to_thread(
+            c.move_to_position,
             x=request.x, y=request.y, z=request.z,
             roll=request.roll, pitch=request.pitch, yaw=request.yaw,
             speed=request.speed,
             check_collision=request.check_collision,
-            wait=request.wait
+            wait=request.wait,
         )
         if not success:
             logger.error("Failed to move to position.")
@@ -601,12 +604,13 @@ async def move_joints(request: JointRequest, background_tasks: BackgroundTasks):
     c = get_controller()
 
     async def move_task():
-        success = c.move_joints(
+        success = await asyncio.to_thread(
+            c.move_joints,
             angles=request.angles,
             speed=request.speed,
             acceleration=request.acceleration,
             check_collision=request.check_collision,
-            wait=request.wait
+            wait=request.wait,
         )
         if not success:
             logger.error("Failed to move joints.")
@@ -621,10 +625,11 @@ async def move_relative(request: RelativeRequest, background_tasks: BackgroundTa
     c = get_controller()
     
     async def move_task():
-        success = c.move_relative(
+        success = await asyncio.to_thread(
+            c.move_relative,
             dx=request.dx, dy=request.dy, dz=request.dz,
             droll=request.droll, dpitch=request.dpitch, dyaw=request.dyaw,
-            speed=request.speed
+            speed=request.speed,
         )
         if not success:
             logger.error("Failed to move relative.")
@@ -639,9 +644,10 @@ async def move_to_location(request: LocationRequest, background_tasks: Backgroun
     c = get_controller()
     
     async def move_task():
-        success = c.move_to_named_location(
+        success = await asyncio.to_thread(
+            c.move_to_named_location,
             location_name=request.location_name,
-            speed=request.speed
+            speed=request.speed,
         )
         if not success:
             logger.error(f"Failed to move to named location: {request.location_name}")
@@ -656,8 +662,10 @@ async def move_home(background_tasks: BackgroundTasks):
     ctrl = get_controller()
     
     try:
-        result = ctrl.go_home()
-        
+        # go_home() blocks until the move completes; offload to a worker
+        # thread so STOP requests can interrupt the event loop.
+        result = await asyncio.to_thread(ctrl.go_home)
+
         if result:
             background_tasks.add_task(broadcast_status_update)
             return {
@@ -678,7 +686,10 @@ async def stop_movement(background_tasks: BackgroundTasks):
 
     try:
         # Execute stop immediately (not in background) for fastest response.
-        if not c.stop_motion():
+        # Run via to_thread so the SDK call doesn't block the event loop
+        # if the underlying TCP/USB layer stalls.
+        stopped = await asyncio.to_thread(c.stop_motion)
+        if not stopped:
             raise HTTPException(status_code=500, detail="Stop command failed.")
         logger.info("Stop command issued immediately.")
     except HTTPException:
@@ -700,7 +711,7 @@ async def clear_errors(background_tasks: BackgroundTasks):
     ctrl = get_controller()
     
     try:
-        result = ctrl.clear_errors()
+        result = await asyncio.to_thread(ctrl.clear_errors)
         
         if result:
             background_tasks.add_task(broadcast_status_update)
@@ -722,23 +733,32 @@ async def enable_robot():
     """Re-enable robot motion after emergency stop."""
     c = get_controller()
 
-    # Clear any errors first
-    if hasattr(c.arm, 'clean_error'):
-        c.arm.clean_error()
-    if hasattr(c.arm, 'clean_warn'):
-        c.arm.clean_warn()
+    def _reenable() -> int | None:
+        if hasattr(c.arm, 'clean_error'):
+            c.arm.clean_error()
+        if hasattr(c.arm, 'clean_warn'):
+            c.arm.clean_warn()
+        code: int | None = None
+        if hasattr(c.arm, 'motion_enable'):
+            code = c.arm.motion_enable(enable=True)
+        # The xArm SDK puts the arm in state 4 (stopped) after an
+        # emergency_stop. Mode/state must be re-asserted before motion
+        # commands will be honored again.
+        if hasattr(c.arm, 'set_mode'):
+            c.arm.set_mode(0)
+        if hasattr(c.arm, 'set_state'):
+            c.arm.set_state(0)
+        return code
 
-    # Re-enable motion
-    if hasattr(c.arm, 'motion_enable'):
-        result = c.arm.motion_enable(enable=True)
-        if result != 0 and result is not None:
-            logger.warning(f"Motion enable returned code: {result}")
+    result = await asyncio.to_thread(_reenable)
+    if result not in (None, 0):
+        logger.warning(f"Motion enable returned code: {result}")
 
     # Reset alive state
     c.alive = True
     c.states['arm'] = ComponentState.ENABLED
     logger.info("Robot motion re-enabled after emergency stop")
-    
+
     await broadcast_status_update()
     return {"message": "Robot motion enabled successfully."}
 
@@ -879,7 +899,10 @@ async def move_track(request: TrackRequest, background_tasks: BackgroundTasks):
     c = get_controller()
 
     async def track_task():
-        success = c.move_track_to_position(position=request.position, speed=request.speed, wait=request.wait)
+        success = await asyncio.to_thread(
+            c.move_track_to_position,
+            position=request.position, speed=request.speed, wait=request.wait,
+        )
         if not success:
             logger.error("Failed to move linear track.")
         await broadcast_status_update()
@@ -895,11 +918,12 @@ async def move_track_to_location(request: TrackLocationRequest, background_tasks
 
         async def track_task():
             try:
-                success = c.move_track_to_named_location(
+                success = await asyncio.to_thread(
+                    c.move_track_to_named_location,
                     location_name=request.location_name,
-            speed=request.speed,
-            wait=request.wait
-        )
+                    speed=request.speed,
+                    wait=request.wait,
+                )
                 if not success:
                     logger.error(f"Failed to move track to named location: {request.location_name}")
                 await broadcast_status_update()
@@ -987,9 +1011,10 @@ async def calibrate_force_torque_sensor(request: ForceTorqueCalibrationRequest, 
     c = get_controller()
 
     async def calibration_task():
-        success = c.calibrate_force_torque_sensor(
+        success = await asyncio.to_thread(
+            c.calibrate_force_torque_sensor,
             samples=request.samples,
-            delay=request.delay
+            delay=request.delay,
         )
         if not success:
             logger.error("Failed to calibrate force torque sensor.")
@@ -1045,11 +1070,12 @@ async def move_until_force(request: ForceTorqueMovementRequest, background_tasks
     c = get_controller()
 
     async def force_movement_task():
-        success = c.move_until_force(
+        success = await asyncio.to_thread(
+            c.move_until_force,
             direction=request.direction,
             force_threshold=request.force_threshold,
             speed=request.speed,
-            timeout=request.timeout
+            timeout=request.timeout,
         )
         if not success:
             logger.error("Force-controlled movement failed or timed out.")
@@ -1064,12 +1090,13 @@ async def move_joint_until_torque(request: JointTorqueMovementRequest, backgroun
     c = get_controller()
 
     async def torque_movement_task():
-        success = c.move_joint_until_torque(
+        success = await asyncio.to_thread(
+            c.move_joint_until_torque,
             joint_id=request.joint_id,
             target_angle=request.target_angle,
             torque_threshold=request.torque_threshold,
             speed=request.speed,
-            timeout=request.timeout
+            timeout=request.timeout,
         )
         if not success:
             logger.error("Torque-controlled joint movement failed or timed out.")
@@ -1084,11 +1111,12 @@ async def move_plate_linear(request: PlateLinearRequest, background_tasks: Backg
     c = get_controller()
     
     async def plate_linear_task():
-        success = c.move_plate_linear(
+        success = await asyncio.to_thread(
+            c.move_plate_linear,
             target_location=request.target_location,
             num_steps=request.num_steps,
             speed=request.speed,
-            wait_between_steps=request.wait_between_steps
+            wait_between_steps=request.wait_between_steps,
         )
         if not success:
             logger.error(f"Failed to move linearly to {request.target_location}")

@@ -24,14 +24,3 @@ profiles:
     tcp_acc: 2000
     angle_speed: 20
     angle_acc: 500
-
-  docker_remote:
-    model: 5
-    num_joints: 5
-    host: '100.64.254.6'
-    port: 18333
-    gripper_type: 'bio_gen2'
-    tcp_speed: 100
-    tcp_acc: 2000
-    angle_speed: 20
-    angle_acc: 500 

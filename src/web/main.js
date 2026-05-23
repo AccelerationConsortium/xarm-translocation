@@ -401,6 +401,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
+            // Enable Robot button: armed when the device is reachable but
+            // the arm itself is not currently "enabled" (typically `error`
+            // after an emergency STOP, or `disabled`/`unknown`).
+            updateEnableRobotBtn(componentStates.arm, isConnected);
+
             // Update enable button state
             const enableGripperBtn = document.getElementById('enable-gripper-btn');
             if (enableGripperBtn) {
@@ -541,6 +546,25 @@ document.addEventListener('DOMContentLoaded', () => {
     const jogBtnIds = ['jog-x-plus','jog-x-minus','jog-y-plus','jog-y-minus','jog-z-plus','jog-z-minus'];
     const jointInputIds = ['j1-input','j2-input','j3-input','j4-input','j5-input','j6-input'];
 
+    function updateEnableRobotBtn(armState, deviceReachable) {
+        if (!enableRobotBtn) return;
+        // Show the button as actionable when the device is reachable AND the
+        // arm is in a state that motion_enable can recover from. After
+        // emergency_stop the SDK callback flips arm to `error`; the spec
+        // envelope reports `degraded` overall but the device is still up.
+        const armOk = armState === 'enabled';
+        const canEnable = deviceReachable && !armOk;
+        enableRobotBtn.disabled = !canEnable;
+        enableRobotBtn.textContent = 'Enable';
+        if (canEnable) {
+            enableRobotBtn.classList.remove('btn-secondary');
+            enableRobotBtn.classList.add('btn-success');
+        } else {
+            enableRobotBtn.classList.remove('btn-success');
+            enableRobotBtn.classList.add('btn-secondary');
+        }
+    }
+
     function setControlsState(enabled) {
         // Enable/disable control buttons based on connection state
         const controlButtons = [
@@ -580,23 +604,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
         
-        // Special handling for Enable Robot button
-        // Available when connected but arm is not enabled (after emergency stop)
-        if (enableRobotBtn) {
-            const isConnected = enabled; // enabled means robot is connected and operational
-            const shouldShowEnable = !isConnected; // Show enable when not fully operational
-            
-            enableRobotBtn.disabled = !shouldShowEnable;
-            if (shouldShowEnable) {
-                enableRobotBtn.textContent = 'Enable';
-                enableRobotBtn.classList.remove('btn-secondary');
-                enableRobotBtn.classList.add('btn-success');
-            } else {
-                enableRobotBtn.textContent = 'Enable';
-                enableRobotBtn.classList.remove('btn-success');
-                enableRobotBtn.classList.add('btn-secondary');
-            }
-        }
+        // Enable Robot button is now driven from the arm component state by
+        // updateEnableRobotBtn() — see updateStatusUI. The wholesale
+        // connect/disconnect toggle here would otherwise stomp on it
+        // (after STOP the arm is `error` but the connection is still alive,
+        // and we need the button to come BACK on, not stay off).
         
         // Connect button: enabled when disconnected, disabled when connected
         if (connectBtn) {

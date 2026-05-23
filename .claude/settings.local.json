@@ -10,7 +10,19 @@
       "PowerShell(Get-ChildItem *)",
       "Bash(C:/SDL_Tools/uv.exe pip *)",
       "Bash(C:/SDL_Tools/uv.exe run *)",
-      "PowerShell(C:\\\\SDL_Tools\\\\nssm.exe start cytation 2>&1; Start-Sleep -Seconds 2; C:\\\\SDL_Tools\\\\nssm.exe status cytation 2>&1)"
+      "PowerShell(C:\\\\SDL_Tools\\\\nssm.exe start cytation 2>&1; Start-Sleep -Seconds 2; C:\\\\SDL_Tools\\\\nssm.exe status cytation 2>&1)",
+      "Bash(curl -fsS --max-time 3 http://127.0.0.1:8000/health)",
+      "Bash(curl -fsS --max-time 3 http://127.0.0.1:8000/)",
+      "Bash(curl -fsS --max-time 3 -o NUL -w \"8000/web/: %{http_code}\\\\n\" http://127.0.0.1:8000/web/)",
+      "Bash(curl -fsS --max-time 3 -o NUL -w \"8888/: %{http_code}\\\\n\" http://127.0.0.1:8888/)",
+      "Bash(curl -fsS --max-time 3 -o NUL -w \"8888/web/: %{http_code}\\\\n\" http://127.0.0.1:8888/web/)",
+      "Bash(curl -fsS --max-time 3 -X POST http://127.0.0.1:8000/status)",
+      "Bash(curl -fsS --max-time 3 http://127.0.0.1:8000/status)",
+      "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('equipment_status=', d['equipment_status']\\); print\\('arm_state=', d['components'].get\\('arm',{}\\).get\\('state'\\)\\)\")",
+      "Bash(python *)",
+      "PowerShell(Test-NetConnection *)",
+      "PowerShell(docker ps *)",
+      "PowerShell(Get-NetTCPConnection *)"
     ]
   }
 }
