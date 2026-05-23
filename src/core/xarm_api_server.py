@@ -36,6 +36,9 @@ try:
         EQUIPMENT_NAME,
         build_status,
     )
+    from .motion_graph import (
+        EdgeNotAllowedError, GraphError, GraphMode,
+    )
 except ImportError:
     from core.xarm_controller import XArmController, SafetyLevel, ComponentState
     from core.xarm_utils import load_config
@@ -49,6 +52,9 @@ except ImportError:
         EQUIPMENT_ID,
         EQUIPMENT_NAME,
         build_status,
+    )
+    from core.motion_graph import (
+        EdgeNotAllowedError, GraphError, GraphMode,
     )
 
 # Configure logging
@@ -242,6 +248,26 @@ class PlateLinearRequest(BaseModel):
     num_steps: int = Field(default=1, ge=1, le=100, description="Number of interpolation steps (1-100)")
     speed: Optional[float] = Field(default=None, description="Movement speed (validated by safety level)")
     wait_between_steps: float = Field(default=0.1, ge=0.0, le=5.0, description="Delay between steps in seconds (0-5)")
+
+
+class GraphModeRequest(BaseModel):
+    """Request model for switching motion-graph enforcement mode."""
+    mode: str = Field(description="One of: 'off', 'advisory', 'strict'")
+
+
+class GraphRecordRequest(BaseModel):
+    """Optional overrides for the edge being recorded from last_transition."""
+    mode: Optional[str] = Field(
+        default=None,
+        description="'linear' or 'joint'; defaults to the mode the last move used",
+    )
+    speed: Optional[float] = Field(
+        default=None, description="Override edge speed; defaults to the speed used"
+    )
+    comment: Optional[str] = Field(default=None, description="Free-text comment")
+    preconditions: Optional[List[str]] = Field(
+        default=None, description="List of named preconditions"
+    )
 
 # Application lifespan management
 @asynccontextmanager
@@ -640,21 +666,40 @@ async def move_relative(request: RelativeRequest, background_tasks: BackgroundTa
 
 @app.post("/move/location")
 async def move_to_location(request: LocationRequest, background_tasks: BackgroundTasks):
-    """Move the robot to a pre-defined named location."""
+    """Move the robot to a pre-defined named location.
+
+    Runs synchronously via to_thread so a STRICT-mode rejection surfaces
+    as HTTP 409 (rather than a silent background failure) and the caller
+    learns the actual outcome. STOP remains responsive because the move
+    runs in a worker thread, not on the event loop.
+    """
     c = get_controller()
-    
-    async def move_task():
+
+    try:
         success = await asyncio.to_thread(
             c.move_to_named_location,
             location_name=request.location_name,
             speed=request.speed,
         )
-        if not success:
-            logger.error(f"Failed to move to named location: {request.location_name}")
-        await broadcast_status_update()
-    
-    background_tasks.add_task(move_task)
-    return {"message": f"Move to location '{request.location_name}' command accepted."}
+    except EdgeNotAllowedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "edge_not_allowed",
+                "current_node": exc.current,
+                "target": exc.target,
+                "reason": exc.reason,
+            },
+        )
+
+    background_tasks.add_task(broadcast_status_update)
+    if not success:
+        logger.error(f"Failed to move to named location: {request.location_name}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Move to '{request.location_name}' failed",
+        )
+    return {"message": f"Moved to '{request.location_name}'."}
 
 @app.post("/move/home")
 async def move_home(background_tasks: BackgroundTasks):
@@ -912,29 +957,38 @@ async def move_track(request: TrackRequest, background_tasks: BackgroundTasks):
 
 @app.post("/track/move/location")
 async def move_track_to_location(request: TrackLocationRequest, background_tasks: BackgroundTasks):
-    """Move the linear track to a pre-configured named location."""
+    """Move the linear track to a pre-configured named location.
+
+    Synchronous via to_thread (same rationale as /move/location).
+    """
+    c = get_controller()
+
     try:
-        c = get_controller()
+        success = await asyncio.to_thread(
+            c.move_track_to_named_location,
+            location_name=request.location_name,
+            speed=request.speed,
+            wait=request.wait,
+        )
+    except EdgeNotAllowedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "edge_not_allowed",
+                "current_node": exc.current,
+                "target": exc.target,
+                "reason": exc.reason,
+            },
+        )
 
-        async def track_task():
-            try:
-                success = await asyncio.to_thread(
-                    c.move_track_to_named_location,
-                    location_name=request.location_name,
-                    speed=request.speed,
-                    wait=request.wait,
-                )
-                if not success:
-                    logger.error(f"Failed to move track to named location: {request.location_name}")
-                await broadcast_status_update()
-            except Exception as e:
-                logger.error(f"Exception in track move task: {e}", exc_info=True)
-
-        background_tasks.add_task(track_task)
-        return {"message": f"Move track to location '{request.location_name}' command accepted."}
-    except Exception as e:
-        logger.error(f"Track move location failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Track move location failed: {str(e)}")
+    background_tasks.add_task(broadcast_status_update)
+    if not success:
+        logger.error(f"Failed to move track to named location: {request.location_name}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Track move to '{request.location_name}' failed",
+        )
+    return {"message": f"Moved track to '{request.location_name}'."}
 
 @app.get("/track/position")
 async def get_track_position():
@@ -1124,6 +1178,151 @@ async def move_plate_linear(request: PlateLinearRequest, background_tasks: Backg
     
     background_tasks.add_task(plate_linear_task)
     return {"message": f"Linear movement to '{request.target_location}' command accepted."}
+
+# =============================================================================
+# MOTION GRAPH (Phase 2)
+# =============================================================================
+
+@app.get("/graph")
+async def get_graph_state():
+    """Snapshot of the motion-graph layer's current state.
+
+    Useful for the web UI, debugging, and tests. Returns 404 when no
+    graph is loaded (legacy config). The same data also rides in
+    /status.details.motion_graph, but is exposed here too for direct
+    polling without parsing the full status envelope.
+    """
+    c = get_controller()
+    if c.motion_graph is None:
+        raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+    return {
+        "graph_mode": c.graph_mode.value,
+        "current_node": c.current_node,
+        "reachable_nodes": c.reachable_node_ids(),
+        "declared_payload": c.declared_payload,
+        "arm_pose_name": c.last_arm_pose_name,
+        "rail_location_name": c.last_rail_location_name,
+        "last_transition": c.last_transition,
+        "adjacency": c.motion_graph.adjacency_summary(),
+    }
+
+
+@app.post("/control/graph/mode")
+async def set_graph_mode(request: GraphModeRequest):
+    """Switch the enforcement mode (off | advisory | strict).
+
+    OFF: graph is not consulted; legacy behavior.
+    ADVISORY: graph observes; off-whitelist moves log a warning but proceed.
+    STRICT: edge.mode overrides preset format, edge.speed caps caller's
+    speed, off-whitelist moves return HTTP 409.
+    """
+    c = get_controller()
+    try:
+        mode = GraphMode(request.mode)
+    except ValueError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"mode must be one of: off, advisory, strict (got {request.mode!r})",
+        )
+    try:
+        c.set_graph_mode(mode)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"graph_mode": c.graph_mode.value}
+
+
+@app.post("/control/graph/record")
+async def record_last_transition(request: GraphRecordRequest):
+    """Append the most recent successful node-to-node transition to
+    motion_graph.yaml as a new edge.
+
+    The proposed edge is first validated against a candidate graph
+    (existing edges + the new one) before being written; if validation
+    fails (coherence rules, duplicates) the API returns 400 with the
+    GraphError reason and the YAML is untouched. On success the in-
+    memory graph is reloaded from disk.
+    """
+    c = get_controller()
+    if c.motion_graph is None:
+        raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+    if c.last_transition is None:
+        raise HTTPException(
+            status_code=409,
+            detail="no transition to record; perform a named move first",
+        )
+
+    transition = c.last_transition
+    proposed = {
+        "from": transition["from_node"],
+        "to": transition["to_node"],
+        "mode": request.mode or transition["mode"],
+        "speed": request.speed if request.speed is not None else transition["speed"],
+    }
+    if request.comment:
+        proposed["comment"] = request.comment
+    if request.preconditions:
+        proposed["preconditions"] = list(request.preconditions)
+
+    try:
+        new_graph = _append_edge_to_yaml(proposed)
+    except GraphError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"proposed edge failed validation: {exc}",
+        )
+
+    c.motion_graph = new_graph
+    return {"recorded": proposed}
+
+
+def _append_edge_to_yaml(proposed: dict) -> "MotionGraph":  # type: ignore[name-defined]
+    """Text-append a new edge to motion_graph.yaml and reload the graph.
+
+    Comments are preserved because the file is not parsed-and-rewritten;
+    we just append a YAML edge block to the end of the file. Validation
+    runs against a candidate graph before the write to avoid leaving the
+    file in a state the loader would reject.
+    """
+    try:
+        from .motion_graph import MotionGraph, DEFAULT_PRECONDITIONS
+    except ImportError:
+        from core.motion_graph import MotionGraph, DEFAULT_PRECONDITIONS
+
+    path = os.path.join("src", "settings", "motion_graph.yaml")
+    raw = open(path).read()
+    # Build the candidate by parsing the current YAML, appending the
+    # edge in-memory, and constructing a MotionGraph to run validation.
+    import yaml as _yaml
+    data = _yaml.safe_load(raw) or {}
+    data.setdefault("edges", []).append(proposed)
+    candidate = MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+    # Validation passed; write the appended edge as raw YAML text.
+    block = _format_edge_yaml(proposed)
+    if not raw.endswith("\n"):
+        raw += "\n"
+    with open(path, "w") as fh:
+        fh.write(raw + block)
+    # Reload the graph from disk so the in-memory object matches the file.
+    return MotionGraph.from_yaml(path, preconditions=DEFAULT_PRECONDITIONS)
+
+
+def _format_edge_yaml(edge: dict) -> str:
+    """Format an edge as a YAML list item with two-space indentation.
+
+    Hand-formats rather than using yaml.dump to control field order
+    (matching the worked sample) and keep diffs small.
+    """
+    lines = [f"  - from: {edge['from']}", f"    to:   {edge['to']}"]
+    lines.append(f"    mode: {edge['mode']}")
+    if edge.get("speed") is not None:
+        lines.append(f"    speed: {edge['speed']}")
+    if edge.get("preconditions"):
+        lines.append(f"    preconditions: {list(edge['preconditions'])}")
+    if edge.get("comment"):
+        # Quote the comment to handle any special characters.
+        safe = str(edge["comment"]).replace('"', '\\"')
+        lines.append(f'    comment: "{safe}"')
+    return "\n".join(lines) + "\n"
+
 
 # Test endpoint for log streaming
 @app.post("/test/log")

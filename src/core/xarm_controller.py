@@ -13,9 +13,21 @@ from core.xarm_utils import (
     get_safety_speed_limits, apply_movement_parameter_limits,
     get_joint_limits_for_model, check_operation_result, validate_and_apply_safety_config
 )
-from core.motion_graph import (
-    DEFAULT_PRECONDITIONS, GraphError, GraphMode, MotionGraph,
-)
+# Use relative-then-absolute fallback so the api_server's `from
+# .motion_graph` (resolving to src.core.motion_graph in test runs)
+# and the controller's import resolve to the SAME class objects.
+# Without this, EdgeNotAllowedError raised by the controller is a
+# different class from the one the API server's except clause catches.
+try:
+    from .motion_graph import (
+        DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
+        GraphMode, MotionGraph, MoveMode,
+    )
+except ImportError:
+    from core.motion_graph import (
+        DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
+        GraphMode, MotionGraph, MoveMode,
+    )
 
 class ComponentState(Enum):
     """Enum for component states"""
@@ -282,6 +294,13 @@ class XArmController:
         self.last_arm_pose_name: Optional[str] = None
         self.last_rail_location_name: Optional[str] = None
         self.declared_payload: str = "empty"
+
+        # Last successful node-to-node transition (Phase 2). Captured by
+        # the named-move methods; used by POST /control/graph/record to
+        # propose a new edge for the YAML. None until at least one named
+        # transition lands between two pinned nodes.
+        #   dict: {from_node, to_node, mode, speed, timestamp}
+        self.last_transition: Optional[dict] = None
 
         # State tracking
         self.alive = True
@@ -803,6 +822,11 @@ class XArmController:
         """
         Move to a predefined location from the position config.
         Supports both joint-based and Cartesian-based location definitions.
+
+        In STRICT graph mode the edge from current_node to the target's
+        node is consulted: edge.mode (linear vs joint) overrides the
+        preset's storage format, edge.speed caps the caller's speed,
+        and off-whitelist transitions raise EdgeNotAllowedError.
         """
         # Check if positions are defined in config
         if 'positions' not in self.position_config:
@@ -815,32 +839,71 @@ class XArmController:
 
         location = self.position_config['positions'][location_name]
 
-        # Detect format: list = joint angles, dict = Cartesian coordinates
-        if isinstance(location, list):
-            # Joint-based location (e.g., [0.0, 0.0, 0.0, 0.0, 0.0])
-            # Ensure we have enough joint angles for the model
+        # === Graph consultation (raises in STRICT mode on off-whitelist) ===
+        from_node = self.current_node
+        target_node_id = self._predict_target_node_for_arm_pose(location_name)
+        edge = self._consult_graph_for_move(target_node_id, location_name)
+
+        # Apply edge.mode override + edge.speed cap (STRICT only).
+        speed = self._apply_edge_speed_cap(speed, edge)
+        mode_override: Optional[MoveMode] = None
+        if self.graph_mode == GraphMode.STRICT and edge is not None:
+            mode_override = edge.mode
+
+        # === Dispatch ===
+        if mode_override == MoveMode.LINEAR:
+            # Edge says linear regardless of how the preset is stored.
+            cartesian = self._position_to_cartesian(location_name, location, speed=speed)
+            if cartesian is None:
+                print(f"Error: could not resolve cartesian coordinates for {location_name!r}")
+                return False
+            success = self.move_to_position(
+                x=cartesian[0], y=cartesian[1], z=cartesian[2],
+                roll=cartesian[3], pitch=cartesian[4], yaw=cartesian[5],
+                speed=speed,
+            )
+            mode_used = MoveMode.LINEAR
+        elif mode_override == MoveMode.JOINT:
+            # Edge says joint. Only meaningful for joint-list presets;
+            # cartesian-dict presets would need IK we don't run.
+            if not isinstance(location, list):
+                print(
+                    f"Error: edge requires joint mode but preset {location_name!r} "
+                    f"is stored as cartesian; inverse-kinematics dispatch not supported"
+                )
+                return False
             angles = list(location)
             while len(angles) < self.num_joints:
-                angles.append(0.0)  # Pad with zeros for missing joints
-
-            print(f"Moving to location '{location_name}' using joint angles: {angles[:self.num_joints]}")
+                angles.append(0.0)
             success = self.move_joints(angles=angles[:self.num_joints], speed=speed)
-        elif isinstance(location, dict):
-            # Cartesian-based location (e.g., {x: 300, y: 0, z: 300, ...})
-            print(f"Moving to location '{location_name}' using Cartesian coordinates")
-            success = self.move_to_position(
-                x=location['x'], y=location['y'], z=location['z'],
-                roll=location.get('roll'), pitch=location.get('pitch'), yaw=location.get('yaw'),
-                speed=speed
-            )
+            mode_used = MoveMode.JOINT
         else:
-            print(f"Error: Invalid location format for '{location_name}'. Expected list (joint angles) or dict (Cartesian coordinates)")
-            return False
+            # No override (OFF / ADVISORY): fall back to preset's storage format.
+            if isinstance(location, list):
+                angles = list(location)
+                while len(angles) < self.num_joints:
+                    angles.append(0.0)
+                print(f"Moving to location '{location_name}' using joint angles: {angles[:self.num_joints]}")
+                success = self.move_joints(angles=angles[:self.num_joints], speed=speed)
+                mode_used = MoveMode.JOINT
+            elif isinstance(location, dict):
+                print(f"Moving to location '{location_name}' using Cartesian coordinates")
+                success = self.move_to_position(
+                    x=location['x'], y=location['y'], z=location['z'],
+                    roll=location.get('roll'), pitch=location.get('pitch'), yaw=location.get('yaw'),
+                    speed=speed,
+                )
+                mode_used = MoveMode.LINEAR
+            else:
+                print(f"Error: Invalid location format for '{location_name}'. Expected list (joint angles) or dict (Cartesian coordinates)")
+                return False
 
         # Inner call cleared last_arm_pose_name; restore it on success so
-        # the motion graph can pin the new node.
+        # the motion graph can pin the new node and capture the transition.
         if success:
             self.last_arm_pose_name = location_name
+            to_node = self.current_node
+            self._store_transition(from_node, to_node, mode_used, speed)
         return success
 
     def move_relative(self, dx=0.0, dy=0.0, dz=0.0, droll=0.0, dpitch=0.0, dyaw=0.0, speed=None):
@@ -1222,10 +1285,23 @@ class XArmController:
             self.last_error = f"No position for track location '{location_name}'."
             return False
 
+        # === Graph consultation (raises in STRICT on off-whitelist) ===
+        from_node = self.current_node
+        target_node_id = self._predict_target_node_for_rail(location_name)
+        edge = self._consult_graph_for_move(target_node_id, location_name)
+        speed = self._apply_edge_speed_cap(speed, edge)
+        # Rail has no mode question (always linear translation); edge.mode
+        # is captured but not used for dispatch on the rail axis.
+
         success = self.move_track_to_position(position, speed=speed, wait=wait)
-        # Inner call cleared the named rail tracker; restore it on success.
+        # Inner call cleared the named rail tracker; restore it on success
+        # and capture the transition for /control/graph/record.
         if success:
             self.last_rail_location_name = location_name
+            to_node = self.current_node
+            self._store_transition(
+                from_node, to_node, MoveMode.LINEAR, speed,
+            )
         return success
 
     def _validate_track_position(self, position):
@@ -1364,6 +1440,132 @@ class XArmController:
         if self.motion_graph is None:
             return []
         return self.motion_graph.allowed_targets(self.current_node)
+
+    def set_graph_mode(self, mode: GraphMode) -> None:
+        """Set the motion-graph enforcement mode. Safe at any time."""
+        if self.motion_graph is None and mode != GraphMode.OFF:
+            raise RuntimeError(
+                "cannot enable graph mode: motion_graph.yaml is not loaded"
+            )
+        self.graph_mode = mode
+        print(f"[motion_graph] mode set to {mode.value}")
+
+    def _predict_target_node_for_arm_pose(self, arm_pose_name: str) -> Optional[str]:
+        """Predict the node id we'd land on after move_to_named_location.
+
+        A pure-arm move keeps rail / gripper / payload unchanged. Returns
+        None if any of the other three dimensions is unpinned or if no
+        node matches the resulting 4-tuple.
+        """
+        if self.motion_graph is None:
+            return None
+        node = self.motion_graph.find_node(
+            arm=arm_pose_name,
+            rail=self.last_rail_location_name,
+            gripper=self._gripper_state_name(),
+            payload=self.declared_payload,
+        )
+        return node.id if node else None
+
+    def _predict_target_node_for_rail(self, rail_location_name: str) -> Optional[str]:
+        """Predict the node id we'd land on after move_track_to_named_location."""
+        if self.motion_graph is None:
+            return None
+        node = self.motion_graph.find_node(
+            arm=self.last_arm_pose_name,
+            rail=rail_location_name,
+            gripper=self._gripper_state_name(),
+            payload=self.declared_payload,
+        )
+        return node.id if node else None
+
+    def _consult_graph_for_move(
+        self, target_node_id: Optional[str], target_label: str,
+    ) -> Optional[Edge]:
+        """Look up the edge from current_node to target_node_id.
+
+        Returns the Edge when one exists, None otherwise. In STRICT mode
+        raises EdgeNotAllowedError on any failure (target unknown,
+        current off-grid, or no whitelisted edge). In ADVISORY mode logs
+        a warning and returns None. In OFF mode returns None silently.
+        """
+        if self.motion_graph is None or self.graph_mode == GraphMode.OFF:
+            return None
+
+        current_id = self.current_node
+
+        if target_node_id is None:
+            msg = (
+                f"target {target_label!r} does not resolve to a graph node "
+                f"(rail={self.last_rail_location_name!r}, "
+                f"gripper={self._gripper_state_name()!r}, "
+                f"payload={self.declared_payload!r})"
+            )
+            if self.graph_mode == GraphMode.STRICT:
+                raise EdgeNotAllowedError(current_id, target_label, msg)
+            print(f"[motion_graph] advisory: {msg}")
+            return None
+
+        if current_id is None:
+            msg = (
+                f"current position is off-grid; cannot transition to "
+                f"{target_node_id!r}. Call a named move that matches "
+                f"actual position to re-pin."
+            )
+            if self.graph_mode == GraphMode.STRICT:
+                raise EdgeNotAllowedError(None, target_node_id, msg)
+            print(f"[motion_graph] advisory: {msg}")
+            return None
+
+        edge = self.motion_graph.find_edge(current_id, target_node_id)
+        if edge is None:
+            msg = f"no whitelisted edge {current_id!r} -> {target_node_id!r}"
+            if self.graph_mode == GraphMode.STRICT:
+                raise EdgeNotAllowedError(current_id, target_node_id, msg)
+            print(f"[motion_graph] advisory: {msg}")
+            return None
+
+        return edge
+
+    def _apply_edge_speed_cap(self, requested: Optional[float], edge: Optional[Edge]) -> Optional[float]:
+        """Clamp the caller's speed to edge.speed in STRICT mode.
+
+        edge.speed is the maximum permitted speed for this transition;
+        callers can ask for slower (more cautious) but not faster.
+        """
+        if (self.graph_mode != GraphMode.STRICT
+                or edge is None or edge.speed is None):
+            return requested
+        if requested is None or requested > edge.speed:
+            if requested is not None and requested > edge.speed:
+                print(
+                    f"[motion_graph] clamping speed {requested} -> "
+                    f"{edge.speed} (edge.speed cap)"
+                )
+            return edge.speed
+        return requested
+
+    def _store_transition(
+        self,
+        from_node: Optional[str],
+        to_node: Optional[str],
+        mode_used: MoveMode,
+        speed_used: Optional[float],
+    ) -> None:
+        """Capture a successful node-to-node transition for graph/record.
+
+        Only stored when both endpoints are pinned nodes — recording an
+        off-grid move makes no sense as a graph edge.
+        """
+        if from_node is None or to_node is None or from_node == to_node:
+            return
+        self.last_transition = {
+            "from_node": from_node,
+            "to_node": to_node,
+            "mode": mode_used.value,
+            "speed": speed_used,
+            "timestamp": time.time(),
+        }
 
     def get_system_info(self):
         """Get information about the configured system."""
