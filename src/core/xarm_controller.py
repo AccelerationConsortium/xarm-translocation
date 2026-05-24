@@ -21,13 +21,15 @@ from core.xarm_utils import (
 try:
     from .motion_graph import (
         DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
-        GraphMode, MotionGraph, MoveMode,
+        GraphMode, MotionGraph, MoveMode, NodeMatch, RecoveryMismatch,
+        find_nearest_node,
     )
     from .claims import ClaimManager
 except ImportError:
     from core.motion_graph import (
         DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
-        GraphMode, MotionGraph, MoveMode,
+        GraphMode, MotionGraph, MoveMode, NodeMatch, RecoveryMismatch,
+        find_nearest_node,
     )
     from core.claims import ClaimManager
 
@@ -1449,6 +1451,87 @@ class XArmController:
         if self.motion_graph is None:
             return []
         return self.motion_graph.allowed_targets(self.current_node)
+
+    def suggest_current_node(
+        self,
+        joint_tolerance_deg: float = 10.0,
+        rail_tolerance_mm: float = 2.0,
+    ) -> NodeMatch:
+        """Compute the best-match graph node for the controller's physical
+        state. Used by /graph/nearest and as the default safety check for
+        /control/graph/recover_to.
+
+        Returns an empty NodeMatch when no graph is loaded.
+        """
+        if self.motion_graph is None:
+            return NodeMatch(
+                node_id=None, arm_residual=None, rail_residual=None,
+                gripper_match=False, payload_match=False, within_tolerance=False,
+            )
+        # Resolve named arm poses to joint angles (skip cartesian dicts —
+        # those need a different recovery path).
+        arm_poses: dict[str, list[float]] = {}
+        for name, pose in (self.position_config.get('positions') or {}).items():
+            if isinstance(pose, list):
+                arm_poses[name] = list(pose)
+        # Resolve rail location names to mm (handles both `name: 62`
+        # and `name: {position: 62, ...}` shapes).
+        rail_positions: dict[str, float] = {}
+        for name, val in (self.track_config.get('locations') or {}).items():
+            if isinstance(val, (int, float)):
+                rail_positions[name] = float(val)
+            elif isinstance(val, dict):
+                p = val.get('position')
+                if isinstance(p, (int, float)):
+                    rail_positions[name] = float(p)
+        return find_nearest_node(
+            self.motion_graph,
+            current_joints=self.last_joints,
+            current_rail_mm=self.last_track_position,
+            current_gripper_state=self._gripper_state_name(),
+            declared_payload=self.declared_payload,
+            arm_pose_joints=arm_poses,
+            rail_position_mm=rail_positions,
+            joint_tolerance_deg=joint_tolerance_deg,
+            rail_tolerance_mm=rail_tolerance_mm,
+        )
+
+    def recover_to(self, node_id: str, force: bool = False) -> dict:
+        """Operator-declared re-pin to a known node after off-grid travel.
+
+        Without ``force``, suggest_current_node() must agree with the
+        requested node id AND be within tolerance — otherwise raises
+        RecoveryMismatch. With ``force=True``, the operator asserts the
+        position is correct and the suggestion check is skipped (use
+        for cartesian-dict presets the nearest-node algo can't score).
+
+        On success, sets last_arm_pose_name + last_rail_location_name +
+        declared_payload to the node's coordinates. The gripper state
+        is derived from the stroke and not directly settable here — if
+        it disagrees, current_node will still report None until the
+        gripper is moved (intentional: gripper position is observable).
+        """
+        if self.motion_graph is None:
+            raise RuntimeError("motion_graph not loaded")
+        node = self.motion_graph.node(node_id)  # raises UnknownNodeError
+
+        if not force:
+            match = self.suggest_current_node()
+            if match.node_id != node_id or not match.within_tolerance:
+                raise RecoveryMismatch(
+                    requested=node_id,
+                    suggested=match.node_id,
+                    arm_residual=match.arm_residual,
+                    rail_residual=match.rail_residual,
+                )
+
+        self.last_arm_pose_name = node.arm
+        self.last_rail_location_name = node.rail
+        self.declared_payload = node.payload
+        return {
+            "recovered_to": node_id,
+            "current_node": self.current_node,
+        }
 
     def set_graph_mode(self, mode: GraphMode) -> None:
         """Set the motion-graph enforcement mode. Safe at any time."""

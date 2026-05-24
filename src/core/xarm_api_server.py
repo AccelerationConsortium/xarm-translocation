@@ -40,7 +40,8 @@ try:
         build_status,
     )
     from .motion_graph import (
-        EdgeNotAllowedError, GraphError, GraphMode,
+        EdgeNotAllowedError, GraphError, GraphMode, RecoveryMismatch,
+        UnknownNodeError,
     )
     from .claims import ClaimConflict, InvalidClaimToken
 except ImportError:
@@ -61,7 +62,8 @@ except ImportError:
         build_status,
     )
     from core.motion_graph import (
-        EdgeNotAllowedError, GraphError, GraphMode,
+        EdgeNotAllowedError, GraphError, GraphMode, RecoveryMismatch,
+        UnknownNodeError,
     )
     from core.claims import ClaimConflict, InvalidClaimToken
 
@@ -276,6 +278,31 @@ class GraphRecordRequest(BaseModel):
     preconditions: Optional[List[str]] = Field(
         default=None, description="List of named preconditions"
     )
+
+
+class GraphRecoverRequest(BaseModel):
+    """Body of POST /control/graph/recover_to (Phase 4)."""
+    node_id: str = Field(description="Graph node id the operator declares as current")
+    force: bool = Field(
+        default=False,
+        description=(
+            "Skip the nearest-node sanity check. Use when the operator has "
+            "verified position by other means (e.g., cartesian-dict presets "
+            "that the joint-distance algo can't score)."
+        ),
+    )
+
+
+class GraphMoveToRequest(BaseModel):
+    """Body of POST /control/graph/move_to.
+
+    Wraps /move/location for graph-aware callers: takes a node id and
+    looks up the underlying arm-pose preset name. Convenient for the
+    web UI's reachable-node buttons since node ids and preset names
+    can differ (e.g. node 'uplc_draw_approach' has arm 'uplc_draw_home').
+    """
+    node_id: str = Field(description="Graph node id to move to")
+    speed: Optional[float] = Field(default=None, description="Movement speed (may be capped by edge.speed in STRICT)")
 
 # Application lifespan management
 @asynccontextmanager
@@ -1272,6 +1299,108 @@ async def get_graph_state():
         "last_transition": c.last_transition,
         "adjacency": c.motion_graph.adjacency_summary(),
     }
+
+
+@app.post("/control/graph/move_to")
+async def graph_move_to(request: GraphMoveToRequest, background_tasks: BackgroundTasks):
+    """Move to a graph node by id.
+
+    Looks up the node's arm-pose preset name and dispatches to
+    move_to_named_location. Returns 409 (edge_not_allowed) when STRICT
+    mode refuses the transition.
+    """
+    c = get_controller()
+    if c.motion_graph is None:
+        raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+    try:
+        node = c.motion_graph.node(request.node_id)
+    except UnknownNodeError:
+        raise HTTPException(status_code=409, detail=f"unknown node: {request.node_id!r}")
+
+    try:
+        success = await asyncio.to_thread(
+            c.move_to_named_location,
+            location_name=node.arm,
+            speed=request.speed,
+        )
+    except EdgeNotAllowedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "edge_not_allowed",
+                "current_node": exc.current,
+                "target": exc.target,
+                "reason": exc.reason,
+            },
+        )
+
+    background_tasks.add_task(broadcast_status_update)
+    if not success:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Move to node '{request.node_id}' failed",
+        )
+    return {"message": f"Moved to node '{request.node_id}'", "current_node": c.current_node}
+
+
+@app.get("/graph/nearest")
+async def get_nearest_node(joint_tolerance_deg: float = 10.0, rail_tolerance_mm: float = 2.0):
+    """Nearest-node detection: which graph node best matches the
+    controller's physical state right now?
+
+    Useful after STOP / power-cycle / manual jog when current_node is
+    None — the operator (or a workflow recovery step) can read this,
+    eyeball the suggestion, and POST /control/graph/recover_to to
+    re-pin. Returns 404 when no graph is loaded.
+    """
+    c = get_controller()
+    if c.motion_graph is None:
+        raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+    match = c.suggest_current_node(
+        joint_tolerance_deg=joint_tolerance_deg,
+        rail_tolerance_mm=rail_tolerance_mm,
+    )
+    return {
+        "suggested_node": match.node_id,
+        "arm_residual_deg": match.arm_residual,
+        "rail_residual_mm": match.rail_residual,
+        "gripper_match": match.gripper_match,
+        "payload_match": match.payload_match,
+        "within_tolerance": match.within_tolerance,
+    }
+
+
+@app.post("/control/graph/recover_to")
+async def recover_to_node(request: GraphRecoverRequest):
+    """Operator-declared re-pin to a known node after off-grid travel.
+
+    Without ``force``, the nearest-node detector must agree with the
+    requested node id (and be within tolerance) — otherwise returns
+    422 with the detector's suggestion + residuals. With ``force=true``
+    the check is skipped; the operator asserts the position is correct.
+
+    On success returns the new graph snapshot.
+    """
+    c = get_controller()
+    if c.motion_graph is None:
+        raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+    try:
+        result = c.recover_to(request.node_id, force=request.force)
+    except UnknownNodeError as exc:
+        raise HTTPException(status_code=409, detail=f"unknown node: {request.node_id!r}")
+    except RecoveryMismatch as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "recovery_mismatch",
+                "requested": exc.requested,
+                "suggested": exc.suggested,
+                "arm_residual_deg": exc.arm_residual,
+                "rail_residual_mm": exc.rail_residual,
+                "hint": "retry with force=true to override, or move the arm closer to the requested node",
+            },
+        )
+    return result
 
 
 @app.post("/control/graph/mode")

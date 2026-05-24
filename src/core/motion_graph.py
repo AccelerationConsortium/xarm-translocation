@@ -154,6 +154,44 @@ class EdgeNotAllowedError(GraphError):
         super().__init__(f"{current!r} -> {target!r}: {reason}")
 
 
+class RecoveryMismatch(GraphError):
+    """Phase 4: ``recover_to(node_id, force=False)`` refused because the
+    nearest-node detector disagrees with the requested node id. Carries
+    the detector's suggestion + residuals so the operator can decide
+    whether to retry with ``force=True``."""
+
+    def __init__(
+        self, requested: str, suggested: str | None,
+        arm_residual: float | None, rail_residual: float | None,
+    ):
+        self.requested = requested
+        self.suggested = suggested
+        self.arm_residual = arm_residual
+        self.rail_residual = rail_residual
+        super().__init__(
+            f"requested recovery to {requested!r}, but nearest match is "
+            f"{suggested!r} (arm residual {arm_residual}, rail residual "
+            f"{rail_residual}); retry with force=True to override"
+        )
+
+
+@dataclass(frozen=True)
+class NodeMatch:
+    """Result of ``find_nearest_node()``.
+
+    ``node_id`` is the best match found, or None when no node satisfies
+    the rail / gripper / payload predicates. ``within_tolerance`` is
+    True only when the arm residual is also within the joint tolerance —
+    callers can use it as a "confident snap" gate.
+    """
+    node_id: str | None
+    arm_residual: float | None    # sum of |angle_diff| in degrees
+    rail_residual: float | None   # |position_diff| in mm
+    gripper_match: bool
+    payload_match: bool
+    within_tolerance: bool
+
+
 # ── The graph ────────────────────────────────────────────────────────
 
 
@@ -442,3 +480,103 @@ DEFAULT_PRECONDITIONS: dict[str, PreconditionFn] = {
     "gripper_empty": _gripper_empty,
     "plate_held": _plate_held,
 }
+
+
+# ── Nearest-node detection (Phase 4) ─────────────────────────────────
+
+
+def _angle_distance_deg(a: float, b: float) -> float:
+    """Modular shortest-path distance between two joint angles in degrees.
+
+    Handles 360-degree wrap (e.g. J1 at 180 vs -180 is 0deg apart, not
+    360). Other joints typically can't reach the wrap region, so this
+    reduces to ``abs(a - b)`` for them.
+    """
+    diff = abs(float(a) - float(b)) % 360.0
+    return min(diff, 360.0 - diff)
+
+
+def find_nearest_node(
+    graph: "MotionGraph",
+    *,
+    current_joints: list[float] | None,
+    current_rail_mm: float | None,
+    current_gripper_state: str | None,
+    declared_payload: str,
+    arm_pose_joints: dict[str, list[float]],
+    rail_position_mm: dict[str, float],
+    joint_tolerance_deg: float = 10.0,
+    rail_tolerance_mm: float = 2.0,
+) -> NodeMatch:
+    """Find the graph node whose 4-tuple best matches the controller's
+    physical state.
+
+    Strategy: gripper-state and payload are exact-match predicates
+    (both must agree for a node to even be a candidate); rail must be
+    within ``rail_tolerance_mm``; arm pose is scored by summed per-joint
+    angular distance, and we pick the candidate with the smallest score.
+
+    Returns a NodeMatch. ``within_tolerance`` is set when the arm
+    residual is also <= joint_tolerance_deg — callers should treat that
+    as the "safe to snap" condition.
+
+    Returns NodeMatch(None, ...) if no candidate passes the gripper /
+    payload / rail predicates, or if the current state is incomplete
+    (joints or rail unknown).
+    """
+    empty = NodeMatch(
+        node_id=None,
+        arm_residual=None,
+        rail_residual=None,
+        gripper_match=False,
+        payload_match=False,
+        within_tolerance=False,
+    )
+    if current_joints is None or current_rail_mm is None:
+        return empty
+
+    best: NodeMatch | None = None
+    for node in graph.nodes:
+        # Gripper + payload are exact match predicates.
+        gripper_match = (node.gripper == current_gripper_state)
+        payload_match = (node.payload == declared_payload)
+        if not (gripper_match and payload_match):
+            continue
+
+        # Rail must resolve and be within tolerance.
+        rail_target = rail_position_mm.get(node.rail)
+        if rail_target is None:
+            continue
+        rail_residual = abs(float(rail_target) - float(current_rail_mm))
+        if rail_residual > rail_tolerance_mm:
+            continue
+
+        # Arm joints must be defined (joint-list preset) to compute distance.
+        # Cartesian-dict presets are skipped here — the operator should
+        # use a different recovery path (declare position manually with
+        # force=True) for those.
+        joints_target = arm_pose_joints.get(node.arm)
+        if not isinstance(joints_target, list):
+            continue
+        # Pair element-wise as far as we have data; ignore trailing joints
+        # if either side is shorter than the other (5-joint arms vs 6/7).
+        pairs = list(zip(current_joints, joints_target))
+        if not pairs:
+            continue
+        arm_residual = sum(_angle_distance_deg(c, t) for c, t in pairs)
+
+        candidate = NodeMatch(
+            node_id=node.id,
+            arm_residual=arm_residual,
+            rail_residual=rail_residual,
+            gripper_match=True,
+            payload_match=True,
+            within_tolerance=(arm_residual <= joint_tolerance_deg),
+        )
+        # best.arm_residual is always a float when best is not None
+        # (we set it explicitly above). Use explicit None check to avoid
+        # the `0.0 or X` falsy-zero trap.
+        if best is None or arm_residual < best.arm_residual:
+            best = candidate
+
+    return best or empty

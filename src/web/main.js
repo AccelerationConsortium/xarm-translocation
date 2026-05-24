@@ -195,6 +195,7 @@ document.addEventListener('DOMContentLoaded', () => {
             current_position: details.current_position,
             current_joints: details.current_joints,
             track_position: trackMetric ? trackMetric.value : null,
+            motion_graph: details.motion_graph || null,
         };
     }
 
@@ -478,10 +479,117 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (error) {
                 console.error('Error setting controls state:', error);
             }
-            
+
+            // Motion-graph card (Phase 4): show current node, reachable
+            // destinations as buttons, current mode in the select.
+            renderMotionGraphCard(data.motion_graph);
+
         } catch (error) {
             console.error('Fatal error in updateStatusUI:', error);
             console.error('Stack trace:', error.stack);
+        }
+    }
+
+    // ── Motion Graph card (Phase 4) ─────────────────────────────────
+
+    function renderMotionGraphCard(motionGraph) {
+        const card = document.getElementById('motion-graph-card');
+        if (!card) return;
+        if (!motionGraph) {
+            // No graph loaded — keep the card hidden.
+            card.hidden = true;
+            return;
+        }
+        card.hidden = false;
+
+        const modeSelect = document.getElementById('mg-mode-select');
+        const currentEl = document.getElementById('mg-current-node');
+        const reachableEl = document.getElementById('mg-reachable');
+
+        // Mode select reflects server state. Only update if it's not
+        // currently focused (so the user can change it without us
+        // stomping their selection mid-dropdown).
+        if (modeSelect && document.activeElement !== modeSelect) {
+            modeSelect.value = motionGraph.graph_mode || 'off';
+        }
+
+        // Current node + reachable buttons.
+        const current = motionGraph.current_node;
+        currentEl.textContent = current || '(off-grid)';
+
+        reachableEl.innerHTML = '';
+        const reachable = motionGraph.reachable_nodes || [];
+        if (reachable.length === 0) {
+            const span = document.createElement('span');
+            span.className = 'muted';
+            span.textContent = current ? '(no outgoing edges)' : '(off-grid — use Recover)';
+            reachableEl.appendChild(span);
+        } else {
+            reachable.forEach(nodeId => {
+                const btn = document.createElement('button');
+                btn.className = 'btn btn-primary';
+                btn.textContent = nodeId;
+                btn.title = `Move to ${nodeId}`;
+                btn.addEventListener('click', () => {
+                    // POST node id to /control/graph/move_to so the
+                    // server looks up the underlying arm-pose preset
+                    // name. Node ids and preset names can differ
+                    // (e.g. node 'uplc_draw_approach' arm 'uplc_draw_home').
+                    apiRequest('/control/graph/move_to', 'POST', { node_id: nodeId });
+                });
+                reachableEl.appendChild(btn);
+            });
+        }
+    }
+
+    async function changeGraphMode(newMode) {
+        const result = await apiRequest('/control/graph/mode', 'POST', { mode: newMode });
+        if (result) {
+            addLogEntry(`graph_mode -> ${result.graph_mode}`, 'info');
+        }
+        // Re-fetch status so the UI reflects the change.
+        fetchAndUpdateStatus();
+    }
+
+    async function openRecoverPanel() {
+        const panel = document.getElementById('mg-recover-panel');
+        const suggestedEl = document.getElementById('mg-suggested-node');
+        const residualsEl = document.getElementById('mg-residuals');
+        const acceptBtn = document.getElementById('mg-recover-accept');
+        const forceCheckbox = document.getElementById('mg-recover-force');
+
+        const nearest = await apiRequest('/graph/nearest', 'GET', null, true);
+        panel.hidden = false;
+        if (!nearest || !nearest.suggested_node) {
+            suggestedEl.textContent = '(no match)';
+            residualsEl.textContent = '';
+            acceptBtn.disabled = true;
+            forceCheckbox.checked = false;
+            return;
+        }
+        suggestedEl.textContent = nearest.suggested_node;
+        const ar = nearest.arm_residual_deg !== null ? `arm Δ ${nearest.arm_residual_deg.toFixed(2)}°` : '';
+        const rr = nearest.rail_residual_mm !== null ? `rail Δ ${nearest.rail_residual_mm.toFixed(2)}mm` : '';
+        residualsEl.textContent = [ar, rr].filter(s => s).join(' · ');
+        acceptBtn.disabled = false;
+        acceptBtn.dataset.nodeId = nearest.suggested_node;
+        acceptBtn.dataset.withinTolerance = String(nearest.within_tolerance);
+        forceCheckbox.checked = !nearest.within_tolerance;
+    }
+
+    async function acceptRecover() {
+        const acceptBtn = document.getElementById('mg-recover-accept');
+        const forceCheckbox = document.getElementById('mg-recover-force');
+        const nodeId = acceptBtn.dataset.nodeId;
+        if (!nodeId) return;
+        const result = await apiRequest('/control/graph/recover_to', 'POST', {
+            node_id: nodeId,
+            force: forceCheckbox.checked,
+        });
+        if (result) {
+            addLogEntry(`recovered to ${result.recovered_to}`, 'info');
+            document.getElementById('mg-recover-panel').hidden = true;
+            fetchAndUpdateStatus();
         }
     }
     
@@ -746,8 +854,23 @@ document.addEventListener('DOMContentLoaded', () => {
     enableRobotBtn.addEventListener('click', () => {
         apiRequest('/robot/enable', 'POST');
     });
-    
-    // Test log button  
+
+    // Motion-graph card listeners (Phase 4). All elements may be
+    // missing if index.html is older than this build — guard each one.
+    const mgModeSelect = document.getElementById('mg-mode-select');
+    if (mgModeSelect) {
+        mgModeSelect.addEventListener('change', (e) => changeGraphMode(e.target.value));
+    }
+    const mgRecoverBtn = document.getElementById('mg-recover-btn');
+    if (mgRecoverBtn) {
+        mgRecoverBtn.addEventListener('click', openRecoverPanel);
+    }
+    const mgRecoverAccept = document.getElementById('mg-recover-accept');
+    if (mgRecoverAccept) {
+        mgRecoverAccept.addEventListener('click', acceptRecover);
+    }
+
+    // Test log button
     const testLogBtn = document.getElementById('test-log-btn');
     if (testLogBtn) {
         testLogBtn.addEventListener('click', () => {

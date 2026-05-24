@@ -777,3 +777,52 @@ input#linear-steps {
 .joint-action-row .btn {
     margin-left: auto;
 }
+
+/* ── Motion Graph card (Phase 4) ────────────────────────────────── */
+.mg-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    flex-wrap: wrap;
+}
+
+.mg-row .inline-label {
+    min-width: 72px;
+}
+
+.mg-reachable {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    flex: 1 1 auto;
+    min-height: 32px;
+    align-items: center;
+}
+
+.mg-reachable .btn {
+    padding: 4px 10px;
+    font-size: 0.9em;
+}
+
+.mg-reachable .muted {
+    color: var(--ink-muted);
+    font-style: italic;
+}
+
+.mg-recover-panel {
+    border-top: 1px solid var(--ink-muted);
+    margin-top: 8px;
+    padding-top: 8px;
+}
+
+#mg-current-node, #mg-suggested-node {
+    font-family: monospace;
+    color: var(--accent, #4a90e2);
+}
+
+#mg-residuals {
+    font-family: monospace;
+    font-size: 0.85em;
+    color: var(--ink-muted);
+}
