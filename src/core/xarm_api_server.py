@@ -14,8 +14,8 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Any
-from datetime import datetime
-from fastapi import FastAPI, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from datetime import datetime, timezone
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Header, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +26,9 @@ try:
     from .xarm_controller import XArmController, SafetyLevel, ComponentState
     from .xarm_utils import load_config
     from .models import (
+        ClaimRequest,
+        ClaimResponse,
+        ClaimRejection,
         EquipmentStatus,
         HealthResponse,
         ProbeResponse,
@@ -39,10 +42,14 @@ try:
     from .motion_graph import (
         EdgeNotAllowedError, GraphError, GraphMode,
     )
+    from .claims import ClaimConflict, InvalidClaimToken
 except ImportError:
     from core.xarm_controller import XArmController, SafetyLevel, ComponentState
     from core.xarm_utils import load_config
     from core.models import (
+        ClaimRequest,
+        ClaimResponse,
+        ClaimRejection,
         EquipmentStatus,
         HealthResponse,
         ProbeResponse,
@@ -56,6 +63,7 @@ except ImportError:
     from core.motion_graph import (
         EdgeNotAllowedError, GraphError, GraphMode,
     )
+    from core.claims import ClaimConflict, InvalidClaimToken
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1178,6 +1186,65 @@ async def move_plate_linear(request: PlateLinearRequest, background_tasks: Backg
     
     background_tasks.add_task(plate_linear_task)
     return {"message": f"Linear movement to '{request.target_location}' command accepted."}
+
+# =============================================================================
+# CLAIM PROTOCOL (STATUS_SPEC v1.1, Phase 3 — advisory)
+# =============================================================================
+
+@app.post("/control/claim", responses={409: {"model": ClaimRejection}})
+async def acquire_claim(request: ClaimRequest):
+    """Take the cooperative claim on this device.
+
+    Returns 200 + ClaimResponse on success. Returns 409 + ClaimRejection
+    when another active session holds the claim. Idempotent for the same
+    session_id (token is rotated, TTL refreshed).
+    """
+    c = get_controller()
+    try:
+        record = c.claim_manager.acquire(
+            owner=request.owner,
+            session_id=request.session_id,
+            ttl_s=request.ttl_s,
+        )
+    except ClaimConflict as exc:
+        rejection = ClaimRejection(
+            detail=str(exc),
+            claimed_by=exc.holder.to_claimed_by_dict(),
+            retry_after_s=exc.retry_after_s,
+        )
+        return JSONResponse(
+            status_code=409,
+            content=rejection.model_dump(mode="json"),
+            headers={"Retry-After": str(int(exc.retry_after_s) + 1)},
+        )
+    return ClaimResponse(
+        claim_token=record.token,
+        heartbeat_interval_s=c.claim_manager.heartbeat_interval_s,
+        expires_at=datetime.fromtimestamp(record.expires_at, tz=timezone.utc),
+    )
+
+
+@app.post("/control/heartbeat")
+async def heartbeat_claim(x_claim_token: str = Header(...)):
+    """Extend the holder's TTL. Returns 204 on success, 401 when the
+    token is unknown / expired / belongs to a different session (per
+    spec: client MUST treat the claim as lost)."""
+    c = get_controller()
+    try:
+        c.claim_manager.heartbeat(token=x_claim_token)
+    except InvalidClaimToken:
+        raise HTTPException(status_code=401, detail="invalid or expired claim token")
+    return Response(status_code=204)
+
+
+@app.post("/control/release")
+async def release_claim(x_claim_token: str = Header(...)):
+    """Release the claim. Idempotent — returns 204 whether or not the
+    token matched, so callers can always cleanly retire a session."""
+    c = get_controller()
+    c.claim_manager.release(token=x_claim_token)
+    return Response(status_code=204)
+
 
 # =============================================================================
 # MOTION GRAPH (Phase 2)

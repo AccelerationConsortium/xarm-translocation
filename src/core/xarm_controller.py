@@ -23,11 +23,13 @@ try:
         DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
         GraphMode, MotionGraph, MoveMode,
     )
+    from .claims import ClaimManager
 except ImportError:
     from core.motion_graph import (
         DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
         GraphMode, MotionGraph, MoveMode,
     )
+    from core.claims import ClaimManager
 
 class ComponentState(Enum):
     """Enum for component states"""
@@ -301,6 +303,13 @@ class XArmController:
         # transition lands between two pinned nodes.
         #   dict: {from_node, to_node, mode, speed, timestamp}
         self.last_transition: Optional[dict] = None
+
+        # STATUS_SPEC v1.1 cooperative claim (Phase 3). Single in-process
+        # holder; advisory by default — /move/*, /gripper/* etc. do NOT
+        # yet check X-Claim-Token. Workflow clients see details.claimed_by
+        # in /status and are expected to honor it via the SDK's
+        # ClaimManager.
+        self.claim_manager = ClaimManager()
 
         # State tracking
         self.alive = True

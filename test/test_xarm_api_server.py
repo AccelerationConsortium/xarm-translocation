@@ -53,13 +53,16 @@ def test_read_root(client):
     """Test the spec ``GET /`` probe endpoint.
 
     The HTML page used to live at ``/``; it now lives at ``/web/`` so that
-    ``/`` can return the STATUS_SPEC v1.0 ``ProbeResponse``.
+    ``/`` can return the STATUS_SPEC ``ProbeResponse``. The current
+    advertised version is bumped via PROTOCOL_VERSION on the spec models
+    rather than a hardcoded string here.
     """
+    from src.core.models import PROTOCOL_VERSION
     response = client.get("/")
     assert response.status_code == 200
     body = response.json()
     assert body["equipment_id"] == "xarm_translocation"
-    assert body["protocol_version"] == "1.0"
+    assert body["protocol_version"] == PROTOCOL_VERSION
 
 
 def test_get_status_not_connected(client, monkeypatch):

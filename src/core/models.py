@@ -1,4 +1,4 @@
-"""Lab equipment status spec v1.0.
+"""Lab equipment status spec v1.1.
 
 This module is a vendored copy of the unified status contract defined in the
 ac-organic-lab monorepo (``docs/STATUS_SPEC.md``). It MUST stay in sync with
@@ -9,12 +9,14 @@ published; once it is, replace this file with::
         EquipmentStatus, ProbeResponse, HealthResponse, ...
     )
 
-Conformance: xarm-translocation REST API conforms to lab status spec v1.0
-(read-only). Control of the xArm currently goes via the device's native HTTP
-endpoints (``/move/*``, ``/gripper/*``, ``/track/*``, ``/force-torque/*``)
-and the ``XArmController`` Python SDK; no ``/control/*`` claim/lease
-semantics are exposed yet. Specific unit operations will be promoted to
-``/control/*`` and v1.1 in follow-up work.
+Conformance: xarm-translocation REST API conforms to lab status spec v1.1
+(read-only baseline + claim protocol). ``allowed_actions`` is populated
+when the motion-graph layer is in STRICT mode (derived from the current
+node's outgoing edges). Claim/heartbeat/release endpoints are exposed
+under ``/control/*`` in advisory mode — existing ``/move/*``, ``/gripper/*``
+etc. do not yet require ``X-Claim-Token`` (a future hardening step can
+flip on enforcement once workflow callers have adopted the SDK's
+``ClaimManager``).
 """
 
 from __future__ import annotations
@@ -24,7 +26,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-PROTOCOL_VERSION = "1.0"
+PROTOCOL_VERSION = "1.1"
 
 
 EquipmentKind = Literal[
@@ -125,3 +127,40 @@ class HealthResponse(BaseModel):
     """Body of ``GET /health`` -- service liveness."""
 
     status: Literal["healthy"] = "healthy"
+
+
+# ── v1.1: claim protocol ─────────────────────────────────────────────
+
+
+class ClaimedBy(BaseModel):
+    """Identity of the current claim holder, surfaced on /status.details
+    so every reader sees who controls the device without a side-trip."""
+
+    session_id: str
+    owner: str
+    expires_at: datetime
+
+
+class ClaimRequest(BaseModel):
+    """Body of ``POST /control/claim``."""
+
+    owner: str = Field(description="Human or agent identifier; surfaced in details.claimed_by")
+    session_id: str = Field(description="Opaque per-session id; UUID recommended")
+    ttl_s: float = Field(default=30.0, ge=1.0, le=300.0, description="Claim lifetime in seconds; device may clamp")
+
+
+class ClaimResponse(BaseModel):
+    """Success body of ``POST /control/claim``."""
+
+    claim_token: str
+    heartbeat_interval_s: float = Field(description="Caller MUST heartbeat more often than this")
+    expires_at: datetime = Field(description="Absolute UTC; claim dies at this time without a heartbeat")
+
+
+class ClaimRejection(BaseModel):
+    """Body of HTTP 409 / 423 when /control/claim is refused because
+    another session already holds the claim."""
+
+    detail: str
+    claimed_by: ClaimedBy | None = None
+    retry_after_s: float | None = None

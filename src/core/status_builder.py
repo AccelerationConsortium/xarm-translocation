@@ -217,6 +217,18 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     if motion_graph_block is not None:
         details["motion_graph"] = motion_graph_block
 
+    # v1.1: ``details.claimed_by`` while a claim is active; absent
+    # otherwise. The status envelope is unchanged for v1.0 readers
+    # because the field lives under ``details`` (free-form blob).
+    claim_block = _build_claimed_by(controller)
+    if claim_block is not None:
+        details["claimed_by"] = claim_block
+    else:
+        # Spec section 9 example shows ``"claimed_by": null`` for the
+        # no-claim case. Keep parity to make the field explicit rather
+        # than missing.
+        details["claimed_by"] = None
+
     return EquipmentStatus(
         protocol_version=PROTOCOL_VERSION,
         equipment_id=EQUIPMENT_ID,
@@ -226,6 +238,9 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         equipment_status=equipment_status,  # type: ignore[arg-type]
         message=message,
         required_actions=required_actions,
+        allowed_actions=_build_allowed_actions(
+            controller, equipment_status, last_error is not None,
+        ),
         device_time=datetime.now(timezone.utc),
         uptime_seconds=time.time() - _PROCESS_START_TIME,
         components=components,
@@ -233,6 +248,67 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         last_error=last_error,
         details=details,
     )
+
+
+def _build_claimed_by(controller: XArmController) -> dict[str, Any] | None:
+    """Read the active claim (if any) from the controller's ClaimManager.
+
+    Returns the ``ClaimedBy`` dict shape from STATUS_SPEC v1.1 §2, or
+    None when no claim is held. Lazily-expired claims are reported as
+    None — the manager checks TTL on every read.
+    """
+    cm = getattr(controller, "claim_manager", None)
+    if cm is None:
+        return None
+    return cm.claimed_by()
+
+
+def _build_allowed_actions(
+    controller: XArmController, equipment_status: str, has_error: bool,
+) -> list[str]:
+    """Populate the v1.1 ``allowed_actions`` list.
+
+    Three sources:
+    1. State-driven defaults (connect / clear_errors / stop) based on
+       ``equipment_status`` — always present so workflow clients have
+       *something* to act on even when the graph isn't enforcing.
+    2. Graph-driven move targets — only when ``graph_mode == STRICT``,
+       since ADVISORY/OFF modes don't actually constrain moves and
+       claiming a list of allowed actions there would be misleading.
+    3. (Future) per-skill names once the xArm's skill catalog lands.
+
+    The format ``"move.<node_id>"`` mirrors the dotted convention from
+    other v1.1 devices (e.g. ``"seal.start"``, ``"stage.in"``).
+    """
+    actions: list[str] = []
+
+    if equipment_status == "requires_init":
+        actions.append("connect")
+        return actions
+
+    if has_error:
+        # Error state: the only meaningful actions are recovery ones.
+        actions.extend(["clear_errors", "stop"])
+        return actions
+
+    if equipment_status in ("ready", "busy", "degraded"):
+        # Stop is always available while the device is reachable; spec
+        # treats it as the safety floor.
+        actions.append("stop")
+
+        graph = getattr(controller, "motion_graph", None)
+        graph_mode = getattr(controller, "graph_mode", None)
+        # Only advertise graph-derived moves when STRICT is in effect.
+        # ADVISORY/OFF would still allow off-whitelist moves, so the
+        # list would understate capability and mislead SDK callers.
+        # Compare on .value to avoid having to import GraphMode here
+        # (which would risk a second module load under test conditions).
+        graph_mode_value = getattr(graph_mode, "value", graph_mode)
+        if graph is not None and graph_mode_value == "strict":
+            for node_id in controller.reachable_node_ids():
+                actions.append(f"move.{node_id}")
+
+    return actions
 
 
 def _build_motion_graph_details(controller: XArmController) -> dict[str, Any] | None:
