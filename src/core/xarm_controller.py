@@ -306,12 +306,18 @@ class XArmController:
         #   dict: {from_node, to_node, mode, speed, timestamp}
         self.last_transition: Optional[dict] = None
 
-        # STATUS_SPEC v1.1 cooperative claim (Phase 3). Single in-process
-        # holder; advisory by default — /move/*, /gripper/* etc. do NOT
-        # yet check X-Claim-Token. Workflow clients see details.claimed_by
-        # in /status and are expected to honor it via the SDK's
-        # ClaimManager.
-        self.claim_manager = ClaimManager()
+        # STATUS_SPEC v1.1 cooperative claim (Phase 3+5). Single
+        # in-process holder. Enforcement defaults OFF (advisory mode);
+        # set XARM_ENFORCE_CLAIMS=1 (or call POST /control/claim/enforce
+        # at runtime) to gate /move/*, /gripper/* etc. with HTTP 423.
+        # Cooperative interpretation: enforcement only blocks moves
+        # while a claim is held by another session — no holder is
+        # free-for-all by design.
+        enforce_env = os.environ.get("XARM_ENFORCE_CLAIMS", "").lower()
+        enforce = enforce_env in ("1", "true", "yes", "on")
+        self.claim_manager = ClaimManager(enforce=enforce)
+        if enforce:
+            print("[claims] enforcement enabled at startup via XARM_ENFORCE_CLAIMS")
 
         # State tracking
         self.alive = True

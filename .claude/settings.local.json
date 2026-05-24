@@ -24,7 +24,14 @@
       "PowerShell(docker ps *)",
       "PowerShell(Get-NetTCPConnection *)",
       "Bash(\"===\")",
-      "Bash(.venv/Scripts/python.exe *)"
+      "Bash(.venv/Scripts/python.exe *)",
+      "Bash(curl -fsS http://127.0.0.1:8000/)",
+      "Bash(curl -fsS http://127.0.0.1:8765/)",
+      "Bash(curl -fsS http://127.0.0.1:8765/status)",
+      "Bash(curl -fsS -X POST http://127.0.0.1:8765/test/log)",
+      "Bash(curl -fsS http://127.0.0.1:8000/status)",
+      "Bash(curl -fsS http://127.0.0.1:8000/web/)",
+      "Bash(curl -fsS http://127.0.0.1:8000/web/main.js)"
     ]
   }
 }

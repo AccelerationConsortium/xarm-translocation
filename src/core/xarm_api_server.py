@@ -15,7 +15,7 @@ import os
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Header, Response, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, BackgroundTasks, Header, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -303,6 +303,43 @@ class GraphMoveToRequest(BaseModel):
     """
     node_id: str = Field(description="Graph node id to move to")
     speed: Optional[float] = Field(default=None, description="Movement speed (may be capped by edge.speed in STRICT)")
+
+
+class EnforcementRequest(BaseModel):
+    """Body of POST /control/claim/enforce (Phase 5 toggle)."""
+    enabled: bool = Field(description="true to require X-Claim-Token on mutating endpoints")
+
+
+# Phase 5: FastAPI dependency that enforces X-Claim-Token on mutating
+# endpoints when claim enforcement is enabled. No-op otherwise (and
+# no-op when no claim is held — the cooperative interpretation, see
+# ClaimManager.verify_token docstring). Defined ABOVE the endpoints
+# so the @app.post(..., dependencies=[Depends(require_claim)]) refs
+# resolve at module import.
+async def require_claim(x_claim_token: Optional[str] = Header(default=None)):
+    c = get_controller()
+    try:
+        c.claim_manager.verify_token(x_claim_token)
+    except InvalidClaimToken:
+        holder = c.claim_manager.claimed_by()
+        raise HTTPException(
+            status_code=423,
+            detail={
+                "error": "claim_required",
+                "claimed_by": (
+                    {
+                        "session_id": holder["session_id"],
+                        "owner": holder["owner"],
+                    } if holder else None
+                ),
+                "hint": (
+                    "this endpoint is gated by an active claim; "
+                    "POST /control/claim to acquire it, or include the "
+                    "holder's X-Claim-Token header"
+                ),
+            },
+        )
+
 
 # Application lifespan management
 @asynccontextmanager
@@ -636,7 +673,7 @@ async def get_locations():
         raise HTTPException(status_code=500, detail=f"Get arm positions failed: {str(e)}")
 
 # Movement endpoints
-@app.post("/move/position")
+@app.post("/move/position", dependencies=[Depends(require_claim)])
 async def move_to_position(request: PositionRequest, background_tasks: BackgroundTasks):
     """Move the robot to a specific Cartesian position."""
     c = get_controller()
@@ -659,7 +696,7 @@ async def move_to_position(request: PositionRequest, background_tasks: Backgroun
     background_tasks.add_task(move_task)
     return {"message": "Move to position command accepted."}
 
-@app.post("/move/joints")
+@app.post("/move/joints", dependencies=[Depends(require_claim)])
 async def move_joints(request: JointRequest, background_tasks: BackgroundTasks):
     """Move the robot to a specific joint configuration."""
     c = get_controller()
@@ -680,7 +717,7 @@ async def move_joints(request: JointRequest, background_tasks: BackgroundTasks):
     background_tasks.add_task(move_task)
     return {"message": "Move joints command accepted."}
 
-@app.post("/move/relative")
+@app.post("/move/relative", dependencies=[Depends(require_claim)])
 async def move_relative(request: RelativeRequest, background_tasks: BackgroundTasks):
     """Move the robot relative to its current position."""
     c = get_controller()
@@ -699,7 +736,7 @@ async def move_relative(request: RelativeRequest, background_tasks: BackgroundTa
     background_tasks.add_task(move_task)
     return {"message": "Move relative command accepted."}
 
-@app.post("/move/location")
+@app.post("/move/location", dependencies=[Depends(require_claim)])
 async def move_to_location(request: LocationRequest, background_tasks: BackgroundTasks):
     """Move the robot to a pre-defined named location.
 
@@ -736,7 +773,7 @@ async def move_to_location(request: LocationRequest, background_tasks: Backgroun
         )
     return {"message": f"Moved to '{request.location_name}'."}
 
-@app.post("/move/home")
+@app.post("/move/home", dependencies=[Depends(require_claim)])
 async def move_home(background_tasks: BackgroundTasks):
     """Move robot to home position"""
     ctrl = get_controller()
@@ -808,7 +845,7 @@ async def clear_errors(background_tasks: BackgroundTasks):
         logger.error(f"Clear errors failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Clear errors failed: {str(e)}")
 
-@app.post("/robot/enable")
+@app.post("/robot/enable", dependencies=[Depends(require_claim)])
 async def enable_robot():
     """Re-enable robot motion after emergency stop."""
     c = get_controller()
@@ -842,7 +879,7 @@ async def enable_robot():
     await broadcast_status_update()
     return {"message": "Robot motion enabled successfully."}
 
-@app.post("/component/enable")
+@app.post("/component/enable", dependencies=[Depends(require_claim)])
 async def enable_component(request: ComponentRequest):
     """Enable a specific component (gripper, track, or force_torque)."""
     c = get_controller()
@@ -863,7 +900,7 @@ async def enable_component(request: ComponentRequest):
     else:
         raise HTTPException(status_code=500, detail=f"Failed to enable component '{component}'.")
 
-@app.post("/component/disable")
+@app.post("/component/disable", dependencies=[Depends(require_claim)])
 async def disable_component(request: ComponentRequest):
     """Disable a specific component (gripper, track, or force_torque)."""
     c = get_controller()
@@ -884,7 +921,7 @@ async def disable_component(request: ComponentRequest):
     else:
         raise HTTPException(status_code=500, detail=f"Failed to disable component '{component}'.")
 
-@app.post("/velocity/cartesian")
+@app.post("/velocity/cartesian", dependencies=[Depends(require_claim)])
 async def set_cartesian_velocity(request: VelocityRequest):
     """Set the Cartesian velocity of the robot arm."""
     c = get_controller()
@@ -896,7 +933,7 @@ async def set_cartesian_velocity(request: VelocityRequest):
     return {"message": "Cartesian velocity set successfully."}
 
 # Gripper endpoints
-@app.post("/gripper/open")
+@app.post("/gripper/open", dependencies=[Depends(require_claim)])
 async def open_gripper(request: Optional[GripperRequest] = None):
     """Open the attached gripper."""
     c = get_controller()
@@ -914,7 +951,7 @@ async def open_gripper(request: Optional[GripperRequest] = None):
         logger.error(f"Open gripper failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Open gripper failed: {str(e)}")
 
-@app.post("/gripper/close")
+@app.post("/gripper/close", dependencies=[Depends(require_claim)])
 async def close_gripper(request: Optional[GripperRequest] = None):
     """Close the attached gripper."""
     c = get_controller()
@@ -932,7 +969,7 @@ async def close_gripper(request: Optional[GripperRequest] = None):
         logger.error(f"Close gripper failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Close gripper failed: {str(e)}")
 
-@app.post("/gripper/move/stroke")
+@app.post("/gripper/move/stroke", dependencies=[Depends(require_claim)])
 async def move_gripper_stroke(request: GripperStrokeRequest):
     """Move gripper to a specific stroke position."""
     c = get_controller()
@@ -954,7 +991,7 @@ async def move_gripper_stroke(request: GripperStrokeRequest):
         logger.error(f"Move gripper to stroke failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Move gripper to stroke failed: {str(e)}")
 
-@app.post("/gripper/force")
+@app.post("/gripper/force", dependencies=[Depends(require_claim)])
 async def set_gripper_force(request: GripperForceRequest):
     """Set gripping force for grippers that support force control."""
     c = get_controller()
@@ -973,7 +1010,7 @@ async def get_gripper_position():
     return {"position": position}
 
 # Linear track endpoints
-@app.post("/track/move")
+@app.post("/track/move", dependencies=[Depends(require_claim)])
 async def move_track(request: TrackRequest, background_tasks: BackgroundTasks):
     """Move the linear track to a specific position."""
     c = get_controller()
@@ -990,7 +1027,7 @@ async def move_track(request: TrackRequest, background_tasks: BackgroundTasks):
     background_tasks.add_task(track_task)
     return {"message": "Move track command accepted."}
 
-@app.post("/track/move/location")
+@app.post("/track/move/location", dependencies=[Depends(require_claim)])
 async def move_track_to_location(request: TrackLocationRequest, background_tasks: BackgroundTasks):
     """Move the linear track to a pre-configured named location.
 
@@ -1065,7 +1102,7 @@ async def get_track_locations():
         raise HTTPException(status_code=500, detail=f"Get track locations failed: {str(e)}")
 
 # Force Torque Sensor endpoints
-@app.post("/force-torque/enable")
+@app.post("/force-torque/enable", dependencies=[Depends(require_claim)])
 async def enable_force_torque_sensor():
     """Enable the 6-axis force torque sensor."""
     c = get_controller()
@@ -1081,7 +1118,7 @@ async def enable_force_torque_sensor():
     else:
         raise HTTPException(status_code=500, detail="Failed to enable force torque sensor.")
 
-@app.post("/force-torque/disable")
+@app.post("/force-torque/disable", dependencies=[Depends(require_claim)])
 async def disable_force_torque_sensor():
     """Disable the 6-axis force torque sensor."""
     c = get_controller()
@@ -1094,7 +1131,7 @@ async def disable_force_torque_sensor():
     else:
         raise HTTPException(status_code=500, detail="Failed to disable force torque sensor.")
 
-@app.post("/force-torque/calibrate")
+@app.post("/force-torque/calibrate", dependencies=[Depends(require_claim)])
 async def calibrate_force_torque_sensor(request: ForceTorqueCalibrationRequest, background_tasks: BackgroundTasks):
     """Calibrate the force torque sensor to zero."""
     c = get_controller()
@@ -1138,7 +1175,7 @@ async def get_force_torque_status():
     
     return c.get_force_torque_status()
 
-@app.post("/force-torque/check-safety")
+@app.post("/force-torque/check-safety", dependencies=[Depends(require_claim)])
 async def check_force_torque_safety():
     """Check if force/torque exceeds safety thresholds and trigger alerts."""
     c = get_controller()
@@ -1153,7 +1190,7 @@ async def check_force_torque_safety():
         "message": "Safety check completed."
     }
 
-@app.post("/force-torque/move-until-force")
+@app.post("/force-torque/move-until-force", dependencies=[Depends(require_claim)])
 async def move_until_force(request: ForceTorqueMovementRequest, background_tasks: BackgroundTasks):
     """Move in a linear direction until a force threshold is reached."""
     c = get_controller()
@@ -1173,7 +1210,7 @@ async def move_until_force(request: ForceTorqueMovementRequest, background_tasks
     background_tasks.add_task(force_movement_task)
     return {"message": "Force-controlled movement started."}
 
-@app.post("/force-torque/move-joint-until-torque")
+@app.post("/force-torque/move-joint-until-torque", dependencies=[Depends(require_claim)])
 async def move_joint_until_torque(request: JointTorqueMovementRequest, background_tasks: BackgroundTasks):
     """Move a specific joint until a torque threshold is reached."""
     c = get_controller()
@@ -1194,7 +1231,7 @@ async def move_joint_until_torque(request: JointTorqueMovementRequest, backgroun
     background_tasks.add_task(torque_movement_task)
     return {"message": "Torque-controlled joint movement started."}
 
-@app.post("/move/plate_linear")
+@app.post("/move/plate_linear", dependencies=[Depends(require_claim)])
 async def move_plate_linear(request: PlateLinearRequest, background_tasks: BackgroundTasks):
     """Move linearly from current position to target with constant tool orientation."""
     c = get_controller()
@@ -1273,6 +1310,23 @@ async def release_claim(x_claim_token: str = Header(...)):
     return Response(status_code=204)
 
 
+@app.post("/control/claim/enforce", dependencies=[Depends(require_claim)])
+async def set_claim_enforcement(request: EnforcementRequest):
+    """Enable or disable claim enforcement at runtime.
+
+    Gated by require_claim itself: disabling enforcement while it's on
+    requires holding the current claim, so a random client can't quietly
+    drop the lock. Enabling from off-state is open (no claim to enforce
+    against yet).
+    """
+    c = get_controller()
+    if request.enabled:
+        c.claim_manager.enable_enforcement()
+    else:
+        c.claim_manager.disable_enforcement()
+    return {"enforced": c.claim_manager.enforced}
+
+
 # =============================================================================
 # MOTION GRAPH (Phase 2)
 # =============================================================================
@@ -1301,7 +1355,7 @@ async def get_graph_state():
     }
 
 
-@app.post("/control/graph/move_to")
+@app.post("/control/graph/move_to", dependencies=[Depends(require_claim)])
 async def graph_move_to(request: GraphMoveToRequest, background_tasks: BackgroundTasks):
     """Move to a graph node by id.
 
@@ -1370,7 +1424,7 @@ async def get_nearest_node(joint_tolerance_deg: float = 10.0, rail_tolerance_mm:
     }
 
 
-@app.post("/control/graph/recover_to")
+@app.post("/control/graph/recover_to", dependencies=[Depends(require_claim)])
 async def recover_to_node(request: GraphRecoverRequest):
     """Operator-declared re-pin to a known node after off-grid travel.
 
@@ -1403,7 +1457,7 @@ async def recover_to_node(request: GraphRecoverRequest):
     return result
 
 
-@app.post("/control/graph/mode")
+@app.post("/control/graph/mode", dependencies=[Depends(require_claim)])
 async def set_graph_mode(request: GraphModeRequest):
     """Switch the enforcement mode (off | advisory | strict).
 
@@ -1427,7 +1481,7 @@ async def set_graph_mode(request: GraphModeRequest):
     return {"graph_mode": c.graph_mode.value}
 
 
-@app.post("/control/graph/record")
+@app.post("/control/graph/record", dependencies=[Depends(require_claim)])
 async def record_last_transition(request: GraphRecordRequest):
     """Append the most recent successful node-to-node transition to
     motion_graph.yaml as a new edge.

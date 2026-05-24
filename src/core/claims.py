@@ -77,6 +77,19 @@ class ClaimManager:
     Thread-safe via an internal lock. Expiry is checked lazily — a
     claim past its ``expires_at`` is treated as released the moment any
     method is called.
+
+    Enforcement is opt-in via ``enforce=True`` (or via the runtime
+    ``enable_enforcement()`` toggle). When enforcement is OFF the
+    manager is purely advisory — workflows can see ``details.claimed_by``
+    in ``/status`` but the mutation endpoints don't require a token.
+    When ON, the ``require_claim`` FastAPI dependency calls
+    ``verify_token`` and returns HTTP 423 on mismatch.
+
+    Cooperative interpretation (matches STATUS_SPEC §5 wording):
+    enforcement only blocks moves while a claim is held by *another*
+    session. Periods with no active claim remain free-for-all, since
+    the entire point of the protocol is that workflows opt-in to
+    mutual exclusion for critical sections.
     """
 
     def __init__(
@@ -85,16 +98,49 @@ class ClaimManager:
         heartbeat_interval_s: float = DEFAULT_HEARTBEAT_INTERVAL_S,
         *,
         clock=time.time,
+        enforce: bool = False,
     ):
         self._default_ttl_s = default_ttl_s
         self._heartbeat_interval_s = heartbeat_interval_s
         self._clock = clock
         self._lock = threading.Lock()
         self._current: Optional[ClaimRecord] = None
+        self._enforce = bool(enforce)
 
     @property
     def heartbeat_interval_s(self) -> float:
         return self._heartbeat_interval_s
+
+    @property
+    def enforced(self) -> bool:
+        return self._enforce
+
+    def enable_enforcement(self) -> None:
+        with self._lock:
+            self._enforce = True
+
+    def disable_enforcement(self) -> None:
+        with self._lock:
+            self._enforce = False
+
+    def verify_token(self, token: Optional[str]) -> None:
+        """Raise InvalidClaimToken if enforcement is on AND a claim is
+        held AND the token doesn't match. Caller uses this from the
+        FastAPI dependency to gate mutating endpoints.
+
+        No-op when:
+          - enforcement is off (advisory mode), or
+          - no claim is currently held (cooperative interpretation:
+            no holder = no one to defer to).
+        """
+        if not self._enforce:
+            return
+        with self._lock:
+            self._expire_if_due()
+            if self._current is None:
+                return
+            if token is None or token != self._current.token:
+                raise InvalidClaimToken()
 
     # ── Internal helpers ────────────────────────────────────────
 
