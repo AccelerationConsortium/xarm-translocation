@@ -250,6 +250,37 @@ class TestStateManagement:
         initialized_controller.clear_errors()
         assert initialized_controller.last_error_code == 0
 
+    def test_clear_errors_after_stop_reenables_arm(
+        self, mock_config_files, mock_xarm_api, monkeypatch
+    ):
+        """After an emergency_stop, clear_errors must re-assert motion_enable /
+        set_mode(0) / set_state(0); otherwise the SDK stays in state 4 and
+        refuses subsequent move commands."""
+        monkeypatch.setattr(
+            'src.core.xarm_controller.XArmAPI', lambda *a, **kw: mock_xarm_api
+        )
+        controller = XArmController(
+            profile_name='test_profile',
+            gripper_type='bio',
+            enable_track=True,
+            auto_enable=True,
+        )
+        mock_xarm_api.get_servo_angle.return_value = (0, [0] * controller.num_joints)
+        assert controller.initialize() is True
+
+        mock_xarm_api.motion_enable.reset_mock()
+        mock_xarm_api.set_mode.reset_mock()
+        mock_xarm_api.set_state.reset_mock()
+
+        controller._state_changed_callback({'state': 4})
+        assert controller.states['arm'] == ComponentState.ERROR
+
+        assert controller.clear_errors() is True
+        assert controller.states['arm'] == ComponentState.ENABLED
+        mock_xarm_api.motion_enable.assert_called_with(enable=True)
+        mock_xarm_api.set_mode.assert_called_with(0)
+        mock_xarm_api.set_state.assert_called_with(0)
+
 
 class TestUtilityMethods:
     """Test utility methods."""

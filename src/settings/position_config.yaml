@@ -1,19 +1,47 @@
 positions:
+  # Generic Safe Positions
   robot_home: [180.0, -45.0, 0.0, 45.0, 90.0]
   robot_home_back: [0.0, -45.0, 0.0, 45.0, 90.0]
   robot_home_left: [90.0, -45.0, 0.0, 45.0, 90.0]
   robot_home_right: [270.0, -45.0, 0.0, 45.0, 90.0]
-  # robot_home_-90: [-90.0, 0.0, 0.0, 0.0, 0.0]
-  # deck_low: [0.0, 35.6, -40.8, 4.9, 179.8] # reach down low
-  # deck_high: [-0.1, 6.6, -35.3, 28.5, 180.2]
-  #
+  
   # The following happens when linear rail is at 0
   uplc_draw_home: [176.5, 8.1, -70.1, 62.1, 90.0]
   uplc_draw_open_max: [174.5, 8.3, -70.4, 62.2, 88] # slight further from fully open
   uplc_draw_open_min: [144.3, 30.8, -103, 72, 57.8] # slight short from fully close
   uplc_draw_open_close: [143.4, 32.7, -106.0, 73.1, 56.9] # You hear a "click"
+  
+  uplc_plate_home: []
+  uplc_plate_high: []
+  uplc_plate_low: []
+  uplc_plate_in: []
+  
+  # The following happens when linear rail is at Deck location
+  # The Arm can reach the solid handler, the deck plates, and the fumehood positions
+  deck_home: []
+  deck_high: []
+  deck_slot1_high: []
+  deck_slot1_low: []
+  deck_slot2_high: []
+  deck_slot2_low: []
+  deck_solid_high: []
+  deck_solid_low: []
+
+  # The following happens when linear rail is at Hood location (same as Deck for now  )
+  # The Arm can reach the shaker and filteration setup in the fumehoods
+  hood_home: []
+  hood_shaker_high: []
+  hood_shaker_low: []
+  hood_shaker_in: []
+  hood_filteration_high: []
+  hood_filteration_in: []
+  hood_filteration_low: []
+
+  # The following happens when linear rail is at Cytation location
+  cytation_home: []
+  cytation_high: []
+  cytation_low: []
   #
-  uplc_plate_home: [108.9, -28.5, -50.4, 78.5, -69.3]
-  uplc_plate_high: [-45.7, 16.4, -39.3, 22.9, -45.3]
-  uplc_plate_low: [-45.7, 34, -43.4, 9.4, -45.6]
-  uplc_plate_in: [-45.7, 39.7, -45.7, 6.1, -45.6]
+  plateloc_home: []
+  plateloc_high: []
+  plateloc_low: []

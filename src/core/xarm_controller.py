@@ -740,6 +740,17 @@ class XArmController:
                 if self.auto_enable:
                     print("Re-enabling components...")
                     if self.states['arm'] == ComponentState.ERROR:
+                        # clean_error/clean_warn alone aren't enough after an
+                        # emergency_stop: the SDK is still in state 4 and
+                        # refuses motion commands until mode/state are
+                        # re-asserted. Mirror /robot/enable's recovery here so
+                        # Clear Errors is sufficient by itself.
+                        if hasattr(self.arm, 'motion_enable'):
+                            self.arm.motion_enable(enable=True)
+                        if hasattr(self.arm, 'set_mode'):
+                            self.arm.set_mode(0)
+                        if hasattr(self.arm, 'set_state'):
+                            self.arm.set_state(0)
                         self.states['arm'] = ComponentState.ENABLED
                     if self.has_gripper() and self.states['gripper'] == ComponentState.ERROR:
                         self.enable_gripper_component()

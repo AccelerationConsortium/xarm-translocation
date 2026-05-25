@@ -31,7 +31,10 @@
       "Bash(curl -fsS -X POST http://127.0.0.1:8765/test/log)",
       "Bash(curl -fsS http://127.0.0.1:8000/status)",
       "Bash(curl -fsS http://127.0.0.1:8000/web/)",
-      "Bash(curl -fsS http://127.0.0.1:8000/web/main.js)"
+      "Bash(curl -fsS http://127.0.0.1:8000/web/main.js)",
+      "Bash(curl -fsS http://localhost:8000/openapi.json)",
+      "Bash(uv run *)",
+      "Bash(wait)"
     ]
   }
 }

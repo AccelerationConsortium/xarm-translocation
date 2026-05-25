@@ -2,12 +2,11 @@ Speed: 500
 Acc: 1000
 Range:
   min: 0
-  max: 1000
+  max: 700
   units: "mm"
 
 # Named locations for the linear track
 locations:
   Home: 0
-  Local_1: 62
-  Local_2: 237 # + 175mm 
-  Local_3: 412 # + 175mm 
+  Deck: 550 #
+  Cytation: 700 # Max linear track length
