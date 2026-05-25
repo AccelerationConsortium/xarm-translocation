@@ -726,6 +726,13 @@ class XArmController:
             error_clear_code = self.arm.clean_error()
             warn_clear_code = self.arm.clean_warn()
 
+            # BIO Gripper hardware errors (e.g. code 12 "object slipped") live
+            # in the gripper's own register; clean_error() doesn't touch them.
+            # An unresolved gripper fault can pin the arm in state 4, so clear
+            # it here too.
+            if self.gripper_type in ('bio', 'bio_gen2') and hasattr(self.arm, 'clean_bio_gripper_error'):
+                self.arm.clean_bio_gripper_error()
+
             # Reset error tracking
             self.error_history.clear()
             self.last_error_code = 0
@@ -752,7 +759,13 @@ class XArmController:
                         if hasattr(self.arm, 'set_state'):
                             self.arm.set_state(0)
                         self.states['arm'] = ComponentState.ENABLED
-                    if self.has_gripper() and self.states['gripper'] == ComponentState.ERROR:
+                    # BIO gripper faults don't propagate to states['gripper'];
+                    # re-enable unconditionally so clean_bio_gripper_error +
+                    # set_bio_gripper_enable(True) actually take effect on the
+                    # hardware after a slip/overcurrent.
+                    if self.gripper_type in ('bio', 'bio_gen2'):
+                        self.enable_gripper_component()
+                    elif self.has_gripper() and self.states['gripper'] == ComponentState.ERROR:
                         self.enable_gripper_component()
                     if self.has_track() and self.states['track'] == ComponentState.ERROR:
                         self.enable_track_component()
