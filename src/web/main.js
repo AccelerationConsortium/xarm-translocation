@@ -303,10 +303,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const hasStrokeControl = gripperConfig.has_stroke_control || false;
             const hasForceControl = gripperConfig.has_force_control || false;
             
-            // Always show gripper name in the info section
-            safeSetText('gripper-type-display', gripperName);
-            safeSetText('gripper-state-display', gripperState);
-            
+            // The status-bar 'gripper-state' field is the canonical gripper
+            // display. (This used to also write 'gripper-type-display' and
+            // 'gripper-state-display', but those elements were removed from
+            // index.html, so writing them only spammed "element not found".)
             if (gripperState === 'enabled' && data.connection_details?.gripper_type) {
                 safeSetText('gripper-state', `${gripperName} (${gripperState})`);
                 
@@ -377,7 +377,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             } else {
-                safeSetText('gripper-state', gripperState);
+                // Keep the gripper name visible even when it isn't enabled.
+                safeSetText('gripper-state', gripperName && gripperName !== 'N/A'
+                    ? `${gripperName} (${gripperState})`
+                    : gripperState);
                 if (gripperStrokeInput) {
                     gripperStrokeInput.disabled = true;
                     gripperStrokeInput.placeholder = "";

@@ -40,7 +40,17 @@
       "Bash(powershell *)",
       "PowerShell(nssm restart *)",
       "PowerShell(Start-Process powershell -Verb RunAs -ArgumentList '-NoProfile','-Command','nssm restart xarm; sc.exe resume xarm; Start-Sleep -Seconds 2')",
-      "Bash(findstr STATE)"
+      "Bash(findstr STATE)",
+      "PowerShell(Write-Host \"=== GET /status ===\"; try { Invoke-RestMethod -Uri \"http://localhost:8000/status\" -TimeoutSec 5 | ConvertTo-Json -Depth 4 } catch { Write-Host \"status error: $_\" })",
+      "PowerShell(foreach \\($ep in @\\(\"/\",\"/health\"\\)\\) { Write-Host \"=== GET $ep ===\"; try { $r = Invoke-RestMethod -Uri \"http://localhost:8000$ep\" -TimeoutSec 15; $r | ConvertTo-Json -Depth 4 } catch { Write-Host \"error: $_\" } })",
+      "PowerShell(Get-CimInstance *)",
+      "PowerShell(Stop-Process *)",
+      "PowerShell(taskkill *)",
+      "PowerShell(Restart-Service *)",
+      "PowerShell(sc.exe qc xarm; Write-Host \"=== state ===\"; sc.exe query xarm)",
+      "PowerShell(foreach \\($ep in @\\(\"/health\",\"/status\"\\)\\) { Write-Host \"=== GET $ep ===\"; try { Invoke-RestMethod -Uri \"http://localhost:8000$ep\" -TimeoutSec 8 | ConvertTo-Json -Depth 5 } catch { Write-Host \"error: $_\" } })",
+      "PowerShell(Get-Process *)",
+      "PowerShell(Write-Host \"=== connect-related lines from xarm.out.log \\(last 50 matches\\) ===\"; Select-String -Path C:\\\\SDL_Logs\\\\xarm.out.log -Pattern \"Initializing Robot Arm|Connection attempt|Exception during connection|Failed to connect to xArm|motion_enable|check_code|Controller Initialized|connect\" -ErrorAction SilentlyContinue | Select-Object -Last 50 | ForEach-Object { $_.Line })"
     ]
   }
 }

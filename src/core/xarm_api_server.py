@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+from collections import deque
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
@@ -71,6 +72,14 @@ except ImportError:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Failures that happen *inside* the WebSocket broadcast path are logged here,
+# NOT through `logger`. `logger` has WebSocketLogHandler attached, so logging a
+# broadcast failure through it would re-queue the message for broadcast, which
+# re-fails, which logs again -- a self-amplifying loop that spams every client
+# and starves the event loop. This logger has no such handler; it still reaches
+# the root stderr handler, so the failure is recorded in the service log.
+_ws_internal_logger = logging.getLogger("xarm.ws_internal")
+
 # Add WebSocket log handler (will be set up after ConnectionManager is ready)
 ws_handler = None
 
@@ -94,48 +103,54 @@ class ConnectionManager:
         await websocket.send_text(message)
 
     async def broadcast(self, message: str):
-        for connection in self.active_connections:
+        # Iterate over a snapshot: send_text awaits, so other coroutines
+        # (connect/disconnect) may mutate active_connections mid-loop.
+        dead: List[WebSocket] = []
+        for connection in list(self.active_connections):
             try:
                 await connection.send_text(message)
-            except Exception as e:
-                logger.error(f"Error broadcasting message: {e}")
+            except Exception as exc:
+                # Use the broadcast-internal logger, never `logger`, to avoid
+                # the feedback loop documented on _ws_internal_logger.
+                _ws_internal_logger.warning(
+                    f"Dropping unreachable WebSocket client: {exc!r}"
+                )
+                dead.append(connection)
+        # Prune dead connections so we stop retrying (and re-failing) them every
+        # broadcast. Without this, one closed browser tab generates an endless
+        # stream of "Error broadcasting message" errors.
+        for connection in dead:
+            self.disconnect(connection)
 
 manager = ConnectionManager()
 
 # Custom logging handler to broadcast logs to WebSocket clients
 class WebSocketLogHandler(logging.Handler):
+    # Bound the queue so that if broadcasting falls behind (or every client is
+    # momentarily unreachable) it can never grow without limit. Oldest entries
+    # are dropped first -- log streaming to a browser is best-effort.
+    MAX_QUEUE = 200
+
     def __init__(self):
         super().__init__()
         self.setLevel(logging.INFO)
         formatter = logging.Formatter('%(levelname)s: %(message)s')
         self.setFormatter(formatter)
+        self.log_queue: deque = deque(maxlen=self.MAX_QUEUE)
 
     def emit(self, record):
         try:
             msg = self.format(record)
             log_type = 'error' if record.levelno >= logging.ERROR else 'warning' if record.levelno >= logging.WARNING else 'info'
-            
-            # Create log message for WebSocket
-            log_data = {
+            self.log_queue.append({
                 'type': 'log',
                 'log_message': msg,
                 'log_type': log_type,
-                'timestamp': record.created
-            }
-            
-            # Store log data for WebSocket broadcast
-            # Use a different approach - store in a queue for periodic broadcast
-            if not hasattr(self, 'log_queue'):
-                self.log_queue = []
-            self.log_queue.append(log_data)
-            
-            # For debugging: print to console to verify handler is working
-            print(f"LOG HANDLER: {log_type.upper()} - {msg}")
-            
-        except Exception as e:
-            # For debugging: print to console if WebSocket broadcast fails
-            print(f"WebSocket log handler failed: {e}")
-            pass  # Don't let logging errors break the app
+                'timestamp': record.created,
+            })
+        except Exception:
+            # Never let a logging failure propagate into application code.
+            pass
 
 # Pydantic models for request/response
 class ConnectionRequest(BaseModel):
@@ -422,17 +437,21 @@ async def broadcast_logs():
     """Periodically broadcast queued logs to WebSocket clients"""
     while True:
         try:
-            if hasattr(ws_handler, 'log_queue') and ws_handler.log_queue:
-                # Broadcast all queued logs
-                logs_to_send = ws_handler.log_queue.copy()
-                ws_handler.log_queue.clear()
-                
-                for log_data in logs_to_send:
+            queue = getattr(ws_handler, 'log_queue', None)
+            if queue:
+                # Drain via popleft so an append racing in from a logging
+                # thread isn't silently dropped by a copy()+clear() window.
+                # Snapshot the count first so a flood can't keep us here
+                # forever (and starve the rest of the event loop).
+                for _ in range(len(queue)):
+                    try:
+                        log_data = queue.popleft()
+                    except IndexError:
+                        break
                     await manager.broadcast(json.dumps(log_data))
-                    
         except Exception as e:
             print(f"Error broadcasting logs: {e}")
-        
+
         await asyncio.sleep(0.5)  # Check every 500ms
 
 # Start log broadcasting task
@@ -454,6 +473,22 @@ def create_error_response(message: str, status_code: int = 500) -> JSONResponse:
         status_code=status_code,
         content={"error": message, "timestamp": datetime.now().isoformat()}
     )
+
+async def _safe_disconnect(ctrl: Optional["XArmController"]) -> None:
+    """Disconnect a controller's SDK session, swallowing any error.
+
+    Used on the /connect failure paths so a controller that failed to
+    initialize still closes its sockets to the control box instead of
+    leaking them (which would saturate the xArm's single control session).
+    Runs the blocking SDK disconnect in a worker thread so it never stalls
+    the event loop.
+    """
+    if ctrl is None:
+        return
+    try:
+        await asyncio.to_thread(ctrl.disconnect)
+    except Exception as exc:  # best-effort cleanup; never mask the original error
+        logger.warning(f"Cleanup disconnect after failed connect raised: {exc}")
 
 async def broadcast_status_update():
     """Broadcast a STATUS_SPEC v1.0 envelope to all connected WebSocket clients.
@@ -530,7 +565,11 @@ async def connect_robot(request: ConnectionRequest, background_tasks: Background
             safety_level=request.get_safety_level_enum()
         )
 
-        if controller.initialize():
+        # initialize() opens the SDK sockets and runs the connect/enable
+        # handshake (retries + sleeps -- up to ~12 s). Run it in a worker
+        # thread so /health, /status and STOP stay responsive while a slow
+        # or failing connect is in progress.
+        if await asyncio.to_thread(controller.initialize):
             background_tasks.add_task(broadcast_status_update)
             return {
                 "message": "Successfully connected.",
@@ -548,10 +587,23 @@ async def connect_robot(request: ConnectionRequest, background_tasks: Background
                 "safety_level": controller.safety_level.name
             }
         else:
+            # initialize() failed: tear down the half-open SDK connection so its
+            # sockets to the control box (port 502 control + 30002 report) are
+            # closed. The xArm grants a single control session; leaking a socket
+            # on every failed connect saturates the box, after which every later
+            # attempt fails the version handshake ("failed to check version,
+            # close"). Just dropping the reference is not enough -- the SDK's
+            # background threads keep the socket ESTABLISHED until disconnect().
+            await _safe_disconnect(controller)
             controller = None
             raise HTTPException(status_code=500, detail="Failed to initialize robot connection. Check logs for details.")
-            
+
+    except HTTPException:
+        # Already a structured error from the branch above; don't re-wrap it
+        # (re-wrapping buried the real 500 detail inside a generic message).
+        raise
     except Exception as e:
+        await _safe_disconnect(controller)
         controller = None
         logger.error(f"Connection failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred during connection: {e}")
@@ -573,7 +625,7 @@ async def disconnect_robot():
     message = "Robot was not connected."
     if controller:
         try:
-            controller.disconnect()
+            await asyncio.to_thread(controller.disconnect)
             message = f"Successfully disconnected from {connection_info['host']}:{connection_info['port']}"
         except Exception as e:
             logger.error(f"Disconnect failed: {e}", exc_info=True)
@@ -606,13 +658,25 @@ async def get_all_positions():
     """Read-only snapshot of every position sensor: joints, Cartesian pose,
     linear track, and gripper — no movement is performed."""
     c = get_controller()
+    has_track = c.has_track()
+
+    # All four reads hit the SDK (get_servo_angle / get_position /
+    # get_linear_track_pos / gripper query). Gather them in a single worker
+    # thread so the serial round-trips don't block the event loop.
+    def _read_all():
+        return (
+            c.get_current_joints(),
+            c.get_current_position(),
+            c.get_track_position() if has_track else None,
+            c.get_gripper_position(),
+        )
+
+    joints_raw, cart_raw, track_pos, gripper_pos = await asyncio.to_thread(_read_all)
 
     # Joints
-    joints_raw = c.get_current_joints()
     joints = joints_raw[:c.num_joints] if joints_raw else None
 
     # Cartesian pose
-    cart_raw = c.get_current_position()
     if cart_raw and len(cart_raw) >= 6:
         cartesian = {"x": cart_raw[0], "y": cart_raw[1], "z": cart_raw[2],
                      "roll": cart_raw[3], "pitch": cart_raw[4], "yaw": cart_raw[5]}
@@ -620,14 +684,12 @@ async def get_all_positions():
         cartesian = None
 
     # Linear track
-    if c.has_track():
-        track_pos = c.get_track_position()
+    if has_track:
         track = {"available": True, "position": track_pos}
     else:
         track = {"available": False, "position": None}
 
     # Gripper
-    gripper_pos = c.get_gripper_position()
     gripper = {
         "available": gripper_pos is not None,
         "position": gripper_pos,
@@ -886,11 +948,11 @@ async def enable_component(request: ComponentRequest):
     component = request.component.lower()
     success = False
     if component == 'gripper':
-        success = c.enable_gripper_component()
+        success = await asyncio.to_thread(c.enable_gripper_component)
     elif component == 'track':
-        success = c.enable_track_component()
+        success = await asyncio.to_thread(c.enable_track_component)
     elif component == 'force_torque':
-        success = c.enable_force_torque_sensor()
+        success = await asyncio.to_thread(c.enable_force_torque_sensor)
     else:
         raise HTTPException(status_code=400, detail="Invalid component specified. Use 'gripper', 'track', or 'force_torque'.")
     
@@ -907,11 +969,11 @@ async def disable_component(request: ComponentRequest):
     component = request.component.lower()
     success = False
     if component == 'gripper':
-        success = c.disable_gripper_component()
+        success = await asyncio.to_thread(c.disable_gripper_component)
     elif component == 'track':
-        success = c.disable_track_component()
+        success = await asyncio.to_thread(c.disable_track_component)
     elif component == 'force_torque':
-        success = c.disable_force_torque_sensor()
+        success = await asyncio.to_thread(c.disable_force_torque_sensor)
     else:
         raise HTTPException(status_code=400, detail="Invalid component specified. Use 'gripper', 'track', or 'force_torque'.")
 
@@ -926,8 +988,8 @@ async def set_cartesian_velocity(request: VelocityRequest):
     """Set the Cartesian velocity of the robot arm."""
     c = get_controller()
     velocities = [request.vx, request.vy, request.vz, request.vroll, request.vpitch, request.vyaw]
-    
-    if not c.set_cartesian_velocity(velocities):
+
+    if not await asyncio.to_thread(c.set_cartesian_velocity, velocities):
         raise HTTPException(status_code=500, detail="Failed to set Cartesian velocity.")
     
     return {"message": "Cartesian velocity set successfully."}
@@ -940,7 +1002,9 @@ async def open_gripper(request: Optional[GripperRequest] = None):
     request = request or GripperRequest()
 
     try:
-        success = c.open_gripper(speed=request.speed, force=request.force, wait=request.wait)
+        success = await asyncio.to_thread(
+            c.open_gripper, speed=request.speed, force=request.force, wait=request.wait
+        )
         await broadcast_status_update()
         if not success:
             raise HTTPException(status_code=500, detail="Failed to open gripper.")
@@ -958,7 +1022,9 @@ async def close_gripper(request: Optional[GripperRequest] = None):
     request = request or GripperRequest()
 
     try:
-        success = c.close_gripper(speed=request.speed, force=request.force, wait=request.wait)
+        success = await asyncio.to_thread(
+            c.close_gripper, speed=request.speed, force=request.force, wait=request.wait
+        )
         await broadcast_status_update()
         if not success:
             raise HTTPException(status_code=500, detail="Failed to close gripper.")
@@ -975,7 +1041,8 @@ async def move_gripper_stroke(request: GripperStrokeRequest):
     c = get_controller()
 
     try:
-        success = c.move_gripper_to_stroke(
+        success = await asyncio.to_thread(
+            c.move_gripper_to_stroke,
             stroke=request.stroke,
             speed=request.speed,
             force=request.force,
@@ -995,7 +1062,7 @@ async def move_gripper_stroke(request: GripperStrokeRequest):
 async def set_gripper_force(request: GripperForceRequest):
     """Set gripping force for grippers that support force control."""
     c = get_controller()
-    if not c.set_gripper_force(request.force):
+    if not await asyncio.to_thread(c.set_gripper_force, request.force):
         raise HTTPException(status_code=500, detail="Failed to set gripper force.")
     await broadcast_status_update()
     return {"message": f"Gripper force set to {request.force}."}
@@ -1004,7 +1071,7 @@ async def set_gripper_force(request: GripperForceRequest):
 async def get_gripper_position():
     """Get gripper stroke/position when supported by the installed gripper."""
     c = get_controller()
-    position = c.get_gripper_position()
+    position = await asyncio.to_thread(c.get_gripper_position)
     if position is None:
         raise HTTPException(status_code=404, detail="Gripper position is not available.")
     return {"position": position}
@@ -1069,7 +1136,7 @@ async def get_track_position():
     
     if not c.has_track():
         raise HTTPException(status_code=400, detail="Linear track is not enabled.")
-    return {"position": c.get_track_position()}
+    return {"position": await asyncio.to_thread(c.get_track_position)}
 
 @app.get("/track/locations")
 async def get_track_locations():
@@ -1109,8 +1176,8 @@ async def enable_force_torque_sensor():
     
     if not c.has_force_torque_sensor():
         raise HTTPException(status_code=400, detail="Force torque sensor is not available or disabled in configuration.")
-    
-    success = c.enable_force_torque_sensor()
+
+    success = await asyncio.to_thread(c.enable_force_torque_sensor)
     await broadcast_status_update()
     
     if success:
@@ -1122,10 +1189,10 @@ async def enable_force_torque_sensor():
 async def disable_force_torque_sensor():
     """Disable the 6-axis force torque sensor."""
     c = get_controller()
-    
-    success = c.disable_force_torque_sensor()
+
+    success = await asyncio.to_thread(c.disable_force_torque_sensor)
     await broadcast_status_update()
-    
+
     if success:
         return {"message": "Force torque sensor disabled successfully."}
     else:
@@ -1156,15 +1223,20 @@ async def get_force_torque_data():
     
     if not c.is_component_enabled('force_torque'):
         raise HTTPException(status_code=400, detail="Force torque sensor is not enabled.")
-    
-    data = c.get_force_torque_data()
+
+    data = await asyncio.to_thread(c.get_force_torque_data)
     if data is None:
         raise HTTPException(status_code=500, detail="Failed to get force torque data.")
-    
+
+    # magnitude/direction each re-read the sensor (get_ft_sensor_data); fetch
+    # them in one worker hop so neither blocks the event loop.
+    magnitude, direction = await asyncio.to_thread(
+        lambda: (c.get_force_torque_magnitude(), c.get_force_torque_direction())
+    )
     return {
         "data": data,
-        "magnitude": c.get_force_torque_magnitude(),
-        "direction": c.get_force_torque_direction(),
+        "magnitude": magnitude,
+        "direction": direction,
         "calibrated": c.force_torque_calibrated
     }
 
@@ -1183,8 +1255,8 @@ async def check_force_torque_safety():
     if not c.is_component_enabled('force_torque'):
         raise HTTPException(status_code=400, detail="Force torque sensor is not enabled.")
     
-    violation_detected = c.check_force_torque_safety()
-    
+    violation_detected = await asyncio.to_thread(c.check_force_torque_safety)
+
     return {
         "violation_detected": violation_detected,
         "message": "Safety check completed."
