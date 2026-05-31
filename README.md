@@ -1,6 +1,8 @@
-# PyxArm - xArm Robot Control Package
+# xArm Translocation
 
-A comprehensive Python package for controlling UFACTORY xArm robotic arms with integrated gripper, linear track, and force torque sensor support. Speaks STATUS_SPEC v1.0 for dashboard integration; the Docker simulator is the supported path for off-hardware testing.
+UFACTORY xArm control for the AC Organic Self-Driving Lab — arm, gripper, linear track, and force-torque sensor, driven through one Python controller, a web UI, and a STATUS_SPEC v1.0 REST API. The Docker simulator is the supported path for off-hardware testing. Installs as the `pyxarm` package.
+
+![xArm Web Control Interface](assets/xarm-control.png)
 
 ## Lab Status Spec Conformance
 
@@ -69,11 +71,14 @@ The in-process software simulation has been removed; use the Docker simulator fo
 
 ### Web Interface & API Server
 ```bash
-# Start web interface and API server
+# Start the web UI (also auto-starts the API server on port 8000)
 pyxarm web
 
-# Or specify custom host/port
-pyxarm web --host 0.0.0.0 --port 8000
+# Or specify a custom host/port for the web UI
+pyxarm web --host 0.0.0.0 --port 6001
+
+# Run only the API server (this is how it is deployed as a device service)
+pyxarm api --host 0.0.0.0 --port 8000
 
 # Alternative method (without installing package)
 python -m src.cli.main web
@@ -81,8 +86,8 @@ python -m src.cli.main web
 
 **Access Points:**
 - 🌐 **Web UI**: http://localhost:6001/web/
-- 📖 **API Docs**: http://localhost:6001/docs  
-- 📡 **API Server**: http://localhost:6001
+- 📖 **API Docs**: http://localhost:8000/docs
+- 📡 **API Server**: http://localhost:8000
 
 ## 💻 Command Line Interface
 
@@ -145,7 +150,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Documentation**: Check root directory for comprehensive guides
 - **Examples**: Run demo scripts in `src/examples/`
 - **CLI**: Use `pyxarm --help` for command-line interface
-- **API**: Access interactive docs at `http://localhost:6001/docs`
+- **API**: Access interactive docs at `http://localhost:8000/docs`
 
 ---
 
