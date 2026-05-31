@@ -201,10 +201,10 @@ def main():
     print("=" * 50)
     print(f"Demo: {args.demo}")
 
-    # Initialize controller against real hardware via the real_hw profile.
+    # Initialize controller against real hardware via the robot profile.
     try:
         controller = XArmController(
-            profile_name='real_hw',
+            profile_name='robot',
             auto_enable=True,
         )
 

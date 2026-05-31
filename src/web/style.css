@@ -298,7 +298,7 @@ input#linear-steps {
 
 .inline-unit {
     color: var(--ink-subtle);
-    font-size: 0.82rem;
+    font-size: 0.78rem;
 }
 
 .track-speed-group {
@@ -419,6 +419,93 @@ input#linear-steps {
 .btn-success:hover:not(:disabled) {
     background: var(--success-hover);
     box-shadow: 0 8px 18px rgba(4, 120, 87, 0.18);
+}
+
+/* Active toggle (e.g. Manual Mode while engaged): pulsing ring so the
+   released-brake state is unmistakable. */
+.btn.is-active {
+    box-shadow: 0 0 0 2px rgba(190, 18, 60, 0.45);
+    animation: btn-active-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes btn-active-pulse {
+    0%, 100% { box-shadow: 0 0 0 2px rgba(190, 18, 60, 0.35); }
+    50%      { box-shadow: 0 0 0 4px rgba(190, 18, 60, 0.6); }
+}
+
+/* Manual-mode toggle switch. Slides + turns red when manual (drag/teach)
+   mode is engaged, mirroring the released-brake "is-active" pulse used on
+   the old button. The hidden checkbox carries the real state. */
+.manual-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    user-select: none;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--ink-muted);
+}
+
+.manual-switch input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.manual-switch-track {
+    position: relative;
+    flex: 0 0 auto;
+    width: 46px;
+    height: 26px;
+    border-radius: 999px;
+    background: var(--border-strong);
+    transition: background 0.18s ease;
+}
+
+.manual-switch-thumb {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #ffffff;
+    box-shadow: var(--shadow-sm);
+    transition: transform 0.18s ease;
+}
+
+/* ON: red track, thumb slid right, label reddened + the pulsing ring. */
+.manual-switch.is-on .manual-switch-track {
+    background: var(--danger);
+}
+
+.manual-switch.is-on .manual-switch-thumb {
+    transform: translateX(20px);
+}
+
+.manual-switch.is-on .manual-switch-text {
+    color: var(--danger);
+}
+
+.manual-switch.is-on {
+    box-shadow: 0 0 0 2px rgba(190, 18, 60, 0.45);
+    border-radius: 999px;
+    animation: btn-active-pulse 1.4s ease-in-out infinite;
+}
+
+/* Disabled (device unreachable): dim and non-interactive. */
+.manual-switch.is-disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+/* Controls locked out while manual mode is engaged. They are already
+   `disabled` (JS), this just signals *why* they're greyed. */
+.manual-locked {
+    opacity: 0.45;
+    cursor: not-allowed;
 }
 
 .btn-secondary {
@@ -579,7 +666,37 @@ input#linear-steps {
 /* ── Status bar ─────────────────────────────────────────────────────── */
 
 .status-bar-card {
-    margin-top: auto;
+    /* Anchored full-width footer: stays put at the bottom of the viewport
+       while the rest of the page scrolls behind it. */
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 50;
+    margin: 0;
+    padding: 10px 24px;
+    border: none;
+    border-top: 1px solid var(--border-strong);
+    border-radius: 0;
+    box-shadow: 0 -2px 12px rgba(15, 23, 42, 0.08);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+}
+
+.status-bar-card h2 {
+    margin: 0;
+    white-space: nowrap;
+}
+
+.status-bar-card .status-bar-line {
+    flex: 1;
+    margin: 0;
+}
+
+/* Reserve space so the fixed footer never covers the last cards. */
+.container {
+    padding-bottom: 84px;
 }
 
 .status-bar-line {
@@ -625,6 +742,17 @@ input#linear-steps {
     align-items: center;
 }
 
+/* Enable + Manual-mode row sitting above the jog pad in the Jog column. */
+.enable-row-jog {
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-top: 0;
+    margin-bottom: 14px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+    width: 100%;
+}
+
 /* ── XYZ Jog pad ────────────────────────────────────────────────────── */
 
 .jog-panel {
@@ -641,15 +769,15 @@ input#linear-steps {
 }
 
 .jog-btn {
-    min-width: 56px;
-    font-size: 0.82rem;
-    padding: 6px 10px;
+    min-width: 64px;
+    font-size: 1rem;
+    padding: 8px 14px;
 }
 
 .jog-xy-pad {
     position: relative;
-    width: 222px;
-    height: 222px;
+    width: 184px;
+    height: 184px;
     border-radius: 50%;
     background: var(--surface-soft);
     border: 2px solid var(--border-strong);
@@ -672,11 +800,11 @@ input#linear-steps {
     position: absolute;
     background: none;
     border: none;
-    font-size: 0.9rem;
+    font-size: 1.15rem;
     font-weight: 700;
     color: var(--ink);
     cursor: pointer;
-    padding: 8px 10px;
+    padding: 8px 12px;
     border-radius: 8px;
     line-height: 1;
     transition: background 0.1s, color 0.1s;
@@ -699,10 +827,11 @@ input#linear-steps {
 #jog-y-minus { right: 8px;   top: 50%; transform: translateY(-50%); }
 
 .jog-step-row {
+    /* No row-level font-size: the label/unit set their own 0.78rem, and the
+       #jog-step input inherits the standard body size like every other box. */
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 0.78rem;
     color: var(--ink-muted);
 }
 
@@ -733,27 +862,20 @@ input#linear-steps {
 }
 
 .joint-col label {
-    font-size: 0.88rem;
-    font-weight: 700;
+    font-size: 0.78rem;
+    font-weight: 650;
     color: var(--ink-muted);
 }
 
 .joint-col input {
+    /* Box styling (border, radius, padding, font) inherited from the shared
+       select/input rule so every text box looks identical. */
     width: 100%;
-    padding: 8px 6px;
-    font-size: 1rem;
     text-align: center;
-    border: 1px solid var(--border-strong);
-    border-radius: 8px;
 }
 
 .joint-col input:disabled {
     background: var(--surface-soft);
-    color: var(--ink-subtle);
-}
-
-.joint-col .inline-unit {
-    font-size: 0.78rem;
     color: var(--ink-subtle);
 }
 
@@ -763,11 +885,6 @@ input#linear-steps {
     gap: 8px;
     padding-top: 10px;
     border-top: 1px solid var(--border);
-}
-
-.joint-action-row .inline-label {
-    font-size: 0.82rem;
-    color: var(--ink-muted);
 }
 
 .joint-action-row .inline-input {

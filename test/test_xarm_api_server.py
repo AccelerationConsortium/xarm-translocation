@@ -86,7 +86,7 @@ def test_connect_success(client, monkeypatch):
         mock_instance.initialize.return_value = True
         mock_instance.is_alive = True
         
-        response = client.post("/connect", json={"profile_name": "docker_local"})
+        response = client.post("/connect", json={"profile_name": "docker"})
         assert response.status_code == 200
         assert "Successfully connected" in response.json()['message']
 
@@ -98,7 +98,7 @@ def test_connect_failure(client, monkeypatch):
         mock_instance = MockController.return_value
         mock_instance.initialize.return_value = False
         
-        response = client.post("/connect", json={"profile_name": "docker_local"})
+        response = client.post("/connect", json={"profile_name": "docker"})
         assert response.status_code == 500
         assert "Failed to initialize" in response.json()['detail']
 

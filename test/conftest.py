@@ -121,7 +121,9 @@ def mock_config_files(monkeypatch):
         'position_config': {
             'positions': {
         'home': {'x': 300, 'y': 0, 'z': 300, 'roll': 180, 'pitch': 0, 'yaw': 0},
-        'pickup': {'x': 400, 'y': 100, 'z': 200, 'roll': 180, 'pitch': 0, 'yaw': 0}
+        'pickup': {'x': 400, 'y': 100, 'z': 200, 'roll': 180, 'pitch': 0, 'yaw': 0},
+        # Named safe home that go_home() routes through (factory home is unsafe).
+        'robot_home': [180.0, -45.0, 0.0, 45.0, 90.0],
     }
         },
         'linear_track_config': {'Speed': 200, 'Acc': 1000},

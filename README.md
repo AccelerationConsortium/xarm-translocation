@@ -61,7 +61,7 @@ if controller.initialize():
 # Start the simulator (e.g. "5" for xArm5)
 src/docker/docker_setup.sh start 5
 
-# Drive it with the demo using the `docker_local` profile
+# Drive it with the demo using the `docker` profile
 python src/examples/demo_docker_sim.py
 ```
 
@@ -104,8 +104,8 @@ pyxarm --version
 
 ## 🎯 Testing Strategy
 
-1. **Docker Simulator** → run the official UFACTORY simulator via the `docker_local` profile for off-hardware validation
-2. **Real Hardware** → production validation against the configured `real_hw` profile
+1. **Docker Simulator** → run the official UFACTORY simulator via the `docker` profile for off-hardware validation
+2. **Real Hardware** → production validation against the configured `robot` profile
 
 ## 📚 Documentation
 

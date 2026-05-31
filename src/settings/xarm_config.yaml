@@ -1,9 +1,9 @@
 # Default profile to use if none is specified
-default_profile: 'real_hw'
+default_profile: 'robot'
 
 # Connection profiles
 profiles:
-  real_hw:
+  robot:
     model: 5
     num_joints: 5
     host: '192.168.1.237'
@@ -14,7 +14,7 @@ profiles:
     angle_speed: 20
     angle_acc: 500
 
-  docker_local:
+  docker:
     model: 5
     num_joints: 5
     host: '127.0.0.1'

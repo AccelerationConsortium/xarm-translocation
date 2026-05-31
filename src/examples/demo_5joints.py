@@ -171,7 +171,7 @@ def main():
         
         try:
             controller = XArmController(
-                profile_name='real_hw',  # Use real_hw profile from config (192.168.1.237)
+                profile_name='robot',  # Use robot profile from config (192.168.1.237)
                 model=5,  # Force xArm5 model
                 gripper_type='bio',
                 enable_track=False,

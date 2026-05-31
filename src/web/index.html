@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>xArm Control</title>
-    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="style.css?v=20260530e">
 </head>
 <body>
     <div class="container">
@@ -97,16 +97,15 @@
 
                 <!-- System Control card -->
                 <div class="card">
-                    <h2>System Control</h2>
+                    <h2>Arm Control</h2>
 
                     <!-- Two-column body: xArm controls (left) + XYZ jog (right) -->
                     <div class="sc-body">
 
                         <!-- Left: xArm controls -->
                         <div class="sc-left">
-                            <h3>xArm</h3>
                             <div class="xarm-buttons">
-                                <button id="home-btn" class="btn">Home</button>
+                                <button id="enable-robot-btn" class="btn btn-success enable-button">Enable</button>
                                 <button id="stop-btn" class="btn btn-danger">STOP</button>
                                 <button id="clear-errors-btn" class="btn btn-warning">Clear Errors</button>
                             </div>
@@ -127,15 +126,17 @@
                                 <span class="inline-label">Steps:</span>
                                 <input type="number" id="linear-steps" placeholder="1" min="1" max="100" value="1" class="inline-input">
                             </div>
-                            <div class="enable-row">
-                                <button id="enable-robot-btn" class="btn btn-success enable-button">Enable</button>
-                                <button id="test-log-btn" class="btn btn-secondary">Test Logs</button>
-                            </div>
                         </div>
 
                         <!-- Right: XYZ jog pad -->
                         <div class="sc-right">
-                            <h3>Jog</h3>
+                            <div class="enable-row enable-row-jog">
+                                <label id="manual-mode-switch" class="manual-switch is-disabled" title="Release the joint brakes for hand-guiding. While on, XYZ and joint commands are locked out; joint angles keep updating live.">
+                                    <input type="checkbox" id="manual-mode-checkbox" disabled>
+                                    <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
+                                    <span class="manual-switch-text">Manual Mode</span>
+                                </label>
+                            </div>
                             <div class="jog-panel">
                                 <!-- Z buttons -->
                                 <div class="jog-z-row">
@@ -171,7 +172,8 @@
                         <div class="joint-col"><label>J3</label><input type="number" id="j3-input" step="0.1" placeholder="—"></div>
                         <div class="joint-col"><label>J4</label><input type="number" id="j4-input" step="0.1" placeholder="—"></div>
                         <div class="joint-col"><label>J5</label><input type="number" id="j5-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col" id="j6-col"><label>J6</label><input type="number" id="j6-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col" id="j6-col" style="display:none"><label>J6</label><input type="number" id="j6-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col" id="j7-col" style="display:none"><label>J7</label><input type="number" id="j7-input" step="0.1" placeholder="—"></div>
                     </div>
                     <div class="joint-action-row">
                         <span class="inline-label">Speed</span>
@@ -218,26 +220,26 @@
                     </div>
                 </div>
 
-                <!-- System Status bar — pinned to bottom of right column -->
-                <div class="card status-bar-card">
-                    <h2>System Status</h2>
-                    <div class="status-bar-line">
-                        <span>Arm: <strong id="arm-state">N/A</strong></span>
-                        <span class="sep">|</span>
-                        <span>Gripper: <strong id="gripper-state">N/A</strong></span>
-                        <span class="sep">|</span>
-                        <span>Track: <strong id="track-state">N/A</strong></span>
-                        <span class="sep">|</span>
-                        <span>Mode: <strong id="robot-mode">N/A</strong></span>
-                        <span class="sep">|</span>
-                        <span>Error: <strong id="last-error">None</strong></span>
-                    </div>
-                </div>
-
             </div><!-- /column-right -->
+
+            <!-- System Status — full-width single-column row at the bottom -->
+            <div class="card status-bar-card">
+                <h2>System Status</h2>
+                <div class="status-bar-line">
+                    <span>Arm: <strong id="arm-state">N/A</strong></span>
+                    <span class="sep">|</span>
+                    <span>Gripper: <strong id="gripper-state">N/A</strong></span>
+                    <span class="sep">|</span>
+                    <span>Track: <strong id="track-state">N/A</strong></span>
+                    <span class="sep">|</span>
+                    <span>Mode: <strong id="robot-mode">N/A</strong></span>
+                    <span class="sep">|</span>
+                    <span>Error: <strong id="last-error">None</strong></span>
+                </div>
+            </div>
 
         </main>
     </div>
-    <script src="main.js?v=20260526a"></script>
+    <script src="main.js?v=20260530g"></script>
 </body>
 </html>

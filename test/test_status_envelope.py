@@ -73,7 +73,7 @@ def _fake_controller(**overrides):
     mc.tcp_speed = 100
     mc.angle_speed = 20
     mc.host = '127.0.0.1'
-    mc.profile_name = 'real_hw'
+    mc.profile_name = 'robot'
     mc.xarm_config = {'port': 18333}
     mc.current_gripper_config = {}
 

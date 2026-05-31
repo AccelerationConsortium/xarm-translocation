@@ -387,7 +387,7 @@ if __name__ == "__main__":
     # Initialize controller
     try:
         controller = XArmController(
-            profile_name='real_hw',  # Use real_hw profile (192.168.1.237)
+            profile_name='robot',  # Use robot profile (192.168.1.237)
             auto_enable=True,
         )
 

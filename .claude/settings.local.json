@@ -50,7 +50,18 @@
       "PowerShell(sc.exe qc xarm; Write-Host \"=== state ===\"; sc.exe query xarm)",
       "PowerShell(foreach \\($ep in @\\(\"/health\",\"/status\"\\)\\) { Write-Host \"=== GET $ep ===\"; try { Invoke-RestMethod -Uri \"http://localhost:8000$ep\" -TimeoutSec 8 | ConvertTo-Json -Depth 5 } catch { Write-Host \"error: $_\" } })",
       "PowerShell(Get-Process *)",
-      "PowerShell(Write-Host \"=== connect-related lines from xarm.out.log \\(last 50 matches\\) ===\"; Select-String -Path C:\\\\SDL_Logs\\\\xarm.out.log -Pattern \"Initializing Robot Arm|Connection attempt|Exception during connection|Failed to connect to xArm|motion_enable|check_code|Controller Initialized|connect\" -ErrorAction SilentlyContinue | Select-Object -Last 50 | ForEach-Object { $_.Line })"
+      "PowerShell(Write-Host \"=== connect-related lines from xarm.out.log \\(last 50 matches\\) ===\"; Select-String -Path C:\\\\SDL_Logs\\\\xarm.out.log -Pattern \"Initializing Robot Arm|Connection attempt|Exception during connection|Failed to connect to xArm|motion_enable|check_code|Controller Initialized|connect\" -ErrorAction SilentlyContinue | Select-Object -Last 50 | ForEach-Object { $_.Line })",
+      "Bash(node --check src/web/main.js)",
+      "PowerShell(Get-Command *)",
+      "Bash(Get-ChildItem -Recurse -File -Name)",
+      "PowerShell(head *)",
+      "Bash(curl -s --max-time 4 http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:9333/status)",
+      "Bash(curl -s --max-time 4 http://localhost:9333/status)",
+      "PowerShell($c = Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue; if \\($c\\) { $c | Select-Object -First 1 LocalAddress,LocalPort,OwningProcess; $p = Get-Process -Id $c[0].OwningProcess -ErrorAction SilentlyContinue; \"Process: $\\($p.ProcessName\\) \\(Id $\\($p.Id\\)\\)\" } else { \"Port 8000: free\" }; \"---\"; $svc = Get-Service -Name xarm -ErrorAction SilentlyContinue; if \\($svc\\) { \"Service xarm: $\\($svc.Status\\)\" } else { \"No 'xarm' service registered\" })",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/web/\" -UseBasicParsing -TimeoutSec 5; \"HTTP $\\($r.StatusCode\\) — web UI is serving\" } catch { \"Web UI fetch failed: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(Start-Process \"http://localhost:8000/web/\"; \"Opened http://localhost:8000/web/ in default browser\")",
+      "PowerShell($svc = Get-Service -Name xarm -ErrorAction SilentlyContinue; \"Before: $\\($svc.Status\\)\"; try { Restart-Service -Name xarm -Force -ErrorAction Stop; \"Restart-Service: issued\" } catch { \"Restart-Service failed: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(Get-Content C:\\\\SDL_Logs\\\\xarm.err.log -Tail 70 | Where-Object { $_ -notmatch \"connection \\(open|closed\\)\" -and $_ -notmatch \"WebSocket /ws\" } | Select-Object -Last 35)"
     ]
   }
 }

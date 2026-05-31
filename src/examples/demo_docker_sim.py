@@ -7,7 +7,7 @@ This script demonstrates how to connect to the xArm using a connection profile
 from the `xarm_config.yaml` file.
 
 This example will:
-1. Connect to the robot using the 'docker_local' profile.
+1. Connect to the robot using the 'docker' profile.
 2. Initialize the controller in simulation mode.
 3. Perform basic arm and gripper movements.
 
@@ -97,13 +97,13 @@ def main():
     
     controller = None
     try:
-        print("Connecting to robot using 'docker_local' profile...")
+        print("Connecting to robot using 'docker' profile...")
         
         # Initialize the controller using a profile name.
         # The controller will automatically load settings from xarm_config.yaml.
         # We explicitly disable auto_enable to control initialization manually.
         controller = XArmController(
-            profile_name='docker_local',
+            profile_name='docker',
             safety_level=SafetyLevel.LOW,
             auto_enable=False  # Prevent initialization within the constructor
         )
@@ -112,7 +112,7 @@ def main():
         print("Initializing controller...")
         if not controller.initialize():
             print("🔥 Failed to initialize robot controller. Please ensure the Docker")
-            print("   simulator is running and the 'docker_local' profile in")
+            print("   simulator is running and the 'docker' profile in")
             print("   `src/settings/xarm_config.yaml` is correct.")
             sys.exit(1)
         

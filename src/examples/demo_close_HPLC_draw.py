@@ -371,7 +371,7 @@ def main():
     try:
         # Initialize controller
         controller = XArmController(
-            profile_name='real_hw',
+            profile_name='robot',
             auto_enable=True,
         )
 

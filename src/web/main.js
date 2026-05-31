@@ -21,7 +21,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const safetyLevelSelect = document.getElementById('safety-level-select');
     const logStream = document.getElementById('log-stream');
 
-    const homeBtn = document.getElementById('home-btn');
     const stopBtn = document.getElementById('stop-btn');
     const clearErrorsBtn = document.getElementById('clear-errors-btn');
 
@@ -38,6 +37,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const linearSpeedInput = document.getElementById('linear-speed');
     const realtimeJointsDisplay = document.getElementById('realtime-joints');
     const enableRobotBtn = document.getElementById('enable-robot-btn');
+    const manualModeSwitch = document.getElementById('manual-mode-switch');
+    const manualModeCheckbox = document.getElementById('manual-mode-checkbox');
     const moveToStrokeBtn = document.getElementById('move-to-stroke-btn');
     const gripperStrokeInput = document.getElementById('gripper-stroke');
     const gripperStrokeRange = document.getElementById('gripper-stroke-range');
@@ -54,6 +55,15 @@ document.addEventListener('DOMContentLoaded', () => {
     let isRobotMoving = false;
     let lastJointPositions = null;
     let movementDetectionThreshold = 0.1; // degrees
+    // Timestamp of the last WebSocket status push. While pushes are fresh the
+    // server's telemetry loop drives live updates, so we suppress the fast HTTP
+    // polling escalation and keep only the cheap idle safety poll. If the
+    // socket drops, this goes stale and HTTP polling auto-resumes.
+    let lastPushAt = 0;
+    const PUSH_STALE_MS = 1500;
+    // Last values applied from the compact telemetry stream, so each ~10 Hz
+    // tick only writes DOM that actually changed (vs. the full status render).
+    const tlmLast = { status: undefined, manual: undefined, track: undefined };
 
     // --- API Helper ---
     async function apiRequest(endpoint, method = 'GET', body = null, skipErrorDisplay = false) {
@@ -150,6 +160,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const wasMoving = isRobotMoving;
         isRobotMoving = detectMovement(currentJoints);
 
+        // While the WebSocket telemetry push is fresh, it already delivers
+        // live motion at the server's rate — don't also escalate to 10 Hz HTTP
+        // polling. Make sure we're on the cheap idle safety poll and bail.
+        if (Date.now() - lastPushAt < PUSH_STALE_MS) {
+            if (!statusRefreshInterval) startIdleRefresh();
+            return;
+        }
+
         // Only change refresh rate when movement state changes
         if (isRobotMoving && !wasMoving) {
             startMovementRefresh();
@@ -160,6 +178,66 @@ document.addEventListener('DOMContentLoaded', () => {
                     startIdleRefresh();
                 }
             }, 500);
+        }
+    }
+
+    // --- Compact telemetry (high-frequency live push) ---
+    // Applies the small `telemetry` WS message with a field-diff so each ~10 Hz
+    // tick only touches DOM that changed. The full `status_update` envelope
+    // (connect + every action) still drives gripper/track buttons, the
+    // motion-graph card, errors, etc.
+    function applyTelemetry(d) {
+        if (!d) return;
+
+        // Live joint angles — the per-tick payload. Skip an input the user is
+        // editing, and only write when the formatted value actually changes.
+        const joints = d.current_joints;
+        if (Array.isArray(joints) && joints.length > 0) {
+            applyJointColumnVisibility(d.num_joints || joints.length);
+            jointInputIds.forEach((id, i) => {
+                if (i >= joints.length) return;
+                const el = document.getElementById(id);
+                if (el && document.activeElement !== el) {
+                    const v = parseFloat(joints[i]).toFixed(2);
+                    if (el.value !== v) el.value = v;
+                }
+            });
+            if (realtimeJointsDisplay) {
+                const txt = `[${joints.map(n => Number(n).toFixed(1)).join(', ')}]`;
+                if (realtimeJointsDisplay.value !== txt) realtimeJointsDisplay.value = txt;
+            }
+            updateRefreshRate(joints);
+        }
+
+        // Track position — only on change.
+        if (d.track_position !== tlmLast.track) {
+            tlmLast.track = d.track_position;
+            if (typeof d.track_position === 'number') {
+                safeSetText('track-position-display', `${d.track_position.toFixed(2)} mm`);
+            }
+        }
+
+        // Manual (drag/teach) mode — only on change. Drives the switch, the
+        // XYZ/joint control lock-out, and the status-bar mode text.
+        if (d.manual_mode !== tlmLast.manual) {
+            tlmLast.manual = d.manual_mode;
+            updateManualModeBtn(d.manual_mode === true, d.is_alive === true);
+            applyManualModeLock(d.manual_mode === true);
+            safeSetText('robot-mode', d.manual_mode === true ? 'Manual (drag)' : 'Position');
+        }
+
+        // Coarse state (status light/text + control enabling) — only on change,
+        // so setControlsState isn't re-run every tick.
+        if (d.equipment_status !== tlmLast.status) {
+            tlmLast.status = d.equipment_status;
+            const alive = d.is_alive === true;
+            updateStatusText(alive
+                ? (d.equipment_status ? `Connected (${d.equipment_status})` : 'Connected')
+                : `Disconnected${d.equipment_status ? ` (${d.equipment_status})` : ''}`);
+            setControlsState(alive);
+            // setControlsState re-enables motion controls when alive; re-assert
+            // the manual lock so they stay disabled while manual mode is on.
+            applyManualModeLock(tlmLast.manual === true);
         }
     }
 
@@ -194,8 +272,10 @@ document.addEventListener('DOMContentLoaded', () => {
             },
             current_position: details.current_position,
             current_joints: details.current_joints,
+            num_joints: details.num_joints || null,
             track_position: trackMetric ? trackMetric.value : null,
             motion_graph: details.motion_graph || null,
+            manual_mode: details.manual_mode === true,
         };
     }
 
@@ -410,6 +490,9 @@ document.addEventListener('DOMContentLoaded', () => {
             // after an emergency STOP, or `disabled`/`unknown`).
             updateEnableRobotBtn(componentStates.arm, isConnected);
 
+            // Manual (drag/teach) mode toggle reflects the live SDK mode.
+            updateManualModeBtn(data.manual_mode === true, isConnected);
+
             // Update enable button state
             const enableGripperBtn = document.getElementById('enable-gripper-btn');
             if (enableGripperBtn) {
@@ -436,18 +519,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 safeSetText('track-position-display', 'N/A');
             }
             
-            safeSetText('robot-mode', 'Hardware');
+            safeSetText('robot-mode', data.manual_mode === true ? 'Manual (drag)' : 'Position');
 
             safeSetText('last-error', systemStatus.last_error || 'None');
+
+            // Column visibility tracks the robot model (J1-J5 / J1-J6 / J1-J7).
+            // Prefer the reported num_joints so columns are right even before
+            // joint data arrives; fall back to the live joint count.
+            const modelJoints = data.num_joints || (Array.isArray(data.current_joints) ? data.current_joints.length : 0);
+            applyJointColumnVisibility(modelJoints);
 
             // Live-feed joint angles into J1–Jn inputs (skip if user is focused on one)
             if (data.current_joints && Array.isArray(data.current_joints) && data.current_joints.length > 0) {
                 const joints = data.current_joints;
                 const numJoints = joints.length;
-
-                // Show/hide J6 column based on robot model
-                const j6col = document.getElementById('j6-col');
-                if (j6col) j6col.style.display = numJoints >= 6 ? '' : 'none';
 
                 jointInputIds.forEach((id, i) => {
                     if (i >= numJoints) return; // skip joints the robot doesn't have
@@ -470,7 +555,12 @@ document.addEventListener('DOMContentLoaded', () => {
             // Set the state of all controls based on the connection status
             try {
                 setControlsState(isConnected);
-                
+
+                // Manual mode locks out XYZ + joint motion controls. Applied
+                // after setControlsState so it wins over the connection-based
+                // enabling (the joint-angle readout still updates live).
+                applyManualModeLock(data.manual_mode === true);
+
                 // Manage refresh rate based on connection state
                 if (!isConnected && statusRefreshInterval) {
                     // Stop refreshing when disconnected to save resources
@@ -655,7 +745,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const directJointSpeed = document.getElementById('direct-joint-speed');
     const jogStepInput     = document.getElementById('jog-step');
     const jogBtnIds = ['jog-x-plus','jog-x-minus','jog-y-plus','jog-y-minus','jog-z-plus','jog-z-minus'];
-    const jointInputIds = ['j1-input','j2-input','j3-input','j4-input','j5-input','j6-input'];
+    const jointInputIds = ['j1-input','j2-input','j3-input','j4-input','j5-input','j6-input','j7-input'];
+
+    // Show exactly J1..numJoints columns (J1-J5 always present; J6/J7 are
+    // model-dependent: xArm5 -> 5, xArm6 -> 6, xArm7 -> 7). Driven by the
+    // robot model so the right columns show as soon as we're connected,
+    // before live joint data arrives.
+    function applyJointColumnVisibility(numJoints) {
+        if (!numJoints) return;
+        [['j6-col', 6], ['j7-col', 7]].forEach(([colId, jointN]) => {
+            const col = document.getElementById(colId);
+            if (col) col.style.display = numJoints >= jointN ? '' : 'none';
+        });
+    }
 
     function updateEnableRobotBtn(armState, deviceReachable) {
         if (!enableRobotBtn) return;
@@ -676,10 +778,51 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function updateManualModeBtn(isManual, deviceReachable) {
+        if (!manualModeCheckbox) return;
+        // The toggle is live whenever the device is reachable. When manual
+        // mode is on the switch slides + turns red (CSS .is-on) to signal the
+        // joint brakes are released. The checkbox carries the real SDK state,
+        // reconciled from /status on every poll so an optimistic flip that the
+        // device rejects snaps back.
+        manualModeCheckbox.disabled = !deviceReachable;
+        manualModeCheckbox.checked = isManual;
+        if (manualModeSwitch) {
+            manualModeSwitch.classList.toggle('is-on', isManual);
+            manualModeSwitch.classList.toggle('is-disabled', !deviceReachable);
+        }
+    }
+
+    // While manual (drag/teach) mode is engaged the arm is back-drivable and
+    // any commanded XYZ / joint motion is both meaningless and unsafe, so we
+    // lock those controls out. Gripper, track, Home/Stop/Clear/Enable stay
+    // live. The joint-angle inputs are disabled for *editing* only — the live
+    // status feed keeps writing their .value, so the readout stays realtime.
+    function applyManualModeLock(isManual) {
+        const lockEls = [
+            movePredefinedBtn, moveLinearBtn, moveJointsBtn,
+            jointSpeedInput, linearSpeedInput, linearStepsInput,
+            directJointSpeed, jogStepInput, predefinedPositionSelect,
+            ...jogBtnIds.map(id => document.getElementById(id)),
+            ...jointInputIds.map(id => document.getElementById(id)),
+        ];
+        lockEls.forEach(el => {
+            if (!el) return;
+            if (isManual) {
+                el.disabled = true;
+                el.classList.add('manual-locked');
+            } else {
+                // Leave .disabled as setControlsState() set it for the current
+                // connection state; just drop the locked styling.
+                el.classList.remove('manual-locked');
+            }
+        });
+    }
+
     function setControlsState(enabled) {
         // Enable/disable control buttons based on connection state
         const controlButtons = [
-            homeBtn, stopBtn, clearErrorsBtn, openGripperBtn, closeGripperBtn, enableGripperBtn, moveTrackLocBtn,
+            stopBtn, clearErrorsBtn, openGripperBtn, closeGripperBtn, enableGripperBtn, moveTrackLocBtn,
             movePredefinedBtn, moveToStrokeBtn, setGripperForceBtn, moveLinearBtn,
             moveJointsBtn,
             ...jogBtnIds.map(id => document.getElementById(id))
@@ -745,17 +888,28 @@ document.addEventListener('DOMContentLoaded', () => {
         socket.onopen = () => console.log('WebSocket connected.');
         socket.onmessage = (event) => {
             const message = JSON.parse(event.data);
-            console.log('WebSocket message received:', message); // Debug logging
-            
+
             if (message.type === 'status_update') {
                 // ``message.data`` is now a STATUS_SPEC v1.0 ``EquipmentStatus``
                 // envelope; convert into the UI shape consumed by updateStatusUI.
+                // Mark the push as fresh so updateRefreshRate keeps HTTP polling
+                // on the idle safety cadence (the push drives live motion).
+                lastPushAt = Date.now();
                 const uiData = envelopeToUiShape(message.data);
+                // A full envelope is authoritative — resync the telemetry diff
+                // cache so the next compact tick doesn't skip a changed field.
+                tlmLast.status = uiData.equipment_status;
+                tlmLast.manual = uiData.manual_mode;
+                tlmLast.track = uiData.track_position;
                 if (document.readyState === 'complete') {
                     updateStatusUI(uiData);
                 } else {
                     setTimeout(() => updateStatusUI(uiData), 100);
                 }
+            } else if (message.type === 'telemetry') {
+                // Compact high-frequency live push: cheap field-diff update.
+                lastPushAt = Date.now();
+                applyTelemetry(message.data);
             } else if (message.type === 'log') {
                 // Handle incoming log messages from API server
                 console.log('Log message received:', message.log_message); // Debug logging
@@ -775,7 +929,14 @@ document.addEventListener('DOMContentLoaded', () => {
         // Load connection profiles
         const profiles = await apiRequest('/api/configurations');
         if (profiles) {
-            configSelect.innerHTML = profiles.map(p => `<option value="${p}">${p.replace(/_/g, ' ').toUpperCase()}</option>`).join('');
+            // Friendly display names for known profiles; fall back to a humanized
+            // version of the raw profile name. Option values stay the raw profile
+            // name so /connect keeps receiving robot / docker.
+            const profileLabels = { robot: 'Robot', docker: 'Docker' };
+            const label = p => profileLabels[p] || p.replace(/_/g, ' ').toUpperCase();
+            configSelect.innerHTML = profiles.map(p =>
+                `<option value="${p}"${p === 'robot' ? ' selected' : ''}>${label(p)}</option>`
+            ).join('');
         }
 
         // Load arm locations with position values for both dropdowns
@@ -798,7 +959,7 @@ document.addEventListener('DOMContentLoaded', () => {
             trackLocationSelect.innerHTML = trackLocations.locations.map(loc => {
                 // Get position values if available
                 const positions = trackLocations.positions ? trackLocations.positions[loc] : null;
-                const displayText = positions ? `${loc} (${positions}mm)` : loc;
+                const displayText = positions ? `${loc} (${positions} mm)` : loc;
                 return `<option value="${loc}">${displayText}</option>`;
             }).join('');
         }
@@ -844,9 +1005,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    homeBtn.addEventListener('click', () => {
-        apiRequest('/move/home', 'POST');
-    });
     stopBtn.addEventListener('click', () => {
         apiRequest('/move/stop', 'POST');
     });
@@ -857,6 +1015,26 @@ document.addEventListener('DOMContentLoaded', () => {
     enableRobotBtn.addEventListener('click', () => {
         apiRequest('/robot/enable', 'POST');
     });
+
+    if (manualModeCheckbox) {
+        manualModeCheckbox.addEventListener('change', () => {
+            const enable = manualModeCheckbox.checked;
+            if (enable && !confirm(
+                'Enable Manual Mode?\n\n' +
+                'This releases the joint brakes so the arm can be moved by hand. ' +
+                'Support the arm before continuing — it may sag under its own ' +
+                'weight or payload.\n\n' +
+                'XYZ and joint controls are locked while manual mode is on.'
+            )) {
+                // User backed out — revert the optimistic flip immediately;
+                // the next /status poll would also correct it.
+                manualModeCheckbox.checked = false;
+                if (manualModeSwitch) manualModeSwitch.classList.remove('is-on');
+                return;
+            }
+            apiRequest('/robot/manual', 'POST', { enable });
+        });
+    }
 
     // Motion-graph card listeners (Phase 4). All elements may be
     // missing if index.html is older than this build — guard each one.
@@ -871,15 +1049,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const mgRecoverAccept = document.getElementById('mg-recover-accept');
     if (mgRecoverAccept) {
         mgRecoverAccept.addEventListener('click', acceptRecover);
-    }
-
-    // Test log button
-    const testLogBtn = document.getElementById('test-log-btn');
-    if (testLogBtn) {
-        testLogBtn.addEventListener('click', () => {
-            console.log('Test log button clicked');
-            apiRequest('/test/log', 'POST');
-        });
     }
 
     function currentGripperForce() {
@@ -973,10 +1142,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (moveJointsBtn) {
         moveJointsBtn.addEventListener('click', () => {
-            // Only collect joints that are visible (respects num_joints from robot)
-            const j6col = document.getElementById('j6-col');
-            const j6hidden = j6col && j6col.style.display === 'none';
-            const activeIds = j6hidden ? jointInputIds.slice(0, 5) : jointInputIds;
+            // Only collect joints whose column is visible (respects the robot
+            // model: J1-J5 always, J6/J7 only when their column is shown).
+            const activeIds = jointInputIds.filter(id => {
+                const col = document.getElementById(id)?.closest('.joint-col');
+                return !col || col.style.display !== 'none';
+            });
 
             const angles = activeIds.map(id => {
                 const v = parseFloat(document.getElementById(id)?.value);

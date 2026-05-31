@@ -1078,6 +1078,41 @@ class XArmController:
         code = self.arm.emergency_stop()
         return self.check_code(code, 'emergency_stop')
 
+    def set_manual_mode(self, enable):
+        """Enable or disable manual (drag/teach) mode.
+
+        Manual mode releases the joint brakes so the arm can be moved by
+        hand -- the same toggle UFACTORY Studio exposes. It maps to xArm
+        SDK mode 2 (joint teaching); disabling restores position-control
+        mode 0. Both transitions re-assert state 0 so the change takes
+        effect (and so toggling straight after a STOP, which leaves the
+        arm in state 4, still works).
+
+        WARNING: while manual mode is on the arm is back-drivable and will
+        sag under its own weight / payload if unsupported. The caller is
+        responsible for warning the operator.
+        """
+        if not self.arm:
+            print("Cannot set manual mode: No arm connection")
+            return False
+
+        try:
+            target_mode = 2 if enable else 0
+            # Manual mode needs motion enabled first.
+            if enable and hasattr(self.arm, 'motion_enable'):
+                self.arm.motion_enable(enable=True)
+            code = self.arm.set_mode(target_mode)
+            if not self.check_code(code, f'set_mode({target_mode})'):
+                return False
+            code = self.arm.set_state(0)
+            if not self.check_code(code, 'set_state(0)'):
+                return False
+            print(f"Manual mode {'enabled' if enable else 'disabled'} (mode {target_mode})")
+            return True
+        except Exception as e:
+            print(f"Failed to set manual mode: {e}")
+            return False
+
     # =============================================================================
     # GRIPPER CONTROL - Multiple Types Supported
     # =============================================================================
@@ -1413,23 +1448,29 @@ class XArmController:
         return None
 
     def go_home(self, speed=None, mvacc=None, wait=True):
-        """Move the robot to its home position using the SDK's built-in method."""
+        """Move the robot to the named ``robot_home`` preset.
+
+        The SDK's factory home (``move_gohome``, joint zeros) is unsafe on this
+        cell, so "home" always routes through the ``robot_home`` definition in
+        ``position_config.yaml`` and travels as a normal named joint move (which
+        keeps the motion-graph node tracker correct). If ``robot_home`` is not
+        defined we raise rather than fall back to factory home.
+
+        ``mvacc``/``wait`` are accepted for backward compatibility; the named
+        move uses the joint-move defaults (blocking).
+        """
         if not self.is_component_enabled('arm'):
             print("Arm is not enabled")
             return False
 
-        if speed is None: speed = self.angle_speed
-        if mvacc is None: mvacc = self.angle_acc
+        positions = (self.position_config or {}).get('positions', {})
+        if not positions.get('robot_home'):
+            raise ValueError(
+                "No 'robot_home' position defined in position_config.yaml; "
+                "refusing to fall back to unsafe factory home."
+            )
 
-        # SDK move_gohome targets the firmware's home (typically joint zeros),
-        # which is not necessarily our named `robot_home` preset. Clear the
-        # named tracker so the graph reports unknown until the operator
-        # invokes an explicit named move.
-        self.last_arm_pose_name = None
-
-        # Use the SDK's dedicated go_home method
-        code = self.arm.move_gohome(speed=speed, mvacc=mvacc, wait=wait)
-        return self.check_code(code, 'go_home')
+        return self.move_to_named_location('robot_home', speed=speed)
 
     def get_named_locations(self):
         """Returns a list of all named locations."""

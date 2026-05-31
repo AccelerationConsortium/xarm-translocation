@@ -41,7 +41,7 @@ If something looks wrong at this stage, fix it before moving on.
 
 Goal: prove `current_node` tracks named moves and clears on raw moves.
 
-1. **Connect** via the web UI with profile `real_hw`. Wait for `ready`.
+1. **Connect** via the web UI with profile `robot`. Wait for `ready`.
 2. Open the Motion Graph card. **Expected**: visible, `Mode: advisory`,
    `Current: (off-grid)`, `Reachable: (off-grid — use Recover)`.
 3. From the named-locations dropdown, **Move to `robot_home`**.

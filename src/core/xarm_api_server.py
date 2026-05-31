@@ -39,6 +39,7 @@ try:
         EQUIPMENT_ID,
         EQUIPMENT_NAME,
         build_status,
+        build_telemetry,
     )
     from .motion_graph import (
         EdgeNotAllowedError, GraphError, GraphMode, RecoveryMismatch,
@@ -61,6 +62,7 @@ except ImportError:
         EQUIPMENT_ID,
         EQUIPMENT_NAME,
         build_status,
+        build_telemetry,
     )
     from core.motion_graph import (
         EdgeNotAllowedError, GraphError, GraphMode, RecoveryMismatch,
@@ -325,6 +327,16 @@ class EnforcementRequest(BaseModel):
     enabled: bool = Field(description="true to require X-Claim-Token on mutating endpoints")
 
 
+class ManualModeRequest(BaseModel):
+    """Body of POST /robot/manual."""
+    enable: bool = Field(
+        description=(
+            "true to release the joint brakes for hand-guiding (drag/teach), "
+            "false to return to position control"
+        )
+    )
+
+
 # Phase 5: FastAPI dependency that enforces X-Claim-Token on mutating
 # endpoints when claim enforcement is enabled. No-op otherwise (and
 # no-op when no claim is held — the cooperative interpretation, see
@@ -364,11 +376,13 @@ async def lifespan(app: FastAPI):
     
     # Start background tasks
     log_task = asyncio.create_task(broadcast_logs())
-    
+    telemetry_task = asyncio.create_task(telemetry_loop())
+
     yield
-    
+
     # Shutdown
     log_task.cancel()
+    telemetry_task.cancel()
     global controller
     if controller:
         logger.info("Disconnecting from robot...")
@@ -505,6 +519,61 @@ async def broadcast_status_update():
         await manager.broadcast(json.dumps(message))
     except Exception as e:
         logger.error(f"Error broadcasting status: {e}")
+
+
+async def broadcast_telemetry():
+    """Broadcast a compact live-telemetry message to WebSocket clients.
+
+    Smaller than the full ``status_update`` envelope and applied by the browser
+    with a cheap field-diff, so the high-frequency push (telemetry_loop) stays
+    light. Action-driven updates still use ``broadcast_status_update``.
+    """
+    try:
+        message = {"type": "telemetry", "data": build_telemetry(controller)}
+        await manager.broadcast(json.dumps(message))
+    except Exception as e:
+        logger.error(f"Error broadcasting telemetry: {e}")
+
+
+# Live-telemetry push. Refreshes the cached joint/pose readings from the arm
+# and pushes the status envelope to connected WebSocket clients at a fixed
+# rate, so the UI shows genuinely live motion (including hand-guided manual
+# mode) without the browser polling /status. The loop idles cheaply when the
+# arm is down or no client is attached. Rate is configurable; 0 disables it.
+TELEMETRY_HZ = float(os.environ.get("XARM_TELEMETRY_HZ", "10"))
+
+
+async def telemetry_loop():
+    interval = 1.0 / TELEMETRY_HZ if TELEMETRY_HZ > 0 else None
+    if interval is None:
+        logger.info("Telemetry loop disabled (XARM_TELEMETRY_HZ=0)")
+        return
+    logger.info(f"Telemetry loop running at {TELEMETRY_HZ} Hz")
+
+    def _refresh(c):
+        # Side-effecting *reads* only: pull live joint/pose (and track) into the
+        # controller's cache that build_status() then reads. Runs in a worker
+        # thread so the serial round-trips don't block the event loop.
+        c._update_positions()
+        if getattr(c, "enable_track", False):
+            c._update_track_position()
+
+    while True:
+        try:
+            await asyncio.sleep(interval)
+            c = controller
+            if c is None or not getattr(c, "is_alive", False):
+                continue
+            if not manager.active_connections:
+                continue
+            await asyncio.to_thread(_refresh, c)
+            await broadcast_telemetry()
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Telemetry loop error: {e}")
+            # Back off so a persistent fault doesn't spin the loop hot.
+            await asyncio.sleep(0.5)
 
 # API Routes
 
@@ -940,6 +1009,29 @@ async def enable_robot():
 
     await broadcast_status_update()
     return {"message": "Robot motion enabled successfully."}
+
+@app.post("/robot/manual", dependencies=[Depends(require_claim)])
+async def set_manual_mode(request: ManualModeRequest):
+    """Toggle manual (drag/teach) mode -- mirrors the factory UI's Manual button.
+
+    Manual mode (xArm SDK mode 2) releases the joint brakes so the arm can be
+    moved by hand. Disabling returns to position control (mode 0). Run via
+    to_thread so the SDK round-trip doesn't block the event loop.
+    """
+    c = get_controller()
+    ok = await asyncio.to_thread(c.set_manual_mode, request.enable)
+    if not ok:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to {'enable' if request.enable else 'disable'} manual mode.",
+        )
+
+    logger.info(f"Manual mode {'enabled' if request.enable else 'disabled'}")
+    await broadcast_status_update()
+    return {
+        "message": f"Manual mode {'enabled' if request.enable else 'disabled'}.",
+        "manual_mode": request.enable,
+    }
 
 @app.post("/component/enable", dependencies=[Depends(require_claim)])
 async def enable_component(request: ComponentRequest):

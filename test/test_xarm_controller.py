@@ -132,7 +132,16 @@ class TestMovementMethods:
         assert initialized_controller.move_single_joint(1, 10) is True
 
     def test_go_home(self, initialized_controller):
+        # go_home routes through the named 'robot_home' preset, never factory home.
         assert initialized_controller.go_home() is True
+        initialized_controller.arm.move_gohome.assert_not_called()
+
+    def test_go_home_without_robot_home_raises(self, initialized_controller):
+        # No 'robot_home' defined → refuse rather than fall back to factory home.
+        initialized_controller.position_config['positions'].pop('robot_home', None)
+        with pytest.raises(ValueError, match="robot_home"):
+            initialized_controller.go_home()
+        initialized_controller.arm.move_gohome.assert_not_called()
 
     def test_velocity_control(self, initialized_controller):
         assert initialized_controller.set_cartesian_velocity(10, 0, 0, 0, 0, 0) is True
@@ -140,6 +149,26 @@ class TestMovementMethods:
 
     def test_stop_motion(self, initialized_controller):
         assert initialized_controller.stop_motion() is True
+
+    def test_set_manual_mode_enable(self, initialized_controller, mock_xarm_api):
+        """Enabling manual mode = motion_enable + set_mode(2) + set_state(0)."""
+        mock_xarm_api.motion_enable.reset_mock()
+        mock_xarm_api.set_mode.reset_mock()
+        mock_xarm_api.set_state.reset_mock()
+
+        assert initialized_controller.set_manual_mode(True) is True
+        mock_xarm_api.motion_enable.assert_called_with(enable=True)
+        mock_xarm_api.set_mode.assert_called_with(2)
+        mock_xarm_api.set_state.assert_called_with(0)
+
+    def test_set_manual_mode_disable(self, initialized_controller, mock_xarm_api):
+        """Disabling manual mode returns to position control: set_mode(0)."""
+        mock_xarm_api.set_mode.reset_mock()
+        mock_xarm_api.set_state.reset_mock()
+
+        assert initialized_controller.set_manual_mode(False) is True
+        mock_xarm_api.set_mode.assert_called_with(0)
+        mock_xarm_api.set_state.assert_called_with(0)
 
 
 class TestUniversalGripperControl:

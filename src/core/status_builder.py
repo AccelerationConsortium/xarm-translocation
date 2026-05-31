@@ -208,6 +208,9 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         "model_name": getattr(controller, "model_name", None),
         "num_joints": getattr(controller, "num_joints", None),
         "gripper_type": getattr(controller, "gripper_type", None),
+        # Manual (drag/teach) mode == xArm SDK mode 2. Read-only here:
+        # the toggle lives on POST /robot/manual.
+        "manual_mode": getattr(getattr(controller, "arm", None), "mode", None) == 2,
     }
     # Carry connection details for the local web UI's panel. Not contracted.
     details["connection_details"] = _build_connection_details(controller)
@@ -248,6 +251,43 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         last_error=last_error,
         details=details,
     )
+
+
+def build_telemetry(controller: XArmController | None) -> dict[str, Any]:
+    """Compact live-telemetry payload pushed at motion rate over the WS.
+
+    Carries only the fields that change while the arm moves (joints, pose,
+    track, manual mode, coarse state) so the high-frequency push stays small
+    and the browser can apply it with a cheap field-diff instead of running
+    the full status render. The complete ``EquipmentStatus`` envelope is still
+    sent as the ``status_update`` message on connect and after every action.
+
+    Side-effect-free: derived from ``build_status`` so the state/manual/joint
+    values can never drift from the authoritative envelope.
+    """
+    if controller is None:
+        return {
+            "equipment_status": "requires_init",
+            "is_alive": False,
+            "current_joints": None,
+            "current_position": None,
+            "track_position": None,
+            "manual_mode": False,
+            "num_joints": None,
+        }
+
+    full = build_status(controller)
+    details = full.details or {}
+    track_metric = full.metrics.get("track_position")
+    return {
+        "equipment_status": full.equipment_status,
+        "is_alive": full.equipment_status in ("ready", "busy", "degraded", "e_stop"),
+        "current_joints": details.get("current_joints"),
+        "current_position": details.get("current_position"),
+        "track_position": (track_metric.value if track_metric is not None else None),
+        "manual_mode": bool(details.get("manual_mode")),
+        "num_joints": details.get("num_joints"),
+    }
 
 
 def _build_claimed_by(controller: XArmController) -> dict[str, Any] | None:

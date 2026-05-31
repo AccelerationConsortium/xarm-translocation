@@ -22,7 +22,7 @@ class TestDockerIntegration:
     def docker_controller(self):
         """Create a controller configured for Docker simulator."""
         return XArmController(
-            profile_name='docker_local',
+            profile_name='docker',
             gripper_type='bio',
             enable_track=True,
             auto_enable=False
@@ -91,7 +91,7 @@ class TestDockerStressTest:
                 pytest.skip("Docker simulator not available")
             
         for _ in range(3):
-            controller = XArmController(profile_name='docker_local', auto_enable=False)
+            controller = XArmController(profile_name='docker', auto_enable=False)
             assert controller.initialize() is True
             assert controller.is_alive
             controller.disconnect()
@@ -108,7 +108,7 @@ class TestDockerComponentIsolation:
         if not is_docker_available():
             pytest.skip("Docker simulator not available")
         
-        controller = XArmController(profile_name='docker_local', auto_enable=False)
+        controller = XArmController(profile_name='docker', auto_enable=False)
         assert controller.initialize(), "Setup: failed to initialize controller"
         yield controller
         controller.disconnect()
@@ -147,7 +147,7 @@ def is_docker_available():
         arm = None
         try:
             from xarm.wrapper import XArmAPI
-            # Use docker_local profile settings for the check
+            # Use docker profile settings for the check
             arm = XArmAPI('127.0.0.1', check_joint_limit=False, do_not_open=True)
             arm.connect()
             is_docker_available.available = arm.connected

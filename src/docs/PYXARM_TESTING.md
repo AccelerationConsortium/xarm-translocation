@@ -15,7 +15,7 @@ This guide provides a comprehensive overview of the simulation modes and a three
 ```python
 # This runs entirely in Python memory - no network connection
 controller = XArmController(
-    profile_name='docker_local',
+    profile_name='docker',
     simulation_mode=True  # ← Pure software simulation
 )
 ```
@@ -31,13 +31,13 @@ controller = XArmController(
 ```python
 # This connects to Docker simulator via network (127.0.0.1:18333)
 controller = XArmController(
-    profile_name='docker_local',
+    profile_name='docker',
     simulation_mode=False  # ← Network connection to simulator
 )
 
 # This connects to real robot hardware via network (192.168.1.237:18333)
 controller = XArmController(
-    profile_name='real_hw',
+    profile_name='robot',
     simulation_mode=False  # ← Network connection to real robot
 )
 ```
@@ -47,8 +47,8 @@ controller = XArmController(
 | `simulation_mode` | Network Connection | Target | Physics Engine | Use Case |
 |-------------------|-------------------|--------|----------------|----------|
 | `True` | ❌ None | Python memory | Basic collision detection | Fast development, CI/CD |
-| `False` + `docker_local` profile | ✅ Yes | Docker simulator (127.0.0.1) | Full physics simulation | Realistic testing |
-| `False` + `real_hw` profile | ✅ Yes | Real robot (192.168.1.237) | Real hardware | Production |
+| `False` + `docker` profile | ✅ Yes | Docker simulator (127.0.0.1) | Full physics simulation | Realistic testing |
+| `False` + `robot` profile | ✅ Yes | Real robot (192.168.1.237) | Real hardware | Production |
 
 **Key Point**: `simulation_mode=False` does NOT mean "real hardware only" - it means "make a network connection" (which could be to a simulator OR real hardware, depending on the profile).
 
@@ -184,7 +184,7 @@ from src.core.xarm_controller import XArmController
 
 # Connect to the Docker simulator (ensure model matches the simulator)
 controller = XArmController(
-    profile_name='docker_local', # Connects to 127.0.0.1
+    profile_name='docker', # Connects to 127.0.0.1
     simulation_mode=False
 )
 
