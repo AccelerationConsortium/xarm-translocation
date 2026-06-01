@@ -16,40 +16,54 @@ positions:
   #uplc_plate_drop: []
   #uplc_plate_low: [136.8, -3.3, -62.5, 64.3, 317.9]
 
-  #ot2_home: [90.0, -45.0, 0.0, 45.0, 90.0]
-  #ot2_high: []
-
-
   # The following happens when linear rail is at Deck location (550mm)
   # The Arm can reach the solid handler, the deck plates, and the fumehood positions
-  deck_home: [90.0, -45.0, 0.0, 45, -90.0]
-  deck_high: [165.58, -88.51, 4.76, 82.96, -14.22]
-  deck_slot1_high: [202.51, -2.59, -19.97, 21.97, 22.28]
-  deck_slot1_low: [202.54, 33.18, -27.42, -6.34, 21.78]
-  deck_slot1_high_y_dir: [211.41, 25.12, -60.52, 35.76, 121.38]
-  deck_slot1_low_y_dir: [211.40, 46.38, -65.99, 19.97, 121.08]
-  deck_slot2_high: [215.68, -37.97, 1.16, 36.20, 35.63]
-  deck_slot2_low: [215.75, 34.68, -10.00, -25.30, 34.66]
-  decks_slot2_high_y_dir: [220.66, 9.40, -37.66, 28.64, 130.54]
-  deck_slot2_low_y_dir: [220.65, 38.24, -43.98, 6.12, 130.11]
-  deck_solid_high: [141.51, -31.05, -16.86, 46.73, -38.38]
-  deck_solid_low: [141.50, -6.09, -12.36, 17.27, -38.80]
+  deck_home: [90.0, -45.0, 0.0, 45, -90.0] # gripper
+  deck_high: [180, -45, 0, 45, 0]
+  deck_slot1_high: [202.88, 6.43, -20.05, 13.03, 22.50]             
+  deck_slot1_low: [203.08, 33.13, -27.07, -6.66, 22.31]             # Gripper close to 120mm to grip from long side
+  deck_slot1_low_press: [203.08, 33.63, -27.28, -6.95, 22.31]       # Press plate down
+
+  # deck_slot1_high_y_dir: [211.41, 25.12, -60.52, 35.76, 121.38] # gripper has to be at 90
+  # deck_slot1_low_y_dir: [211.40, 46.38, -65.99, 19.97, 121.08] # gripper has to be at 90
+  # deck_slot2_high: [215.68, -37.97, 1.16, 36.20, 35.63]
+  # deck_slot2_low: [215.75, 34.68, -10.00, -25.30, 34.66]
+  # decks_slot2_high_y_dir: [220.66, 9.40, -37.66, 28.64, 130.54] # gripper has to be at 90
+  # deck_slot2_low_y_dir: [220.65, 38.24, -43.98, 6.12, 130.11] # gripper has to be at 90
+  
+  deck_solid_high:  [141.51, -31.05, -16.86, 46.73, -38.38]
+  deck_solid_low: [141.40, -7.65, -11.90, 18.36, -38.88]
+  deck_solid_low_press: [141.40, -7.07, -11.91, 17.79, -38.89]
 
   # The following happens when linear rail is at Hood location (same as Deck for now  )
   # The Arm can reach the shaker and filteration setup in the fumehoods
-  hood_home: []
-  hood_shaker_high: []
-  hood_shaker_low: []
-  # hood_shaker_drop: []
-  hood_filteration_high: []
-  # hood_filteration_drop: []
-  hood_filteration_low: []
+  hood_home: [-4.42, -67.82, 8.18, 59.11, -4.33]
+  hood_shaker_high: [5.13, 28.61, -61.45, 32.40, 4.98]
+  hood_shaker_low: [5.14, 39.01, -63.64, 24.21, 4.84]               # Gripper close to 120mm to grip from long side
+  hood_shaker_low_press: [5.14, 39.80, -63.90, 23.68, 4.84]         # Press plate down
+
+  hood_filter_home: [-46.10, -5.22, -32.69, 37.49, -46.08]      
+  hood_filter_high: [-28.19, 29.48, -81.85, 51.98, -27.95]     
+  hood_filter_low: [-28.19, 35.68, -80.25, 44.17, -28.05]           # Gripper close to 120mm to grip from long side  and away from filteration plate
+  hood_filter_low_press: [-28.19, 36.01, -80.23, 43.82, -28.06]     # Press plate down
+  hood_filter_top_plate: [-28.19, 32.05, -80.86, 48.42, -27.99]     # Position to grip top plate of filteration plate
+
+  # The following happens when linear rail is at Home
+  opentrons_home: [-4.42, -67.82, 8.18, 59.11, -4.33]
+  opentrons_2_high: [-2.28, 7.22, -25.61, 17.89, -2.62]
+  opentrons_2_low: [-2.21, 33.11, -31.79, -1.83, -2.93]             # Gripper close to 120mm to grip from long side
+  opentrons_2_low_press: [-2.20, 33.82, -32.07, -2.26, -2.94]       # Press plate down
+  opentrons_4_high: [15.06, 28.20, -51.35, 22.86, 14.77]
+  opentrons_4_low: [15.10, 42.10, -55.87, 13.48, 14.62]
+  opentrons_6_high: [-18.22, 33.43, -52.03, 17.92, -18.60]
+  opentrons_6_low: [-18.20, 41.26, -54.90, 12.96, -18.69]
+  opentrons_6_low_press: [-18.20, 41.63, -55.06, 12.75, -18.69]
 
   # The following happens when linear rail is at Cytation location
-  cytation_home: []
-  cytation_high: []
-  cytation_low: []
-  #
-  plateloc_home: []
-  plateloc_high: []
-  plateloc_low: []
+  # cytation_home: []
+  # cytation_high: []
+  # cytation_low: []
+
+  # plateloc_home: []
+  # plateloc_high: []
+  # plateloc_low: []

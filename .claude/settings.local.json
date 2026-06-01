@@ -61,7 +61,13 @@
       "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:8000/web/\" -UseBasicParsing -TimeoutSec 5; \"HTTP $\\($r.StatusCode\\) — web UI is serving\" } catch { \"Web UI fetch failed: $\\($_.Exception.Message\\)\" })",
       "PowerShell(Start-Process \"http://localhost:8000/web/\"; \"Opened http://localhost:8000/web/ in default browser\")",
       "PowerShell($svc = Get-Service -Name xarm -ErrorAction SilentlyContinue; \"Before: $\\($svc.Status\\)\"; try { Restart-Service -Name xarm -Force -ErrorAction Stop; \"Restart-Service: issued\" } catch { \"Restart-Service failed: $\\($_.Exception.Message\\)\" })",
-      "PowerShell(Get-Content C:\\\\SDL_Logs\\\\xarm.err.log -Tail 70 | Where-Object { $_ -notmatch \"connection \\(open|closed\\)\" -and $_ -notmatch \"WebSocket /ws\" } | Select-Object -Last 35)"
+      "PowerShell(Get-Content C:\\\\SDL_Logs\\\\xarm.err.log -Tail 70 | Where-Object { $_ -notmatch \"connection \\(open|closed\\)\" -and $_ -notmatch \"WebSocket /ws\" } | Select-Object -Last 35)",
+      "Read(//Users/macbook_m2/Library/CloudStorage/OneDrive-Personal/**)",
+      "Read(//c/Users/macbook_m2/Library/CloudStorage/OneDrive-Personal/**)",
+      "Read(//c/Users/**)",
+      "Read(//c/Users/sdl2/**)",
+      "Bash(mkdir -p \"/c/Users/sdl2/Projects/xarm-translocation/assets\")",
+      "Bash(cp \"/c/Users/sdl2/Downloads/xArm.png\" \"/c/Users/sdl2/Projects/xarm-translocation/assets/xarm-control.png\")"
     ]
   }
 }

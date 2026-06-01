@@ -9,4 +9,6 @@ Range:
 locations:
   Home: 0
   Deck: 550 #
+  Hood: 550 # same as Deck for now (see position_config.yaml hood_* comment)
   Cytation: 700 # Max linear track length
+  Plateloc: 0 # TODO: jog + measure; placeholder == Home until authored
