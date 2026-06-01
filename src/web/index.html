@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>xArm Control</title>
-    <link rel="stylesheet" href="style.css?v=20260530e">
+    <link rel="stylesheet" href="style.css?v=20260531b">
 </head>
 <body>
     <div class="container">
@@ -19,6 +19,7 @@
                             <div id="status-text">Disconnected</div>
                         </div>
                         <div id="connection-details"></div>
+                        <div id="claim-status" class="claim-status claim-free">Control: nobody (open)</div>
                     </div>
                 </div>
                 <div class="log-container">
@@ -105,9 +106,9 @@
                         <!-- Left: xArm controls -->
                         <div class="sc-left">
                             <div class="xarm-buttons">
-                                <button id="enable-robot-btn" class="btn btn-success enable-button">Enable</button>
+                                <button id="take-control-btn" class="btn btn-claim" title="Acquire the device claim so you can drive the arm. While you hold it, workflows are locked out (HTTP 423) and see you as the claim holder.">Take Control</button>
                                 <button id="stop-btn" class="btn btn-danger">STOP</button>
-                                <button id="clear-errors-btn" class="btn btn-warning">Clear Errors</button>
+                                <button id="clear-errors-btn" class="btn btn-warning" title="Clear arm + gripper faults and re-energize the servos (replaces the old separate Enable). Works without taking control.">Clear Errors</button>
                             </div>
                             <div class="position-controls-row">
                                 <select id="predefined-position-select" class="position-dropdown"></select>
@@ -240,6 +241,6 @@
 
         </main>
     </div>
-    <script src="main.js?v=20260530g"></script>
+    <script src="main.js?v=20260531b"></script>
 </body>
 </html>

@@ -306,18 +306,23 @@ class XArmController:
         #   dict: {from_node, to_node, mode, speed, timestamp}
         self.last_transition: Optional[dict] = None
 
-        # STATUS_SPEC v1.1 cooperative claim (Phase 3+5). Single
-        # in-process holder. Enforcement defaults OFF (advisory mode);
-        # set XARM_ENFORCE_CLAIMS=1 (or call POST /control/claim/enforce
-        # at runtime) to gate /move/*, /gripper/* etc. with HTTP 423.
-        # Cooperative interpretation: enforcement only blocks moves
-        # while a claim is held by another session — no holder is
-        # free-for-all by design.
-        enforce_env = os.environ.get("XARM_ENFORCE_CLAIMS", "").lower()
-        enforce = enforce_env in ("1", "true", "yes", "on")
+        # STATUS_SPEC v1.1 claim (Phase 3+5). Single in-process holder.
+        # Hard enforcement is ON by default so the claim is the single
+        # gate on motion: every mutating endpoint (/move/*, /gripper/*,
+        # /track/*, ...) requires the active claim's X-Claim-Token or
+        # returns HTTP 423 — including when no claim is held at all (a
+        # caller must POST /control/claim first). /move/stop and
+        # /clear/errors stay ungated (safety floor). Set
+        # XARM_ENFORCE_CLAIMS to a falsy value (0/false/no/off) to drop
+        # back to advisory mode for demos/dev; POST /control/claim/enforce
+        # toggles it at runtime.
+        enforce_env = os.environ.get("XARM_ENFORCE_CLAIMS", "").strip().lower()
+        enforce = enforce_env not in ("0", "false", "no", "off")
         self.claim_manager = ClaimManager(enforce=enforce)
         if enforce:
-            print("[claims] enforcement enabled at startup via XARM_ENFORCE_CLAIMS")
+            print("[claims] hard enforcement ON (default); set XARM_ENFORCE_CLAIMS=0 for advisory mode")
+        else:
+            print("[claims] enforcement OFF (advisory) via XARM_ENFORCE_CLAIMS")
 
         # State tracking
         self.alive = True
@@ -743,32 +748,32 @@ class XArmController:
                 self.alive = True
                 print("[OK] All errors and warnings cleared successfully")
 
-                # Check if we need to re-enable components
-                if self.auto_enable:
-                    print("Re-enabling components...")
-                    if self.states['arm'] == ComponentState.ERROR:
-                        # clean_error/clean_warn alone aren't enough after an
-                        # emergency_stop: the SDK is still in state 4 and
-                        # refuses motion commands until mode/state are
-                        # re-asserted. Mirror /robot/enable's recovery here so
-                        # Clear Errors is sufficient by itself.
-                        if hasattr(self.arm, 'motion_enable'):
-                            self.arm.motion_enable(enable=True)
-                        if hasattr(self.arm, 'set_mode'):
-                            self.arm.set_mode(0)
-                        if hasattr(self.arm, 'set_state'):
-                            self.arm.set_state(0)
-                        self.states['arm'] = ComponentState.ENABLED
-                    # BIO gripper faults don't propagate to states['gripper'];
-                    # re-enable unconditionally so clean_bio_gripper_error +
-                    # set_bio_gripper_enable(True) actually take effect on the
-                    # hardware after a slip/overcurrent.
-                    if self.gripper_type in ('bio', 'bio_gen2'):
-                        self.enable_gripper_component()
-                    elif self.has_gripper() and self.states['gripper'] == ComponentState.ERROR:
-                        self.enable_gripper_component()
-                    if self.has_track() and self.states['track'] == ComponentState.ERROR:
-                        self.enable_track_component()
+                # Always re-arm the arm. This is the single recovery button
+                # (it replaced the separate "Enable"), so it must re-energize
+                # the servos unconditionally — NOT just when auto_enable is on
+                # or the arm is flagged ERROR. The SDK parks the arm in state 4
+                # after emergency_stop and refuses motion until mode/state are
+                # re-asserted; a merely-disabled arm must also come back live.
+                print("Re-enabling arm and components...")
+                if hasattr(self.arm, 'motion_enable'):
+                    self.arm.motion_enable(enable=True)
+                if hasattr(self.arm, 'set_mode'):
+                    self.arm.set_mode(0)
+                if hasattr(self.arm, 'set_state'):
+                    self.arm.set_state(0)
+                self.states['arm'] = ComponentState.ENABLED
+
+                # BIO gripper faults live in the gripper's own register;
+                # re-enable unconditionally so clean_bio_gripper_error +
+                # set_bio_gripper_enable(True) actually take effect on the
+                # hardware after a slip/overcurrent. Other grippers/track:
+                # re-enable when they were in error.
+                if self.gripper_type in ('bio', 'bio_gen2'):
+                    self.enable_gripper_component()
+                elif self.has_gripper() and self.states['gripper'] == ComponentState.ERROR:
+                    self.enable_gripper_component()
+                if self.has_track() and self.states['track'] == ComponentState.ERROR:
+                    self.enable_track_component()
 
                 return True
             else:

@@ -36,7 +36,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const jointSpeedInput = document.getElementById('joint-speed');
     const linearSpeedInput = document.getElementById('linear-speed');
     const realtimeJointsDisplay = document.getElementById('realtime-joints');
-    const enableRobotBtn = document.getElementById('enable-robot-btn');
     const manualModeSwitch = document.getElementById('manual-mode-switch');
     const manualModeCheckbox = document.getElementById('manual-mode-checkbox');
     const moveToStrokeBtn = document.getElementById('move-to-stroke-btn');
@@ -49,6 +48,20 @@ document.addEventListener('DOMContentLoaded', () => {
     // Linear movement controls
     const linearStepsInput = document.getElementById('linear-steps');
     const moveLinearBtn = document.getElementById('move-linear-btn');
+
+    // STATUS_SPEC v1.1 claim: the /web/ UI is a first-class claim holder.
+    // The arm refuses motion (HTTP 423) unless the caller presents the
+    // active claim's token, so an operator here must "Take Control" to
+    // drive — which surfaces them as details.claimed_by and locks
+    // workflows out (and vice-versa). STOP / Clear Errors stay ungated.
+    const takeControlBtn = document.getElementById('take-control-btn');
+    const claimStatusEl = document.getElementById('claim-status');
+    const CLAIM_OWNER = 'human@xarm-web';
+    const claimSessionId =
+        (window.crypto && crypto.randomUUID && crypto.randomUUID()) ||
+        `xarm-web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    let claimToken = null;          // non-null while this browser holds the claim
+    let claimHeartbeatTimer = null; // setInterval handle for the heartbeat
 
     let socket;
     let statusRefreshInterval = null;
@@ -77,11 +90,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 method,
                 headers: { 'Content-Type': 'application/json' },
             };
+            // Attach the claim token so gated endpoints accept the request
+            // while this browser holds control. Harmless when enforcement
+            // is off or for ungated endpoints (the server ignores it).
+            if (claimToken) {
+                options.headers['X-Claim-Token'] = claimToken;
+            }
             if (body) {
                 options.body = JSON.stringify(body);
             }
             const response = await fetch(`${API_BASE_URL}${endpoint}`, options);
             if (!response.ok) {
+                // 423 Locked: the claim is held elsewhere (or this browser's
+                // claim expired/was stolen). Drop our local claim state so the
+                // UI re-locks and the operator can re-take control.
+                if (response.status === 423) {
+                    handleClaimLost();
+                }
                 let errorData = {};
                 try {
                     errorData = await response.json();
@@ -89,6 +114,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     errorData = {};
                 }
                 let errorMessage = errorData.detail || errorData.error || `HTTP error! status: ${response.status}`;
+                if (response.status === 423) {
+                    const heldBy = errorData?.detail?.claimed_by?.owner;
+                    errorMessage = heldBy
+                        ? `Locked: control held by ${heldBy}. Click Take Control to request it.`
+                        : 'Locked: you do not hold control. Click Take Control first.';
+                }
                 
                 // Simplify connection error messages
                 if (endpoint === '/connect' && response.status >= 500) {
@@ -236,8 +267,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 : `Disconnected${d.equipment_status ? ` (${d.equipment_status})` : ''}`);
             setControlsState(alive);
             // setControlsState re-enables motion controls when alive; re-assert
-            // the manual lock so they stay disabled while manual mode is on.
+            // the manual + claim locks so they stay disabled when manual mode is
+            // on or this browser doesn't hold the claim.
             applyManualModeLock(tlmLast.manual === true);
+            applyClaimLock(claimToken !== null);
         }
     }
 
@@ -276,6 +309,7 @@ document.addEventListener('DOMContentLoaded', () => {
             track_position: trackMetric ? trackMetric.value : null,
             motion_graph: details.motion_graph || null,
             manual_mode: details.manual_mode === true,
+            claimed_by: details.claimed_by || null,
         };
     }
 
@@ -485,11 +519,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            // Enable Robot button: armed when the device is reachable but
-            // the arm itself is not currently "enabled" (typically `error`
-            // after an emergency STOP, or `disabled`/`unknown`).
-            updateEnableRobotBtn(componentStates.arm, isConnected);
-
             // Manual (drag/teach) mode toggle reflects the live SDK mode.
             updateManualModeBtn(data.manual_mode === true, isConnected);
 
@@ -560,6 +589,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 // after setControlsState so it wins over the connection-based
                 // enabling (the joint-angle readout still updates live).
                 applyManualModeLock(data.manual_mode === true);
+
+                // Claim lock: gated controls stay disabled unless THIS browser
+                // holds the claim. Applied last so it wins over the connection
+                // enabling. STOP / Clear Errors are never claim-locked.
+                applyClaimLock(claimToken !== null);
+                updateClaimIndicator(data.claimed_by);
 
                 // Manage refresh rate based on connection state
                 if (!isConnected && statusRefreshInterval) {
@@ -759,25 +794,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    function updateEnableRobotBtn(armState, deviceReachable) {
-        if (!enableRobotBtn) return;
-        // Show the button as actionable when the device is reachable AND the
-        // arm is in a state that motion_enable can recover from. After
-        // emergency_stop the SDK callback flips arm to `error`; the spec
-        // envelope reports `degraded` overall but the device is still up.
-        const armOk = armState === 'enabled';
-        const canEnable = deviceReachable && !armOk;
-        enableRobotBtn.disabled = !canEnable;
-        enableRobotBtn.textContent = 'Enable';
-        if (canEnable) {
-            enableRobotBtn.classList.remove('btn-secondary');
-            enableRobotBtn.classList.add('btn-success');
-        } else {
-            enableRobotBtn.classList.remove('btn-success');
-            enableRobotBtn.classList.add('btn-secondary');
-        }
-    }
-
     function updateManualModeBtn(isManual, deviceReachable) {
         if (!manualModeCheckbox) return;
         // The toggle is live whenever the device is reachable. When manual
@@ -819,9 +835,188 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // --- STATUS_SPEC v1.1 claim lifecycle ---------------------------------
+    // Claim-gated controls: everything that can command motion. STOP and
+    // Clear Errors are deliberately excluded (they're ungated server-side
+    // too — the safety floor must work even when control is held elsewhere).
+    // Connect / Disconnect are also excluded (you connect before claiming).
+    function claimGatedElements() {
+        // NB: takeControlBtn, stopBtn, clearErrorsBtn, connect/disconnect are
+        // intentionally NOT in this list.
+        return [
+            openGripperBtn, closeGripperBtn, enableGripperBtn,
+            moveTrackLocBtn, movePredefinedBtn, moveToStrokeBtn,
+            setGripperForceBtn, moveLinearBtn, moveJointsBtn,
+            jointSpeedInput, linearSpeedInput, trackSpeedInput,
+            gripperStrokeInput, gripperForceInput, linearStepsInput,
+            directJointSpeed, jogStepInput,
+            predefinedPositionSelect, trackLocationSelect,
+            manualModeCheckbox,
+            ...jogBtnIds.map(id => document.getElementById(id)),
+            ...jointInputIds.map(id => document.getElementById(id)),
+        ];
+    }
+
+    // Disable the motion-control surface unless this browser holds the claim.
+    // When held, only the locked styling is dropped; .disabled is left to the
+    // connection/status logic (so disconnected stays disabled). Mirrors
+    // applyManualModeLock and must run AFTER setControlsState.
+    function applyClaimLock(held) {
+        claimGatedElements().forEach(el => {
+            if (!el) return;
+            if (!held) {
+                el.disabled = true;
+                el.classList.add('claim-locked');
+            } else {
+                el.classList.remove('claim-locked');
+            }
+        });
+        // When locked, grey the manual switch too. When held, leave the
+        // is-disabled class to updateManualModeBtn (which owns the
+        // device-reachability case).
+        if (!held && manualModeSwitch) {
+            manualModeSwitch.classList.add('is-disabled');
+        }
+    }
+
+    // Reflect the device-reported claim holder (details.claimed_by) in the
+    // status header. "(you)" when the holder matches our session.
+    function updateClaimIndicator(claimedBy) {
+        if (!claimStatusEl) return;
+        claimStatusEl.classList.remove('claim-free', 'claim-mine', 'claim-other');
+        if (!claimedBy) {
+            claimStatusEl.textContent = 'Control: nobody (open)';
+            claimStatusEl.classList.add('claim-free');
+            return;
+        }
+        const mine = claimedBy.session_id === claimSessionId;
+        claimStatusEl.textContent = `Control: ${claimedBy.owner}${mine ? ' (you)' : ''}`;
+        claimStatusEl.classList.add(mine ? 'claim-mine' : 'claim-other');
+    }
+
+    function updateTakeControlBtn() {
+        if (!takeControlBtn) return;
+        const held = claimToken !== null;
+        takeControlBtn.textContent = held ? 'Release Control' : 'Take Control';
+        takeControlBtn.classList.toggle('is-holding', held);
+    }
+
+    function startClaimHeartbeat(intervalSeconds) {
+        stopClaimHeartbeat();
+        // Beat at half the server's advertised interval so a single missed
+        // beat (network hiccup) doesn't drop the lock. Floor at 2 s.
+        const everyMs = Math.max(2000, ((intervalSeconds || 10) * 1000) / 2);
+        claimHeartbeatTimer = setInterval(async () => {
+            if (!claimToken) return;
+            try {
+                const r = await fetch(`${API_BASE_URL}/control/heartbeat`, {
+                    method: 'POST',
+                    headers: { 'X-Claim-Token': claimToken },
+                });
+                // 401/404 => the device forgot our claim (expiry or restart).
+                if (r.status === 401 || r.status === 404) handleClaimLost();
+            } catch (e) {
+                // Transient network error: let the next beat retry. A real loss
+                // surfaces as a 423 on the next action or a 401/404 next beat.
+                console.warn('Heartbeat failed (will retry):', e);
+            }
+        }, everyMs);
+    }
+
+    function stopClaimHeartbeat() {
+        if (claimHeartbeatTimer) {
+            clearInterval(claimHeartbeatTimer);
+            claimHeartbeatTimer = null;
+        }
+    }
+
+    async function takeControl() {
+        try {
+            const resp = await fetch(`${API_BASE_URL}/control/claim`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    owner: CLAIM_OWNER,
+                    session_id: claimSessionId,
+                    ttl_s: 30,
+                }),
+            });
+            if (resp.status === 200) {
+                const data = await resp.json();
+                claimToken = data.claim_token;
+                startClaimHeartbeat(data.heartbeat_interval_s);
+                updateTakeControlBtn();
+                applyClaimLock(true);
+                addLogEntry('Control acquired (human@xarm-web)', 'info');
+                clearMessage();
+                // Re-run the enable logic so gated controls light up now.
+                fetchAndUpdateStatus();
+            } else if (resp.status === 409) {
+                let d = {};
+                try { d = await resp.json(); } catch { /* noop */ }
+                const owner = d.claimed_by && d.claimed_by.owner;
+                showMessage(
+                    `Cannot take control: held by ${owner || 'another session'}. Try again later.`,
+                    'error',
+                );
+                addLogEntry(`Take Control refused (held by ${owner || 'another session'})`, 'warning');
+            } else {
+                showMessage(`Failed to take control (HTTP ${resp.status}).`, 'error');
+            }
+        } catch (e) {
+            showMessage(`Failed to take control: ${e.message}`, 'error');
+        }
+    }
+
+    // Release the claim. `viaUnload` uses fetch keepalive so the request
+    // survives the page closing (sendBeacon can't set the X-Claim-Token header).
+    async function releaseControl(viaUnload = false) {
+        const token = claimToken;
+        stopClaimHeartbeat();
+        claimToken = null;
+        updateTakeControlBtn();
+        if (!viaUnload) {
+            applyClaimLock(false);
+            updateClaimIndicator(null);
+        }
+        if (!token) return;
+        try {
+            await fetch(`${API_BASE_URL}/control/release`, {
+                method: 'POST',
+                headers: { 'X-Claim-Token': token },
+                keepalive: viaUnload,
+            });
+        } catch (e) {
+            if (!viaUnload) console.warn('Release failed:', e);
+        }
+        if (!viaUnload) {
+            addLogEntry('Control released', 'info');
+            fetchAndUpdateStatus();
+        }
+    }
+
+    // Called when the claim is gone from under us (423 on an action, or
+    // 401/404 on a heartbeat). Drop local state and re-lock the UI.
+    function handleClaimLost() {
+        if (claimToken === null) return; // already released/lost
+        claimToken = null;
+        stopClaimHeartbeat();
+        updateTakeControlBtn();
+        applyClaimLock(false);
+        showMessage(
+            'Lost control — the claim is no longer held by this browser. Click Take Control to resume.',
+            'error',
+        );
+        addLogEntry('Claim lost (expired or held elsewhere)', 'error');
+    }
+
     function setControlsState(enabled) {
-        // Enable/disable control buttons based on connection state
+        // Enable/disable control buttons based on connection state.
+        // takeControlBtn is here (not claim-gated) because acquiring a claim
+        // needs a connected controller, but it must NOT require already
+        // holding the claim.
         const controlButtons = [
+            takeControlBtn,
             stopBtn, clearErrorsBtn, openGripperBtn, closeGripperBtn, enableGripperBtn, moveTrackLocBtn,
             movePredefinedBtn, moveToStrokeBtn, setGripperForceBtn, moveLinearBtn,
             moveJointsBtn,
@@ -857,12 +1052,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 select.disabled = !enabled;
             }
         });
-        
-        // Enable Robot button is now driven from the arm component state by
-        // updateEnableRobotBtn() — see updateStatusUI. The wholesale
-        // connect/disconnect toggle here would otherwise stomp on it
-        // (after STOP the arm is `error` but the connection is still alive,
-        // and we need the button to come BACK on, not stay off).
         
         // Connect button: enabled when disconnected, disabled when connected
         if (connectBtn) {
@@ -1005,15 +1194,29 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    if (takeControlBtn) {
+        takeControlBtn.addEventListener('click', () => {
+            // The button toggles: take when free, release when held.
+            if (claimToken !== null) {
+                releaseControl();
+            } else {
+                takeControl();
+            }
+        });
+    }
+
+    // Release the claim when the operator leaves so it doesn't linger until
+    // TTL expiry and block workflows. `pagehide` is the reliable mobile/desktop
+    // unload signal; keepalive lets the request (with its header) survive.
+    window.addEventListener('pagehide', () => {
+        if (claimToken !== null) releaseControl(true);
+    });
+
     stopBtn.addEventListener('click', () => {
         apiRequest('/move/stop', 'POST');
     });
     clearErrorsBtn.addEventListener('click', () => {
         apiRequest('/clear/errors', 'POST');
-    });
-    
-    enableRobotBtn.addEventListener('click', () => {
-        apiRequest('/robot/enable', 'POST');
     });
 
     if (manualModeCheckbox) {

@@ -85,11 +85,18 @@ class ClaimManager:
     When ON, the ``require_claim`` FastAPI dependency calls
     ``verify_token`` and returns HTTP 423 on mismatch.
 
-    Cooperative interpretation (matches STATUS_SPEC §5 wording):
-    enforcement only blocks moves while a claim is held by *another*
-    session. Periods with no active claim remain free-for-all, since
-    the entire point of the protocol is that workflows opt-in to
-    mutual exclusion for critical sections.
+    Hard enforcement (STATUS_SPEC §5 "hard-enforcement on /control/*"):
+    when enforcement is ON, every gated endpoint requires the token of
+    the *currently-held* claim. Crucially, a period with **no** active
+    claim is NOT a free-for-all — it refuses motion (HTTP 423) until
+    some caller acquires a claim. This makes the claim the single gate:
+    there is no un-gated window a non-participating client (e.g. the
+    /web/ UI) could move through. The only way to move under enforcement
+    is to POST /control/claim first and present the returned token.
+
+    The constructor still defaults to ``enforce=False`` so unit tests
+    and advisory deployments behave predictably; the *service* layer
+    (``XArmController``) is what defaults enforcement on.
     """
 
     def __init__(
@@ -124,22 +131,28 @@ class ClaimManager:
             self._enforce = False
 
     def verify_token(self, token: Optional[str]) -> None:
-        """Raise InvalidClaimToken if enforcement is on AND a claim is
-        held AND the token doesn't match. Caller uses this from the
-        FastAPI dependency to gate mutating endpoints.
+        """Gate a mutating endpoint under hard enforcement. Used by the
+        FastAPI ``require_claim`` dependency, which maps the raised
+        exception to HTTP 423.
 
-        No-op when:
-          - enforcement is off (advisory mode), or
-          - no claim is currently held (cooperative interpretation:
-            no holder = no one to defer to).
+        No-op only when enforcement is off (advisory mode).
+
+        When enforcement is ON, raise ``InvalidClaimToken`` whenever the
+        request does not present the currently-held claim's token. This
+        includes the **no-claim-held** case: with no active claim there
+        is no token that could match, so motion is refused until some
+        caller acquires a claim via ``POST /control/claim``. This is the
+        hard-enforcement contract (STATUS_SPEC §5) — there is no
+        free-for-all window for a non-participating client to slip
+        through. ``/control/{claim,heartbeat,release}`` and the safety
+        actions (``/move/stop``, ``/clear/errors``) are deliberately not
+        gated by this dependency.
         """
         if not self._enforce:
             return
         with self._lock:
             self._expire_if_due()
-            if self._current is None:
-                return
-            if token is None or token != self._current.token:
+            if self._current is None or token is None or token != self._current.token:
                 raise InvalidClaimToken()
 
     # ── Internal helpers ────────────────────────────────────────

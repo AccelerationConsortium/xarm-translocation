@@ -516,6 +516,53 @@ input#linear-steps {
     background: #334155;
 }
 
+/* Take/Release Control button. Default (claim not held) is an indigo
+   "take" affordance; when this browser holds the claim it flips to an
+   amber "release" state so it's obvious you're the active driver. */
+.btn-claim {
+    background: #4f46e5;
+}
+
+.btn-claim:hover:not(:disabled) {
+    background: #4338ca;
+}
+
+.btn-claim.is-holding {
+    background: var(--warning);
+}
+
+.btn-claim.is-holding:hover:not(:disabled) {
+    background: var(--warning-hover);
+}
+
+/* Controls locked out because this browser does not hold the device
+   claim. Same treatment as the manual-mode lock — already `disabled`
+   via JS, this just signals *why*. */
+.claim-locked {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+/* Claim holder indicator in the status header. */
+.claim-status {
+    margin-top: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+}
+
+.claim-status.claim-free {
+    color: #64748b;
+}
+
+.claim-status.claim-mine {
+    color: var(--success);
+}
+
+.claim-status.claim-other {
+    color: var(--danger);
+}
+
 .xarm-buttons .btn {
     min-height: 104px;
     padding: 16px;

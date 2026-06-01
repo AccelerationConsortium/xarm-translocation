@@ -1,12 +1,14 @@
 """Phase 5 tests: claim enforcement on mutating endpoints.
 
+Hard enforcement (STATUS_SPEC §5): when enforcement is ON the claim is
+the single gate — there is no no-claim free-for-all window.
+
 Covers:
-- ClaimManager.verify_token() honors the enforce flag + cooperative
-  interpretation (no claim held = pass)
+- ClaimManager.verify_token() honors the enforce flag
 - Default (enforce off) behavior unchanged
-- enforce on + no claim = moves proceed
+- enforce on + no claim held = motion REFUSED (must claim first)
 - enforce on + claim held + matching token = moves proceed
-- enforce on + claim held + wrong/missing token = 423 + body
+- enforce on + claim held/no claim + wrong/missing token = 423 + body
 - /move/stop and /clear/errors are NEVER gated (safety/recovery)
 - /control/claim, /heartbeat, /release are NEVER gated (manage the lock)
 - POST /control/claim/enforce respects the same dependency
@@ -41,11 +43,13 @@ def test_verify_token_noop_when_enforcement_off():
     cm.verify_token(None)
 
 
-def test_verify_token_noop_when_no_claim_held():
-    """Cooperative interpretation: no holder = anyone can move."""
+def test_verify_token_raises_when_no_claim_held():
+    """Hard enforcement: no holder = motion refused until someone claims."""
     cm = ClaimManager(enforce=True)
-    cm.verify_token(None)
-    cm.verify_token("garbage")
+    with pytest.raises(InvalidClaimToken):
+        cm.verify_token(None)
+    with pytest.raises(InvalidClaimToken):
+        cm.verify_token("garbage")
 
 
 def test_verify_token_passes_with_matching_token():
@@ -114,13 +118,33 @@ def test_named_move_works_without_token_when_enforcement_off(client, mock_contro
     assert resp.status_code == 200
 
 
-# ── Enforcement on, no claim held = pass ───────────────────────────
+# ── Enforcement on, no claim held = refused (hard enforcement) ─────
 
 
-def test_named_move_works_when_enforcement_on_but_no_claim_held(client, mock_controller):
+def test_named_move_refused_when_enforcement_on_and_no_claim_held(client, mock_controller):
     mock_controller.claim_manager.enable_enforcement()
-    # No claim held — cooperative interpretation lets the move through.
+    # No claim held — hard enforcement refuses motion until someone claims.
     resp = client.post("/move/location", json={"location_name": "pickup"})
+    assert resp.status_code == 423
+    detail = resp.json()["detail"]
+    assert detail["error"] == "claim_required"
+    # No holder, so claimed_by is null and the hint points at /control/claim.
+    assert detail["claimed_by"] is None
+
+
+def test_claim_then_move_with_token_succeeds(client, mock_controller):
+    """The intended flow under hard enforcement: acquire, then move."""
+    mock_controller.claim_manager.enable_enforcement()
+    claim = client.post(
+        "/control/claim", json={"owner": "human@xarm-web", "session_id": "s9"}
+    )
+    assert claim.status_code == 200
+    token = claim.json()["claim_token"]
+    resp = client.post(
+        "/move/location",
+        json={"location_name": "pickup"},
+        headers={"X-Claim-Token": token},
+    )
     assert resp.status_code == 200
 
 
@@ -176,6 +200,14 @@ def test_clear_errors_never_blocked_by_enforcement(client, mock_controller):
     mock_controller.claim_manager.acquire(owner="alice", session_id="s1")
     resp = client.post("/clear/errors")
     assert resp.status_code == 200
+
+
+def test_stop_works_with_enforcement_on_and_no_claim(client, mock_controller):
+    """Safety floor under hard enforcement: STOP must work even when no
+    claim is held (and would otherwise 423 a move)."""
+    mock_controller.claim_manager.enable_enforcement()
+    assert client.post("/move/stop").status_code == 200
+    assert client.post("/clear/errors").status_code == 200
 
 
 def test_claim_endpoint_never_blocked_by_enforcement(client, mock_controller):
