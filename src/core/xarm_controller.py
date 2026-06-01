@@ -278,6 +278,17 @@ class XArmController:
         self.last_gripper_force = self._gripper_setting('force', 100)
         self.last_gripper_speed = self._gripper_setting('speed', 300)
 
+        # BIO gripper status/error register cache, surfaced on /status as a
+        # plate-transfer verification signal (failed pickup / mid-move slip).
+        # Refreshed by refresh_gripper_status() after each Gen2 jaw move;
+        # status_builder reads ONLY these cached values so it stays
+        # side-effect-free (no live Modbus round-trip from /status).
+        self.last_gripper_position_actual = None   # mm, read back from gripper
+        self.last_gripper_motion_state = None      # stop|moving|object_detected|fault|unknown
+        self.last_gripper_object_detected = None   # bool | None
+        self.last_gripper_error_code = 0           # BIO register 0x0F; 0 == OK, 12 == object slipped
+        self.last_gripper_error_text = None         # human-readable mapping of the code
+
         # Force torque sensor tracking
         self.force_torque_history = deque(maxlen=1000)
         self.last_force_torque = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # [fx, fy, fz, tx, ty, tz]
@@ -1228,6 +1239,64 @@ class XArmController:
                 return ret[1]
         return None
 
+    # BIO Gripper G2 status register (0x00) low 2 bits, per
+    # xarm.core.config x_config.XCONF.BioGripperState. Mirrored here so we
+    # don't import a deep SDK internal just for four constants.
+    _BIO_GRIPPER_MOTION_STATES = {
+        0: "stop",             # reached commanded position, nothing held
+        1: "moving",
+        2: "object_detected",  # caught something between the jaws (good pickup)
+        3: "fault",            # detail lives in the error register (0x0F)
+    }
+    # BIO gripper error register (0x0F) codes we have copy for. Unknown
+    # codes fall back to "fault"; extend as new failure modes surface.
+    _BIO_GRIPPER_ERROR_TEXT = {
+        12: "object slipped",
+    }
+
+    def refresh_gripper_status(self):
+        """Read the BIO gripper status + error registers and cache them.
+
+        This round-trips to the gripper over Modbus, so it is NOT
+        side-effect-free and MUST NOT be called from ``status_builder``
+        (which only reads the cached ``last_gripper_*`` attributes set
+        here). Call it right after each Gen2 jaw move; the cached values
+        then describe that move for the next ``/status`` read.
+
+        No-op for non-BIO grippers, when disconnected, or when the SDK
+        build lacks the status getter. Returns the decoded motion-state
+        string, or ``None`` when unavailable.
+        """
+        if self.gripper_type not in ('bio', 'bio_gen2') or not self.arm:
+            return None
+        if not hasattr(self.arm, 'get_bio_gripper_status'):
+            return None
+        try:
+            code, status = self.arm.get_bio_gripper_status()
+            if code != 0 or not isinstance(status, int) or status < 0:
+                return None
+            motion_state = self._BIO_GRIPPER_MOTION_STATES.get(status & 0x03, "unknown")
+            self.last_gripper_motion_state = motion_state
+            self.last_gripper_object_detected = (motion_state == "object_detected")
+            if motion_state == "fault" and hasattr(self.arm, 'get_bio_gripper_error'):
+                ecode, evalue = self.arm.get_bio_gripper_error()
+                err_code = evalue if (ecode == 0 and isinstance(evalue, int)) else 0
+                self.last_gripper_error_code = err_code
+                self.last_gripper_error_text = self._BIO_GRIPPER_ERROR_TEXT.get(
+                    err_code, "fault"
+                )
+            else:
+                self.last_gripper_error_code = 0
+                self.last_gripper_error_text = None
+            # Cache the actual jaw position too (within the same refresh).
+            pos = self.get_gripper_position()
+            if isinstance(pos, (int, float)) and not isinstance(pos, bool):
+                self.last_gripper_position_actual = pos
+            return motion_state
+        except Exception as e:  # defensive: never let a status read break a move
+            print(f"[gripper] status refresh failed: {e}")
+            return None
+
     # =============================================================================
     # LINEAR TRACK CONTROL (Optional)
     # =============================================================================
@@ -1833,6 +1902,9 @@ class XArmController:
             self.last_gripper_position = position
             self.last_gripper_force = force
             self.last_gripper_speed = speed
+            # Capture the slip/detect register for /status now that the jaws
+            # have settled — this is the move whose outcome we verify.
+            self.refresh_gripper_status()
         return success
 
     # Standard Gripper Methods (Internal use - prefer universal methods)

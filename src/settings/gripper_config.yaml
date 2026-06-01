@@ -3,19 +3,6 @@
 # The system will automatically detect and configure the appropriate gripper
 ---
 
-# Bio Gripper Configuration
-bio:
-  name: "BioGripper Gen1"
-  type: "bio"
-  has_stroke_control: false
-  has_force_control: false
-  speed: 300
-  open_position: 850
-  close_position: 0
-  capabilities:
-    - "open_close"
-  description: "UFACTORY Bio Gripper without stroke control"
-
 # BioGripper Gen2 Configuration
 # Official UFACTORY BioGripper Gen2 SDK parameter ranges:
 #   Position : 71–150  (71 = fully closed, 150 = fully open)

@@ -153,10 +153,18 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         "arm": ComponentStatus(connected=arm_connected, state=arm_state),
     }
     if controller.has_gripper():
+        gripper_message = str(getattr(controller, "gripper_type", None) or "")
+        # Reflect a BIO gripper hardware fault (e.g. "object slipped") into
+        # the component message so it's visible without opening details.
+        grip_err_code = getattr(controller, "last_gripper_error_code", 0)
+        grip_err_text = getattr(controller, "last_gripper_error_text", None)
+        if isinstance(grip_err_code, int) and grip_err_code != 0:
+            label = grip_err_text if isinstance(grip_err_text, str) else "fault"
+            gripper_message = f"{gripper_message} FAULT: {label} (code {grip_err_code})".strip()
         components["gripper"] = ComponentStatus(
             connected=arm_connected,
             state=gripper_state,
-            message=str(getattr(controller, "gripper_type", None) or ""),
+            message=gripper_message or None,
         )
     if controller.has_track():
         components["track"] = ComponentStatus(
@@ -219,6 +227,13 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     motion_graph_block = _build_motion_graph_details(controller)
     if motion_graph_block is not None:
         details["motion_graph"] = motion_graph_block
+
+    # BIO gripper slip/detect register snapshot (plate-transfer
+    # verification aid). Absent for non-BIO grippers and before the first
+    # gripper move of the session. Populated from cached values only.
+    gripper_block = _build_gripper_details(controller)
+    if gripper_block is not None:
+        details["gripper"] = gripper_block
 
     # v1.1: ``details.claimed_by`` while a claim is active; absent
     # otherwise. The status envelope is unchanged for v1.0 readers
@@ -349,6 +364,53 @@ def _build_allowed_actions(
                 actions.append(f"move.{node_id}")
 
     return actions
+
+
+def _build_gripper_details(controller: XArmController) -> dict[str, Any] | None:
+    """Cached BIO gripper status/error register snapshot for /status.
+
+    This is the device-side surface of the plate-transfer verification
+    signal: ``object_detected`` distinguishes a real pickup from the jaws
+    closing on empty deck, and ``error_code`` 12 ("object slipped")
+    flags a mid-move drop. All values come from the controller's
+    ``refresh_gripper_status`` cache, so this reader is side-effect-free.
+
+    Returns ``None`` when nothing concrete has been cached yet (non-BIO
+    gripper, or the gripper hasn't moved this session) so the field
+    doesn't pollute /status for arms that never grip.
+
+    Field shape::
+
+        {
+          "motion_state":    "stop" | "moving" | "object_detected" | "fault",
+          "object_detected": bool,
+          "position_mm":     float,   # actual read-back jaw position
+          "error_code":      int,     # BIO register 0x0F; 0 == OK, 12 == slipped
+          "error_text":      str      # present only when error_code != 0
+        }
+    """
+    block: dict[str, Any] = {}
+
+    motion_state = getattr(controller, "last_gripper_motion_state", None)
+    if isinstance(motion_state, str):
+        block["motion_state"] = motion_state
+
+    detected = getattr(controller, "last_gripper_object_detected", None)
+    if isinstance(detected, bool):
+        block["object_detected"] = detected
+
+    position = getattr(controller, "last_gripper_position_actual", None)
+    if isinstance(position, (int, float)) and not isinstance(position, bool):
+        block["position_mm"] = float(position)
+
+    error_code = getattr(controller, "last_gripper_error_code", None)
+    if isinstance(error_code, int) and not isinstance(error_code, bool):
+        block["error_code"] = error_code
+        error_text = getattr(controller, "last_gripper_error_text", None)
+        if error_code != 0 and isinstance(error_text, str):
+            block["error_text"] = error_text
+
+    return block or None
 
 
 def _build_motion_graph_details(controller: XArmController) -> dict[str, Any] | None:

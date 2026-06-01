@@ -54,6 +54,8 @@ def mock_xarm_api():
     mock_arm.set_bio_gripper_force.return_value = 0
     mock_arm.set_bio_gripper_speed.return_value = 0
     mock_arm.get_bio_gripper_g2_position.return_value = (0, 0)
+    mock_arm.get_bio_gripper_status.return_value = (0, 0)   # 0 == IS_STOP, no object
+    mock_arm.get_bio_gripper_error.return_value = (0, 0)
     mock_arm.set_gripper_enable.return_value = 0
     mock_arm.set_gripper_position.return_value = 0
     mock_arm.robotiq_reset.return_value = 0

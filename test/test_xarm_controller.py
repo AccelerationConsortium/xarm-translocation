@@ -407,3 +407,73 @@ class TestConfigurationManagement:
 
     def test_safety_config_loading(self, initialized_controller):
         assert 'workspace_limits' in initialized_controller.safety_config
+
+
+class TestGripperStatusRegister:
+    """refresh_gripper_status() decodes the BIO gripper status/error register."""
+
+    def _bio_gen2_controller(self, mock_config_files, mock_xarm_api, monkeypatch):
+        monkeypatch.setattr('src.core.xarm_controller.XArmAPI', lambda *a, **k: mock_xarm_api)
+        return XArmController(
+            profile_name='test_profile',
+            gripper_type='bio_gen2',
+            auto_enable=False,
+        )
+
+    def test_object_detected_sets_cache(self, mock_config_files, mock_xarm_api, monkeypatch):
+        # status low 2 bits == 2 (IS_DETECTED); actual jaw position 82 mm.
+        mock_xarm_api.get_bio_gripper_status.return_value = (0, 0b10)
+        mock_xarm_api.get_bio_gripper_g2_position.return_value = (0, 82)
+        controller = self._bio_gen2_controller(mock_config_files, mock_xarm_api, monkeypatch)
+
+        state = controller.refresh_gripper_status()
+        assert state == 'object_detected'
+        assert controller.last_gripper_object_detected is True
+        assert controller.last_gripper_error_code == 0
+        assert controller.last_gripper_error_text is None
+        assert controller.last_gripper_position_actual == 82
+
+    def test_slip_fault_reads_error_register(self, mock_config_files, mock_xarm_api, monkeypatch):
+        # status low 2 bits == 3 (IS_FAULT); error register 0x0F == 12 (slipped).
+        mock_xarm_api.get_bio_gripper_status.return_value = (0, 0b11)
+        mock_xarm_api.get_bio_gripper_error.return_value = (0, 12)
+        controller = self._bio_gen2_controller(mock_config_files, mock_xarm_api, monkeypatch)
+
+        state = controller.refresh_gripper_status()
+        assert state == 'fault'
+        assert controller.last_gripper_error_code == 12
+        assert controller.last_gripper_error_text == 'object slipped'
+        assert controller.last_gripper_object_detected is False
+
+    def test_clean_stop_clears_error(self, mock_config_files, mock_xarm_api, monkeypatch):
+        # status low 2 bits == 0 (IS_STOP): jaws fully closed, nothing held.
+        mock_xarm_api.get_bio_gripper_status.return_value = (0, 0)
+        controller = self._bio_gen2_controller(mock_config_files, mock_xarm_api, monkeypatch)
+        # Pre-load a stale fault to prove it gets cleared.
+        controller.last_gripper_error_code = 12
+        controller.last_gripper_error_text = 'object slipped'
+
+        state = controller.refresh_gripper_status()
+        assert state == 'stop'
+        assert controller.last_gripper_object_detected is False
+        assert controller.last_gripper_error_code == 0
+        assert controller.last_gripper_error_text is None
+
+    def test_noop_for_non_bio_gripper(self, mock_config_files, mock_xarm_api, monkeypatch):
+        monkeypatch.setattr('src.core.xarm_controller.XArmAPI', lambda *a, **k: mock_xarm_api)
+        controller = XArmController(
+            profile_name='test_profile', gripper_type='standard', auto_enable=False,
+        )
+        assert controller.refresh_gripper_status() is None
+        mock_xarm_api.get_bio_gripper_status.assert_not_called()
+
+    def test_gen2_move_refreshes_status(self, mock_config_files, mock_xarm_api, monkeypatch):
+        """A successful Gen2 jaw move caches the register without an extra call."""
+        mock_xarm_api.get_bio_gripper_status.return_value = (0, 0b10)
+        mock_xarm_api.get_bio_gripper_g2_position.return_value = (0, 82)
+        controller = self._bio_gen2_controller(mock_config_files, mock_xarm_api, monkeypatch)
+        controller.states['gripper'] = ComponentState.ENABLED
+
+        assert controller.close_gripper() is True
+        assert controller.last_gripper_motion_state == 'object_detected'
+        assert controller.last_gripper_object_detected is True
