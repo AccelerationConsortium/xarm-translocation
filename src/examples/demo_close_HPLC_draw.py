@@ -240,7 +240,7 @@ def demo_hplc_drawer_closing(controller, auto_confirm=False, custom_speeds=None)
         tcp_speed = speeds['position_for_closing']['tcp_speed']
         if not move_with_confirmation(
             controller,
-            lambda: controller.move_plate_linear('uplc_draw_open_min', num_steps=1, speed=tcp_speed),
+            lambda: controller.move_plate_linear('uplc_draw_open_min', speed=tcp_speed),
             "Step 5: Linear movement to position for drawer closing",
             auto_confirm,
             speeds['position_for_closing']
@@ -251,7 +251,7 @@ def demo_hplc_drawer_closing(controller, auto_confirm=False, custom_speeds=None)
         tcp_speed = speeds['close_drawer']['tcp_speed']
         if not move_with_confirmation(
             controller,
-            lambda: controller.move_plate_linear('uplc_draw_open_close', num_steps=1, speed=tcp_speed),
+            lambda: controller.move_plate_linear('uplc_draw_open_close', speed=tcp_speed),
             "Step 6: Linear movement to close the drawer",
             auto_confirm,
             speeds['close_drawer']
@@ -262,7 +262,7 @@ def demo_hplc_drawer_closing(controller, auto_confirm=False, custom_speeds=None)
         tcp_speed = speeds['retract_from_closed']['tcp_speed']
         if not move_with_confirmation(
             controller,
-            lambda: controller.move_plate_linear('uplc_draw_open_min', num_steps=1, speed=tcp_speed),
+            lambda: controller.move_plate_linear('uplc_draw_open_min', speed=tcp_speed),
             "Step 7: Linear movement to retract from closed drawer",
             auto_confirm,
             speeds['retract_from_closed']
@@ -273,7 +273,7 @@ def demo_hplc_drawer_closing(controller, auto_confirm=False, custom_speeds=None)
         tcp_speed = speeds['move_away_from_drawer']['tcp_speed']
         if not move_with_confirmation(
             controller,
-            lambda: controller.move_plate_linear('uplc_draw_open_max', num_steps=1, speed=tcp_speed),
+            lambda: controller.move_plate_linear('uplc_draw_open_max', speed=tcp_speed),
             "Step 8: Linear movement away from drawer area",
             auto_confirm,
             speeds['move_away_from_drawer']

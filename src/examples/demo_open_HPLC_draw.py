@@ -252,7 +252,7 @@ def demo_hplc_drawer_opening(controller, auto_confirm=False, custom_speeds=None)
         tcp_speed = speeds['uplc_draw_open_min']['tcp_speed']
         if not move_with_confirmation(
             controller,
-            lambda: controller.move_plate_linear('uplc_draw_open_min', num_steps=1, speed=tcp_speed),
+            lambda: controller.move_plate_linear('uplc_draw_open_min', speed=tcp_speed),
             "Step 5: Linear movement to uplc_draw_open_min position",
             auto_confirm,
             speeds['uplc_draw_open_min']
@@ -263,7 +263,7 @@ def demo_hplc_drawer_opening(controller, auto_confirm=False, custom_speeds=None)
         tcp_speed = speeds['uplc_draw_open_close']['tcp_speed']
         if not move_with_confirmation(
             controller,
-            lambda: controller.move_plate_linear('uplc_draw_open_close', num_steps=1, speed=tcp_speed),
+            lambda: controller.move_plate_linear('uplc_draw_open_close', speed=tcp_speed),
             "Step 6: Linear movement to uplc_draw_open_close position (drawer fully closed)",
             auto_confirm,
             speeds['uplc_draw_open_close']
@@ -274,7 +274,7 @@ def demo_hplc_drawer_opening(controller, auto_confirm=False, custom_speeds=None)
         tcp_speed = speeds['uplc_draw_return_min']['tcp_speed']
         if not move_with_confirmation(
             controller,
-            lambda: controller.move_plate_linear('uplc_draw_open_min', num_steps=1, speed=tcp_speed),
+            lambda: controller.move_plate_linear('uplc_draw_open_min', speed=tcp_speed),
             "Step 7: Linear movement back to uplc_draw_open_min position",
             auto_confirm,
             speeds['uplc_draw_return_min']
@@ -285,7 +285,7 @@ def demo_hplc_drawer_opening(controller, auto_confirm=False, custom_speeds=None)
         tcp_speed = speeds['uplc_draw_return_max']['tcp_speed']
         if not move_with_confirmation(
             controller,
-            lambda: controller.move_plate_linear('uplc_draw_open_max', num_steps=1, speed=tcp_speed),
+            lambda: controller.move_plate_linear('uplc_draw_open_max', speed=tcp_speed),
             "Step 8: Linear movement to uplc_draw_open_max position",
             auto_confirm,
             speeds['uplc_draw_return_max']

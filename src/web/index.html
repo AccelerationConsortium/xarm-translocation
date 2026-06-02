@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>xArm Control</title>
-    <link rel="stylesheet" href="style.css?v=20260531b">
+    <link rel="stylesheet" href="style.css?v=20260602d">
 </head>
 <body>
     <div class="container">
@@ -14,11 +14,13 @@
                     <p class="eyebrow">xArm Translocation</p>
                     <h1>Web Control Interface</h1>
                     <div id="status-container">
-                        <div id="status-main">
-                            <div id="status-light" class="status-light offline"></div>
-                            <div id="status-text">Disconnected</div>
+                        <div class="status-pills">
+                            <div id="status-main">
+                                <div id="status-light" class="status-light offline"></div>
+                                <div id="status-text">Disconnected</div>
+                            </div>
+                            <div id="connection-details"></div>
                         </div>
-                        <div id="connection-details"></div>
                         <div id="claim-status" class="claim-status claim-free">Control: nobody (open)</div>
                     </div>
                 </div>
@@ -124,8 +126,6 @@
                                 <span class="inline-label">Speed:</span>
                                 <input type="number" id="linear-speed" placeholder="50" min="1" max="1000" value="50" class="inline-input">
                                 <span class="inline-unit">mm/s</span>
-                                <span class="inline-label">Steps:</span>
-                                <input type="number" id="linear-steps" placeholder="1" min="1" max="100" value="1" class="inline-input">
                             </div>
                         </div>
 
@@ -162,11 +162,9 @@
                         </div>
 
                     </div><!-- /sc-body -->
-                </div><!-- /System Control card -->
 
-                <!-- Joint Angles card — horizontal, below System Control -->
-                <div class="card">
-                    <h2>Joint Angles <span class="panel-unit">live · direct control</span></h2>
+                    <!-- Joint Angles (merged into Arm Control) -->
+                    <h3 class="joints-subhead">Joint Angles <span class="panel-unit">live · direct control</span></h3>
                     <div class="joint-inputs-h">
                         <div class="joint-col"><label>J1</label><input type="number" id="j1-input" step="0.1" placeholder="—"></div>
                         <div class="joint-col"><label>J2</label><input type="number" id="j2-input" step="0.1" placeholder="—"></div>
@@ -180,6 +178,7 @@
                         <span class="inline-label">Speed</span>
                         <input type="number" id="direct-joint-speed" value="10" min="1" max="200" class="inline-input" disabled>
                         <span class="inline-unit">°/s</span>
+                        <button id="copy-joints-btn" class="btn" title="Copy the current joint angles to the clipboard">Copy Joints</button>
                         <button id="move-joints-btn" class="btn btn-primary" disabled>Move Joints</button>
                     </div>
                 </div>
@@ -241,6 +240,6 @@
 
         </main>
     </div>
-    <script src="main.js?v=20260531b"></script>
+    <script src="main.js?v=20260602d"></script>
 </body>
 </html>

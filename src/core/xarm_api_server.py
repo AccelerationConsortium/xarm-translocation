@@ -272,9 +272,7 @@ class JointTorqueMovementRequest(BaseModel):
 class PlateLinearRequest(BaseModel):
     """Request model for linear movement from current position to target."""
     target_location: str = Field(description="Name of the target location from position_config.yaml")
-    num_steps: int = Field(default=1, ge=1, le=100, description="Number of interpolation steps (1-100)")
     speed: Optional[float] = Field(default=None, description="Movement speed (validated by safety level)")
-    wait_between_steps: float = Field(default=0.1, ge=0.0, le=5.0, description="Delay between steps in seconds (0-5)")
 
 
 class GraphModeRequest(BaseModel):
@@ -1404,9 +1402,7 @@ async def move_plate_linear(request: PlateLinearRequest, background_tasks: Backg
         success = await asyncio.to_thread(
             c.move_plate_linear,
             target_location=request.target_location,
-            num_steps=request.num_steps,
             speed=request.speed,
-            wait_between_steps=request.wait_between_steps,
         )
         if not success:
             logger.error(f"Failed to move linearly to {request.target_location}")

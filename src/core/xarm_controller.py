@@ -2358,16 +2358,14 @@ class XArmController:
         """Check if force torque sensor is available and enabled."""
         return self.force_torque_config.get('enable', True)
 
-    def move_plate_linear(self, target_location, num_steps=1, speed=None, wait_between_steps=0.1):
+    def move_plate_linear(self, target_location, speed=None):
         """
         Move tool linearly from current position to target position.
         Tool maintains the same absolute orientation throughout the movement.
         
         Args:
             target_location (str): Name of target location from position_config.yaml
-            num_steps (int): Number of interpolation steps (default: 10)
             speed (float): Movement speed (default: tcp_speed)
-            wait_between_steps (float): Delay between steps in seconds (default: 0.1)
             
         Returns:
             bool: True if successful, False otherwise
@@ -2403,51 +2401,20 @@ class XArmController:
         print(f"Target: {target_cartesian[:3]} (X,Y,Z)")
         print(f"Tool orientation: {start_cartesian[3:]} (maintained throughout)")
         
-        # Perform linear interpolation - POSITION ONLY
-        # Tool orientation stays exactly the same as current orientation
-        if num_steps == 1:
-            # Single step - move directly to target
-            steps_to_execute = [1]
-        else:
-            # Multiple steps - interpolate
-            steps_to_execute = range(1, num_steps + 1)
-            
-        for i in steps_to_execute:
-            # Calculate interpolation factor (0 to 1)
-            t = i / max(num_steps, 1)  # Avoid division by zero
-            
-            # Linear interpolation for POSITION only (X, Y, Z)
-            interp_x = start_cartesian[0] + t * (target_cartesian[0] - start_cartesian[0])
-            interp_y = start_cartesian[1] + t * (target_cartesian[1] - start_cartesian[1])
-            interp_z = start_cartesian[2] + t * (target_cartesian[2] - start_cartesian[2])
-            
-            # Keep CURRENT tool orientation throughout (absolute direction in space)
-            interp_roll = start_cartesian[3]
-            interp_pitch = start_cartesian[4] 
-            interp_yaw = start_cartesian[5]
-            
-            interp_pos = [interp_x, interp_y, interp_z, interp_roll, interp_pitch, interp_yaw]
-            
-            # Move to interpolated position
-            success = self.move_to_position(
-                x=interp_pos[0], y=interp_pos[1], z=interp_pos[2],
-                roll=interp_pos[3], pitch=interp_pos[4], yaw=interp_pos[5],
-                speed=speed, check_collision=False, wait=True
-            )
-            
-            if not success:
-                print(f"Error: Failed at step {i}/{num_steps}")
-                return False
-                
-            print(f"[OK] Step {i}/{num_steps}: {interp_pos[:3]}")
-                
-            # Wait between steps if specified
-            if wait_between_steps > 0 and i < num_steps:
-                time.sleep(wait_between_steps)
-                
+        # Straight-line move to the target X/Y/Z, holding the CURRENT tool
+        # orientation throughout (absolute direction in space).
+        success = self.move_to_position(
+            x=target_cartesian[0], y=target_cartesian[1], z=target_cartesian[2],
+            roll=start_cartesian[3], pitch=start_cartesian[4], yaw=start_cartesian[5],
+            speed=speed, check_collision=False, wait=True
+        )
+        if not success:
+            print(f"Error: Failed linear movement to '{target_location}'")
+            return False
+
         print(f"[OK] Successfully completed linear movement to '{target_location}'")
-        # Inner move_to_position calls cleared the named pose tracker;
-        # we arrived at target_location, so pin it.
+        # move_to_position cleared the named pose tracker; we arrived at
+        # target_location, so pin it.
         self.last_arm_pose_name = target_location
         return True
 

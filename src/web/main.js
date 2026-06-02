@@ -46,7 +46,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const gripperForceRange = document.getElementById('gripper-force-range');
     
     // Linear movement controls
-    const linearStepsInput = document.getElementById('linear-steps');
     const moveLinearBtn = document.getElementById('move-linear-btn');
 
     // STATUS_SPEC v1.1 claim: the /web/ UI is a first-class claim holder.
@@ -782,6 +781,65 @@ document.addEventListener('DOMContentLoaded', () => {
     const jogBtnIds = ['jog-x-plus','jog-x-minus','jog-y-plus','jog-y-minus','jog-z-plus','jog-z-minus'];
     const jointInputIds = ['j1-input','j2-input','j3-input','j4-input','j5-input','j6-input','j7-input'];
 
+    // --- Copy Joints: build "[j1, j2, ...]" from the visible joint inputs ---
+    const copyJointsBtn = document.getElementById('copy-joints-btn');
+
+    // Reads only the columns the current model exposes (J6/J7 hidden on a 5/6-DOF
+    // arm), and strips trailing zeros so the output matches position_config.yaml
+    // style (e.g. "180" not "180.00", but "202.51" kept). Returns null when a
+    // value isn't ready yet (disconnected / no live data).
+    function buildJointsString() {
+        const vals = [];
+        for (const id of jointInputIds) {
+            const el = document.getElementById(id);
+            if (!el) continue;
+            const col = el.closest('.joint-col');
+            if (col && getComputedStyle(col).display === 'none') continue; // joint the robot doesn't have
+            const v = el.value.trim();
+            if (v === '' || isNaN(parseFloat(v))) return null;
+            vals.push(String(parseFloat(v)));
+        }
+        return vals.length ? '[' + vals.join(', ') + ']' : null;
+    }
+
+    // Clipboard with a fallback: navigator.clipboard needs a secure context
+    // (https or localhost), but the panel is usually served over plain http
+    // across the Tailnet, where it's unavailable — fall back to execCommand.
+    async function copyTextToClipboard(text) {
+        try {
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(text);
+                return true;
+            }
+        } catch (e) { /* fall through */ }
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.focus(); ta.select();
+            const ok = document.execCommand('copy');
+            document.body.removeChild(ta);
+            return ok;
+        } catch (e) { return false; }
+    }
+
+    if (copyJointsBtn) {
+        copyJointsBtn.addEventListener('click', async () => {
+            const orig = copyJointsBtn.textContent;
+            const s = buildJointsString();
+            if (!s) {
+                copyJointsBtn.textContent = 'No data';
+                setTimeout(() => { copyJointsBtn.textContent = orig; }, 1200);
+                return;
+            }
+            const ok = await copyTextToClipboard(s);
+            copyJointsBtn.textContent = ok ? 'Copied!' : 'Copy failed';
+            setTimeout(() => { copyJointsBtn.textContent = orig; }, 1200);
+        });
+    }
+
     // Show exactly J1..numJoints columns (J1-J5 always present; J6/J7 are
     // model-dependent: xArm5 -> 5, xArm6 -> 6, xArm7 -> 7). Driven by the
     // robot model so the right columns show as soon as we're connected,
@@ -817,7 +875,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function applyManualModeLock(isManual) {
         const lockEls = [
             movePredefinedBtn, moveLinearBtn, moveJointsBtn,
-            jointSpeedInput, linearSpeedInput, linearStepsInput,
+            jointSpeedInput, linearSpeedInput,
             directJointSpeed, jogStepInput, predefinedPositionSelect,
             ...jogBtnIds.map(id => document.getElementById(id)),
             ...jointInputIds.map(id => document.getElementById(id)),
@@ -848,7 +906,7 @@ document.addEventListener('DOMContentLoaded', () => {
             moveTrackLocBtn, movePredefinedBtn, moveToStrokeBtn,
             setGripperForceBtn, moveLinearBtn, moveJointsBtn,
             jointSpeedInput, linearSpeedInput, trackSpeedInput,
-            gripperStrokeInput, gripperForceInput, linearStepsInput,
+            gripperStrokeInput, gripperForceInput,
             directJointSpeed, jogStepInput,
             predefinedPositionSelect, trackLocationSelect,
             manualModeCheckbox,
@@ -1025,7 +1083,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Enable/disable input fields
         const controlInputs = [
-            jointSpeedInput, linearSpeedInput, trackSpeedInput, gripperStrokeInput, gripperForceInput, linearStepsInput,
+            jointSpeedInput, linearSpeedInput, trackSpeedInput, gripperStrokeInput, gripperForceInput,
             directJointSpeed, jogStepInput,
             ...jointInputIds.map(id => document.getElementById(id))
         ];
@@ -1287,21 +1345,18 @@ document.addEventListener('DOMContentLoaded', () => {
     // Linear movement event listener
     moveLinearBtn.addEventListener('click', () => {
         const targetLocation = predefinedPositionSelect.value; // Use same dropdown as Move Joints
-        const numSteps = parseInt(linearStepsInput.value) || 1;
         const speed = linearSpeedInput ? parseInt(linearSpeedInput.value) || 100 : 100;
-        
+
         if (!targetLocation) {
             showMessage('Please select a destination location.', 'error');
             return;
         }
-        
+
         // Use new plate_linear endpoint - moves from current position to target
         // Tool maintains the same absolute orientation throughout movement
         apiRequest('/move/plate_linear', 'POST', {
             target_location: targetLocation,
-            num_steps: numSteps,
-            speed: speed,
-            wait_between_steps: 0.1
+            speed: speed
         });
     });
 
