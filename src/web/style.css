@@ -952,6 +952,13 @@ input#linear-speed {
     color: var(--ink-subtle);
 }
 
+/* Joint boxes while the arm is moving: live readout only, not editable.
+   Already `disabled` (JS), so this just signals *why* they're greyed. */
+.joint-col input.moving-locked {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
 .joint-action-row {
     display: flex;
     align-items: center;

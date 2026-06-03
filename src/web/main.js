@@ -66,6 +66,15 @@ document.addEventListener('DOMContentLoaded', () => {
     let statusRefreshInterval = null;
     let isRobotMoving = false;
     let lastJointPositions = null;
+    // Joint-angle inputs double as the live readout AND the Move-Joints target.
+    // Telemetry overwrites them every tick, but it must NOT clobber a value the
+    // operator has typed-but-not-yet-submitted: focus alone is insufficient
+    // because clicking "Move Joints" (or tabbing to the next joint) blurs the
+    // box, and the next tick would revert the target to the current angle,
+    // making the move a no-op. A box stays "dirty" from first edit until a move
+    // is dispatched, at which point telemetry resumes (and animates toward the
+    // target). Keyed by input id, e.g. "j1-input".
+    const dirtyJoints = new Set();
     let movementDetectionThreshold = 0.1; // degrees
     // Timestamp of the last WebSocket status push. While pushes are fresh the
     // server's telemetry loop drives live updates, so we suppress the fast HTTP
@@ -190,6 +199,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const wasMoving = isRobotMoving;
         isRobotMoving = detectMovement(currentJoints);
 
+        // Grey-out and lock the joint inputs while the arm is actually moving,
+        // restoring them when it settles. Done on the transition (not every
+        // tick) and before the early-return below so it fires on both the WS
+        // and HTTP-poll paths.
+        if (isRobotMoving !== wasMoving) {
+            applyMovingLock(isRobotMoving);
+        }
+
         // While the WebSocket telemetry push is fresh, it already delivers
         // live motion at the server's rate — don't also escalate to 10 Hz HTTP
         // polling. Make sure we're on the cheap idle safety poll and bail.
@@ -211,6 +228,24 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // While the arm is moving, the J1–Jn boxes are a live readout only — grey
+    // them and lock out editing so an operator can't type a target into a box
+    // that telemetry is rewriting underneath them. When motion stops, restore
+    // each box to whatever the other locks dictate by mirroring the Move-Joints
+    // button, which is already gated on connection + claim + manual mode (and
+    // is never touched by this lock). A typed-but-unsubmitted value (dirty box)
+    // is preserved across the move: disabling never clears the value and
+    // telemetry still skips dirty boxes.
+    function applyMovingLock(moving) {
+        const lockedByOthers = !!(moveJointsBtn && moveJointsBtn.disabled);
+        jointInputIds.forEach(id => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.classList.toggle('moving-locked', moving);
+            el.disabled = moving || lockedByOthers;
+        });
+    }
+
     // --- Compact telemetry (high-frequency live push) ---
     // Applies the small `telemetry` WS message with a field-diff so each ~10 Hz
     // tick only touches DOM that changed. The full `status_update` envelope
@@ -227,7 +262,7 @@ document.addEventListener('DOMContentLoaded', () => {
             jointInputIds.forEach((id, i) => {
                 if (i >= joints.length) return;
                 const el = document.getElementById(id);
-                if (el && document.activeElement !== el) {
+                if (el && document.activeElement !== el && !dirtyJoints.has(id)) {
                     const v = parseFloat(joints[i]).toFixed(2);
                     if (el.value !== v) el.value = v;
                 }
@@ -270,6 +305,9 @@ document.addEventListener('DOMContentLoaded', () => {
             // on or this browser doesn't hold the claim.
             applyManualModeLock(tlmLast.manual === true);
             applyClaimLock(claimToken !== null);
+            // ...and re-assert the moving lock, since setControlsState above
+            // would otherwise re-enable the joint boxes mid-move.
+            applyMovingLock(isRobotMoving);
         }
     }
 
@@ -565,7 +603,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 jointInputIds.forEach((id, i) => {
                     if (i >= numJoints) return; // skip joints the robot doesn't have
                     const el = document.getElementById(id);
-                    if (el && document.activeElement !== el) {
+                    if (el && document.activeElement !== el && !dirtyJoints.has(id)) {
                         el.value = parseFloat(joints[i]).toFixed(2);
                     }
                 });
@@ -594,6 +632,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 // enabling. STOP / Clear Errors are never claim-locked.
                 applyClaimLock(claimToken !== null);
                 updateClaimIndicator(data.claimed_by);
+                // Re-assert the moving lock after the other locks have settled
+                // moveJointsBtn's disabled state (which it mirrors).
+                applyMovingLock(isRobotMoving);
 
                 // Manage refresh rate based on connection state
                 if (!isConnected && statusRefreshInterval) {
@@ -780,6 +821,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const jogStepInput     = document.getElementById('jog-step');
     const jogBtnIds = ['jog-x-plus','jog-x-minus','jog-y-plus','jog-y-minus','jog-z-plus','jog-z-minus'];
     const jointInputIds = ['j1-input','j2-input','j3-input','j4-input','j5-input','j6-input','j7-input'];
+
+    // Mark a joint box "dirty" the moment the operator edits it, so telemetry
+    // stops overwriting the typed target (see dirtyJoints declaration above).
+    // The flag is cleared when a move is dispatched (or the box is reset to the
+    // live value on Escape / blur-with-empty).
+    jointInputIds.forEach(id => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('input', () => dirtyJoints.add(id));
+        // Escape abandons the edit: drop the dirty flag so the next telemetry
+        // tick restores the current angle.
+        el.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') { dirtyJoints.delete(id); el.blur(); }
+        });
+    });
 
     // --- Copy Joints: build "[j1, j2, ...]" from the visible joint inputs ---
     const copyJointsBtn = document.getElementById('copy-joints-btn');
@@ -1417,6 +1473,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             const speed = parseFloat(directJointSpeed?.value) || 10;
             apiRequest('/move/joints', 'POST', { angles, speed });
+            // Target dispatched — let telemetry take the inputs back so they
+            // animate toward the commanded angles.
+            dirtyJoints.clear();
         });
     }
 
