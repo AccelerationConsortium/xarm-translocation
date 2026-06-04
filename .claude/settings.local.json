@@ -67,7 +67,24 @@
       "Read(//c/Users/**)",
       "Read(//c/Users/sdl2/**)",
       "Bash(mkdir -p \"/c/Users/sdl2/Projects/xarm-translocation/assets\")",
-      "Bash(cp \"/c/Users/sdl2/Downloads/xArm.png\" \"/c/Users/sdl2/Projects/xarm-translocation/assets/xarm-control.png\")"
+      "Bash(cp \"/c/Users/sdl2/Downloads/xArm.png\" \"/c/Users/sdl2/Projects/xarm-translocation/assets/xarm-control.png\")",
+      "PowerShell($errors = $null; $null = [System.Management.Automation.Language.Parser]::ParseFile\\(\"C:\\\\Users\\\\sdl2\\\\Projects\\\\xarm-translocation\\\\tools\\\\xarm-record.ps1\", [ref]$null, [ref]$errors\\); if \\($errors\\) { $errors | ForEach-Object { $_.Message } } else { \"PARSE OK\" })",
+      "PowerShell($p=\"C:\\\\Users\\\\sdl2\\\\Projects\\\\xarm-translocation\\\\tools\\\\xarm-record.ps1\"; $i=0; foreach\\($line in [IO.File]::ReadAllLines\\($p\\)\\){ $i++; foreach\\($ch in $line.ToCharArray\\(\\)\\){ if\\([int]$ch -gt 127\\){ Write-Output \\(\"line {0}: U+{1:X4} '{2}'\" -f $i,[int]$ch,$ch\\) } } })",
+      "PowerShell($p=\"C:\\\\Users\\\\sdl2\\\\Projects\\\\xarm-translocation\\\\tools\\\\xarm-record.ps1\"; $t=[IO.File]::ReadAllText\\($p\\); $t=$t.Replace\\([char]0x2014,'-'\\); $enc=New-Object System.Text.UTF8Encoding\\($true\\); [IO.File]::WriteAllText\\($p,$t,$enc\\); $errors=$null; $null=[System.Management.Automation.Language.Parser]::ParseFile\\($p,[ref]$null,[ref]$errors\\); if\\($errors\\){$errors|ForEach-Object{$_.Message}}else{\"PARSE OK\"})",
+      "Bash(node --check \"C:/Users/sdl2/Projects/xarm-translocation/src/web/main.js\")",
+      "PowerShell($n=\\(Get-Command node -ErrorAction SilentlyContinue\\); if\\($n\\){ & node --check \"C:\\\\Users\\\\sdl2\\\\Projects\\\\xarm-translocation\\\\src\\\\web\\\\main.js\"; if\\($?\\){\"main.js OK\"} } else {\"node not found\"})",
+      "Bash(git check-ignore *)",
+      "Bash(git add *)",
+      "Bash(git commit -m 'Add edge-recording helper, Copy Joints, and control-panel cleanups *)",
+      "Bash(git push *)",
+      "Bash(git commit -m 'Cap the log box height so it scrolls instead of growing the page *)",
+      "Bash(command -v deno bun python python3)",
+      "Read(//c/Program Files/**)",
+      "Bash(git -C /c/Users/sdl2/Projects/xarm-translocation status --short)",
+      "Bash(git -C /c/Users/sdl2/Projects/xarm-translocation diff --stat -- src/web/main.js src/web/style.css)",
+      "Bash(git commit -m ' *)",
+      "Bash(git -C C:/Users/sdl2/Projects/xarm-translocation ls-files)",
+      "Bash(grep -nA8 \"class GraphRecordRequest\" src/core/xarm_api_server.py)"
     ]
   }
 }
