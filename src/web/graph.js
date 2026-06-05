@@ -24,6 +24,9 @@
     var lastPushAt = 0;
 
     var cy = null;
+    var expanded = {};          // station -> true when its nodes are shown
+    var autoStation = null;     // station auto-expanded to follow the robot
+    var latestClaimedBy = null; // device claim holder from /status (for the lock)
     var currentNodeId = null;   // last applied live current_node
     var traverseTimer = null;
 
@@ -68,7 +71,7 @@
     function nodeData(n) {
         var station = (n.tags && n.tags.length) ? n.tags[0] : '';
         var held = n.payload && n.payload !== 'empty';
-        return {
+        var d = {
             id: n.id,
             label: held ? n.id + ' ▣' : n.id,
             station: station,
@@ -76,11 +79,27 @@
             rail: n.rail,
             payload: n.payload,
         };
+        return d;
     }
 
     function buildElements(data) {
         var elements = [];
-        (data.nodes || []).forEach(function (n) {
+        var nodes = data.nodes || [];
+        // One clickable "station tile" per station, labelled with its count.
+        // Collapsing a station hides its member nodes and leaves just the tile.
+        var counts = {};
+        nodes.forEach(function (n) {
+            var s = (n.tags && n.tags.length) ? n.tags[0] : '';
+            if (s) counts[s] = (counts[s] || 0) + 1;
+        });
+        Object.keys(counts).forEach(function (s) {
+            elements.push({ group: 'nodes', data: {
+                id: 'grp:' + s, label: '▸ ' + s + ' (' + counts[s] + ')',
+                isGroup: true, station: s, color: colorForStation(s),
+                count: counts[s],
+            } });
+        });
+        nodes.forEach(function (n) {
             elements.push({ group: 'nodes', data: nodeData(n) });
         });
         (data.edges || []).forEach(function (e) {
@@ -131,6 +150,21 @@
                 'shape': 'round-rectangle',
                 'border-width': 2,
                 'border-color': 'rgba(15,23,42,0.15)',
+            },
+        },
+        {
+            // Station tile: a larger solid station-coloured pill you click to
+            // show/hide that station's nodes.
+            selector: 'node[?isGroup]',
+            style: {
+                'background-color': 'data(color)',
+                'color': '#ffffff',
+                'font-size': 14,
+                'font-weight': 800,
+                'shape': 'round-rectangle',
+                'padding': '16px',
+                'border-width': 3,
+                'border-color': 'rgba(15,23,42,0.25)',
             },
         },
         {
@@ -191,11 +225,8 @@
         },
     ];
 
-    // Grid sorted by station then id: many nodes are disconnected until
-    // edges are recorded on hardware, so a force/tree layout collapses them
-    // into an unreadable line. The grid keeps every node legible and clusters
-    // each station's nodes together; the (few) edges draw on top. Reused when
-    // a node is added so the new node lands in its station group.
+    // Grid layout over the VISIBLE elements, sorted so each station's tile
+    // leads its (shown) member nodes. Run after every collapse/expand and add.
     function gridLayout() {
         return {
             name: 'grid',
@@ -205,10 +236,33 @@
             padding: 24,
             sort: function (a, b) {
                 var sa = a.data('station') || '', sb = b.data('station') || '';
-                return sa < sb ? -1 : sa > sb ? 1
-                    : (a.id() < b.id() ? -1 : a.id() > b.id() ? 1 : 0);
+                if (sa !== sb) return sa < sb ? -1 : 1;
+                var ga = a.data('isGroup') ? 0 : 1, gb = b.data('isGroup') ? 0 : 1;
+                if (ga !== gb) return ga - gb;  // station tile first
+                return a.id() < b.id() ? -1 : a.id() > b.id() ? 1 : 0;
             },
         };
+    }
+
+    // Show member nodes only for expanded stations; update each tile's caret +
+    // count. Then lay out just the visible elements so collapsed stations take
+    // a single tile of space.
+    function applyGroupVisibility() {
+        if (!cy) return;
+        cy.batch(function () {
+            cy.nodes().forEach(function (n) {
+                var s = n.data('station');
+                if (n.data('isGroup')) {
+                    var exp = !!expanded[s];
+                    n.data('label', (exp ? '▾ ' : '▸ ') + s + (exp ? '' : ' (' + (n.data('count') || 0) + ')'));
+                } else {
+                    // station-less nodes always show; otherwise follow expansion
+                    n.style('display', (!s || expanded[s]) ? 'element' : 'none');
+                }
+            });
+        });
+        cy.elements(':visible').layout(gridLayout()).run();
+        cy.fit(undefined, 30);
     }
 
     function renderGraph(data) {
@@ -222,11 +276,10 @@
             container: document.getElementById('cy'),
             elements: elements,
             style: CY_STYLE,
-            layout: gridLayout(),
             wheelSensitivity: 0.2,
         });
-        cy.fit(undefined, 30);
         onGraphRendered(cy);
+        applyGroupVisibility();  // start collapsed + initial layout
     }
 
     // ── Phase B: edge editing (mode/speed) behind a claim ────────────
@@ -258,6 +311,25 @@
         cyInstance.on('tap', function (evt) {
             if (evt.target === cyInstance) closeEdgePanel();
         });
+        // Manual show/hide of a station by tapping its tile — disabled while a
+        // workflow holds control (automation in progress).
+        cyInstance.on('tap', 'node', function (evt) {
+            var n = evt.target;
+            if (!n.data('isGroup')) return;  // a member node — ignore
+            if (automationActive()) {
+                showMessage('Locked: a workflow holds control — expand/collapse is disabled while automation is running.');
+                return;
+            }
+            clearMessage();
+            var s = n.data('station');
+            if (expanded[s]) delete expanded[s]; else expanded[s] = true;
+            applyGroupVisibility();
+        });
+    }
+
+    // "Automation" = the device claim is held by someone other than this page.
+    function automationActive() {
+        return !!(latestClaimedBy && latestClaimedBy.session_id !== claimSessionId);
     }
 
     function showEdgeError(text) {
@@ -532,13 +604,26 @@
 
     function addNodeToCanvas(created) {
         if (!cy || !created) return;
-        cy.add({ group: 'nodes', data: nodeData({
+        var nd = nodeData({
             id: created.id, arm: created.arm, rail: created.rail,
             gripper: created.gripper, payload: created.payload, tags: created.tags || [],
-        }) });
-        // Re-run the grid so the new node lands in its station group.
-        cy.layout(gridLayout()).run();
-        cy.fit(undefined, 30);
+        });
+        var station = nd.station;
+        if (station) {
+            var grp = cy.getElementById('grp:' + station);
+            if (grp.empty()) {
+                // New station — create its tile.
+                cy.add({ group: 'nodes', data: {
+                    id: 'grp:' + station, label: '▾ ' + station, isGroup: true,
+                    station: station, color: colorForStation(station), count: 1,
+                } });
+            } else {
+                grp.data('count', (grp.data('count') || 0) + 1);
+            }
+            expanded[station] = true;  // reveal the station so the new node shows
+        }
+        cy.add({ group: 'nodes', data: nd });
+        applyGroupVisibility();
     }
 
     if (nodeAddBtn) nodeAddBtn.addEventListener('click', addNode);
@@ -554,6 +639,20 @@
 
         if (!cy) return;
         var holding = node && payload && payload !== 'empty';
+
+        // Auto-follow: expand the station the robot is in, collapse the one it
+        // left. Runs on station change only (not every tick).
+        var station = null;
+        if (node) {
+            var ne = cy.getElementById(node);
+            if (ne && ne.nonempty()) station = ne.data('station');
+        }
+        if (station !== autoStation) {
+            if (autoStation) delete expanded[autoStation];
+            if (station) expanded[station] = true;
+            autoStation = station;
+            applyGroupVisibility();
+        }
 
         // Flash the edge being traversed when the pinned node changes.
         if (node && currentNodeId && node !== currentNodeId) {
@@ -582,6 +681,7 @@
     }
 
     function updateClaimIndicator(claimedBy) {
+        latestClaimedBy = claimedBy || null;  // drives automationActive()
         if (!claimEl) return;
         claimEl.classList.remove('claim-free', 'claim-mine', 'claim-other');
         if (!claimedBy) {
