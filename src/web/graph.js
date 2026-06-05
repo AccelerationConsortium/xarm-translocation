@@ -933,7 +933,23 @@
 
     // ── Boot ──────────────────────────────────────────────────────────
 
+    // Collapsible side cards: clicking a .card-toggle header shows/hides the
+    // sibling .card-body and flips the caret.
+    function initCollapsibleCards() {
+        var toggles = document.querySelectorAll('.card-toggle');
+        Array.prototype.forEach.call(toggles, function (h) {
+            h.addEventListener('click', function () {
+                var body = h.parentElement.querySelector('.card-body');
+                if (!body) return;
+                body.hidden = !body.hidden;
+                var caret = h.querySelector('.card-caret');
+                if (caret) caret.textContent = body.hidden ? '▸' : '▾';
+            });
+        });
+    }
+
     document.addEventListener('DOMContentLoaded', function () {
+        initCollapsibleCards();
         initialLoad();
         connectWebSocket();
         setInterval(pollLiveState, 1500);

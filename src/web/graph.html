@@ -53,7 +53,8 @@
 
                 <!-- Add node: writes a new state to motion_graph.yaml (claim-gated). -->
                 <div id="add-node-panel" class="card add-node-panel">
-                    <h2>Add node</h2>
+                    <h2 class="card-toggle">Add node <span class="card-caret">▸</span></h2>
+                    <div class="card-body" hidden>
                     <div class="form-group">
                         <label for="node-arm">Pose (arm) — from position_config</label>
                         <select id="node-arm"></select>
@@ -82,12 +83,14 @@
                         <button id="node-add-btn" class="btn btn-primary">Add node</button>
                     </div>
                     <div id="add-node-error" class="edge-panel-error" hidden></div>
+                    </div><!-- /card-body -->
                 </div>
 
                 <!-- Draw edge: pick a source node then a target node, set
                      mode/speed (+ grip/release when payload changes), create. -->
                 <div id="edge-draw-panel" class="card edge-draw-panel">
-                    <h2>Draw edge</h2>
+                    <h2 class="card-toggle">Draw edge <span class="card-caret">▸</span></h2>
+                    <div class="card-body" hidden>
                     <button id="edge-draw-toggle" class="btn">Pick source…</button>
                     <p class="muted legend-note" id="edge-draw-hint">Click to start, then tap a source node and a target node on the canvas.</p>
                     <div class="edge-panel-route">
@@ -122,6 +125,7 @@
                         </div>
                     </div>
                     <div id="edge-draw-error" class="edge-panel-error" hidden></div>
+                    </div><!-- /card-body -->
                 </div>
 
                 <!-- Edge edit panel — Phase B wires this up. Inert in Phase A. -->
@@ -159,6 +163,6 @@
     </div>
 
     <script src="cytoscape.min.js"></script>
-    <script src="graph.js?v=20260605c"></script>
+    <script src="graph.js?v=20260605d"></script>
 </body>
 </html>

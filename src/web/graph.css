@@ -125,6 +125,21 @@ html, body {
     font-size: 1rem;
 }
 
+/* Collapsible card headers (Add node / Draw edge). */
+.card-toggle {
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.card-toggle .card-caret {
+    font-size: 0.8em;
+    color: var(--ink-subtle);
+}
+
 .graph-message {
     border: 1px solid var(--warning);
     border-radius: 12px;
