@@ -84,6 +84,46 @@
                     <div id="add-node-error" class="edge-panel-error" hidden></div>
                 </div>
 
+                <!-- Draw edge: pick a source node then a target node, set
+                     mode/speed (+ grip/release when payload changes), create. -->
+                <div id="edge-draw-panel" class="card edge-draw-panel">
+                    <h2>Draw edge</h2>
+                    <button id="edge-draw-toggle" class="btn">Pick source…</button>
+                    <p class="muted legend-note" id="edge-draw-hint">Click to start, then tap a source node and a target node on the canvas.</p>
+                    <div class="edge-panel-route">
+                        <strong id="draw-from">—</strong>
+                        <span class="edge-arrow">→</span>
+                        <strong id="draw-to">—</strong>
+                    </div>
+                    <div id="edge-draw-form" hidden>
+                        <div class="form-group">
+                            <label for="draw-mode">Mode</label>
+                            <select id="draw-mode">
+                                <option value="joint">joint</option>
+                                <option value="linear">linear</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="draw-speed">Speed (optional)</label>
+                            <input type="number" id="draw-speed" min="0.1" step="1" placeholder="—">
+                        </div>
+                        <div class="form-group" id="draw-grip-group" hidden>
+                            <label>Grip (empty → held)</label>
+                            <input type="number" id="draw-grip-stroke" placeholder="stroke">
+                            <input type="number" id="draw-grip-force" placeholder="force (optional)">
+                        </div>
+                        <div class="form-group" id="draw-release-group" hidden>
+                            <label for="draw-release-stroke">Release stroke (optional)</label>
+                            <input type="number" id="draw-release-stroke" placeholder="open stroke">
+                        </div>
+                        <div class="edge-panel-actions">
+                            <button id="draw-create-btn" class="btn btn-primary">Create edge</button>
+                            <button id="draw-cancel-btn" class="btn btn-secondary">Clear</button>
+                        </div>
+                    </div>
+                    <div id="edge-draw-error" class="edge-panel-error" hidden></div>
+                </div>
+
                 <!-- Edge edit panel — Phase B wires this up. Inert in Phase A. -->
                 <div id="edge-panel" class="card edge-panel" hidden>
                     <h2>Edit edge</h2>

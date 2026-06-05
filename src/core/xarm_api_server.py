@@ -352,6 +352,35 @@ class GraphNodeCreateRequest(BaseModel):
     tags: Optional[List[str]] = Field(default=None, description="Optional tags; first tag groups/colours the node")
 
 
+class GraphGripSpec(BaseModel):
+    """Grip action params for an empty->held edge."""
+    stroke: float = Field(description="Gripper SDK stroke to close to (bio_gen2 71-150)")
+    force: Optional[float] = Field(default=None, description="Optional grip force")
+
+
+class GraphReleaseSpec(BaseModel):
+    """Release action params for a held->empty edge."""
+    stroke: Optional[float] = Field(default=None, description="Open stroke; defaults to gripper_states[open]")
+
+
+class GraphEdgeCreateRequest(BaseModel):
+    """Body of POST /control/graph/edge/create — add a new edge (motion)
+    between two existing nodes.
+
+    Payload-changing edges must carry the matching action: empty->held needs
+    `grip`, held->empty needs `release` (loader coherence rules). Same-payload
+    edges must omit both. The candidate is validated before it's written.
+    """
+    from_node: str = Field(description="Source node id (must exist)")
+    to_node: str = Field(description="Target node id (must exist)")
+    mode: str = Field(description="'joint' or 'linear'")
+    speed: Optional[float] = Field(default=None, gt=0, description="Edge speed (>0)")
+    preconditions: Optional[List[str]] = Field(default=None, description="Named preconditions")
+    comment: Optional[str] = Field(default=None, description="Free-text comment")
+    grip: Optional[GraphGripSpec] = Field(default=None, description="Required on empty->held edges")
+    release: Optional[GraphReleaseSpec] = Field(default=None, description="Required on held->empty edges")
+
+
 class EnforcementRequest(BaseModel):
     """Body of POST /control/claim/enforce (Phase 5 toggle)."""
     enabled: bool = Field(description="true to require X-Claim-Token on mutating endpoints")
@@ -1843,6 +1872,99 @@ def _update_edge_in_yaml(req: "GraphEdgeUpdateRequest") -> "MotionGraph":  # typ
     # Serialize once; validate that exact text via the real loader before
     # committing it to disk (mode/speed don't touch the coherence rules,
     # but this re-confirms the file still loads — cheap insurance).
+    buf = io.StringIO()
+    yaml_rt.dump(data, buf)
+    serialized = buf.getvalue()
+    plain = _pyyaml.safe_load(serialized)
+    MotionGraph.from_dict(plain, preconditions=DEFAULT_PRECONDITIONS)  # raises GraphError
+
+    with open(path, "w") as fh:      # validated -> commit
+        fh.write(serialized)
+    return MotionGraph.from_yaml(path, preconditions=DEFAULT_PRECONDITIONS)
+
+
+@app.post("/control/graph/edge/create", dependencies=[Depends(require_claim)])
+async def create_graph_edge(request: GraphEdgeCreateRequest):
+    """Add a new edge (motion) between two existing nodes.
+
+    Claim-gated (single-gate rule). Both endpoints must exist and there must
+    be no existing edge for that ordered pair. Payload-changing edges must
+    carry the matching grip/release action; the loader's coherence rules are
+    enforced on a candidate graph before the write (400 on violation).
+    Comments in the file are preserved (ruamel) and the graph hot-reloads.
+    """
+    c = get_controller()
+    if c.motion_graph is None:
+        raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+    if not c.motion_graph.has_node(request.from_node):
+        raise HTTPException(status_code=409, detail=f"unknown node: {request.from_node!r}")
+    if not c.motion_graph.has_node(request.to_node):
+        raise HTTPException(status_code=409, detail=f"unknown node: {request.to_node!r}")
+    if request.from_node == request.to_node:
+        raise HTTPException(status_code=422, detail="from_node and to_node must differ")
+    if c.motion_graph.find_edge(request.from_node, request.to_node) is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"edge {request.from_node!r} -> {request.to_node!r} already exists",
+        )
+    if request.mode not in ("joint", "linear"):
+        raise HTTPException(status_code=422, detail=f"mode must be 'joint' or 'linear' (got {request.mode!r})")
+
+    edge = {"from": request.from_node, "to": request.to_node, "mode": request.mode}
+    if request.speed is not None:
+        edge["speed"] = request.speed
+    if request.preconditions:
+        edge["preconditions"] = list(request.preconditions)
+    if request.comment:
+        edge["comment"] = request.comment
+    action = {}
+    if request.grip is not None:
+        action["grip"] = {"stroke": request.grip.stroke}
+        if request.grip.force is not None:
+            action["grip"]["force"] = request.grip.force
+    if request.release is not None:
+        action["release"] = ({"stroke": request.release.stroke}
+                             if request.release.stroke is not None else {})
+    if action:
+        edge["action"] = action
+
+    try:
+        new_graph = _append_edge_via_ruamel(edge)
+    except GraphError as exc:
+        raise HTTPException(status_code=400, detail=f"edge failed validation: {exc}")
+    c.motion_graph = new_graph
+    e = new_graph.find_edge(request.from_node, request.to_node)
+    return {
+        "created": {
+            "from": e.from_node, "to": e.to_node, "mode": e.mode.value, "speed": e.speed,
+            "grips": e.grip is not None, "releases": e.release is not None,
+            "preconditions": list(e.preconditions), "comment": e.comment,
+        }
+    }
+
+
+def _append_edge_via_ruamel(edge: dict) -> "MotionGraph":  # type: ignore[name-defined]
+    """Append a fully-formed edge dict (may include a nested action block) to
+    motion_graph.yaml via a ruamel round-trip, validate, then hot-reload.
+
+    Unlike record's text-append helper, this serialises the whole edge with
+    ruamel so a nested grip/release `action:` survives — and comments are
+    preserved. Validation runs on the candidate before the write."""
+    import io
+    from ruamel.yaml import YAML
+    import yaml as _pyyaml
+    try:
+        from .motion_graph import MotionGraph, DEFAULT_PRECONDITIONS
+    except ImportError:
+        from core.motion_graph import MotionGraph, DEFAULT_PRECONDITIONS
+
+    path = os.path.join("src", "settings", "motion_graph.yaml")
+    yaml_rt = YAML()
+    yaml_rt.preserve_quotes = True
+    with open(path) as fh:
+        data = yaml_rt.load(fh)
+    data.setdefault("edges", []).append(edge)
+
     buf = io.StringIO()
     yaml_rt.dump(data, buf)
     serialized = buf.getvalue()

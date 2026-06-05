@@ -24,6 +24,7 @@
     var lastPushAt = 0;
 
     var cy = null;
+    var gripperStrokes = {};    // gripper_state name -> stroke (for grip defaults)
     var expanded = {};          // station -> true when its nodes are shown
     var autoStation = null;     // station auto-expanded to follow the robot
     var latestClaimedBy = null; // device claim holder from /status (for the lock)
@@ -203,11 +204,11 @@
             },
         },
         {
-            selector: 'edge.grip',
+            selector: 'edge[kind = "grip"]',
             style: { 'line-color': '#047857', 'target-arrow-color': '#047857', 'width': 4 },
         },
         {
-            selector: 'edge.release',
+            selector: 'edge[kind = "release"]',
             style: { 'line-color': '#b45309', 'target-arrow-color': '#b45309', 'width': 4 },
         },
         {
@@ -222,6 +223,14 @@
         {
             selector: 'edge.selected-edge',
             style: { 'line-color': '#0369a1', 'target-arrow-color': '#0369a1', 'width': 5 },
+        },
+        {
+            selector: 'node.draw-source',
+            style: { 'border-width': 5, 'border-color': '#0ea5e9' },
+        },
+        {
+            selector: 'node.draw-target',
+            style: { 'border-width': 5, 'border-color': '#7c3aed' },
         },
     ];
 
@@ -315,7 +324,11 @@
         // workflow holds control (automation in progress).
         cyInstance.on('tap', 'node', function (evt) {
             var n = evt.target;
-            if (!n.data('isGroup')) return;  // a member node — ignore
+            if (!n.data('isGroup')) {
+                // Member node: in draw mode it's an edge endpoint, else ignore.
+                if (drawMode) pickDrawNode(n);
+                return;
+            }
             if (automationActive()) {
                 showMessage('Locked: a workflow holds control — expand/collapse is disabled while automation is running.');
                 return;
@@ -527,6 +540,7 @@
     // Populate the form's dropdowns: gripper/payload from the /graph
     // catalogs, arm poses from /locations, rail from /track/locations.
     function populateAddNodeForm(graphData) {
+        (graphData.gripper_states || []).forEach(function (g) { gripperStrokes[g.name] = g.stroke; });
         fillSelect(nodeGripperEl, (graphData.gripper_states || []).map(function (g) { return g.name; }));
         fillSelect(nodePayloadEl, (graphData.payloads || []).map(function (p) { return p.name; }));
         fetch(API_BASE + '/locations').then(function (r) { return r.json(); })
@@ -627,6 +641,155 @@
     }
 
     if (nodeAddBtn) nodeAddBtn.addEventListener('click', addNode);
+
+    // ── Draw edge (pick source → pick target → create) ───────────────
+
+    var drawMode = false;
+    var drawFrom = null, drawTo = null;
+    var drawToggleBtn = document.getElementById('edge-draw-toggle');
+    var drawFromEl = document.getElementById('draw-from');
+    var drawToEl = document.getElementById('draw-to');
+    var drawFormEl = document.getElementById('edge-draw-form');
+    var drawModeEl = document.getElementById('draw-mode');
+    var drawSpeedEl = document.getElementById('draw-speed');
+    var drawGripGroup = document.getElementById('draw-grip-group');
+    var drawGripStrokeEl = document.getElementById('draw-grip-stroke');
+    var drawGripForceEl = document.getElementById('draw-grip-force');
+    var drawReleaseGroup = document.getElementById('draw-release-group');
+    var drawReleaseStrokeEl = document.getElementById('draw-release-stroke');
+    var drawCreateBtn = document.getElementById('draw-create-btn');
+    var drawCancelBtn = document.getElementById('draw-cancel-btn');
+    var drawErrEl = document.getElementById('edge-draw-error');
+    var drawIdentitySwap = false;
+
+    function showDrawError(t) { if (drawErrEl) { drawErrEl.textContent = t; drawErrEl.hidden = false; } }
+    function clearDrawError() { if (drawErrEl) drawErrEl.hidden = true; }
+
+    function setDrawMode(on) {
+        drawMode = on;
+        if (drawToggleBtn) {
+            drawToggleBtn.textContent = on ? 'Stop drawing' : 'Pick source…';
+            drawToggleBtn.classList.toggle('is-active', on);
+        }
+        if (!on) clearDrawSelection();
+    }
+
+    function clearDrawSelection() {
+        if (cy) cy.nodes().removeClass('draw-source draw-target');
+        drawFrom = drawTo = null;
+        if (drawFromEl) drawFromEl.textContent = '—';
+        if (drawToEl) drawToEl.textContent = '—';
+        if (drawFormEl) drawFormEl.hidden = true;
+        clearDrawError();
+    }
+
+    function pickDrawNode(n) {
+        if (!drawFrom) {
+            drawFrom = n.id();
+            n.addClass('draw-source');
+            if (drawFromEl) drawFromEl.textContent = drawFrom;
+            clearDrawError();
+        } else if (!drawTo && n.id() !== drawFrom) {
+            drawTo = n.id();
+            n.addClass('draw-target');
+            if (drawToEl) drawToEl.textContent = drawTo;
+            openDrawForm();
+        }
+    }
+
+    // Show the create form; reveal grip/release inputs based on the payload
+    // change implied by the two endpoints (mirrors the loader's rules).
+    function openDrawForm() {
+        var fp = (cy.getElementById(drawFrom).data('payload')) || 'empty';
+        var tp = (cy.getElementById(drawTo).data('payload')) || 'empty';
+        var gripNeeded = fp === 'empty' && tp !== 'empty';
+        var releaseNeeded = fp !== 'empty' && tp === 'empty';
+        drawIdentitySwap = fp !== 'empty' && tp !== 'empty' && fp !== tp;
+        if (drawGripGroup) drawGripGroup.hidden = !gripNeeded;
+        if (drawReleaseGroup) drawReleaseGroup.hidden = !releaseNeeded;
+        if (gripNeeded && drawGripStrokeEl && !drawGripStrokeEl.value) {
+            drawGripStrokeEl.value = gripperStrokes.grip_plate || 100;
+        }
+        clearDrawError();
+        if (drawIdentitySwap) {
+            showDrawError('Cannot connect two different non-empty payloads directly — route through an empty state.');
+        }
+        if (drawFormEl) drawFormEl.hidden = false;
+    }
+
+    function createEdge() {
+        if (!drawFrom || !drawTo) { showDrawError('Pick a source and a target node first.'); return; }
+        if (drawIdentitySwap) { showDrawError('Cannot connect two different non-empty payloads directly.'); return; }
+        var body = { from_node: drawFrom, to_node: drawTo, mode: drawModeEl ? drawModeEl.value : 'joint' };
+        var speedRaw = drawSpeedEl ? drawSpeedEl.value : '';
+        if (speedRaw !== '' && speedRaw != null) {
+            var sp = parseFloat(speedRaw);
+            if (isNaN(sp) || sp <= 0) { showDrawError('Speed must be a number greater than 0.'); return; }
+            body.speed = sp;
+        }
+        if (drawGripGroup && !drawGripGroup.hidden) {
+            var gs = parseFloat(drawGripStrokeEl && drawGripStrokeEl.value);
+            if (isNaN(gs)) { showDrawError('Grip stroke is required for an empty → held edge.'); return; }
+            body.grip = { stroke: gs };
+            var gf = parseFloat(drawGripForceEl && drawGripForceEl.value);
+            if (!isNaN(gf)) body.grip.force = gf;
+        }
+        if (drawReleaseGroup && !drawReleaseGroup.hidden) {
+            var rs = parseFloat(drawReleaseStrokeEl && drawReleaseStrokeEl.value);
+            body.release = isNaN(rs) ? {} : { stroke: rs };
+        }
+        clearDrawError();
+        if (drawCreateBtn) drawCreateBtn.disabled = true;
+        ensureClaim().then(function (held) {
+            if (!held) {
+                if (edgeErrEl && !edgeErrEl.hidden) showDrawError(edgeErrEl.textContent);
+                if (drawCreateBtn) drawCreateBtn.disabled = false;
+                return;
+            }
+            return fetch(API_BASE + '/control/graph/edge/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Claim-Token': claimToken },
+                body: JSON.stringify(body),
+            }).then(function (resp) {
+                if (resp.status === 200) {
+                    return resp.json().then(function (data) {
+                        addEdgeToCanvas(data.created);
+                        clearDrawSelection();  // ready for the next edge; stay in draw mode
+                    });
+                }
+                if (resp.status === 423) {
+                    handleClaimLost();
+                    showDrawError('Locked: control is held elsewhere.');
+                    return;
+                }
+                return resp.json().catch(function () { return {}; }).then(function (d2) {
+                    var msg = (d2 && (d2.detail || d2.error)) || ('HTTP ' + resp.status);
+                    showDrawError('Create failed: ' + (typeof msg === 'string' ? msg : JSON.stringify(msg)));
+                });
+            });
+        }).catch(function (e) {
+            showDrawError('Create failed: ' + e.message);
+        }).then(function () {
+            if (drawCreateBtn) drawCreateBtn.disabled = false;
+        });
+    }
+
+    function addEdgeToCanvas(created) {
+        if (!cy || !created) return;
+        var kind = created.grips ? 'grip' : (created.releases ? 'release' : 'plain');
+        cy.add({ group: 'edges', data: {
+            id: 'e:' + created.from + '->' + created.to,
+            source: created.from, target: created.to,
+            label: edgeLabel(created.mode, created.speed, created.preconditions || []),
+            kind: kind, mode: created.mode, speed: created.speed,
+            preconditions: created.preconditions || [],
+        } });
+        applyGroupVisibility();
+    }
+
+    if (drawToggleBtn) drawToggleBtn.addEventListener('click', function () { setDrawMode(!drawMode); });
+    if (drawCreateBtn) drawCreateBtn.addEventListener('click', createEdge);
+    if (drawCancelBtn) drawCancelBtn.addEventListener('click', clearDrawSelection);
 
     // ── Live state ───────────────────────────────────────────────────
 

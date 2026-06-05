@@ -5,6 +5,12 @@ html, body {
     height: 100%;
 }
 
+/* `display:flex` on .form-group etc. would otherwise override the [hidden]
+   attribute, so force hidden elements to stay hidden. */
+[hidden] {
+    display: none !important;
+}
+
 .graph-page {
     display: flex;
     flex-direction: column;
