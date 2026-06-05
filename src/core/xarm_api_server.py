@@ -320,6 +320,23 @@ class GraphMoveToRequest(BaseModel):
     speed: Optional[float] = Field(default=None, description="Movement speed (may be capped by edge.speed in STRICT)")
 
 
+class GraphEdgeUpdateRequest(BaseModel):
+    """Body of POST /control/graph/edge — in-place edit of an existing edge.
+
+    Only mode and speed are editable from the viewer; node poses, grip/
+    release actions, and topology stay with the control panel / record flow.
+    A None field is left unchanged.
+    """
+    from_node: str = Field(description="Edge source node id")
+    to_node: str = Field(description="Edge target node id")
+    mode: Optional[str] = Field(
+        default=None, description="'joint' or 'linear'; None leaves it unchanged"
+    )
+    speed: Optional[float] = Field(
+        default=None, gt=0, description="Edge speed (>0); None leaves it unchanged"
+    )
+
+
 class EnforcementRequest(BaseModel):
     """Body of POST /control/claim/enforce (Phase 5 toggle)."""
     enabled: bool = Field(description="true to require X-Claim-Token on mutating endpoints")
@@ -1723,6 +1740,95 @@ async def record_last_transition(request: GraphRecordRequest):
 
     c.motion_graph = new_graph
     return {"recorded": proposed}
+
+
+@app.post("/control/graph/edge", dependencies=[Depends(require_claim)])
+async def update_graph_edge(request: GraphEdgeUpdateRequest):
+    """In-place edit of an existing edge's mode and/or speed.
+
+    Claim-gated like every mutating endpoint (the single-gate rule). The
+    edge must already exist; node poses, grip/release actions, and
+    topology are not editable here — those stay with the control panel
+    and the record (append-by-demonstration) flow. The YAML is rewritten
+    with a ruamel round-trip so comments survive, validated before the
+    write, then the in-memory graph is hot-reloaded.
+    """
+    c = get_controller()
+    if c.motion_graph is None:
+        raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+    if c.motion_graph.find_edge(request.from_node, request.to_node) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no edge {request.from_node!r} -> {request.to_node!r}",
+        )
+    if request.mode is not None and request.mode not in ("joint", "linear"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"mode must be 'joint' or 'linear' (got {request.mode!r})",
+        )
+    try:
+        new_graph = _update_edge_in_yaml(request)
+    except GraphError as exc:
+        raise HTTPException(status_code=400, detail=f"edit failed validation: {exc}")
+    c.motion_graph = new_graph
+    edge = new_graph.find_edge(request.from_node, request.to_node)
+    return {
+        "updated": {
+            "from": edge.from_node, "to": edge.to_node,
+            "mode": edge.mode.value, "speed": edge.speed,
+        }
+    }
+
+
+def _update_edge_in_yaml(req: "GraphEdgeUpdateRequest") -> "MotionGraph":  # type: ignore[name-defined]
+    """Edit an existing edge's mode/speed in motion_graph.yaml in place.
+
+    Uses a ruamel.yaml round-trip so the file's comments (the "you hear a
+    click" notes, the commented station templates) survive — a PyYAML
+    re-dump would wipe them all. The candidate is validated with the real
+    loader BEFORE the write, so a bad value never lands on disk, then the
+    graph is reloaded from the file so memory matches disk.
+    """
+    import io
+    from ruamel.yaml import YAML
+    import yaml as _pyyaml
+    try:
+        from .motion_graph import MotionGraph, DEFAULT_PRECONDITIONS
+    except ImportError:
+        from core.motion_graph import MotionGraph, DEFAULT_PRECONDITIONS
+
+    path = os.path.join("src", "settings", "motion_graph.yaml")
+    yaml_rt = YAML()                 # round-trip mode (default)
+    yaml_rt.preserve_quotes = True
+    with open(path) as fh:
+        data = yaml_rt.load(fh)
+
+    # Locate the edge by (from, to) — the loader forbids duplicate pairs,
+    # so this is unambiguous.
+    target = next(
+        (e for e in data.get("edges", [])
+         if e.get("from") == req.from_node and e.get("to") == req.to_node),
+        None,
+    )
+    if target is None:
+        raise GraphError(f"no edge {req.from_node!r} -> {req.to_node!r}")
+    if req.mode is not None:
+        target["mode"] = req.mode
+    if req.speed is not None:
+        target["speed"] = req.speed
+
+    # Serialize once; validate that exact text via the real loader before
+    # committing it to disk (mode/speed don't touch the coherence rules,
+    # but this re-confirms the file still loads — cheap insurance).
+    buf = io.StringIO()
+    yaml_rt.dump(data, buf)
+    serialized = buf.getvalue()
+    plain = _pyyaml.safe_load(serialized)
+    MotionGraph.from_dict(plain, preconditions=DEFAULT_PRECONDITIONS)  # raises GraphError
+
+    with open(path, "w") as fh:      # validated -> commit
+        fh.write(serialized)
+    return MotionGraph.from_yaml(path, preconditions=DEFAULT_PRECONDITIONS)
 
 
 def _append_edge_to_yaml(proposed: dict) -> "MotionGraph":  # type: ignore[name-defined]

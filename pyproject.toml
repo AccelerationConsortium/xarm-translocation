@@ -32,6 +32,7 @@ classifiers = [
 dependencies = [
     "xarm-python-sdk>=1.13.0",
     "PyYAML>=6.0",
+    "ruamel.yaml>=0.18",
     "fastapi>=0.104.1",
     "uvicorn[standard]>=0.24.0",
     "websockets>=12.0"

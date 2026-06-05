@@ -204,8 +204,197 @@
         onGraphRendered(cy);
     }
 
-    // Hook for Phase B (edge tap → edit panel). No-op in Phase A.
-    function onGraphRendered(_cy) {}
+    // ── Phase B: edge editing (mode/speed) behind a claim ────────────
+
+    var CLAIM_OWNER = 'human@xarm-graph';
+    var claimSessionId =
+        (window.crypto && crypto.randomUUID && crypto.randomUUID()) ||
+        ('xarm-graph-' + Date.now() + '-' + Math.random().toString(16).slice(2));
+    // updateClaimIndicator reads this to mark the holder "(you)".
+    window.__graphClaim = { sessionId: claimSessionId };
+    var claimToken = null;
+    var claimHeartbeatTimer = null;
+
+    var editingEdge = null;          // cytoscape edge currently in the panel
+    var panel = document.getElementById('edge-panel');
+    var edgeFromEl = document.getElementById('edge-from');
+    var edgeToEl = document.getElementById('edge-to');
+    var edgeModeEl = document.getElementById('edge-mode');
+    var edgeSpeedEl = document.getElementById('edge-speed');
+    var edgeSaveBtn = document.getElementById('edge-save-btn');
+    var edgeCancelBtn = document.getElementById('edge-cancel-btn');
+    var edgeErrEl = document.getElementById('edge-panel-error');
+
+    // Bind edge taps once the canvas exists. Tapping empty space closes
+    // the panel; tapping an edge opens it on that edge.
+    function onGraphRendered(cyInstance) {
+        cyInstance.on('tap', 'edge', function (evt) { openEdgePanel(evt.target); });
+        cyInstance.on('tap', function (evt) {
+            if (evt.target === cyInstance) closeEdgePanel();
+        });
+    }
+
+    function showEdgeError(text) {
+        if (!edgeErrEl) return;
+        edgeErrEl.textContent = text;
+        edgeErrEl.hidden = false;
+    }
+    function clearEdgeError() {
+        if (edgeErrEl) edgeErrEl.hidden = true;
+    }
+
+    function openEdgePanel(edge) {
+        if (!panel) return;
+        if (editingEdge) editingEdge.removeClass('selected-edge');
+        editingEdge = edge;
+        edge.addClass('selected-edge');
+        var d = edge.data();
+        if (edgeFromEl) edgeFromEl.textContent = d.source;
+        if (edgeToEl) edgeToEl.textContent = d.target;
+        if (edgeModeEl) edgeModeEl.value = d.mode;
+        if (edgeSpeedEl) edgeSpeedEl.value = (d.speed != null ? d.speed : '');
+        clearEdgeError();
+        panel.hidden = false;
+    }
+
+    function closeEdgePanel() {
+        if (editingEdge) { editingEdge.removeClass('selected-edge'); editingEdge = null; }
+        if (panel) panel.hidden = true;
+    }
+
+    // Acquire a claim on first edit and keep it (heartbeated) for the
+    // session. Resolves to true when the claim is held, false otherwise
+    // (and surfaces the reason in the edit panel).
+    function ensureClaim() {
+        if (claimToken) return Promise.resolve(true);
+        return fetch(API_BASE + '/control/claim', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ owner: CLAIM_OWNER, session_id: claimSessionId, ttl_s: 30 }),
+        }).then(function (resp) {
+            if (resp.status === 200) {
+                return resp.json().then(function (data) {
+                    claimToken = data.claim_token;
+                    startClaimHeartbeat(data.heartbeat_interval_s);
+                    updateClaimIndicator({ owner: CLAIM_OWNER, session_id: claimSessionId });
+                    return true;
+                });
+            }
+            if (resp.status === 409 || resp.status === 423) {
+                return resp.json().catch(function () { return {}; }).then(function (d) {
+                    var owner = (d.claimed_by && d.claimed_by.owner) ||
+                        (d.detail && d.detail.claimed_by && d.detail.claimed_by.owner);
+                    showEdgeError('Device is controlled by ' + (owner || 'another session') + '. Try again later.');
+                    return false;
+                });
+            }
+            // 400 "connect first" — the arm isn't connected, so no claim.
+            return resp.json().catch(function () { return {}; }).then(function (d) {
+                var msg = (d && (d.detail || d.error)) || ('HTTP ' + resp.status);
+                showEdgeError('Cannot take control: ' + msg);
+                return false;
+            });
+        }).catch(function (e) {
+            showEdgeError('Cannot take control: ' + e.message);
+            return false;
+        });
+    }
+
+    function startClaimHeartbeat(intervalSeconds) {
+        stopClaimHeartbeat();
+        var everyMs = Math.max(2000, ((intervalSeconds || 10) * 1000) / 2);
+        claimHeartbeatTimer = setInterval(function () {
+            if (!claimToken) return;
+            fetch(API_BASE + '/control/heartbeat', {
+                method: 'POST', headers: { 'X-Claim-Token': claimToken },
+            }).then(function (r) {
+                if (r.status === 401 || r.status === 404) handleClaimLost();
+            }).catch(function () { /* transient; next beat retries */ });
+        }, everyMs);
+    }
+
+    function stopClaimHeartbeat() {
+        if (claimHeartbeatTimer) { clearInterval(claimHeartbeatTimer); claimHeartbeatTimer = null; }
+    }
+
+    function handleClaimLost() {
+        if (claimToken === null) return;
+        claimToken = null;
+        stopClaimHeartbeat();
+        showEdgeError('Lost control — the claim is no longer held. Save again to re-acquire.');
+    }
+
+    function releaseClaim(viaUnload) {
+        var token = claimToken;
+        stopClaimHeartbeat();
+        claimToken = null;
+        if (!token) return;
+        try {
+            fetch(API_BASE + '/control/release', {
+                method: 'POST', headers: { 'X-Claim-Token': token }, keepalive: !!viaUnload,
+            });
+        } catch (e) { /* best-effort */ }
+    }
+
+    function saveEdge() {
+        if (!editingEdge) return;
+        var d = editingEdge.data();
+        var mode = edgeModeEl ? edgeModeEl.value : d.mode;
+        var speedRaw = edgeSpeedEl ? edgeSpeedEl.value : '';
+        var body = { from_node: d.source, to_node: d.target, mode: mode };
+        if (speedRaw !== '' && speedRaw != null) {
+            var speed = parseFloat(speedRaw);
+            if (isNaN(speed) || speed <= 0) {
+                showEdgeError('Speed must be a number greater than 0.');
+                return;
+            }
+            body.speed = speed;
+        }
+        clearEdgeError();
+        if (edgeSaveBtn) edgeSaveBtn.disabled = true;
+        ensureClaim().then(function (held) {
+            if (!held) { if (edgeSaveBtn) edgeSaveBtn.disabled = false; return; }
+            return fetch(API_BASE + '/control/graph/edge', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Claim-Token': claimToken },
+                body: JSON.stringify(body),
+            }).then(function (resp) {
+                if (resp.status === 200) {
+                    return resp.json().then(function (data) {
+                        var u = data.updated || {};
+                        // Update the in-memory edge + label in place (no rebuild).
+                        editingEdge.data('mode', u.mode);
+                        editingEdge.data('speed', u.speed);
+                        editingEdge.data('label', u.mode + (u.speed != null ? ' @ ' + u.speed : ''));
+                        closeEdgePanel();
+                    });
+                }
+                if (resp.status === 423) {
+                    handleClaimLost();
+                    return resp.json().catch(function () { return {}; }).then(function (d2) {
+                        var owner = d2.detail && d2.detail.claimed_by && d2.detail.claimed_by.owner;
+                        showEdgeError(owner
+                            ? 'Locked: control held by ' + owner + '.'
+                            : 'Locked: control is held elsewhere.');
+                    });
+                }
+                return resp.json().catch(function () { return {}; }).then(function (d2) {
+                    var msg = (d2 && (d2.detail || d2.error)) || ('HTTP ' + resp.status);
+                    showEdgeError('Save failed: ' + (typeof msg === 'string' ? msg : JSON.stringify(msg)));
+                });
+            });
+        }).catch(function (e) {
+            showEdgeError('Save failed: ' + e.message);
+        }).then(function () {
+            if (edgeSaveBtn) edgeSaveBtn.disabled = false;
+        });
+    }
+
+    if (edgeSaveBtn) edgeSaveBtn.addEventListener('click', saveEdge);
+    if (edgeCancelBtn) edgeCancelBtn.addEventListener('click', closeEdgePanel);
+    window.addEventListener('beforeunload', function () {
+        if (claimToken) releaseClaim(true);
+    });
 
     // ── Live state ───────────────────────────────────────────────────
 
