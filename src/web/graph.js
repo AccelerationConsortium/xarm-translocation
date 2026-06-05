@@ -197,19 +197,27 @@
             return;
         }
         clearMessage();
-        var hasHome = (data.nodes || []).some(function (n) { return n.id === 'home'; });
         cy = cytoscape({
             container: document.getElementById('cy'),
             elements: elements,
             style: CY_STYLE,
+            // Grid sorted by station then id: many nodes are disconnected
+            // until edges are recorded on hardware, so a force/tree layout
+            // collapses them into an unreadable line. The grid keeps every
+            // node legible and clusters each station's nodes together; the
+            // (few) edges draw on top. Switch to a tree layout once the
+            // graph is mostly connected.
             layout: {
-                name: 'breadthfirst',
-                directed: true,
-                roots: hasHome ? '#home' : undefined,
-                spacingFactor: 1.5,
+                name: 'grid',
                 avoidOverlap: true,
                 nodeDimensionsIncludeLabels: true,
+                condense: false,
                 padding: 24,
+                sort: function (a, b) {
+                    var sa = a.data('station') || '', sb = b.data('station') || '';
+                    return sa < sb ? -1 : sa > sb ? 1
+                        : (a.id() < b.id() ? -1 : a.id() > b.id() ? 1 : 0);
+                },
             },
             wheelSensitivity: 0.2,
         });

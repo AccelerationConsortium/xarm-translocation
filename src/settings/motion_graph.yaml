@@ -1,234 +1,137 @@
-# Motion-graph interlock data — Phase 1 (advisory mode only).
+# Motion-graph interlock data.
 #
-# Nodes = (arm_pose_name, rail_location_name, gripper_state_name, payload_name).
-# Edges = whitelisted directional transitions; speed differences belong on
-# the move call, not as parallel edges. Loader enforces three coherence
-# rules at startup (see src/core/motion_graph.py::_validate_topology).
+# A NODE is a STATE = a named arm pose from position_config.yaml (the `arm`
+# field) combined with a rail location, a gripper state, and a payload.
+# Poses that are visited both empty-handed and while holding a plate are
+# split into two nodes (`<pose>_empty` / `<pose>_held`); a pose with only
+# one meaningful state keeps the bare pose name. EDGES are the motions
+# between states and are mostly discovered on hardware via `record`.
 #
-# This Phase 1 sample covers only the UPLC drawer open/close subgraph
-# (gripper open, no payload throughout). Phase 4 will add plate-pickup
-# nodes that exercise gripper-state and payload changes.
+# Loader enforces coherence at startup (src/core/motion_graph.py::
+# _validate_topology): a non-empty payload may not use the fully-open
+# gripper; payload-changing edges must carry the matching grip/release
+# action; non-changing edges must not.
+#
+# Rail locations (linear_track_config.yaml): Home=0, Deck=550, Hood=550,
+# Cytation=700, Plateloc=0(placeholder). cytation_*/plateloc_* poses are
+# all-zero TODOs in position_config.yaml and are intentionally NOT modelled
+# as nodes yet.
 
 schema_version: "0.1"
 
-# ── Gripper states: commanded mechanical positions only.
-#    Stroke is the bio_gen2 SDK position value (range 71-150).
-#    No payload knowledge here; that's the separate `payloads` dimension.
+# ── Gripper states: commanded mechanical positions only (bio_gen2 stroke
+#    range 71-150). grip_plate must stay < 150 so a held node stays
+#    coherent (rule 1: a payload can't be held with a fully-open gripper).
 gripper_states:
   open:       { stroke: 150 }   # fully open
   closed:     { stroke: 71 }    # fully closed (empty)
-  grip_plate: { stroke: 100 }   # grips a 96-well plate; TUNE on hardware (71-150, must be < 150 to stay coherent with a payload)
+  grip_plate: { stroke: 100 }   # grips a 96-well plate; TUNE on hardware
 
 # ── Payloads: held-item identities. `empty` is the no-payload sentinel.
 payloads:
   empty: {}
   plate_96: { description: "96-well microplate" }
 
-# ── Nodes: enumerate only the meaningful combinations, not the cartesian.
-#    Anything not listed here resolves to UNKNOWN_NODE at runtime.
+# ── Nodes: grounded 1:1 in position_config.yaml poses. Empty = gripper
+#    open / payload empty; held = gripper grip_plate / payload plate_96.
 nodes:
-  - id: home
-    arm: robot_home
-    rail: Home
-    gripper: open
-    payload: empty
-    tags: [home, safe_parking]
+  # ── Generic safe poses (rail Home), empty-only ──
+  - { id: robot_home,       arm: robot_home,       rail: Home, gripper: open, payload: empty, tags: [safe, home] }
+  - { id: robot_home_back,  arm: robot_home_back,  rail: Home, gripper: open, payload: empty, tags: [safe] }
+  - { id: robot_home_left,  arm: robot_home_left,  rail: Home, gripper: open, payload: empty, tags: [safe] }
+  - { id: robot_home_right, arm: robot_home_right, rail: Home, gripper: open, payload: empty, tags: [safe] }
 
-  - id: uplc_draw_approach
-    arm: uplc_draw_home
-    rail: Home
-    gripper: open
-    payload: empty
-    tags: [uplc, approach]
+  # ── Opentrons OT-2 (rail Home). Per-slot pick/place: high/low split
+  #    empty/held; low_press is held-only. ──
+  - { id: opentrons_home, arm: opentrons_home, rail: Home, gripper: open, payload: empty, tags: [opentrons, transit] }
 
-  - id: uplc_draw_open_max
-    arm: uplc_draw_open_max
-    rail: Home
-    gripper: open
-    payload: empty
-    tags: [uplc, drawer_open]
+  - { id: opentrons_2_high_empty, arm: opentrons_2_high, rail: Home, gripper: open,       payload: empty,    tags: [opentrons, slot2] }
+  - { id: opentrons_2_high_held,  arm: opentrons_2_high, rail: Home, gripper: grip_plate, payload: plate_96, tags: [opentrons, slot2] }
+  - { id: opentrons_2_low_empty,  arm: opentrons_2_low,  rail: Home, gripper: open,       payload: empty,    tags: [opentrons, slot2] }
+  - { id: opentrons_2_low_held,   arm: opentrons_2_low,  rail: Home, gripper: grip_plate, payload: plate_96, tags: [opentrons, slot2] }
+  - { id: opentrons_2_low_press,  arm: opentrons_2_low_press, rail: Home, gripper: grip_plate, payload: plate_96, tags: [opentrons, slot2] }
 
-  - id: uplc_draw_open_min
-    arm: uplc_draw_open_min
-    rail: Home
-    gripper: open
-    payload: empty
-    tags: [uplc, drawer_open]
+  - { id: opentrons_4_high_empty, arm: opentrons_4_high, rail: Home, gripper: open,       payload: empty,    tags: [opentrons, slot4] }
+  - { id: opentrons_4_high_held,  arm: opentrons_4_high, rail: Home, gripper: grip_plate, payload: plate_96, tags: [opentrons, slot4] }
+  - { id: opentrons_4_low_empty,  arm: opentrons_4_low,  rail: Home, gripper: open,       payload: empty,    tags: [opentrons, slot4] }
+  - { id: opentrons_4_low_held,   arm: opentrons_4_low,  rail: Home, gripper: grip_plate, payload: plate_96, tags: [opentrons, slot4] }
+  - { id: opentrons_4_low_press,  arm: opentrons_4_low_press, rail: Home, gripper: grip_plate, payload: plate_96, tags: [opentrons, slot4] }
 
-  - id: uplc_draw_close_click
-    arm: uplc_draw_open_close
-    rail: Home
-    gripper: open
-    payload: empty
-    tags: [uplc, drawer_click]
+  - { id: opentrons_6_high_empty, arm: opentrons_6_high, rail: Home, gripper: open,       payload: empty,    tags: [opentrons, slot6] }
+  - { id: opentrons_6_high_held,  arm: opentrons_6_high, rail: Home, gripper: grip_plate, payload: plate_96, tags: [opentrons, slot6] }
+  - { id: opentrons_6_low_empty,  arm: opentrons_6_low,  rail: Home, gripper: open,       payload: empty,    tags: [opentrons, slot6] }
+  - { id: opentrons_6_low_held,   arm: opentrons_6_low,  rail: Home, gripper: grip_plate, payload: plate_96, tags: [opentrons, slot6] }
+  - { id: opentrons_6_low_press,  arm: opentrons_6_low_press, rail: Home, gripper: grip_plate, payload: plate_96, tags: [opentrons, slot6] }
 
-  # ─────────────────────────────────────────────────────────────────
-  # Cytation plate pick/place (rail at Cytation=700). FULLY-WORKED TEMPLATE.
-  # Pattern: approach -> high_empty -> low_empty -> [grip] -> low_held -> high_held.
-  # Uncomment + fill cytation_{home,high,low} joints in position_config.yaml,
-  # then discover edges below by `record` demonstration.
-  # ─────────────────────────────────────────────────────────────────
-  # - id: cytation_approach
-  #   arm: cytation_home
-  #   rail: Cytation
-  #   gripper: open
-  #   payload: empty
-  #   tags: [cytation, approach]
-  #
-  # - id: cytation_high_empty
-  #   arm: cytation_high
-  #   rail: Cytation
-  #   gripper: open
-  #   payload: empty
-  #   tags: [cytation, plate_pick]
-  #
-  # - id: cytation_low_empty
-  #   arm: cytation_low
-  #   rail: Cytation
-  #   gripper: open
-  #   payload: empty
-  #   tags: [cytation, plate_pick]
-  #
-  # - id: cytation_low_held
-  #   arm: cytation_low          # same arm pose as low_empty; differs only in gripper+payload
-  #   rail: Cytation
-  #   gripper: grip_plate
-  #   payload: plate_96
-  #   tags: [cytation, plate_pick]
-  #
-  # - id: cytation_high_held
-  #   arm: cytation_high         # same arm pose as high_empty
-  #   rail: Cytation
-  #   gripper: grip_plate
-  #   payload: plate_96
-  #   tags: [cytation, plate_pick]
+  # ── UPLC (rail Home), empty-only ("no payload allowed" in position_config). ──
+  - { id: uplc_home,            arm: uplc_home,            rail: Home, gripper: open, payload: empty, tags: [uplc, transit] }
+  # drawer open/close subgraph
+  - { id: uplc_draw_home,       arm: uplc_draw_home,       rail: Home, gripper: open, payload: empty, tags: [uplc, drawer] }
+  - { id: uplc_draw_open_max,   arm: uplc_draw_open_max,   rail: Home, gripper: open, payload: empty, tags: [uplc, drawer] }
+  - { id: uplc_draw_open_min,   arm: uplc_draw_open_min,   rail: Home, gripper: open, payload: empty, tags: [uplc, drawer] }
+  - { id: uplc_draw_open_close, arm: uplc_draw_open_close, rail: Home, gripper: open, payload: empty, tags: [uplc, drawer] }
+  # plate in/out poses
+  - { id: uplc_plate_home,      arm: uplc_plate_home,      rail: Home, gripper: open, payload: empty, tags: [uplc, plate] }
+  - { id: uplc_plate_high,      arm: uplc_plate_high,      rail: Home, gripper: open, payload: empty, tags: [uplc, plate] }
+  - { id: uplc_plate_in,        arm: uplc_plate_in,        rail: Home, gripper: open, payload: empty, tags: [uplc, plate] }
 
-  # ─────────────────────────────────────────────────────────────────
-  # Plateloc plate pick/place (rail at Plateloc=TBD). Node stubs only; edges via record.
-  # Mirrors the cytation shape. Fill plateloc_{home,high,low} joints + the Plateloc
-  # rail position before uncommenting.
-  # ─────────────────────────────────────────────────────────────────
-  # - id: plateloc_approach
-  #   arm: plateloc_home
-  #   rail: Plateloc
-  #   gripper: open
-  #   payload: empty
-  #   tags: [plateloc, approach]
-  #
-  # - id: plateloc_high_empty
-  #   arm: plateloc_high
-  #   rail: Plateloc
-  #   gripper: open
-  #   payload: empty
-  #   tags: [plateloc, plate_pick]
-  #
-  # - id: plateloc_low_empty
-  #   arm: plateloc_low
-  #   rail: Plateloc
-  #   gripper: open
-  #   payload: empty
-  #   tags: [plateloc, plate_pick]
-  #
-  # - id: plateloc_low_held
-  #   arm: plateloc_low
-  #   rail: Plateloc
-  #   gripper: grip_plate
-  #   payload: plate_96
-  #   tags: [plateloc, plate_pick]
-  #
-  # - id: plateloc_high_held
-  #   arm: plateloc_high
-  #   rail: Plateloc
-  #   gripper: grip_plate
-  #   payload: plate_96
-  #   tags: [plateloc, plate_pick]
+  # ── Deck (rail Deck=550). deck_home/deck_high are transit (empty);
+  #    slot1/slot2/solid are pick/place (high/low split, press held-only). ──
+  - { id: deck_home, arm: deck_home, rail: Deck, gripper: open, payload: empty, tags: [deck, transit] }
+  - { id: deck_high, arm: deck_high, rail: Deck, gripper: open, payload: empty, tags: [deck, transit] }
 
-  # ─────────────────────────────────────────────────────────────────
-  # Hood (rail at Hood=550, same as Deck for now). Two sub-stations: shaker + filtration.
-  # Node stubs only; edges via record. NOTE: arm poses use the position_config.yaml
-  # spelling "hood_filteration_*" (typo preserved on purpose — must match exactly).
-  # ─────────────────────────────────────────────────────────────────
-  # - id: hood_approach
-  #   arm: hood_home
-  #   rail: Hood
-  #   gripper: open
-  #   payload: empty
-  #   tags: [hood, approach]
-  #
-  #   # ── shaker sub-station ──
-  # - id: hood_shaker_high_empty
-  #   arm: hood_shaker_high
-  #   rail: Hood
-  #   gripper: open
-  #   payload: empty
-  #   tags: [hood, shaker, plate_pick]
-  #
-  # - id: hood_shaker_low_empty
-  #   arm: hood_shaker_low
-  #   rail: Hood
-  #   gripper: open
-  #   payload: empty
-  #   tags: [hood, shaker, plate_pick]
-  #
-  # - id: hood_shaker_low_held
-  #   arm: hood_shaker_low
-  #   rail: Hood
-  #   gripper: grip_plate
-  #   payload: plate_96
-  #   tags: [hood, shaker, plate_pick]
-  #
-  # - id: hood_shaker_high_held
-  #   arm: hood_shaker_high
-  #   rail: Hood
-  #   gripper: grip_plate
-  #   payload: plate_96
-  #   tags: [hood, shaker, plate_pick]
-  #
-  #   # ── filtration sub-station (arm poses spelled "filteration") ──
-  # - id: hood_filtration_high_empty
-  #   arm: hood_filteration_high
-  #   rail: Hood
-  #   gripper: open
-  #   payload: empty
-  #   tags: [hood, filtration, plate_pick]
-  #
-  # - id: hood_filtration_low_empty
-  #   arm: hood_filteration_low
-  #   rail: Hood
-  #   gripper: open
-  #   payload: empty
-  #   tags: [hood, filtration, plate_pick]
-  #
-  # - id: hood_filtration_low_held
-  #   arm: hood_filteration_low
-  #   rail: Hood
-  #   gripper: grip_plate
-  #   payload: plate_96
-  #   tags: [hood, filtration, plate_pick]
-  #
-  # - id: hood_filtration_high_held
-  #   arm: hood_filteration_high
-  #   rail: Hood
-  #   gripper: grip_plate
-  #   payload: plate_96
-  #   tags: [hood, filtration, plate_pick]
+  - { id: deck_slot1_high_empty, arm: deck_slot1_high, rail: Deck, gripper: open,       payload: empty,    tags: [deck, slot1] }
+  - { id: deck_slot1_high_held,  arm: deck_slot1_high, rail: Deck, gripper: grip_plate, payload: plate_96, tags: [deck, slot1] }
+  - { id: deck_slot1_low_empty,  arm: deck_slot1_low,  rail: Deck, gripper: open,       payload: empty,    tags: [deck, slot1] }
+  - { id: deck_slot1_low_held,   arm: deck_slot1_low,  rail: Deck, gripper: grip_plate, payload: plate_96, tags: [deck, slot1] }
+  - { id: deck_slot1_low_press,  arm: deck_slot1_low_press, rail: Deck, gripper: grip_plate, payload: plate_96, tags: [deck, slot1] }
 
-# ── Edges: directional. Mode overrides the preset's storage form
-#    (a joint-list preset can still be driven linearly by an edge).
+  - { id: deck_slot2_high_empty, arm: deck_slot2_high, rail: Deck, gripper: open,       payload: empty,    tags: [deck, slot2] }
+  - { id: deck_slot2_high_held,  arm: deck_slot2_high, rail: Deck, gripper: grip_plate, payload: plate_96, tags: [deck, slot2] }
+  - { id: deck_slot2_low_empty,  arm: deck_slot2_low,  rail: Deck, gripper: open,       payload: empty,    tags: [deck, slot2] }
+  - { id: deck_slot2_low_held,   arm: deck_slot2_low,  rail: Deck, gripper: grip_plate, payload: plate_96, tags: [deck, slot2] }
+
+  - { id: deck_solid_high_empty, arm: deck_solid_high, rail: Deck, gripper: open,       payload: empty,    tags: [deck, solid] }
+  - { id: deck_solid_high_held,  arm: deck_solid_high, rail: Deck, gripper: grip_plate, payload: plate_96, tags: [deck, solid] }
+  - { id: deck_solid_low_empty,  arm: deck_solid_low,  rail: Deck, gripper: open,       payload: empty,    tags: [deck, solid] }
+  - { id: deck_solid_low_held,   arm: deck_solid_low,  rail: Deck, gripper: grip_plate, payload: plate_96, tags: [deck, solid] }
+  - { id: deck_solid_low_press,  arm: deck_solid_low_press, rail: Deck, gripper: grip_plate, payload: plate_96, tags: [deck, solid] }
+
+  # ── Hood (rail Hood=550). shaker + filtration sub-stations. ──
+  - { id: hood_home, arm: hood_home, rail: Hood, gripper: open, payload: empty, tags: [hood, transit] }
+
+  - { id: hood_shaker_high_empty, arm: hood_shaker_high, rail: Hood, gripper: open,       payload: empty,    tags: [hood, shaker] }
+  - { id: hood_shaker_high_held,  arm: hood_shaker_high, rail: Hood, gripper: grip_plate, payload: plate_96, tags: [hood, shaker] }
+  - { id: hood_shaker_low_empty,  arm: hood_shaker_low,  rail: Hood, gripper: open,       payload: empty,    tags: [hood, shaker] }
+  - { id: hood_shaker_low_held,   arm: hood_shaker_low,  rail: Hood, gripper: grip_plate, payload: plate_96, tags: [hood, shaker] }
+  - { id: hood_shaker_low_press,  arm: hood_shaker_low_press, rail: Hood, gripper: grip_plate, payload: plate_96, tags: [hood, shaker] }
+
+  - { id: hood_filter_home, arm: hood_filter_home, rail: Hood, gripper: open, payload: empty, tags: [hood, filter] }
+  - { id: hood_filter_high_empty, arm: hood_filter_high, rail: Hood, gripper: open,       payload: empty,    tags: [hood, filter] }
+  - { id: hood_filter_high_held,  arm: hood_filter_high, rail: Hood, gripper: grip_plate, payload: plate_96, tags: [hood, filter] }
+  - { id: hood_filter_low_empty,  arm: hood_filter_low,  rail: Hood, gripper: open,       payload: empty,    tags: [hood, filter] }
+  - { id: hood_filter_low_held,   arm: hood_filter_low,  rail: Hood, gripper: grip_plate, payload: plate_96, tags: [hood, filter] }
+  - { id: hood_filter_top_plate_empty, arm: hood_filter_top_plate, rail: Hood, gripper: open,       payload: empty,    tags: [hood, filter] }
+  - { id: hood_filter_top_plate_held,  arm: hood_filter_top_plate, rail: Hood, gripper: grip_plate, payload: plate_96, tags: [hood, filter] }
+
+# ── Edges: directional motions. Only the UPLC drawer subgraph is authored
+#    here (it predates this file and is hand-verified). All other station
+#    edges are discovered on hardware via POST /control/graph/record.
+#    These are all empty->empty moves, so they carry no grip/release action.
 edges:
-  - from: home
-    to:   uplc_draw_approach
+  - from: robot_home
+    to:   uplc_draw_home
     mode: joint
     speed: 30
     comment: "Pre-position for UPLC drawer interaction."
 
-  - from: uplc_draw_approach
-    to:   home
+  - from: uplc_draw_home
+    to:   robot_home
     mode: joint
     speed: 30
     comment: "Retreat from UPLC drawer."
 
-  - from: uplc_draw_approach
+  - from: uplc_draw_home
     to:   uplc_draw_open_max
     mode: linear
     speed: 20
@@ -242,13 +145,13 @@ edges:
     comment: "Close drawer to almost-shut position (slow)."
 
   - from: uplc_draw_open_min
-    to:   uplc_draw_close_click
+    to:   uplc_draw_open_close
     mode: linear
     speed: 5
     preconditions: [gripper_empty]
-    comment: "Final close — you should hear a click."
+    comment: "Final close - you should hear a click."
 
-  - from: uplc_draw_close_click
+  - from: uplc_draw_open_close
     to:   uplc_draw_open_min
     mode: linear
     speed: 5
@@ -259,276 +162,3 @@ edges:
     mode: linear
     speed: 15
     comment: "Open drawer fully."
-
-  # ─────────────────────────────────────────────────────────────────
-  # Cytation edges. FULLY-WORKED TEMPLATE. Hand-verified against the four
-  # coherence rules: grip/release appear only on the two payload-changing
-  # edges; the non-changing edges carry none. Discover/confirm by record.
-  # ─────────────────────────────────────────────────────────────────
-  # ── pick: empty descends, grips, lifts ──
-  # - from: home
-  #   to:   cytation_approach
-  #   mode: joint
-  #   speed: 30
-  #   comment: "Travel rail Home->Cytation and pre-position."
-  #
-  # - from: cytation_approach
-  #   to:   cytation_high_empty
-  #   mode: joint
-  #   speed: 25
-  #
-  # - from: cytation_high_empty
-  #   to:   cytation_low_empty
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [gripper_empty]
-  #   comment: "Descend over plate (empty)."
-  #
-  # - from: cytation_low_empty
-  #   to:   cytation_low_held
-  #   mode: linear
-  #   speed: 10
-  #   action:
-  #     grip: { stroke: 100, force: 5 }   # TUNE on hardware
-  #   comment: "Close gripper on the plate (empty -> plate_96)."
-  #
-  # - from: cytation_low_held
-  #   to:   cytation_high_held
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [plate_held]
-  #   comment: "Lift plate clear."
-  #
-  # ── place: held descends, releases, retracts (reverse of pick) ──
-  # - from: cytation_high_held
-  #   to:   cytation_low_held
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [plate_held]
-  #   comment: "Lower plate onto the reader."
-  #
-  # - from: cytation_low_held
-  #   to:   cytation_low_empty
-  #   mode: linear
-  #   speed: 10
-  #   action:
-  #     release: { stroke: 150 }   # plate_96 -> empty; opens to the `open` stroke
-  #   comment: "Release plate."
-  #
-  # - from: cytation_low_empty
-  #   to:   cytation_high_empty
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [gripper_empty]
-  #   comment: "Retract empty."
-  #
-  # - from: cytation_high_empty
-  #   to:   cytation_approach
-  #   mode: joint
-  #   speed: 25
-  #
-  # - from: cytation_approach
-  #   to:   home
-  #   mode: joint
-  #   speed: 30
-  #   comment: "Return rail Cytation->Home."
-
-  # ─────────────────────────────────────────────────────────────────
-  # Plateloc edges. TEMPLATE (mirrors cytation). Confirm by record.
-  # ─────────────────────────────────────────────────────────────────
-  # ── pick ──
-  # - from: home
-  #   to:   plateloc_approach
-  #   mode: joint
-  #   speed: 30
-  #   comment: "Travel rail Home->Plateloc and pre-position."
-  #
-  # - from: plateloc_approach
-  #   to:   plateloc_high_empty
-  #   mode: joint
-  #   speed: 25
-  #
-  # - from: plateloc_high_empty
-  #   to:   plateloc_low_empty
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [gripper_empty]
-  #   comment: "Descend over plate (empty)."
-  #
-  # - from: plateloc_low_empty
-  #   to:   plateloc_low_held
-  #   mode: linear
-  #   speed: 10
-  #   action:
-  #     grip: { stroke: 100, force: 5 }   # TUNE on hardware
-  #   comment: "Close gripper on the plate (empty -> plate_96)."
-  #
-  # - from: plateloc_low_held
-  #   to:   plateloc_high_held
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [plate_held]
-  #   comment: "Lift plate clear."
-  #
-  # ── place ──
-  # - from: plateloc_high_held
-  #   to:   plateloc_low_held
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [plate_held]
-  #   comment: "Lower plate onto the sealer."
-  #
-  # - from: plateloc_low_held
-  #   to:   plateloc_low_empty
-  #   mode: linear
-  #   speed: 10
-  #   action:
-  #     release: { stroke: 150 }
-  #   comment: "Release plate."
-  #
-  # - from: plateloc_low_empty
-  #   to:   plateloc_high_empty
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [gripper_empty]
-  #   comment: "Retract empty."
-  #
-  # - from: plateloc_high_empty
-  #   to:   plateloc_approach
-  #   mode: joint
-  #   speed: 25
-  #
-  # - from: plateloc_approach
-  #   to:   home
-  #   mode: joint
-  #   speed: 30
-  #   comment: "Return rail Plateloc->Home."
-
-  # ─────────────────────────────────────────────────────────────────
-  # Hood edges. TEMPLATE. Shared `hood_approach` fans out to two sub-stations
-  # (shaker + filtration); each is an independent cytation-shaped pick/place.
-  # Confirm by record.
-  # ─────────────────────────────────────────────────────────────────
-  # - from: home
-  #   to:   hood_approach
-  #   mode: joint
-  #   speed: 30
-  #   comment: "Travel rail Home->Hood and pre-position."
-  #
-  # - from: hood_approach
-  #   to:   home
-  #   mode: joint
-  #   speed: 30
-  #   comment: "Return rail Hood->Home."
-  #
-  # ── shaker sub-station: pick ──
-  # - from: hood_approach
-  #   to:   hood_shaker_high_empty
-  #   mode: joint
-  #   speed: 25
-  #
-  # - from: hood_shaker_high_empty
-  #   to:   hood_shaker_low_empty
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [gripper_empty]
-  #   comment: "Descend over plate (empty)."
-  #
-  # - from: hood_shaker_low_empty
-  #   to:   hood_shaker_low_held
-  #   mode: linear
-  #   speed: 10
-  #   action:
-  #     grip: { stroke: 100, force: 5 }   # TUNE on hardware
-  #   comment: "Close gripper on the plate (empty -> plate_96)."
-  #
-  # - from: hood_shaker_low_held
-  #   to:   hood_shaker_high_held
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [plate_held]
-  #   comment: "Lift plate clear."
-  #
-  # ── shaker sub-station: place ──
-  # - from: hood_shaker_high_held
-  #   to:   hood_shaker_low_held
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [plate_held]
-  #   comment: "Lower plate onto the shaker."
-  #
-  # - from: hood_shaker_low_held
-  #   to:   hood_shaker_low_empty
-  #   mode: linear
-  #   speed: 10
-  #   action:
-  #     release: { stroke: 150 }
-  #   comment: "Release plate."
-  #
-  # - from: hood_shaker_low_empty
-  #   to:   hood_shaker_high_empty
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [gripper_empty]
-  #   comment: "Retract empty."
-  #
-  # - from: hood_shaker_high_empty
-  #   to:   hood_approach
-  #   mode: joint
-  #   speed: 25
-  #
-  # ── filtration sub-station: pick ──
-  # - from: hood_approach
-  #   to:   hood_filtration_high_empty
-  #   mode: joint
-  #   speed: 25
-  #
-  # - from: hood_filtration_high_empty
-  #   to:   hood_filtration_low_empty
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [gripper_empty]
-  #   comment: "Descend over plate (empty)."
-  #
-  # - from: hood_filtration_low_empty
-  #   to:   hood_filtration_low_held
-  #   mode: linear
-  #   speed: 10
-  #   action:
-  #     grip: { stroke: 100, force: 5 }   # TUNE on hardware
-  #   comment: "Close gripper on the plate (empty -> plate_96)."
-  #
-  # - from: hood_filtration_low_held
-  #   to:   hood_filtration_high_held
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [plate_held]
-  #   comment: "Lift plate clear."
-  #
-  # ── filtration sub-station: place ──
-  # - from: hood_filtration_high_held
-  #   to:   hood_filtration_low_held
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [plate_held]
-  #   comment: "Lower plate onto the filtration setup."
-  #
-  # - from: hood_filtration_low_held
-  #   to:   hood_filtration_low_empty
-  #   mode: linear
-  #   speed: 10
-  #   action:
-  #     release: { stroke: 150 }
-  #   comment: "Release plate."
-  #
-  # - from: hood_filtration_low_empty
-  #   to:   hood_filtration_high_empty
-  #   mode: linear
-  #   speed: 15
-  #   preconditions: [gripper_empty]
-  #   comment: "Retract empty."
-  #
-  # - from: hood_filtration_high_empty
-  #   to:   hood_approach
-  #   mode: joint
-  #   speed: 25

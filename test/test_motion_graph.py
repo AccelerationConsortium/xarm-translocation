@@ -75,17 +75,23 @@ def test_real_yaml_loads_and_validates():
     """The shipped motion_graph.yaml must load cleanly with default preconditions."""
     graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
     nodes = {n.id for n in graph.nodes}
-    assert "home" in nodes
-    assert "uplc_draw_close_click" in nodes
-    # The drawer click is a leaf for direct return — must back out.
-    assert graph.allowed_targets("uplc_draw_close_click") == ["uplc_draw_open_min"]
+    assert "robot_home" in nodes
+    assert "uplc_draw_open_close" in nodes
+    # The drawer close pose is a leaf for direct return — must back out.
+    assert graph.allowed_targets("uplc_draw_open_close") == ["uplc_draw_open_min"]
 
 
 def test_real_yaml_reachability_from_home():
     graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
-    # Every drawer node should be reachable from home.
-    unreachable = graph.unreachable_nodes("home")
-    assert unreachable == []
+    # The UPLC drawer subgraph is fully connected from robot_home. Other
+    # stations are grounded nodes with no edges yet (recorded on hardware),
+    # so they're expected-unreachable — only assert the drawer subgraph.
+    unreachable = set(graph.unreachable_nodes("robot_home"))
+    drawer = {
+        "uplc_draw_home", "uplc_draw_open_max",
+        "uplc_draw_open_min", "uplc_draw_open_close",
+    }
+    assert drawer & unreachable == set()
 
 
 # ── Query API ────────────────────────────────────────────────────────
