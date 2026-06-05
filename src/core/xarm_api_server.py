@@ -1491,27 +1491,68 @@ async def set_claim_enforcement(request: EnforcementRequest):
 # MOTION GRAPH (Phase 2)
 # =============================================================================
 
+def _load_standalone_graph():  # -> Optional[MotionGraph]
+    """Load motion_graph.yaml directly from disk, no controller required.
+
+    The motion graph is pure data; the graph viewer must render with no
+    hardware connected (the controller — and thus c.motion_graph — only
+    exists after /connect). When disconnected we read the file here so
+    GET /graph still returns the full topology. Returns None if the file
+    is missing or fails validation (same disabled-graph semantics the
+    controller uses at init)."""
+    try:
+        from .motion_graph import MotionGraph, DEFAULT_PRECONDITIONS, GraphError
+    except ImportError:
+        from core.motion_graph import MotionGraph, DEFAULT_PRECONDITIONS, GraphError
+    path = os.path.join("src", "settings", "motion_graph.yaml")
+    try:
+        return MotionGraph.from_yaml(path, preconditions=DEFAULT_PRECONDITIONS)
+    except (FileNotFoundError, GraphError) as exc:
+        logger.warning(f"Standalone motion_graph load failed: {exc}")
+        return None
+
+
 @app.get("/graph")
 async def get_graph_state():
     """Snapshot of the motion-graph layer's current state.
 
-    Useful for the web UI, debugging, and tests. Returns 404 when no
-    graph is loaded (legacy config). The same data also rides in
-    /status.details.motion_graph, but is exposed here too for direct
-    polling without parsing the full status envelope.
+    Useful for the web UI, debugging, and tests. The full node/edge
+    topology is always returned (loaded standalone from YAML when no
+    controller is connected, so the viewer works with no hardware); the
+    live fields (current_node, reachable_nodes, payload, mode) are only
+    meaningful once connected and are nulled/defaulted otherwise. Returns
+    404 only when no graph is loadable at all. The same data also rides
+    in /status.details.motion_graph.
     """
-    c = get_controller()
-    if c.motion_graph is None:
+    c = controller  # module global; None until /connect
+    graph = c.motion_graph if c is not None else _load_standalone_graph()
+    if graph is None:
         raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
     return {
-        "graph_mode": c.graph_mode.value,
-        "current_node": c.current_node,
-        "reachable_nodes": c.reachable_node_ids(),
-        "declared_payload": c.declared_payload,
-        "arm_pose_name": c.last_arm_pose_name,
-        "rail_location_name": c.last_rail_location_name,
-        "last_transition": c.last_transition,
-        "adjacency": c.motion_graph.adjacency_summary(),
+        # Live state — populated from the controller when connected,
+        # neutral defaults when the viewer is open against a cold service.
+        "graph_mode": c.graph_mode.value if c is not None else "off",
+        "current_node": c.current_node if c is not None else None,
+        "reachable_nodes": c.reachable_node_ids() if c is not None else [],
+        "declared_payload": c.declared_payload if c is not None else "empty",
+        "arm_pose_name": c.last_arm_pose_name if c is not None else None,
+        "rail_location_name": c.last_rail_location_name if c is not None else None,
+        "last_transition": c.last_transition if c is not None else None,
+        "adjacency": graph.adjacency_summary(),
+        # Full node/edge detail so the graph viewer can render the whole
+        # topology (and Phase B can edit it) without a second call.
+        "nodes": [
+            {"id": n.id, "arm": n.arm, "rail": n.rail,
+             "gripper": n.gripper, "payload": n.payload, "tags": list(n.tags)}
+            for n in graph.nodes
+        ],
+        "edges": [
+            {"from": e.from_node, "to": e.to_node, "mode": e.mode.value,
+             "speed": e.speed, "grips": e.grip is not None,
+             "releases": e.release is not None,
+             "preconditions": list(e.preconditions), "comment": e.comment}
+            for e in graph.edges
+        ],
     }
 
 

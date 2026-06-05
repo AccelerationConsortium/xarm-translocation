@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>xArm Motion Graph</title>
+    <link rel="stylesheet" href="style.css?v=20260604a">
+    <link rel="stylesheet" href="graph.css?v=20260604a">
+</head>
+<body>
+    <div class="graph-page">
+        <header class="graph-header">
+            <div class="graph-title">
+                <p class="eyebrow">xArm Translocation</p>
+                <h1>Motion Graph <span class="panel-unit">interlock topology</span></h1>
+            </div>
+            <div class="graph-header-status">
+                <div class="graph-live">
+                    <span class="inline-label">Mode</span>
+                    <strong id="graph-mode">—</strong>
+                    <span class="sep">|</span>
+                    <span class="inline-label">Current</span>
+                    <strong id="graph-current">—</strong>
+                    <span class="sep">|</span>
+                    <span class="inline-label">Payload</span>
+                    <strong id="graph-payload">—</strong>
+                </div>
+                <div id="claim-status" class="claim-status claim-free">Control: nobody (open)</div>
+            </div>
+            <div class="graph-header-links">
+                <a href="index.html" class="btn btn-secondary">← Control panel</a>
+            </div>
+        </header>
+
+        <main class="graph-main">
+            <div id="cy" class="graph-canvas"></div>
+
+            <aside class="graph-side">
+                <div id="graph-message" class="graph-message" hidden></div>
+
+                <div class="card graph-legend">
+                    <h2>Legend</h2>
+                    <ul class="legend-list">
+                        <li><span class="legend-swatch swatch-current"></span> current node (live)</li>
+                        <li><span class="legend-swatch swatch-holding"></span> holding labware</li>
+                        <li><span class="legend-line line-grip"></span> grip edge</li>
+                        <li><span class="legend-line line-release"></span> release edge</li>
+                        <li><span class="legend-line line-plain"></span> move edge</li>
+                    </ul>
+                    <p class="muted legend-note">Edge label = <code>mode @ speed</code>. Node colour groups by station (first tag).</p>
+                </div>
+
+                <!-- Edge edit panel — Phase B wires this up. Inert in Phase A. -->
+                <div id="edge-panel" class="card edge-panel" hidden>
+                    <h2>Edit edge</h2>
+                    <div class="edge-panel-route">
+                        <strong id="edge-from">—</strong>
+                        <span class="edge-arrow">→</span>
+                        <strong id="edge-to">—</strong>
+                    </div>
+                    <div class="form-group">
+                        <label for="edge-mode">Mode</label>
+                        <select id="edge-mode">
+                            <option value="joint">joint</option>
+                            <option value="linear">linear</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="edge-speed">Speed</label>
+                        <input type="number" id="edge-speed" min="0.1" step="1" placeholder="—">
+                    </div>
+                    <div class="edge-panel-actions">
+                        <button id="edge-save-btn" class="btn btn-primary">Save</button>
+                        <button id="edge-cancel-btn" class="btn btn-secondary">Cancel</button>
+                    </div>
+                    <div id="edge-panel-error" class="edge-panel-error" hidden></div>
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <script src="cytoscape.min.js"></script>
+    <script src="graph.js?v=20260604a"></script>
+</body>
+</html>

@@ -25,8 +25,9 @@ class XArmWebHandler(http.server.SimpleHTTPRequestHandler):
         
         # Proxy API requests to the API server
         api_paths = [
-            '/api', '/status', '/locations', '/track', 
-            '/connect', '/disconnect', '/move', '/clear', '/gripper', '/ws'
+            '/api', '/status', '/locations', '/track',
+            '/connect', '/disconnect', '/move', '/clear', '/gripper', '/ws',
+            '/graph', '/control',
         ]
         if any(parsed_path.path.startswith(path) for path in api_paths):
             self.proxy_to_api_server()

@@ -1,0 +1,266 @@
+/* Motion Graph viewer — standalone page layout.
+   Shares colour tokens + .btn / .claim-status classes with style.css. */
+
+html, body {
+    height: 100%;
+}
+
+.graph-page {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    padding: 16px;
+    gap: 12px;
+}
+
+.graph-header {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+    padding: 12px 18px;
+}
+
+.graph-title h1 {
+    margin: 2px 0 0;
+    font-size: 1.3rem;
+}
+
+.graph-title .eyebrow {
+    margin: 0;
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ink-subtle);
+}
+
+.graph-header-status {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-left: auto;
+}
+
+.graph-live {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.92rem;
+    white-space: nowrap;
+}
+
+.graph-live .sep {
+    color: var(--border-strong);
+}
+
+.graph-header-links {
+    display: flex;
+    gap: 8px;
+}
+
+.panel-unit {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: var(--ink-subtle);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-left: 6px;
+}
+
+.inline-label {
+    color: var(--ink-muted);
+    font-size: 0.82rem;
+}
+
+/* ── Main: canvas + side column ─────────────────────────────────── */
+
+.graph-main {
+    display: flex;
+    gap: 12px;
+    flex: 1;
+    min-height: 0;
+}
+
+.graph-canvas {
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background:
+        radial-gradient(circle at 1px 1px, rgba(15, 23, 42, 0.05) 1px, transparent 0);
+    background-size: 22px 22px;
+    background-color: var(--surface);
+    box-shadow: var(--shadow-sm);
+}
+
+.graph-side {
+    width: 300px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow-y: auto;
+}
+
+.graph-side .card {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    background: var(--surface);
+    box-shadow: var(--shadow-sm);
+    padding: 14px 16px;
+}
+
+.graph-side h2 {
+    margin: 0 0 10px;
+    font-size: 1rem;
+}
+
+.graph-message {
+    border: 1px solid var(--warning);
+    border-radius: 12px;
+    background: #fffbeb;
+    color: var(--warning-hover);
+    padding: 12px 14px;
+    font-size: 0.9rem;
+}
+
+/* ── Legend ─────────────────────────────────────────────────────── */
+
+.legend-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 0.86rem;
+}
+
+.legend-list li {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.legend-swatch {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.swatch-current {
+    background: var(--success);
+    box-shadow: 0 0 0 3px rgba(4, 120, 87, 0.25);
+}
+
+.swatch-holding {
+    background: var(--surface);
+    border: 3px solid var(--warning);
+}
+
+.legend-line {
+    width: 22px;
+    height: 0;
+    flex-shrink: 0;
+    border-top-width: 3px;
+    border-top-style: solid;
+}
+
+.line-grip { border-top-color: var(--success); }
+.line-release { border-top-color: var(--warning); }
+.line-plain { border-top-color: var(--border-strong); }
+
+.legend-note {
+    margin: 12px 0 0;
+    font-size: 0.78rem;
+    line-height: 1.4;
+}
+
+.muted {
+    color: var(--ink-subtle);
+}
+
+code {
+    background: var(--surface-soft);
+    padding: 1px 5px;
+    border-radius: 5px;
+    font-size: 0.85em;
+}
+
+/* ── Edge edit panel (Phase B) ──────────────────────────────────── */
+
+.edge-panel-route {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    font-size: 0.95rem;
+    word-break: break-all;
+}
+
+.edge-arrow {
+    color: var(--ink-subtle);
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 12px;
+}
+
+.form-group label {
+    font-size: 0.8rem;
+    color: var(--ink-muted);
+    font-weight: 600;
+}
+
+.form-group select,
+.form-group input {
+    padding: 8px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    font: inherit;
+    font-size: 0.9rem;
+    background: var(--surface);
+    color: var(--ink);
+}
+
+.edge-panel-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.edge-panel-actions .btn {
+    flex: 1;
+}
+
+.edge-panel-error {
+    margin-top: 12px;
+    border: 1px solid var(--danger);
+    border-radius: 10px;
+    background: #fff1f2;
+    color: var(--danger-hover);
+    padding: 10px 12px;
+    font-size: 0.85rem;
+}
+
+@media (max-width: 860px) {
+    .graph-main {
+        flex-direction: column;
+    }
+    .graph-side {
+        width: auto;
+        flex-direction: row;
+        flex-wrap: wrap;
+    }
+    .graph-side .card {
+        flex: 1;
+        min-width: 220px;
+    }
+}

@@ -563,6 +563,19 @@ input#linear-speed {
     color: var(--danger);
 }
 
+.graph-link {
+    display: inline-block;
+    margin-top: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--primary);
+    text-decoration: none;
+}
+
+.graph-link:hover {
+    text-decoration: underline;
+}
+
 .xarm-buttons .btn {
     min-height: 104px;
     padding: 16px;
