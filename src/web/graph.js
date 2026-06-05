@@ -63,24 +63,25 @@
 
     // ── Element construction ─────────────────────────────────────────
 
+    // Cytoscape node data for one graph node. ▣ marks nodes whose state
+    // holds labware, so the pick/place ladder is legible even before a move.
+    function nodeData(n) {
+        var station = (n.tags && n.tags.length) ? n.tags[0] : '';
+        var held = n.payload && n.payload !== 'empty';
+        return {
+            id: n.id,
+            label: held ? n.id + ' ▣' : n.id,
+            station: station,
+            color: colorForStation(station),
+            rail: n.rail,
+            payload: n.payload,
+        };
+    }
+
     function buildElements(data) {
         var elements = [];
         (data.nodes || []).forEach(function (n) {
-            var station = (n.tags && n.tags.length) ? n.tags[0] : '';
-            var held = n.payload && n.payload !== 'empty';
-            elements.push({
-                group: 'nodes',
-                data: {
-                    id: n.id,
-                    // ▣ marks topology nodes whose state holds labware, so the
-                    // pick/place ladder is legible even before the arm moves.
-                    label: held ? n.id + ' ▣' : n.id,
-                    station: station,
-                    color: colorForStation(station),
-                    rail: n.rail,
-                    payload: n.payload,
-                },
-            });
+            elements.push({ group: 'nodes', data: nodeData(n) });
         });
         (data.edges || []).forEach(function (e) {
             var kind = e.grips ? 'grip' : (e.releases ? 'release' : 'plain');
@@ -190,6 +191,26 @@
         },
     ];
 
+    // Grid sorted by station then id: many nodes are disconnected until
+    // edges are recorded on hardware, so a force/tree layout collapses them
+    // into an unreadable line. The grid keeps every node legible and clusters
+    // each station's nodes together; the (few) edges draw on top. Reused when
+    // a node is added so the new node lands in its station group.
+    function gridLayout() {
+        return {
+            name: 'grid',
+            avoidOverlap: true,
+            nodeDimensionsIncludeLabels: true,
+            condense: false,
+            padding: 24,
+            sort: function (a, b) {
+                var sa = a.data('station') || '', sb = b.data('station') || '';
+                return sa < sb ? -1 : sa > sb ? 1
+                    : (a.id() < b.id() ? -1 : a.id() > b.id() ? 1 : 0);
+            },
+        };
+    }
+
     function renderGraph(data) {
         var elements = buildElements(data);
         if (!elements.length) {
@@ -201,24 +222,7 @@
             container: document.getElementById('cy'),
             elements: elements,
             style: CY_STYLE,
-            // Grid sorted by station then id: many nodes are disconnected
-            // until edges are recorded on hardware, so a force/tree layout
-            // collapses them into an unreadable line. The grid keeps every
-            // node legible and clusters each station's nodes together; the
-            // (few) edges draw on top. Switch to a tree layout once the
-            // graph is mostly connected.
-            layout: {
-                name: 'grid',
-                avoidOverlap: true,
-                nodeDimensionsIncludeLabels: true,
-                condense: false,
-                padding: 24,
-                sort: function (a, b) {
-                    var sa = a.data('station') || '', sb = b.data('station') || '';
-                    return sa < sb ? -1 : sa > sb ? 1
-                        : (a.id() < b.id() ? -1 : a.id() > b.id() ? 1 : 0);
-                },
-            },
+            layout: gridLayout(),
             wheelSensitivity: 0.2,
         });
         cy.fit(undefined, 30);
@@ -424,6 +428,121 @@
         if (claimToken) releaseClaim(true);
     });
 
+    // ── Add node ─────────────────────────────────────────────────────
+
+    var nodeArmEl = document.getElementById('node-arm');
+    var nodeRailEl = document.getElementById('node-rail');
+    var nodeGripperEl = document.getElementById('node-gripper');
+    var nodePayloadEl = document.getElementById('node-payload');
+    var nodeIdEl = document.getElementById('node-id');
+    var nodeTagsEl = document.getElementById('node-tags');
+    var nodeAddBtn = document.getElementById('node-add-btn');
+    var addNodeErrEl = document.getElementById('add-node-error');
+
+    function fillSelect(sel, values) {
+        if (!sel) return;
+        sel.innerHTML = values.map(function (v) {
+            return '<option value="' + v + '">' + v + '</option>';
+        }).join('');
+    }
+    function showAddNodeError(text) {
+        if (!addNodeErrEl) return;
+        addNodeErrEl.textContent = text;
+        addNodeErrEl.hidden = false;
+    }
+    function clearAddNodeError() { if (addNodeErrEl) addNodeErrEl.hidden = true; }
+
+    // Populate the form's dropdowns: gripper/payload from the /graph
+    // catalogs, arm poses from /locations, rail from /track/locations.
+    function populateAddNodeForm(graphData) {
+        fillSelect(nodeGripperEl, (graphData.gripper_states || []).map(function (g) { return g.name; }));
+        fillSelect(nodePayloadEl, (graphData.payloads || []).map(function (p) { return p.name; }));
+        fetch(API_BASE + '/locations').then(function (r) { return r.json(); })
+            .then(function (d) { fillSelect(nodeArmEl, (d && d.locations) || []); })
+            .catch(function () {});
+        fetch(API_BASE + '/track/locations').then(function (r) { return r.json(); })
+            .then(function (d) { fillSelect(nodeRailEl, (d && d.locations) || []); })
+            .catch(function () {});
+    }
+
+    // Suggest the node id from the pose name when the id box is empty, so
+    // the convention (id == pose, + _empty/_held) is the path of least effort.
+    if (nodeArmEl) {
+        nodeArmEl.addEventListener('change', function () {
+            if (nodeIdEl && !nodeIdEl.value.trim()) nodeIdEl.value = nodeArmEl.value;
+        });
+    }
+
+    function addNode() {
+        var id = (nodeIdEl && nodeIdEl.value.trim()) || '';
+        var arm = nodeArmEl && nodeArmEl.value;
+        var rail = nodeRailEl && nodeRailEl.value;
+        var gripper = nodeGripperEl && nodeGripperEl.value;
+        var payload = nodePayloadEl && nodePayloadEl.value;
+        if (!id) { showAddNodeError('Node id is required.'); return; }
+        if (!arm || !rail || !gripper || !payload) {
+            showAddNodeError('Pose, rail, gripper and payload are all required.');
+            return;
+        }
+        if (cy && cy.getElementById(id).nonempty()) {
+            showAddNodeError('A node with id "' + id + '" already exists.');
+            return;
+        }
+        var tags = (nodeTagsEl && nodeTagsEl.value.trim())
+            ? nodeTagsEl.value.split(',').map(function (t) { return t.trim(); }).filter(Boolean)
+            : null;
+        var body = { id: id, arm: arm, rail: rail, gripper: gripper, payload: payload, tags: tags };
+        clearAddNodeError();
+        if (nodeAddBtn) nodeAddBtn.disabled = true;
+        ensureClaim().then(function (held) {
+            // ensureClaim surfaces its reason in the edge panel; mirror it here.
+            if (!held) {
+                if (edgeErrEl && !edgeErrEl.hidden) showAddNodeError(edgeErrEl.textContent);
+                if (nodeAddBtn) nodeAddBtn.disabled = false;
+                return;
+            }
+            return fetch(API_BASE + '/control/graph/node', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Claim-Token': claimToken },
+                body: JSON.stringify(body),
+            }).then(function (resp) {
+                if (resp.status === 200) {
+                    return resp.json().then(function (data) {
+                        addNodeToCanvas(data.created);
+                        if (nodeIdEl) nodeIdEl.value = '';
+                        if (nodeTagsEl) nodeTagsEl.value = '';
+                    });
+                }
+                if (resp.status === 423) {
+                    handleClaimLost();
+                    showAddNodeError('Locked: control is held elsewhere.');
+                    return;
+                }
+                return resp.json().catch(function () { return {}; }).then(function (d2) {
+                    var msg = (d2 && (d2.detail || d2.error)) || ('HTTP ' + resp.status);
+                    showAddNodeError('Add failed: ' + (typeof msg === 'string' ? msg : JSON.stringify(msg)));
+                });
+            });
+        }).catch(function (e) {
+            showAddNodeError('Add failed: ' + e.message);
+        }).then(function () {
+            if (nodeAddBtn) nodeAddBtn.disabled = false;
+        });
+    }
+
+    function addNodeToCanvas(created) {
+        if (!cy || !created) return;
+        cy.add({ group: 'nodes', data: nodeData({
+            id: created.id, arm: created.arm, rail: created.rail,
+            gripper: created.gripper, payload: created.payload, tags: created.tags || [],
+        }) });
+        // Re-run the grid so the new node lands in its station group.
+        cy.layout(gridLayout()).run();
+        cy.fit(undefined, 30);
+    }
+
+    if (nodeAddBtn) nodeAddBtn.addEventListener('click', addNode);
+
     // ── Live state ───────────────────────────────────────────────────
 
     function applyLiveState(live) {
@@ -498,6 +617,7 @@
         fetchGraph().then(function (data) {
             renderGraph(data);
             applyLiveState(data);
+            populateAddNodeForm(data);
         }).catch(function (err) {
             if (err.message === 'no_graph') {
                 showMessage('No motion graph loaded (motion_graph.yaml missing or invalid).');

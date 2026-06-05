@@ -50,6 +50,39 @@
                     <p class="muted legend-note">Edge label = <code>mode @ speed</code>. Node colour groups by station (first tag).</p>
                 </div>
 
+                <!-- Add node: writes a new state to motion_graph.yaml (claim-gated). -->
+                <div id="add-node-panel" class="card add-node-panel">
+                    <h2>Add node</h2>
+                    <div class="form-group">
+                        <label for="node-arm">Pose (arm) — from position_config</label>
+                        <select id="node-arm"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="node-rail">Rail location</label>
+                        <select id="node-rail"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="node-gripper">Gripper</label>
+                        <select id="node-gripper"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="node-payload">Payload</label>
+                        <select id="node-payload"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="node-id">Node id</label>
+                        <input type="text" id="node-id" placeholder="e.g. deck_solid_high_held">
+                    </div>
+                    <div class="form-group">
+                        <label for="node-tags">Tags (comma-separated, optional)</label>
+                        <input type="text" id="node-tags" placeholder="deck, solid">
+                    </div>
+                    <div class="edge-panel-actions">
+                        <button id="node-add-btn" class="btn btn-primary">Add node</button>
+                    </div>
+                    <div id="add-node-error" class="edge-panel-error" hidden></div>
+                </div>
+
                 <!-- Edge edit panel — Phase B wires this up. Inert in Phase A. -->
                 <div id="edge-panel" class="card edge-panel" hidden>
                     <h2>Edit edge</h2>

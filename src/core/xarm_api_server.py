@@ -337,6 +337,21 @@ class GraphEdgeUpdateRequest(BaseModel):
     )
 
 
+class GraphNodeCreateRequest(BaseModel):
+    """Body of POST /control/graph/node — add a new node (state) to the graph.
+
+    A node is a state: a named arm pose (from position_config.yaml) at a rail
+    location, with a gripper state and payload. Edges between nodes are added
+    separately (record / edge editor). The loader validates the result.
+    """
+    id: str = Field(description="Unique node id (convention: the pose name, +_empty/_held)")
+    arm: str = Field(description="Arm pose name from position_config.yaml")
+    rail: str = Field(description="Rail location name from linear_track_config.yaml")
+    gripper: str = Field(description="Gripper state name (must be a declared gripper_state)")
+    payload: str = Field(description="Payload name (must be a declared payload)")
+    tags: Optional[List[str]] = Field(default=None, description="Optional tags; first tag groups/colours the node")
+
+
 class EnforcementRequest(BaseModel):
     """Body of POST /control/claim/enforce (Phase 5 toggle)."""
     enabled: bool = Field(description="true to require X-Claim-Token on mutating endpoints")
@@ -1570,6 +1585,14 @@ async def get_graph_state():
              "preconditions": list(e.preconditions), "comment": e.comment}
             for e in graph.edges
         ],
+        # Catalogs the add-node form needs to populate its dropdowns
+        # (arm poses + rail locations come from /locations + /track/locations).
+        "gripper_states": [
+            {"name": g.name, "stroke": g.stroke} for g in graph.gripper_states
+        ],
+        "payloads": [
+            {"name": p.name, "description": p.description} for p in graph.payloads
+        ],
     }
 
 
@@ -1820,6 +1843,78 @@ def _update_edge_in_yaml(req: "GraphEdgeUpdateRequest") -> "MotionGraph":  # typ
     # Serialize once; validate that exact text via the real loader before
     # committing it to disk (mode/speed don't touch the coherence rules,
     # but this re-confirms the file still loads — cheap insurance).
+    buf = io.StringIO()
+    yaml_rt.dump(data, buf)
+    serialized = buf.getvalue()
+    plain = _pyyaml.safe_load(serialized)
+    MotionGraph.from_dict(plain, preconditions=DEFAULT_PRECONDITIONS)  # raises GraphError
+
+    with open(path, "w") as fh:      # validated -> commit
+        fh.write(serialized)
+    return MotionGraph.from_yaml(path, preconditions=DEFAULT_PRECONDITIONS)
+
+
+@app.post("/control/graph/node", dependencies=[Depends(require_claim)])
+async def create_graph_node(request: GraphNodeCreateRequest):
+    """Add a new node (state) to motion_graph.yaml.
+
+    Claim-gated like every mutating endpoint (the single-gate rule). The
+    node id must be unique; gripper/payload must be declared, and the
+    result must satisfy the loader's coherence rules (e.g. a held payload
+    cannot use the fully-open gripper) — otherwise 400. Comments in the
+    file are preserved (ruamel round-trip), the candidate is validated
+    before the write, and the in-memory graph is hot-reloaded.
+    """
+    c = get_controller()
+    if c.motion_graph is None:
+        raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+    if c.motion_graph.has_node(request.id):
+        raise HTTPException(status_code=409, detail=f"node {request.id!r} already exists")
+    try:
+        new_graph = _append_node_to_yaml(request)
+    except GraphError as exc:
+        raise HTTPException(status_code=400, detail=f"node failed validation: {exc}")
+    c.motion_graph = new_graph
+    n = new_graph.node(request.id)
+    return {
+        "created": {
+            "id": n.id, "arm": n.arm, "rail": n.rail,
+            "gripper": n.gripper, "payload": n.payload, "tags": list(n.tags),
+        }
+    }
+
+
+def _append_node_to_yaml(req: "GraphNodeCreateRequest") -> "MotionGraph":  # type: ignore[name-defined]
+    """Append a new node to motion_graph.yaml (ruamel round-trip), validate
+    the candidate with the real loader, then hot-reload.
+
+    Comments survive because ruamel preserves them; the candidate is fully
+    validated (unknown gripper/payload, coherence rules) before the write,
+    so a bad node never lands on disk."""
+    import io
+    from ruamel.yaml import YAML
+    import yaml as _pyyaml
+    try:
+        from .motion_graph import MotionGraph, DEFAULT_PRECONDITIONS
+    except ImportError:
+        from core.motion_graph import MotionGraph, DEFAULT_PRECONDITIONS
+
+    path = os.path.join("src", "settings", "motion_graph.yaml")
+    yaml_rt = YAML()
+    yaml_rt.preserve_quotes = True
+    with open(path) as fh:
+        data = yaml_rt.load(fh)
+
+    node = {
+        "id": req.id, "arm": req.arm, "rail": req.rail,
+        "gripper": req.gripper, "payload": req.payload,
+    }
+    if req.tags:
+        node["tags"] = list(req.tags)
+    data.setdefault("nodes", []).append(node)
+
+    # Serialize once; validate that exact text via the real loader before
+    # committing (catches unknown gripper/payload + coherence violations).
     buf = io.StringIO()
     yaml_rt.dump(data, buf)
     serialized = buf.getvalue()
