@@ -84,21 +84,31 @@
         });
         (data.edges || []).forEach(function (e) {
             var kind = e.grips ? 'grip' : (e.releases ? 'release' : 'plain');
-            var label = e.mode + (e.speed != null ? ' @ ' + e.speed : '');
+            var precos = e.preconditions || [];
             elements.push({
                 group: 'edges',
                 data: {
                     id: 'e:' + e.from + '->' + e.to,
                     source: e.from,
                     target: e.to,
-                    label: label,
+                    label: edgeLabel(e.mode, e.speed, precos),
                     kind: kind,
                     mode: e.mode,
                     speed: e.speed,
+                    preconditions: precos,
                 },
             });
         });
         return elements;
+    }
+
+    // Edge label: "mode @ speed" plus any preconditions appended after a
+    // dot, e.g. "linear @ 15 · gripper_empty". Preconditions show on the
+    // edge so they're visible at a glance (they're not editable here).
+    function edgeLabel(mode, speed, precos) {
+        var label = mode + (speed != null ? ' @ ' + speed : '');
+        if (precos && precos.length) label += ' · ' + precos.join(', ');
+        return label;
     }
 
     var CY_STYLE = [
@@ -196,11 +206,14 @@
                 name: 'breadthfirst',
                 directed: true,
                 roots: hasHome ? '#home' : undefined,
-                spacingFactor: 1.3,
+                spacingFactor: 1.5,
+                avoidOverlap: true,
+                nodeDimensionsIncludeLabels: true,
                 padding: 24,
             },
             wheelSensitivity: 0.2,
         });
+        cy.fit(undefined, 30);
         onGraphRendered(cy);
     }
 
@@ -224,6 +237,7 @@
     var edgeSaveBtn = document.getElementById('edge-save-btn');
     var edgeCancelBtn = document.getElementById('edge-cancel-btn');
     var edgeErrEl = document.getElementById('edge-panel-error');
+    var edgePrecosEl = document.getElementById('edge-preconditions');
 
     // Bind edge taps once the canvas exists. Tapping empty space closes
     // the panel; tapping an edge opens it on that edge.
@@ -253,6 +267,10 @@
         if (edgeToEl) edgeToEl.textContent = d.target;
         if (edgeModeEl) edgeModeEl.value = d.mode;
         if (edgeSpeedEl) edgeSpeedEl.value = (d.speed != null ? d.speed : '');
+        if (edgePrecosEl) {
+            var precos = d.preconditions || [];
+            edgePrecosEl.textContent = precos.length ? precos.join(', ') : 'none';
+        }
         clearEdgeError();
         panel.hidden = false;
     }
@@ -363,9 +381,11 @@
                     return resp.json().then(function (data) {
                         var u = data.updated || {};
                         // Update the in-memory edge + label in place (no rebuild).
+                        // Preconditions are unchanged by this edit but kept in
+                        // the recomputed label so they don't disappear on save.
                         editingEdge.data('mode', u.mode);
                         editingEdge.data('speed', u.speed);
-                        editingEdge.data('label', u.mode + (u.speed != null ? ' @ ' + u.speed : ''));
+                        editingEdge.data('label', edgeLabel(u.mode, u.speed, editingEdge.data('preconditions')));
                         closeEdgePanel();
                     });
                 }
