@@ -841,7 +841,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const copyJointsBtn = document.getElementById('copy-joints-btn');
 
     // Reads only the columns the current model exposes (J6/J7 hidden on a 5/6-DOF
-    // arm), and strips trailing zeros so the output matches position_config.yaml
+    // arm), and strips trailing zeros so the output matches joint_config.yaml
     // style (e.g. "180" not "180.00", but "202.51" kept). Returns null when a
     // value isn't ready yet (disconnected / no live data).
     function buildJointsString() {

@@ -192,6 +192,14 @@ html, body {
     border-top-style: solid;
 }
 
+.legend-glyph {
+    display: inline-block;
+    width: 16px;
+    text-align: center;
+    flex-shrink: 0;
+    color: var(--ink-muted);
+}
+
 .line-grip { border-top-color: var(--success); }
 .line-release { border-top-color: var(--warning); }
 .line-plain { border-top-color: var(--border-strong); }
@@ -200,6 +208,16 @@ html, body {
     margin: 12px 0 0;
     font-size: 0.78rem;
     line-height: 1.4;
+}
+
+.legend-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.legend-actions .btn {
+    flex: 1;
 }
 
 .muted {

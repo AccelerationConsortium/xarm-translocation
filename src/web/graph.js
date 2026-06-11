@@ -25,11 +25,76 @@
 
     var cy = null;
     var gripperStrokes = {};    // gripper_state name -> stroke (for grip defaults)
-    var expanded = {};          // station -> true when its nodes are shown
+
+    // Persisted layout — node positions, which stations are open, and the
+    // pan/zoom — kept in localStorage so a save (add node/edge) or a reopen
+    // restores the exact arrangement instead of re-gridding from scratch.
+    var LAYOUT_KEY = 'xarm-graph-layout-v2';
+    var savedLayout = loadSavedLayout();          // {positions, expanded, pan, zoom}
+    var expanded = savedLayout.expanded || {};    // station -> true when its nodes are shown
+    var placedIds = {};         // node ids that already have a committed position
+    var saveTimer = null;       // debounce handle for persistLayoutSoon
+    var stationAnchors = {};    // station -> its anchor ("home") node id
+    // While a home node is dragged, its placed siblings move with it (the whole
+    // submap translates together). Captured at grab, applied on each drag tick.
+    var dragHome = null, dragHomeStart = null, dragSiblings = null;
+
     var autoStation = null;     // station auto-expanded to follow the robot
     var latestClaimedBy = null; // device claim holder from /status (for the lock)
     var currentNodeId = null;   // last applied live current_node
     var traverseTimer = null;
+
+    function loadSavedLayout() {
+        try {
+            var raw = window.localStorage.getItem(LAYOUT_KEY);
+            var obj = raw ? JSON.parse(raw) : null;
+            return (obj && typeof obj === 'object') ? obj : {};
+        } catch (e) { return {}; }
+    }
+
+    // Write the live arrangement back to localStorage. Only nodes we've
+    // actually positioned (placedIds) are saved, so a never-expanded
+    // station's members stay unplaced and fan out fresh when first opened.
+    function persistLayout() {
+        if (!cy) return;
+        var positions = {};
+        cy.nodes().forEach(function (n) {
+            if (!placedIds[n.id()]) return;
+            var p = n.position();
+            if (p && isFinite(p.x) && isFinite(p.y)) positions[n.id()] = { x: p.x, y: p.y };
+        });
+        savedLayout.positions = positions;
+        savedLayout.expanded = expanded;
+        savedLayout.pan = cy.pan();
+        savedLayout.zoom = cy.zoom();
+        // localStorage is an offline cache; the device file is the source of
+        // truth shared across every PC that connects.
+        try { window.localStorage.setItem(LAYOUT_KEY, JSON.stringify(savedLayout)); } catch (e) {}
+        try {
+            fetch(API_BASE + '/graph/layout', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    positions: positions, expanded: expanded,
+                    pan: savedLayout.pan, zoom: savedLayout.zoom,
+                }),
+            }).catch(function () { /* offline: localStorage still holds it */ });
+        } catch (e) { /* fetch unavailable */ }
+    }
+
+    // The device-stored geometry shared across PCs. Resolves to null on any
+    // failure so the caller falls back to the localStorage copy.
+    function fetchLayout() {
+        return fetch(API_BASE + '/graph/layout')
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .catch(function () { return null; });
+    }
+
+    // Debounced save for high-frequency events (drag, pan, zoom).
+    function persistLayoutSoon() {
+        if (saveTimer) clearTimeout(saveTimer);
+        saveTimer = setTimeout(persistLayout, 300);
+    }
 
     var modeEl = document.getElementById('graph-mode');
     var currentEl = document.getElementById('graph-current');
@@ -67,41 +132,61 @@
 
     // ── Element construction ─────────────────────────────────────────
 
-    // Cytoscape node data for one graph node. ▣ marks nodes whose state
-    // holds labware, so the pick/place ladder is legible even before a move.
+    // Cytoscape node data for one graph node. Every node shows its payload
+    // state in the label — ▣ holds labware, ▢ is empty — so the pick/place
+    // ladder is legible at a glance even before a move. `base` is the label
+    // without the expand/collapse caret a station's home node also carries.
     function nodeData(n) {
         var station = (n.tags && n.tags.length) ? n.tags[0] : '';
         var held = n.payload && n.payload !== 'empty';
-        var d = {
+        var base = n.id + (held ? ' ▣' : ' ▢');
+        return {
             id: n.id,
-            label: held ? n.id + ' ▣' : n.id,
+            base: base,
+            label: base,
             station: station,
             color: colorForStation(station),
             rail: n.rail,
             payload: n.payload,
         };
-        return d;
+    }
+
+    // Pick a station's anchor ("home") node — the one that stays visible when
+    // the station is collapsed and that the rest fan out from. Prefer a node
+    // tagged `home`, then `<station>_home`, then any `*_home`, then the lowest
+    // id (deterministic so the anchor never jumps between loads).
+    function chooseAnchor(station, members) {
+        var tagged = members.filter(function (m) { return (m.tags || []).indexOf('home') !== -1; });
+        if (tagged.length) return tagged[0].id;
+        var exact = members.filter(function (m) { return m.id === station + '_home'; });
+        if (exact.length) return exact[0].id;
+        var ends = members.filter(function (m) { return /_home$/.test(m.id); });
+        if (ends.length) return ends[0].id;
+        return members.map(function (m) { return m.id; }).sort()[0];
     }
 
     function buildElements(data) {
         var elements = [];
         var nodes = data.nodes || [];
-        // One clickable "station tile" per station, labelled with its count.
-        // Collapsing a station hides its member nodes and leaves just the tile.
-        var counts = {};
+        // Group members by station (first tag) and elect one anchor per station.
+        // No synthetic "tile" node — the station's home node IS the collapse
+        // target and the origin its siblings fan out from.
+        var byStation = {};
         nodes.forEach(function (n) {
             var s = (n.tags && n.tags.length) ? n.tags[0] : '';
-            if (s) counts[s] = (counts[s] || 0) + 1;
+            (byStation[s] = byStation[s] || []).push(n);
         });
-        Object.keys(counts).forEach(function (s) {
-            elements.push({ group: 'nodes', data: {
-                id: 'grp:' + s, label: '▸ ' + s + ' (' + counts[s] + ')',
-                isGroup: true, station: s, color: colorForStation(s),
-                count: counts[s],
-            } });
+        stationAnchors = {};
+        Object.keys(byStation).forEach(function (s) {
+            if (s) stationAnchors[s] = chooseAnchor(s, byStation[s]);
         });
         nodes.forEach(function (n) {
-            elements.push({ group: 'nodes', data: nodeData(n) });
+            var d = nodeData(n);
+            if (d.station && stationAnchors[d.station] === n.id) {
+                d.isAnchor = true;
+                d.count = byStation[d.station].length;  // members incl. the anchor
+            }
+            elements.push({ group: 'nodes', data: d });
         });
         (data.edges || []).forEach(function (e) {
             var kind = e.grips ? 'grip' : (e.releases ? 'release' : 'plain');
@@ -154,18 +239,16 @@
             },
         },
         {
-            // Station tile: a larger solid station-coloured pill you click to
-            // show/hide that station's nodes.
-            selector: 'node[?isGroup]',
+            // Anchor ("home") node: the always-visible head of a station you
+            // click to fan its siblings out / collapse them back. Heavier
+            // border + bolder label so it reads as the group head.
+            selector: 'node[?isAnchor]',
             style: {
-                'background-color': 'data(color)',
-                'color': '#ffffff',
-                'font-size': 14,
+                'font-size': 13,
                 'font-weight': 800,
-                'shape': 'round-rectangle',
-                'padding': '16px',
-                'border-width': 3,
-                'border-color': 'rgba(15,23,42,0.25)',
+                'padding': '14px',
+                'border-width': 4,
+                'border-color': 'rgba(15,23,42,0.5)',
             },
         },
         {
@@ -234,44 +317,108 @@
         },
     ];
 
-    // Grid layout over the VISIBLE elements, sorted so each station's tile
-    // leads its (shown) member nodes. Run after every collapse/expand and add.
-    function gridLayout() {
-        return {
-            name: 'grid',
-            avoidOverlap: true,
-            nodeDimensionsIncludeLabels: true,
-            condense: false,
-            padding: 24,
-            sort: function (a, b) {
-                var sa = a.data('station') || '', sb = b.data('station') || '';
-                if (sa !== sb) return sa < sb ? -1 : 1;
-                var ga = a.data('isGroup') ? 0 : 1, gb = b.data('isGroup') ? 0 : 1;
-                if (ga !== gb) return ga - gb;  // station tile first
-                return a.id() < b.id() ? -1 : a.id() > b.id() ? 1 : 0;
-            },
-        };
+    // Seed anchor (home) nodes that have no position yet (first load, or a
+    // brand-new station) into a simple grid, started below any anchors already
+    // placed so a new station doesn't land on an existing one.
+    function seedAnchorGrid(unplaced, allAnchors) {
+        var SPACING = 300;
+        var startX = 0, startY = 0;
+        var placedAnchors = allAnchors.filter(function (n) { return placedIds[n.id()]; });
+        if (placedAnchors.nonempty()) {
+            var maxY = -Infinity;
+            placedAnchors.forEach(function (n) { maxY = Math.max(maxY, n.position('y')); });
+            startY = maxY + SPACING;
+        }
+        var arr = unplaced.toArray();
+        var perRow = Math.max(1, Math.ceil(Math.sqrt(arr.length)));
+        arr.forEach(function (n, i) {
+            n.position({ x: startX + (i % perRow) * SPACING, y: startY + Math.floor(i / perRow) * SPACING });
+            placedIds[n.id()] = true;
+        });
     }
 
-    // Show member nodes only for expanded stations; update each tile's caret +
-    // count. Then lay out just the visible elements so collapsed stations take
-    // a single tile of space.
-    function applyGroupVisibility() {
+    // Fan a station's not-yet-placed siblings out in concentric rings around
+    // its home node — so expanding grows the submap "from the home node"
+    // instead of re-gridding the whole graph. Siblings the user already
+    // positioned keep their spot.
+    function fanAround(home, unplaced) {
+        var c = home.position();
+        var STEP = 150, MIN_ARC = 140;  // ring spacing / min gap between nodes
+        var arr = unplaced.toArray();
+        var idx = 0, ring = 1;
+        while (idx < arr.length) {
+            var r = STEP * ring;
+            var cap = Math.max(1, Math.floor((2 * Math.PI * r) / MIN_ARC));
+            for (var k = 0; k < cap && idx < arr.length; k++, idx++) {
+                var ang = (2 * Math.PI * k) / cap - Math.PI / 2;
+                arr[idx].position({ x: c.x + r * Math.cos(ang), y: c.y + r * Math.sin(ang) });
+                placedIds[arr[idx].id()] = true;
+            }
+            ring += 1;
+        }
+    }
+
+    // Position nodes without disturbing any the user (or a prior session)
+    // already placed: restore saved spots, seed unplaced anchors, and fan each
+    // expanded station's unplaced siblings around its home node. No global
+    // relayout, and no auto-fit unless opts.fit is set (fresh page, nothing saved).
+    function placeNodes(opts) {
+        opts = opts || {};
+        var positions = savedLayout.positions || {};
+        cy.nodes().forEach(function (n) {
+            var id = n.id();
+            if (!placedIds[id] && positions[id]) {
+                n.position({ x: positions[id].x, y: positions[id].y });
+                placedIds[id] = true;
+            }
+        });
+        // Anchors (+ any station-less nodes) are the always-visible skeleton.
+        var anchors = cy.nodes().filter(function (n) { return n.data('isAnchor') || !n.data('station'); });
+        var unplacedAnchors = anchors.filter(function (n) { return !placedIds[n.id()]; });
+        if (unplacedAnchors.nonempty()) seedAnchorGrid(unplacedAnchors, anchors);
+        Object.keys(expanded).forEach(function (s) {
+            if (!expanded[s]) return;
+            var home = cy.getElementById(stationAnchors[s] || '');
+            if (home.empty() || !placedIds[home.id()]) return;
+            var unplaced = cy.nodes().filter(function (n) {
+                return n.data('station') === s && !n.data('isAnchor') && !placedIds[n.id()];
+            });
+            if (unplaced.nonempty()) fanAround(home, unplaced);
+        });
+        if (opts.fit) cy.fit(undefined, 30);
+    }
+
+    // Anchors are always visible; their label gains a caret + the count of
+    // hidden siblings when collapsed. Plain members show only when their
+    // station is expanded. Positions persist, so a collapse/expand or a save
+    // no longer collapses (re-grids) the view.
+    function applyGroupVisibility(opts) {
         if (!cy) return;
         cy.batch(function () {
             cy.nodes().forEach(function (n) {
                 var s = n.data('station');
-                if (n.data('isGroup')) {
-                    var exp = !!expanded[s];
-                    n.data('label', (exp ? '▾ ' : '▸ ') + s + (exp ? '' : ' (' + (n.data('count') || 0) + ')'));
+                if (n.data('isAnchor')) {
+                    var hidden = Math.max(0, (n.data('count') || 1) - 1);
+                    var suffix = hidden ? (expanded[s] ? '  ▾' : '  ▸ ' + hidden) : '';
+                    n.data('label', n.data('base') + suffix);
+                    n.style('display', 'element');
                 } else {
                     // station-less nodes always show; otherwise follow expansion
                     n.style('display', (!s || expanded[s]) ? 'element' : 'none');
                 }
             });
         });
-        cy.elements(':visible').layout(gridLayout()).run();
-        cy.fit(undefined, 30);
+        placeNodes(opts);
+        persistLayoutSoon();
+    }
+
+    // Forget the saved arrangement and lay everything out fresh (re-seed tiles,
+    // re-fan open stations) — the "undo my dragging" escape hatch.
+    function resetLayout() {
+        try { window.localStorage.removeItem(LAYOUT_KEY); } catch (e) {}
+        savedLayout = {};
+        placedIds = {};
+        if (cy) applyGroupVisibility({ fit: true });
     }
 
     function renderGraph(data) {
@@ -286,9 +433,49 @@
             elements: elements,
             style: CY_STYLE,
             wheelSensitivity: 0.2,
+            // Drag the empty background to pan the whole map; box-selection
+            // (on by default) would otherwise hijack that drag into a marquee.
+            userPanningEnabled: true,
+            userZoomingEnabled: true,
+            boxSelectionEnabled: false,
         });
         onGraphRendered(cy);
-        applyGroupVisibility();  // start collapsed + initial layout
+        // Restore the saved arrangement; only auto-fit when nothing is saved.
+        var fresh = !(savedLayout.positions && Object.keys(savedLayout.positions).length);
+        applyGroupVisibility({ fit: fresh });
+        if (!fresh && savedLayout.zoom && savedLayout.pan) {
+            cy.zoom(savedLayout.zoom);
+            cy.pan(savedLayout.pan);
+        }
+        // Persist user-driven moves and viewport changes so they survive reopen.
+        cy.on('dragfree', 'node', persistLayoutSoon);
+        cy.on('pan zoom', persistLayoutSoon);
+
+        // Drag a home node → its submap moves with it. On grab, snapshot the
+        // home and every already-placed sibling; on each drag tick, shift those
+        // siblings by the home's delta so relative positions are preserved.
+        cy.on('grab', 'node', function (evt) {
+            var n = evt.target;
+            if (!n.data('isAnchor')) { dragHome = null; return; }
+            var s = n.data('station');
+            dragHome = n;
+            dragHomeStart = { x: n.position('x'), y: n.position('y') };
+            dragSiblings = [];
+            cy.nodes().forEach(function (m) {
+                if (m.id() !== n.id() && m.data('station') === s && placedIds[m.id()]) {
+                    dragSiblings.push({ node: m, x: m.position('x'), y: m.position('y') });
+                }
+            });
+        });
+        cy.on('drag', 'node', function (evt) {
+            if (!dragHome || evt.target.id() !== dragHome.id() || !dragSiblings) return;
+            var dx = dragHome.position('x') - dragHomeStart.x;
+            var dy = dragHome.position('y') - dragHomeStart.y;
+            dragSiblings.forEach(function (it) {
+                it.node.position({ x: it.x + dx, y: it.y + dy });
+            });
+        });
+        cy.on('free', 'node', function () { dragHome = null; dragHomeStart = null; dragSiblings = null; });
     }
 
     // ── Phase B: edge editing (mode/speed) behind a claim ────────────
@@ -310,6 +497,7 @@
     var edgeSpeedEl = document.getElementById('edge-speed');
     var edgeSaveBtn = document.getElementById('edge-save-btn');
     var edgeCancelBtn = document.getElementById('edge-cancel-btn');
+    var edgeDeleteBtn = document.getElementById('edge-delete-btn');
     var edgeErrEl = document.getElementById('edge-panel-error');
     var edgePrecosEl = document.getElementById('edge-preconditions');
 
@@ -320,15 +508,14 @@
         cyInstance.on('tap', function (evt) {
             if (evt.target === cyInstance) closeEdgePanel();
         });
-        // Manual show/hide of a station by tapping its tile — disabled while a
-        // workflow holds control (automation in progress).
+        // Tapping a station's home node fans its siblings out / collapses them
+        // back to it. In draw mode any node (home or not) is an edge endpoint.
+        // Expand/collapse is locked while a workflow holds control.
         cyInstance.on('tap', 'node', function (evt) {
             var n = evt.target;
-            if (!n.data('isGroup')) {
-                // Member node: in draw mode it's an edge endpoint, else ignore.
-                if (drawMode) pickDrawNode(n);
-                return;
-            }
+            if (drawMode) { pickDrawNode(n); return; }
+            if (!n.data('isAnchor')) return;          // plain member: nothing to toggle
+            if ((n.data('count') || 1) <= 1) return;  // lone node: no siblings to show
             if (automationActive()) {
                 showMessage('Locked: a workflow holds control — expand/collapse is disabled while automation is running.');
                 return;
@@ -507,8 +694,51 @@
         });
     }
 
+    // Delete the edge currently open in the panel (claim-gated, like save).
+    // On success the edge is removed from the canvas and the panel closes.
+    function deleteEdge() {
+        if (!editingEdge) return;
+        var d = editingEdge.data();
+        var body = { from_node: d.source, to_node: d.target };
+        clearEdgeError();
+        if (edgeDeleteBtn) edgeDeleteBtn.disabled = true;
+        ensureClaim().then(function (held) {
+            if (!held) { if (edgeDeleteBtn) edgeDeleteBtn.disabled = false; return; }
+            return fetch(API_BASE + '/control/graph/edge/delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Claim-Token': claimToken },
+                body: JSON.stringify(body),
+            }).then(function (resp) {
+                if (resp.status === 200) {
+                    if (editingEdge) { editingEdge.remove(); editingEdge = null; }
+                    closeEdgePanel();
+                    persistLayoutSoon();
+                    return;
+                }
+                if (resp.status === 423) {
+                    handleClaimLost();
+                    return resp.json().catch(function () { return {}; }).then(function (d2) {
+                        var owner = d2.detail && d2.detail.claimed_by && d2.detail.claimed_by.owner;
+                        showEdgeError(owner
+                            ? 'Locked: control held by ' + owner + '.'
+                            : 'Locked: control is held elsewhere.');
+                    });
+                }
+                return resp.json().catch(function () { return {}; }).then(function (d2) {
+                    var msg = (d2 && (d2.detail || d2.error)) || ('HTTP ' + resp.status);
+                    showEdgeError('Delete failed: ' + (typeof msg === 'string' ? msg : JSON.stringify(msg)));
+                });
+            });
+        }).catch(function (e) {
+            showEdgeError('Delete failed: ' + e.message);
+        }).then(function () {
+            if (edgeDeleteBtn) edgeDeleteBtn.disabled = false;
+        });
+    }
+
     if (edgeSaveBtn) edgeSaveBtn.addEventListener('click', saveEdge);
     if (edgeCancelBtn) edgeCancelBtn.addEventListener('click', closeEdgePanel);
+    if (edgeDeleteBtn) edgeDeleteBtn.addEventListener('click', deleteEdge);
     window.addEventListener('beforeunload', function () {
         if (claimToken) releaseClaim(true);
     });
@@ -623,18 +853,17 @@
             gripper: created.gripper, payload: created.payload, tags: created.tags || [],
         });
         var station = nd.station;
-        if (station) {
-            var grp = cy.getElementById('grp:' + station);
-            if (grp.empty()) {
-                // New station — create its tile.
-                cy.add({ group: 'nodes', data: {
-                    id: 'grp:' + station, label: '▾ ' + station, isGroup: true,
-                    station: station, color: colorForStation(station), count: 1,
-                } });
-            } else {
-                grp.data('count', (grp.data('count') || 0) + 1);
-            }
-            expanded[station] = true;  // reveal the station so the new node shows
+        if (station && !stationAnchors[station]) {
+            // First node of a brand-new station becomes its home/anchor.
+            stationAnchors[station] = nd.id;
+            nd.isAnchor = true;
+            nd.count = 1;
+        } else if (station) {
+            // Bump the home node's member count and reveal the station so the
+            // new sibling fans out from the home node.
+            var home = cy.getElementById(stationAnchors[station]);
+            if (home.nonempty()) home.data('count', (home.data('count') || 1) + 1);
+            expanded[station] = true;
         }
         cy.add({ group: 'nodes', data: nd });
         applyGroupVisibility();
@@ -877,7 +1106,21 @@
             showMessage('Cytoscape failed to load (cytoscape.min.js missing).');
             return;
         }
-        fetchGraph().then(function (data) {
+        // Fetch the topology and the device-stored geometry together. The
+        // server layout is authoritative across PCs; fall back to the
+        // localStorage copy (already in savedLayout) only when the device has
+        // nothing saved yet.
+        Promise.all([fetchGraph(), fetchLayout()]).then(function (res) {
+            var data = res[0], layout = res[1];
+            if (layout && layout.positions && Object.keys(layout.positions).length) {
+                savedLayout = {
+                    positions: layout.positions,
+                    expanded: layout.expanded || {},
+                    pan: layout.pan || null,
+                    zoom: layout.zoom || null,
+                };
+                expanded = savedLayout.expanded;
+            }
             renderGraph(data);
             applyLiveState(data);
             populateAddNodeForm(data);
@@ -950,6 +1193,10 @@
 
     document.addEventListener('DOMContentLoaded', function () {
         initCollapsibleCards();
+        var fitBtn = document.getElementById('fit-btn');
+        var resetBtn = document.getElementById('reset-layout-btn');
+        if (fitBtn) fitBtn.addEventListener('click', function () { if (cy) cy.fit(undefined, 30); });
+        if (resetBtn) resetBtn.addEventListener('click', resetLayout);
         initialLoad();
         connectWebSocket();
         setInterval(pollLiveState, 1500);

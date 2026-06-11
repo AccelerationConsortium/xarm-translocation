@@ -191,7 +191,7 @@ def demo_hplc_drawer_opening(controller, auto_confirm=False, custom_speeds=None)
         
         for pos_name in required_positions:
             if pos_name not in positions:
-                print(f"❌ Error: Position '{pos_name}' not found in position_config.yaml")
+                print(f"❌ Error: Position '{pos_name}' not found in joint_config.yaml")
                 return False
     
         # Step 1: Linear motor to home

@@ -167,7 +167,7 @@ def demo_plate_pickup(controller, auto_confirm=False, custom_speeds=None):
         
         for pos_name in required_positions:
             if pos_name not in positions:
-                print(f"Error: Position '{pos_name}' not found in position_config.yaml")
+                print(f"Error: Position '{pos_name}' not found in joint_config.yaml")
                 return False
         
         # Check if linear track is enabled (the configuration will be validated by the movement function)

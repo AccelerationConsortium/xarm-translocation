@@ -76,6 +76,12 @@ venv.bak/
 .prof.json
 *.prof
 
+# Motion-graph viewer geometry (runtime UI state, device-local; the
+# topology lives in motion_graph.yaml). Commit a copy only if you want a
+# shared default layout to ship with the repo.
+src/settings/motion_graph_layout.json
+src/settings/motion_graph_layout.json.tmp
+
 # IDE settings
 .vscode/
 .idea/

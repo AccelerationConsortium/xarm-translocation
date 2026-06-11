@@ -204,7 +204,7 @@ class RelativeRequest(BaseModel):
 
 class LocationRequest(BaseModel):
     """Request model for moving to a named location."""
-    location_name: str = Field(description="Name of the location defined in position_config.yaml")
+    location_name: str = Field(description="Name of the location defined in joint_config.yaml")
     speed: Optional[float] = Field(default=None, description="Movement speed (validated by safety level)")
 
 class TrackRequest(BaseModel):
@@ -271,7 +271,7 @@ class JointTorqueMovementRequest(BaseModel):
 
 class PlateLinearRequest(BaseModel):
     """Request model for linear movement from current position to target."""
-    target_location: str = Field(description="Name of the target location from position_config.yaml")
+    target_location: str = Field(description="Name of the target location from joint_config.yaml")
     speed: Optional[float] = Field(default=None, description="Movement speed (validated by safety level)")
 
 
@@ -337,15 +337,46 @@ class GraphEdgeUpdateRequest(BaseModel):
     )
 
 
+class GraphEdgeDeleteRequest(BaseModel):
+    """Body of POST /control/graph/edge/delete — remove an existing edge.
+
+    Identified by its ordered (from, to) pair, which is unique. Only the edge
+    (a motion) is removed; both endpoint nodes stay. The candidate is validated
+    and the file's comments preserved (ruamel round-trip) before the write.
+    """
+    from_node: str = Field(description="Edge source node id")
+    to_node: str = Field(description="Edge target node id")
+
+
+class GraphLayoutModel(BaseModel):
+    """Body of POST /graph/layout — the viewer's saved geometry.
+
+    Pure presentation data (node positions, which stations are expanded, the
+    pan/zoom), stored device-side in src/settings/motion_graph_layout.json so every PC
+    that connects sees the same arrangement. Deliberately separate from
+    motion_graph.yaml (the validated interlock topology) and NOT claim-gated —
+    rearranging the map moves no hardware. Unknown node ids are harmless (the
+    viewer only applies positions for nodes that exist).
+    """
+    positions: Dict[str, Dict[str, float]] = Field(
+        default_factory=dict, description="node id -> {x, y}"
+    )
+    expanded: Dict[str, bool] = Field(
+        default_factory=dict, description="station -> true when its nodes are shown"
+    )
+    pan: Optional[Dict[str, float]] = Field(default=None, description="{x, y} viewport pan")
+    zoom: Optional[float] = Field(default=None, description="viewport zoom factor")
+
+
 class GraphNodeCreateRequest(BaseModel):
     """Body of POST /control/graph/node — add a new node (state) to the graph.
 
-    A node is a state: a named arm pose (from position_config.yaml) at a rail
+    A node is a state: a named arm pose (from joint_config.yaml) at a rail
     location, with a gripper state and payload. Edges between nodes are added
     separately (record / edge editor). The loader validates the result.
     """
     id: str = Field(description="Unique node id (convention: the pose name, +_empty/_held)")
-    arm: str = Field(description="Arm pose name from position_config.yaml")
+    arm: str = Field(description="Arm pose name from joint_config.yaml")
     rail: str = Field(description="Rail location name from linear_track_config.yaml")
     gripper: str = Field(description="Gripper state name (must be a declared gripper_state)")
     payload: str = Field(description="Payload name (must be a declared payload)")
@@ -836,9 +867,9 @@ async def get_locations():
     try:
         # Try multiple possible paths for position config
         possible_paths = [
-            os.path.join('src', 'settings', 'position_config.yaml'),
-            os.path.join('settings', 'position_config.yaml'),
-            os.path.join(os.path.dirname(__file__), '..', 'settings', 'position_config.yaml')
+            os.path.join('src', 'settings', 'joint_config.yaml'),
+            os.path.join('settings', 'joint_config.yaml'),
+            os.path.join(os.path.dirname(__file__), '..', 'settings', 'joint_config.yaml')
         ]
         
         position_config = None
@@ -853,7 +884,7 @@ async def get_locations():
             locations = list(position_config.get('positions', {}).keys())
             positions = position_config.get('positions', {})
         else:
-            logger.warning("position_config.yaml not found in any expected location, returning empty list.")
+            logger.warning("joint_config.yaml not found in any expected location, returning empty list.")
             locations = []
             positions = {}
         
@@ -1625,6 +1656,50 @@ async def get_graph_state():
     }
 
 
+def _graph_layout_path() -> str:
+    return os.path.join("src", "settings", "motion_graph_layout.json")
+
+
+@app.get("/graph/layout")
+async def get_graph_layout():
+    """The viewer's saved geometry (positions / expanded / pan / zoom).
+
+    Read-only, NOT claim-gated — it's presentation data shared by every PC
+    that connects, stored device-side so the layout no longer lives in one
+    browser's localStorage. Returns empty defaults when nothing's been saved
+    yet (so a fresh device just lays itself out from scratch).
+    """
+    path = _graph_layout_path()
+    if not os.path.exists(path):
+        return {"positions": {}, "expanded": {}, "pan": None, "zoom": None}
+    try:
+        with open(path) as fh:
+            data = json.load(fh)
+    except (json.JSONDecodeError, OSError):
+        # Corrupt/unreadable layout must never break the viewer — fall back to
+        # empty and let the next save overwrite it.
+        return {"positions": {}, "expanded": {}, "pan": None, "zoom": None}
+    return data
+
+
+@app.post("/graph/layout")
+async def save_graph_layout(layout: GraphLayoutModel):
+    """Persist the viewer's geometry to src/settings/motion_graph_layout.json.
+
+    NOT claim-gated: rearranging the map moves no hardware, and a read-only
+    viewer (no claim) must still be able to save layout. Written atomically
+    (temp file + replace) so a concurrent reader never sees a half-written
+    file. Last write wins — layout is not safety-critical.
+    """
+    path = _graph_layout_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(layout.model_dump(), fh, indent=2)
+    os.replace(tmp, path)
+    return {"saved": True}
+
+
 @app.post("/control/graph/move_to", dependencies=[Depends(require_claim)])
 async def graph_move_to(request: GraphMoveToRequest, background_tasks: BackgroundTasks):
     """Move to a graph node by id.
@@ -1872,6 +1947,73 @@ def _update_edge_in_yaml(req: "GraphEdgeUpdateRequest") -> "MotionGraph":  # typ
     # Serialize once; validate that exact text via the real loader before
     # committing it to disk (mode/speed don't touch the coherence rules,
     # but this re-confirms the file still loads — cheap insurance).
+    buf = io.StringIO()
+    yaml_rt.dump(data, buf)
+    serialized = buf.getvalue()
+    plain = _pyyaml.safe_load(serialized)
+    MotionGraph.from_dict(plain, preconditions=DEFAULT_PRECONDITIONS)  # raises GraphError
+
+    with open(path, "w") as fh:      # validated -> commit
+        fh.write(serialized)
+    return MotionGraph.from_yaml(path, preconditions=DEFAULT_PRECONDITIONS)
+
+
+@app.post("/control/graph/edge/delete", dependencies=[Depends(require_claim)])
+async def delete_graph_edge(request: GraphEdgeDeleteRequest):
+    """Remove an existing edge (motion) from the graph.
+
+    Claim-gated like every mutating endpoint (the single-gate rule). The edge
+    must exist; only the edge is removed (both endpoint nodes stay). The YAML is
+    rewritten with a ruamel round-trip so comments survive, validated before the
+    write, then the in-memory graph is hot-reloaded.
+    """
+    c = get_controller()
+    if c.motion_graph is None:
+        raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+    if c.motion_graph.find_edge(request.from_node, request.to_node) is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no edge {request.from_node!r} -> {request.to_node!r}",
+        )
+    try:
+        new_graph = _delete_edge_in_yaml(request)
+    except GraphError as exc:
+        raise HTTPException(status_code=400, detail=f"delete failed validation: {exc}")
+    c.motion_graph = new_graph
+    return {"deleted": {"from": request.from_node, "to": request.to_node}}
+
+
+def _delete_edge_in_yaml(req: "GraphEdgeDeleteRequest") -> "MotionGraph":  # type: ignore[name-defined]
+    """Remove the edge for the ordered (from, to) pair from motion_graph.yaml.
+
+    Uses a ruamel.yaml round-trip so the file's comments survive. The candidate
+    is validated with the real loader BEFORE the write, so the file always
+    stays loadable, then the graph is reloaded so memory matches disk.
+    """
+    import io
+    from ruamel.yaml import YAML
+    import yaml as _pyyaml
+    try:
+        from .motion_graph import MotionGraph, DEFAULT_PRECONDITIONS
+    except ImportError:
+        from core.motion_graph import MotionGraph, DEFAULT_PRECONDITIONS
+
+    path = os.path.join("src", "settings", "motion_graph.yaml")
+    yaml_rt = YAML()                 # round-trip mode (default)
+    yaml_rt.preserve_quotes = True
+    with open(path) as fh:
+        data = yaml_rt.load(fh)
+
+    edges = data.get("edges", []) or []
+    idx = next(
+        (i for i, e in enumerate(edges)
+         if e.get("from") == req.from_node and e.get("to") == req.to_node),
+        None,
+    )
+    if idx is None:
+        raise GraphError(f"no edge {req.from_node!r} -> {req.to_node!r}")
+    del edges[idx]
+
     buf = io.StringIO()
     yaml_rt.dump(data, buf)
     serialized = buf.getvalue()

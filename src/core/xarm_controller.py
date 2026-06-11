@@ -176,7 +176,7 @@ class XArmController:
         component_configs = {
             'gripper_config': 'gripper_config.yaml' if self.gripper_type != 'none' else None,
             'track_config': 'linear_track_config.yaml' if self.enable_track else None,
-            'position_config': 'position_config.yaml',
+            'position_config': 'joint_config.yaml',
             'safety_config': 'safety.yaml',
             'force_torque_config': 'force_torque_config.yaml'
         }
@@ -1526,7 +1526,7 @@ class XArmController:
 
         The SDK's factory home (``move_gohome``, joint zeros) is unsafe on this
         cell, so "home" always routes through the ``robot_home`` definition in
-        ``position_config.yaml`` and travels as a normal named joint move (which
+        ``joint_config.yaml`` and travels as a normal named joint move (which
         keeps the motion-graph node tracker correct). If ``robot_home`` is not
         defined we raise rather than fall back to factory home.
 
@@ -1540,7 +1540,7 @@ class XArmController:
         positions = (self.position_config or {}).get('positions', {})
         if not positions.get('robot_home'):
             raise ValueError(
-                "No 'robot_home' position defined in position_config.yaml; "
+                "No 'robot_home' position defined in joint_config.yaml; "
                 "refusing to fall back to unsafe factory home."
             )
 
@@ -2364,7 +2364,7 @@ class XArmController:
         Tool maintains the same absolute orientation throughout the movement.
         
         Args:
-            target_location (str): Name of target location from position_config.yaml
+            target_location (str): Name of target location from joint_config.yaml
             speed (float): Movement speed (default: tcp_speed)
             
         Returns:

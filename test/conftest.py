@@ -138,7 +138,7 @@ def mock_config_files(monkeypatch):
             return mock_configs['xarm_config']
         elif 'gripper_config' in filename:
             return mock_configs['gripper_config']
-        elif 'position_config' in filename:
+        elif 'joint_config' in filename:
             return mock_configs['position_config']
         elif 'linear_track_config' in filename:
             return mock_configs['linear_track_config']

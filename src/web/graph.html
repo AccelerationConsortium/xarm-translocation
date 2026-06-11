@@ -43,12 +43,17 @@
                     <ul class="legend-list">
                         <li><span class="legend-swatch swatch-current"></span> current node (live)</li>
                         <li><span class="legend-swatch swatch-holding"></span> holding labware</li>
+                        <li><span class="legend-glyph">▣</span> state holds a plate&nbsp;·&nbsp;<span class="legend-glyph">▢</span> empty</li>
                         <li><span class="legend-line line-grip"></span> grip edge</li>
                         <li><span class="legend-line line-release"></span> release edge</li>
                         <li><span class="legend-line line-plain"></span> move edge</li>
                     </ul>
-                    <p class="muted legend-note">Edge label = <code>mode @ speed</code>. Node colour groups by station (first tag).</p>
-                    <p class="muted legend-note">Stations collapse to a tile — click a station tile to show/hide its nodes. The robot's station auto-expands; manual toggling is locked while a workflow holds control.</p>
+                    <p class="muted legend-note">Edge label = <code>mode @ speed</code>. Node colour groups by station (first tag). Every node shows its payload state: <code>▣</code> held, <code>▢</code> empty.</p>
+                    <p class="muted legend-note">Each station has a <strong>home node</strong> (heavier border, e.g. <code>deck_home</code>) shown with <code>▸ N</code> hidden siblings. Click it to fan the station's nodes out from the home node; click again to collapse back to it. Drag nodes to arrange them; positions, open stations and the view are remembered across reopen. The robot's station auto-expands; manual toggling is locked while a workflow holds control.</p>
+                    <div class="legend-actions">
+                        <button id="fit-btn" class="btn btn-secondary">Fit view</button>
+                        <button id="reset-layout-btn" class="btn btn-secondary">Reset layout</button>
+                    </div>
                 </div>
 
                 <!-- Add node: writes a new state to motion_graph.yaml (claim-gated). -->
@@ -56,7 +61,7 @@
                     <h2 class="card-toggle">Add node <span class="card-caret">▸</span></h2>
                     <div class="card-body" hidden>
                     <div class="form-group">
-                        <label for="node-arm">Pose (arm) — from position_config</label>
+                        <label for="node-arm">Pose (arm) — from joint_config</label>
                         <select id="node-arm"></select>
                     </div>
                     <div class="form-group">
@@ -156,6 +161,9 @@
                         <button id="edge-save-btn" class="btn btn-primary">Save</button>
                         <button id="edge-cancel-btn" class="btn btn-secondary">Cancel</button>
                     </div>
+                    <div class="edge-panel-actions">
+                        <button id="edge-delete-btn" class="btn btn-danger">Delete edge</button>
+                    </div>
                     <div id="edge-panel-error" class="edge-panel-error" hidden></div>
                 </div>
             </aside>
@@ -163,6 +171,6 @@
     </div>
 
     <script src="cytoscape.min.js"></script>
-    <script src="graph.js?v=20260605d"></script>
+    <script src="graph.js?v=20260611a"></script>
 </body>
 </html>

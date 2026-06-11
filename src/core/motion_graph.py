@@ -8,7 +8,7 @@ payload name) and asking ``MotionGraph.find_node(...)`` to resolve them
 to a node id.
 
 This module exists to formalize the implicit sequencing that today lives
-only in YAML comments in ``position_config.yaml`` (e.g., "happens when
+only in YAML comments in ``joint_config.yaml`` (e.g., "happens when
 linear rail is at 0", "You hear a click"). See
 ``ac-organic-lab/docs/INTERLOCKS.md`` for where this fits in the
 four-layer interlock model (layers 1+2).
@@ -81,7 +81,7 @@ class Payload:
 class Node:
     """A reachable state in the (arm, rail, gripper, payload) product."""
     id: str
-    arm: str          # name in position_config.yaml::positions
+    arm: str          # name in joint_config.yaml::positions
     rail: str         # name in linear_track_config.yaml::locations
     gripper: str      # name in motion_graph.yaml::gripper_states
     payload: str      # name in motion_graph.yaml::payloads
