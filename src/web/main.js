@@ -652,6 +652,14 @@ document.addEventListener('DOMContentLoaded', () => {
             // destinations as buttons, current mode in the select.
             renderMotionGraphCard(data.motion_graph);
 
+            // Drive Arm card: dropdown of graph-reachable destinations + Send.
+            // Runs after the lock functions above, so it's handed the same
+            // connection/manual flags to gate the Send button consistently.
+            renderDriveArmCard(data.motion_graph, {
+                connected: isConnected,
+                manual: data.manual_mode === true,
+            });
+
         } catch (error) {
             console.error('Fatal error in updateStatusUI:', error);
             console.error('Stack trace:', error.stack);
@@ -708,6 +716,107 @@ document.addEventListener('DOMContentLoaded', () => {
                 reachableEl.appendChild(btn);
             });
         }
+    }
+
+    // ── Drive Arm card ──────────────────────────────────────────────
+    // A friendlier, dropdown-based view of the same reachable-node data the
+    // Motion Graph card renders as buttons. Only graph-allowed destinations
+    // (outgoing edges from the current node) ever appear, and Send drives the
+    // arm under STRICT enforcement.
+
+    // One-shot guard so we set STRICT on first appearance only — re-asserting
+    // it on every status poll would fight the Motion Graph mode selector.
+    let driveArmStrictInitialized = false;
+
+    function renderDriveArmCard(motionGraph, gating = {}) {
+        const card = document.getElementById('drive-arm-card');
+        if (!card) return;
+        if (!motionGraph) {
+            // No graph loaded — keep the card hidden.
+            card.hidden = true;
+            return;
+        }
+        card.hidden = false;
+
+        const select = document.getElementById('drive-dest-select');
+        const sendBtn = document.getElementById('drive-send-btn');
+        const hint = document.getElementById('drive-dest-hint');
+        if (!select || !sendBtn || !hint) return;
+
+        // Best-effort, one-time: nudge the controller into STRICT the first
+        // time the card shows with a graph and we hold the claim. The robust
+        // guarantee is the ensure-strict step at Send time.
+        if (!driveArmStrictInitialized && claimToken
+                && (motionGraph.graph_mode || 'off') !== 'strict') {
+            driveArmStrictInitialized = true;
+            changeGraphMode('strict');
+        }
+
+        const current = motionGraph.current_node;
+        const reachable = motionGraph.reachable_nodes || [];
+
+        // Don't rebuild options while the operator is interacting with the
+        // dropdown — that would stomp their open selection mid-pick.
+        if (document.activeElement === select) return;
+
+        if (current === null || reachable.length === 0) {
+            select.innerHTML = '';
+            select.disabled = true;
+            sendBtn.disabled = true;
+            hint.textContent = current
+                ? '(no outgoing edges from current node)'
+                : '(off-grid — recover in Motion Graph)';
+            hint.hidden = false;
+            return;
+        }
+
+        // Preserve the prior selection if it's still reachable.
+        const previous = select.value;
+        select.innerHTML = '';
+        reachable.forEach(nodeId => {
+            const opt = document.createElement('option');
+            opt.value = nodeId;
+            opt.textContent = nodeId;
+            select.appendChild(opt);
+        });
+        if (reachable.includes(previous)) {
+            select.value = previous;
+        }
+
+        // This render runs AFTER applyClaimLock / applyManualModeLock /
+        // applyMovingLock, so it must re-apply the same gating itself or it
+        // would re-enable Send when control isn't actually permitted.
+        const canDrive = gating.connected === true
+            && gating.manual !== true
+            && claimToken !== null
+            && !isRobotMoving;
+        select.disabled = !canDrive;
+        sendBtn.disabled = !canDrive;
+        if (canDrive) {
+            hint.hidden = true;
+        } else {
+            hint.textContent = claimToken === null
+                ? '(take control to drive)'
+                : '(unavailable while disconnected, in manual mode, or moving)';
+            hint.hidden = false;
+        }
+    }
+
+    async function sendDriveArm() {
+        const select = document.getElementById('drive-dest-select');
+        const speedInput = document.getElementById('drive-dest-speed');
+        if (!select || !select.value) {
+            showMessage('Select a destination first.', 'error');
+            return;
+        }
+        const nodeId = select.value;
+        const speed = parseFloat(speedInput?.value) || undefined;
+
+        // Ensure STRICT before moving so only whitelisted edges are possible.
+        const ensured = await apiRequest('/control/graph/mode', 'POST', { mode: 'strict' });
+        if (!ensured) return;  // mode set failed (e.g. claim lost) — abort.
+
+        apiRequest('/control/graph/move_to', 'POST', { node_id: nodeId, speed });
     }
 
     async function changeGraphMode(newMode) {
@@ -933,6 +1042,9 @@ document.addEventListener('DOMContentLoaded', () => {
             movePredefinedBtn, moveLinearBtn, moveJointsBtn,
             jointSpeedInput, linearSpeedInput,
             directJointSpeed, jogStepInput, predefinedPositionSelect,
+            document.getElementById('drive-dest-select'),
+            document.getElementById('drive-dest-speed'),
+            document.getElementById('drive-send-btn'),
             ...jogBtnIds.map(id => document.getElementById(id)),
             ...jointInputIds.map(id => document.getElementById(id)),
         ];
@@ -966,6 +1078,9 @@ document.addEventListener('DOMContentLoaded', () => {
             directJointSpeed, jogStepInput,
             predefinedPositionSelect, trackLocationSelect,
             manualModeCheckbox,
+            document.getElementById('drive-dest-select'),
+            document.getElementById('drive-dest-speed'),
+            document.getElementById('drive-send-btn'),
             ...jogBtnIds.map(id => document.getElementById(id)),
             ...jointInputIds.map(id => document.getElementById(id)),
         ];
@@ -1366,6 +1481,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const mgRecoverAccept = document.getElementById('mg-recover-accept');
     if (mgRecoverAccept) {
         mgRecoverAccept.addEventListener('click', acceptRecover);
+    }
+
+    // Drive Arm card listener: Send drives the arm to the selected node.
+    const driveSendBtn = document.getElementById('drive-send-btn');
+    if (driveSendBtn) {
+        driveSendBtn.addEventListener('click', sendDriveArm);
     }
 
     function currentGripperForce() {

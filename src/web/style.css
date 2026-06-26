@@ -1044,3 +1044,18 @@ input#linear-speed {
     font-size: 0.85em;
     color: var(--ink-muted);
 }
+
+/* ── Drive Arm card ─────────────────────────────────────────────── */
+/* Node ids are long (e.g. deck_slot1_low_held), so widen the select past
+   the narrow 72px .inline-input default and let it grow to fill the row. */
+#drive-dest-select {
+    width: auto;
+    min-width: 220px;
+    flex: 1 1 auto;
+    text-align: left;
+}
+
+#drive-dest-hint {
+    color: var(--ink-muted);
+    font-style: italic;
+}
