@@ -23,6 +23,12 @@
     box-sizing: border-box;
 }
 
+/* The hidden attribute must always win, even over display:flex rules on
+   the same element (UA [hidden] styles lose to any author display value). */
+[hidden] {
+    display: none !important;
+}
+
 body {
     margin: 0;
     background: var(--surface-subtle);
@@ -53,11 +59,11 @@ header,
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    height: 56px;
+    min-height: 56px;
     margin-bottom: 12px;
-    padding: 0 16px;
+    padding: 8px 16px;
     border: 1px solid var(--border);
-    border-radius: 12px;
+    border-radius: 14px;
     background: var(--surface);
     box-shadow: 0 10px 30px rgba(15, 23, 42, 0.04);
 }
@@ -133,6 +139,8 @@ header,
 
 .auth-login select,
 .auth-login input {
+    width: auto;
+    max-width: 260px;
     height: 34px;
     padding: 0 10px;
     border: 1px solid var(--border-strong);
@@ -144,6 +152,10 @@ header,
 
 .auth-login input {
     width: 90px;
+}
+
+.auth-login .btn {
+    min-height: 34px;
 }
 
 .auth-login .btn {
@@ -194,7 +206,7 @@ header {
     display: grid;
     grid-template-columns: minmax(280px, 1fr) minmax(320px, 560px);
     gap: 16px;
-    align-items: start;
+    align-items: stretch;
 }
 
 .title-status-container,
@@ -248,16 +260,19 @@ h3 {
 }
 
 .log-container {
+    display: flex;
     min-height: 0;
     overflow: hidden;
+    background: #020617;
 }
 
 .log-stream {
+    flex: 1;
     height: auto;
-    min-height: 90px;
-    max-height: 200px;
+    min-height: 120px;
+    max-height: 280px;
     overflow: auto;
-    padding: 12px;
+    padding: 14px;
     background: #020617;
     color: #cbd5e1;
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
@@ -529,12 +544,25 @@ input#linear-speed {
 }
 
 .btn:disabled {
-    background: #cbd5e1;
-    border-color: #cbd5e1;
-    color: #f8fafc;
+    background: var(--surface-soft);
+    border-color: var(--border);
+    color: #94a3b8;
     cursor: not-allowed;
     transform: none;
     box-shadow: none;
+}
+
+.btn:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.35);
+}
+
+/* The emergency stop keeps its identity even while unavailable: a faint
+   rose wash instead of the generic grey, so the eye still finds it. */
+#stop-btn:disabled {
+    background: #fff1f2;
+    border-color: #fecdd3;
+    color: #fda4af;
 }
 
 .btn-danger {
@@ -720,14 +748,15 @@ input#linear-speed {
 }
 
 .xarm-buttons .btn {
-    min-height: 104px;
-    padding: 16px;
-    font-size: clamp(1.05rem, 2vw, 1.6rem);
+    min-height: 68px;
+    padding: 14px;
+    border-radius: 14px;
+    font-size: clamp(0.95rem, 1.6vw, 1.15rem);
 }
 
 #stop-btn {
-    font-size: clamp(1.45rem, 3vw, 2.25rem);
-    letter-spacing: 0.04em;
+    font-size: clamp(1.15rem, 2.2vw, 1.5rem);
+    letter-spacing: 0.08em;
 }
 
 .move-position-button,
@@ -896,7 +925,8 @@ input#linear-speed {
 
 .status-bar-card {
     /* Anchored full-width footer: stays put at the bottom of the viewport
-       while the rest of the page scrolls behind it. */
+       while the rest of the page scrolls behind it. Translucent + blurred
+       so content sliding underneath stays legible. */
     position: fixed;
     left: 0;
     right: 0;
@@ -905,9 +935,12 @@ input#linear-speed {
     margin: 0;
     padding: 10px 24px;
     border: none;
-    border-top: 1px solid var(--border-strong);
+    border-top: 1px solid var(--border);
     border-radius: 0;
-    box-shadow: 0 -2px 12px rgba(15, 23, 42, 0.08);
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 -2px 12px rgba(15, 23, 42, 0.06);
     display: flex;
     align-items: center;
     gap: 16px;
