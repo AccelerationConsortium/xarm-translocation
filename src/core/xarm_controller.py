@@ -25,6 +25,7 @@ try:
         find_nearest_node,
     )
     from .claims import ClaimManager
+    from .events_exporter import EventsExporter
 except ImportError:
     from core.motion_graph import (
         DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
@@ -32,6 +33,22 @@ except ImportError:
         find_nearest_node,
     )
     from core.claims import ClaimManager
+    from core.events_exporter import EventsExporter
+
+
+# Coarse xArm SDK controller-state -> STATUS_SPEC-ish label, used only to
+# label device-pushed state_transition events. The raw SDK integer always
+# rides along in extra.xarm_state; the /status envelope keeps its own
+# (richer) derivation in status_builder.
+_XARM_STATE_LABELS = {
+    1: "busy",      # in motion
+    2: "ready",     # sleeping / standby
+    3: "busy",      # paused mid-trajectory
+    4: "error",     # stop state (error / protective stop)
+    5: "unknown",   # system reset
+    6: "busy",      # slowing / stopping
+}
+
 
 class ComponentState(Enum):
     """Enum for component states"""
@@ -335,6 +352,17 @@ class XArmController:
         else:
             print("[claims] enforcement OFF (advisory) via XARM_ENFORCE_CLAIMS")
 
+        # Device-pushed event rows for the dashboard's history DB (fine-
+        # grained state_transition / error events straight from the SDK
+        # callbacks; the aggregator's 60 s poll stays the coarse backstop).
+        # No-op unless XARM_INGEST_URL is set. See core/events_exporter.py.
+        self.events_exporter = EventsExporter.from_env()
+        self._last_emitted_state: Optional[str] = None
+        if self.events_exporter.enabled:
+            print(f"[events] exporter ON -> {self.events_exporter.ingest_url}")
+        else:
+            print("[events] exporter OFF (set XARM_INGEST_URL to enable)")
+
         # State tracking
         self.alive = True
         self._ignore_exit_state = False
@@ -443,6 +471,8 @@ class XArmController:
                             self.enable_track_component()
 
                     print("xArm Controller Initialized")
+                    self._emit_event("startup", message="Controller connected and enabled")
+                    self._emit_state_transition("ready", message="Controller initialized")
                     self._update_positions()
                     if self.enable_track:
                         self._update_track_position()
@@ -596,6 +626,52 @@ class XArmController:
         except Exception as e:
             print(f"Warning: Failed to update track position: {e}")
 
+    def _current_graph_node(self) -> Optional[str]:
+        """Best-effort current motion-graph node id for event context."""
+        try:
+            if getattr(self, "motion_graph", None) is None:
+                return None
+            return self.current_node
+        except Exception:
+            return None
+
+    def _emit_event(self, event, *, from_state=None, to_state=None, message=None, **extra):
+        """Push one row to the dashboard's history DB, best-effort.
+
+        Always attaches the standard context keys from the plan's event
+        vocabulary (xarm_state, error_code, warn_code, graph_node);
+        callers can override or extend via **extra. Never raises.
+        """
+        exporter = getattr(self, "events_exporter", None)
+        if exporter is None or not exporter.enabled:
+            return
+        context = {
+            "xarm_state": getattr(self.arm, "state", None) if self.arm else None,
+            "error_code": getattr(self, "last_error_code", 0),
+            "warn_code": getattr(self, "last_warn_code", 0),
+            "graph_node": self._current_graph_node(),
+        }
+        context.update(extra)
+        exporter.emit(
+            event, from_state=from_state, to_state=to_state, message=message, **context
+        )
+
+    def _emit_state_transition(self, to_state, *, message=None, **extra):
+        """Emit a state_transition row when the coarse state label changes.
+
+        from_state is the last label *this exporter* emitted (None on the
+        first transition of the process, mirroring the aggregator's
+        first-observation row), so consecutive duplicates are suppressed.
+        """
+        from_state = self._last_emitted_state
+        if to_state == from_state:
+            return
+        self._last_emitted_state = to_state
+        self._emit_event(
+            "state_transition", from_state=from_state, to_state=to_state,
+            message=message, **extra,
+        )
+
     def _error_warn_callback(self, data):
         """SDK callback: record error/warn codes and flip to error state."""
         if not data:
@@ -614,17 +690,41 @@ class XArmController:
             self.alive = False
             self.states['arm'] = ComponentState.ERROR
             print(f'Error {error_code} detected')
+            self._emit_event(
+                "error",
+                message=f"Controller reports error code {error_code}",
+                severity="error",
+                error_code=error_code,
+                warn_code=data.get('warn_code', 0),
+            )
+            self._emit_state_transition(
+                "error", message=f"Error code {error_code} latched",
+            )
 
         if data.get('warn_code', 0) != 0:
             self.last_warn_code = data['warn_code']
             print(f'Warning: {data["warn_code"]}')
+            self._emit_event(
+                "error",
+                message=f"Controller reports warn code {data['warn_code']}",
+                severity="warning",
+                warn_code=data['warn_code'],
+            )
 
     def _state_changed_callback(self, data):
         """SDK callback: flip to error state on the SDK's emergency state 4."""
-        if not self._ignore_exit_state and data and data['state'] == 4:
+        if not data or 'state' not in data:
+            return
+        state = data['state']
+        if not self._ignore_exit_state and state == 4:
             self.alive = False
             self.states['arm'] = ComponentState.ERROR
             print('State 4 detected, stopping operations')
+        self._emit_state_transition(
+            _XARM_STATE_LABELS.get(state, "unknown"),
+            message=f"xArm SDK controller state changed to {state}",
+            xarm_state=state,
+        )
 
     def check_code(self, code, operation_name):
         """Check if an SDK operation was successful (None or 0)."""
@@ -758,6 +858,7 @@ class XArmController:
             if error_clear_code == 0 and warn_clear_code == 0:
                 self.alive = True
                 print("[OK] All errors and warnings cleared successfully")
+                self._emit_state_transition("ready", message="Errors cleared")
 
                 # Always re-arm the arm. This is the single recovery button
                 # (it replaced the separate "Enable"), so it must re-energize
@@ -1830,6 +1931,8 @@ class XArmController:
     def disconnect(self):
         """Disconnects from the robot arm."""
         print("Disconnecting Robot Arm...")
+        self._emit_event("shutdown", message="Controller disconnecting")
+        self._emit_state_transition("requires_init", message="Controller disconnected")
         self.alive = False
         self.states['connection'] = ComponentState.DISABLED
         self.states['arm'] = ComponentState.DISABLED

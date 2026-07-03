@@ -33,6 +33,30 @@ EQUIPMENT_NAME = "UFactory xArm5"
 EQUIPMENT_KIND = "robot_arm"
 
 
+def _resolve_equipment_version() -> str | None:
+    """Installed pyxarm version for the envelope's ``equipment_version``.
+
+    Package metadata first (the deployed service is uv-installed), then
+    the CLI's ``__version__`` for from-source runs; ``None`` only when
+    both fail rather than guessing.
+    """
+    try:
+        from importlib.metadata import version
+
+        return version("pyxarm")
+    except Exception:
+        pass
+    try:
+        from cli import __version__
+
+        return __version__
+    except Exception:
+        return None
+
+
+EQUIPMENT_VERSION = _resolve_equipment_version()
+
+
 # Process start time used for ``uptime_seconds``. Captured at import so each
 # new uvicorn worker reports its own uptime.
 _PROCESS_START_TIME = time.time()
@@ -69,6 +93,7 @@ def _disconnected_envelope() -> EquipmentStatus:
         equipment_id=EQUIPMENT_ID,
         equipment_name=EQUIPMENT_NAME,
         equipment_kind=EQUIPMENT_KIND,
+        equipment_version=EQUIPMENT_VERSION,
         host=_safe_hostname(),
         equipment_status="requires_init",
         message="Controller not instantiated. POST /connect to initialize.",
@@ -252,6 +277,7 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         equipment_id=EQUIPMENT_ID,
         equipment_name=EQUIPMENT_NAME,
         equipment_kind=EQUIPMENT_KIND,
+        equipment_version=EQUIPMENT_VERSION,
         host=_safe_hostname(),
         equipment_status=equipment_status,  # type: ignore[arg-type]
         message=message,

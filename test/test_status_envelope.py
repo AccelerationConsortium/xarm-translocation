@@ -140,6 +140,9 @@ def test_status_returns_requires_init_when_no_controller(client):
     assert parsed.equipment_id == EQUIPMENT_ID
     assert parsed.equipment_kind == 'robot_arm'
     assert parsed.protocol_version == PROTOCOL_VERSION
+    # Populated from package metadata (uv install) or cli.__version__
+    # (from-source runs like this test); null was the pre-fix regression.
+    assert parsed.equipment_version is not None
 
 
 def test_status_returns_error_when_controller_has_error_code(client_with_controller):
