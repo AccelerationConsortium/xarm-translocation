@@ -56,6 +56,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const takeControlBtn = document.getElementById('take-control-btn');
     const claimStatusEl = document.getElementById('claim-status');
     const CLAIM_OWNER = 'human@xarm-web';
+    // Prefer the signed-in identity from the auth banner (auth.js) so
+    // details.claimed_by and the lab audit trail name a real person.
+    // Falls back to the anonymous owner when auth is unconfigured or
+    // nobody is signed in.
+    function claimOwner() {
+        const identity = window.labAuth && window.labAuth.identity;
+        return (identity && identity.email) || CLAIM_OWNER;
+    }
     const claimSessionId =
         (window.crypto && crypto.randomUUID && crypto.randomUUID()) ||
         `xarm-web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -1165,7 +1173,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    owner: CLAIM_OWNER,
+                    owner: claimOwner(),
                     session_id: claimSessionId,
                     ttl_s: 30,
                 }),
@@ -1176,7 +1184,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 startClaimHeartbeat(data.heartbeat_interval_s);
                 updateTakeControlBtn();
                 applyClaimLock(true);
-                addLogEntry('Control acquired (human@xarm-web)', 'info');
+                addLogEntry(`Control acquired (${claimOwner()})`, 'info');
                 clearMessage();
                 // Re-run the enable logic so gated controls light up now.
                 fetchAndUpdateStatus();

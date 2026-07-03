@@ -16,7 +16,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
-from fastapi import Depends, FastAPI, HTTPException, BackgroundTasks, Header, Response, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, BackgroundTasks, Header, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -514,6 +514,173 @@ try:
         app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 except Exception as e:
     logger.warning(f"Could not mount static files: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Auth banner proxy (SDL2 Auth sidecar, ac_auth)
+#
+# The /web/ UI shows a sign-in banner backed by the lab's central auth
+# sidecar (email one-time-code -> opaque session cookie). The browser can't
+# talk to the sidecar directly: it serves no CORS headers and its session
+# cookie is SameSite=Lax, so cross-origin fetches from this UI would carry
+# neither. These endpoints proxy the four calls the banner needs on the
+# SAME origin as the UI, holding the session token in a cookie scoped to
+# this device's origin. The sidecar remains the single source of truth —
+# tokens are validated server-side there on every /auth/me.
+#
+# Auth here is ADVISORY (a banner + claim-owner identity), not an access
+# gate: the claim protocol stays the single gate on motion. Signing in
+# lets the UI stamp `owner: <email>` into /control/claim, so the
+# dashboard's claimed_by and the audit trail show a real person instead
+# of the anonymous fallback.
+#
+# Disabled unless XARM_AUTH_URL is set (e.g. http://100.64.254.6:8009).
+# ---------------------------------------------------------------------------
+
+AUTH_SIDECAR_URL = os.environ.get("XARM_AUTH_URL", "").strip().rstrip("/")
+AUTH_COOKIE_NAME = os.environ.get("XARM_AUTH_COOKIE_NAME", "ac_auth_session")
+_AUTH_TIMEOUT_S = 5.0
+# The device UI is plain http over the Tailnet (same posture as the
+# dashboard), so the cookie can't be Secure. HttpOnly + SameSite=Lax.
+_AUTH_COOKIE_MAX_AGE_S = 12 * 3600
+
+
+def _auth_sidecar_call(method: str, path: str, body: Optional[dict] = None,
+                       cookie_token: Optional[str] = None):
+    """Blocking sidecar round-trip (run via asyncio.to_thread).
+
+    Returns (status_code, parsed_json | None, session_token | None) where
+    session_token is extracted from the sidecar's Set-Cookie, if any.
+    Raises OSError/URLError on transport failure.
+    """
+    import urllib.request
+    from http.cookies import SimpleCookie
+
+    request = urllib.request.Request(
+        f"{AUTH_SIDECAR_URL}{path}",
+        data=json.dumps(body).encode("utf-8") if body is not None else None,
+        headers={
+            "Content-Type": "application/json",
+            **({"Cookie": f"{AUTH_COOKIE_NAME}={cookie_token}"} if cookie_token else {}),
+        },
+        method=method,
+    )
+    try:
+        resp = urllib.request.urlopen(request, timeout=_AUTH_TIMEOUT_S)
+    except urllib.error.HTTPError as exc:
+        resp = exc  # non-2xx still carries a JSON body (FastAPI detail)
+    with resp:
+        status = resp.getcode() if hasattr(resp, "getcode") else resp.code
+        try:
+            payload = json.loads(resp.read().decode("utf-8"))
+        except Exception:
+            payload = None
+        token = None
+        for header in resp.headers.get_all("Set-Cookie") or []:
+            jar = SimpleCookie()
+            jar.load(header)
+            if AUTH_COOKIE_NAME in jar:
+                token = jar[AUTH_COOKIE_NAME].value
+        return status, payload, token
+
+
+def _auth_passthrough(status: int, payload):
+    """Mirror the sidecar's response (status + body) to the browser."""
+    return JSONResponse(payload if payload is not None else {}, status_code=status)
+
+
+class AuthEmailIn(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+
+
+class AuthVerifyIn(BaseModel):
+    email: str = Field(min_length=3, max_length=254)
+    code: str = Field(min_length=1, max_length=16)
+
+
+@app.get("/auth/config", tags=["auth"])
+async def auth_config() -> dict:
+    """Banner bootstrap: is the auth integration configured on this device?"""
+    return {"enabled": bool(AUTH_SIDECAR_URL)}
+
+
+@app.get("/auth/me", tags=["auth"])
+async def auth_me(request: Request):
+    if not AUTH_SIDECAR_URL:
+        return {"authenticated": False, "identity": None}
+    token = request.cookies.get(AUTH_COOKIE_NAME)
+    if not token:
+        return {"authenticated": False, "identity": None}
+    try:
+        status, payload, _ = await asyncio.to_thread(
+            _auth_sidecar_call, "GET", "/auth/me", None, token
+        )
+    except Exception:
+        raise HTTPException(status_code=502, detail="Auth service unreachable.")
+    return _auth_passthrough(status, payload)
+
+
+@app.get("/auth/users", tags=["auth"])
+async def auth_users():
+    """Active human accounts, for the banner's email picker."""
+    if not AUTH_SIDECAR_URL:
+        raise HTTPException(status_code=501, detail="Auth not configured on this device.")
+    try:
+        status, payload, _ = await asyncio.to_thread(
+            _auth_sidecar_call, "GET", "/auth/users", None, None
+        )
+    except Exception:
+        raise HTTPException(status_code=502, detail="Auth service unreachable.")
+    return _auth_passthrough(status, payload)
+
+
+@app.post("/auth/request-code", tags=["auth"])
+async def auth_request_code(body: AuthEmailIn):
+    if not AUTH_SIDECAR_URL:
+        raise HTTPException(status_code=501, detail="Auth not configured on this device.")
+    try:
+        status, payload, _ = await asyncio.to_thread(
+            _auth_sidecar_call, "POST", "/auth/request-code", {"email": body.email}, None
+        )
+    except Exception:
+        raise HTTPException(status_code=502, detail="Auth service unreachable.")
+    return _auth_passthrough(status, payload)
+
+
+@app.post("/auth/verify-code", tags=["auth"])
+async def auth_verify_code(body: AuthVerifyIn, response: Response):
+    if not AUTH_SIDECAR_URL:
+        raise HTTPException(status_code=501, detail="Auth not configured on this device.")
+    try:
+        status, payload, token = await asyncio.to_thread(
+            _auth_sidecar_call, "POST", "/auth/verify-code",
+            {"email": body.email, "code": body.code}, None,
+        )
+    except Exception:
+        raise HTTPException(status_code=502, detail="Auth service unreachable.")
+    if status == 200 and token:
+        # Re-issue the sidecar's session token as a cookie on OUR origin;
+        # the sidecar's own Set-Cookie would be scoped to :8009 and Secure.
+        response.set_cookie(
+            AUTH_COOKIE_NAME, token, max_age=_AUTH_COOKIE_MAX_AGE_S,
+            httponly=True, samesite="lax", path="/",
+        )
+        return payload if payload is not None else {"ok": True}
+    return _auth_passthrough(status, payload)
+
+
+@app.post("/auth/logout", tags=["auth"])
+async def auth_logout(request: Request, response: Response):
+    token = request.cookies.get(AUTH_COOKIE_NAME)
+    if AUTH_SIDECAR_URL and token:
+        try:
+            await asyncio.to_thread(
+                _auth_sidecar_call, "POST", "/auth/logout", None, token
+            )
+        except Exception:
+            pass  # revoking best-effort; the local cookie still dies
+    response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------------------
