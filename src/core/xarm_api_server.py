@@ -545,13 +545,34 @@ _AUTH_TIMEOUT_S = 5.0
 _AUTH_COOKIE_MAX_AGE_S = 12 * 3600
 
 
+def _env_truthy(val: Optional[str]) -> bool:
+    return str(val or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+# When set, the session cookie is scoped to this parent domain so a single
+# sign-in covers every *.<domain> lab UI (deploy with tail6a1dd7.ts.net).
+# logout must delete with the SAME Domain or the browser won't clear it.
+# None -> host-only cookie (current single-UI behaviour).
+AUTH_COOKIE_DOMAIN = os.environ.get("XARM_AUTH_COOKIE_DOMAIN", "").strip() or None
+
+# Opt-in server-side gate: when truthy AND the auth sidecar is configured,
+# POST /control/claim requires a verified identity (session cookie -> the
+# sidecar's /auth/me, or X-Api-Key -> /auth/verify) and stamps the verified
+# email as the claim owner. Off by default so unconfigured/dev deployments
+# and v1.0 advisory posture are unchanged.
+REQUIRE_LOGIN_FOR_CLAIM = _env_truthy(os.environ.get("XARM_REQUIRE_LOGIN_FOR_CLAIM"))
+
+
 def _auth_sidecar_call(method: str, path: str, body: Optional[dict] = None,
-                       cookie_token: Optional[str] = None):
+                       cookie_token: Optional[str] = None, *,
+                       api_key: Optional[str] = None):
     """Blocking sidecar round-trip (run via asyncio.to_thread).
 
     Returns (status_code, parsed_json | None, session_token | None) where
     session_token is extracted from the sidecar's Set-Cookie, if any.
-    Raises OSError/URLError on transport failure.
+    ``cookie_token`` forwards the human session cookie; ``api_key`` forwards
+    a machine principal's key as ``X-Api-Key``. Raises OSError/URLError on
+    transport failure.
     """
     import urllib.request
     from http.cookies import SimpleCookie
@@ -562,6 +583,7 @@ def _auth_sidecar_call(method: str, path: str, body: Optional[dict] = None,
         headers={
             "Content-Type": "application/json",
             **({"Cookie": f"{AUTH_COOKIE_NAME}={cookie_token}"} if cookie_token else {}),
+            **({"X-Api-Key": api_key} if api_key else {}),
         },
         method=method,
     )
@@ -587,6 +609,50 @@ def _auth_sidecar_call(method: str, path: str, body: Optional[dict] = None,
 def _auth_passthrough(status: int, payload):
     """Mirror the sidecar's response (status + body) to the browser."""
     return JSONResponse(payload if payload is not None else {}, status_code=status)
+
+
+def _identity_email(payload) -> Optional[str]:
+    """Pull the verified email out of a sidecar identity payload.
+
+    Tolerates both the /auth/me shape ({identity: {email, role}}) and a
+    flatter {email: ...} shape a machine-principal /auth/verify may use.
+    Returns None when no email is present (e.g. anonymous /auth/me).
+    """
+    if not isinstance(payload, dict):
+        return None
+    ident = payload.get("identity")
+    if isinstance(ident, dict) and ident.get("email"):
+        return ident["email"]
+    if payload.get("email"):
+        return payload["email"]
+    return None
+
+
+async def _resolve_claim_identity(request: Request) -> Optional[str]:
+    """Resolve a verified principal email for claim acquisition.
+
+    Checks, in order: an ``X-Api-Key`` header (machine principals / future
+    SDK workflows -> the sidecar's GET /auth/verify), then the
+    ``ac_auth_session`` cookie (humans -> GET /auth/me). Returns the verified
+    email, or None when no credential was presented / it didn't validate.
+
+    Fails closed: the sidecar round-trip runs off the event loop and any
+    transport exception is propagated to the caller (which maps it to 503),
+    never silently allowed.
+    """
+    api_key = request.headers.get("X-Api-Key")
+    if api_key:
+        status, payload, _ = await asyncio.to_thread(
+            _auth_sidecar_call, "GET", "/auth/verify", None, None, api_key=api_key,
+        )
+        return _identity_email(payload) if status == 200 else None
+    token = request.cookies.get(AUTH_COOKIE_NAME)
+    if token:
+        status, payload, _ = await asyncio.to_thread(
+            _auth_sidecar_call, "GET", "/auth/me", None, token,
+        )
+        return _identity_email(payload) if status == 200 else None
+    return None
 
 
 class AuthEmailIn(BaseModel):
@@ -664,6 +730,7 @@ async def auth_verify_code(body: AuthVerifyIn, response: Response):
         response.set_cookie(
             AUTH_COOKIE_NAME, token, max_age=_AUTH_COOKIE_MAX_AGE_S,
             httponly=True, samesite="lax", path="/",
+            domain=AUTH_COOKIE_DOMAIN,
         )
         return payload if payload is not None else {"ok": True}
     return _auth_passthrough(status, payload)
@@ -679,7 +746,8 @@ async def auth_logout(request: Request, response: Response):
             )
         except Exception:
             pass  # revoking best-effort; the local cookie still dies
-    response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+    # Must match the Domain used on set_cookie or the browser keeps it.
+    response.delete_cookie(AUTH_COOKIE_NAME, path="/", domain=AUTH_COOKIE_DOMAIN)
     return {"ok": True}
 
 
@@ -1675,17 +1743,50 @@ async def move_plate_linear(request: PlateLinearRequest, background_tasks: Backg
 # =============================================================================
 
 @app.post("/control/claim", responses={409: {"model": ClaimRejection}})
-async def acquire_claim(request: ClaimRequest):
+async def acquire_claim(request: ClaimRequest, http_request: Request):
     """Take the cooperative claim on this device.
 
     Returns 200 + ClaimResponse on success. Returns 409 + ClaimRejection
     when another active session holds the claim. Idempotent for the same
     session_id (token is rotated, TTL refreshed).
+
+    When XARM_REQUIRE_LOGIN_FOR_CLAIM is on (and the auth sidecar is
+    configured), the caller must present a verified identity — a signed-in
+    session cookie or an X-Api-Key — or the request is refused with 401.
+    On success the verified email OVERRIDES the client-supplied owner, so
+    details.claimed_by and the audit trail always name the real principal.
+    heartbeat/release stay token-only (the token already proves the holder).
     """
+    # Identity is hardware-independent, so the login gate runs BEFORE the
+    # connection check: an unauthenticated caller gets a clean 401 and never
+    # learns whether the arm is connected. Authenticated-but-disconnected
+    # still falls through to get_controller()'s 400 ("connect first").
+    owner = request.owner
+    if REQUIRE_LOGIN_FOR_CLAIM and AUTH_SIDECAR_URL:
+        try:
+            email = await _resolve_claim_identity(http_request)
+        except Exception:
+            # Fail closed: sidecar unreachable -> refuse, never silently allow.
+            raise HTTPException(
+                status_code=503,
+                detail="Auth service unreachable; cannot verify identity for claim.",
+            )
+        if not email:
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "login_required",
+                    "hint": (
+                        "sign in via /web/ (email one-time code) or present an "
+                        "X-Api-Key header to acquire a claim on this device"
+                    ),
+                },
+            )
+        owner = email  # ignore client-supplied owner; keep client's session_id
     c = get_controller()
     try:
         record = c.claim_manager.acquire(
-            owner=request.owner,
+            owner=owner,
             session_id=request.session_id,
             ttl_s=request.ttl_s,
         )

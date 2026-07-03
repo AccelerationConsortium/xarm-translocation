@@ -136,3 +136,49 @@ class TestAuthProxy:
         resp = client.post("/auth/logout")
         assert resp.status_code == 200
         assert f'{srv.AUTH_COOKIE_NAME}=""' in resp.headers["set-cookie"]
+
+
+class TestSharedCookieDomain:
+    """XARM_AUTH_COOKIE_DOMAIN scopes the session cookie to a parent domain
+    so one sign-in covers every *.<domain> lab UI; logout must delete with
+    the SAME Domain or the browser keeps the cookie."""
+
+    def test_verify_code_sets_domain_when_configured(
+        self, client, auth_enabled, monkeypatch,
+    ):
+        monkeypatch.setattr(srv, "AUTH_COOKIE_DOMAIN", "tail6a1dd7.ts.net")
+        monkeypatch.setattr(
+            srv, "_auth_sidecar_call",
+            fake_call(200, {"ok": True, "email": "op@lab", "role": "user"},
+                      token="sess-abc"),
+        )
+        resp = client.post("/auth/verify-code",
+                           json={"email": "op@lab", "code": "123456"})
+        assert resp.status_code == 200
+        set_cookie = resp.headers["set-cookie"]
+        assert f"{srv.AUTH_COOKIE_NAME}=sess-abc" in set_cookie
+        assert "Domain=tail6a1dd7.ts.net" in set_cookie
+
+    def test_verify_code_omits_domain_when_unset(
+        self, client, auth_enabled, monkeypatch,
+    ):
+        monkeypatch.setattr(srv, "AUTH_COOKIE_DOMAIN", None)
+        monkeypatch.setattr(
+            srv, "_auth_sidecar_call",
+            fake_call(200, {"ok": True}, token="sess-abc"),
+        )
+        resp = client.post("/auth/verify-code",
+                           json={"email": "op@lab", "code": "123456"})
+        assert "Domain=" not in resp.headers["set-cookie"]
+
+    def test_logout_deletes_with_matching_domain(
+        self, client, auth_enabled, monkeypatch,
+    ):
+        monkeypatch.setattr(srv, "AUTH_COOKIE_DOMAIN", "tail6a1dd7.ts.net")
+        monkeypatch.setattr(srv, "_auth_sidecar_call", fake_call(200, {"ok": True}))
+        client.cookies.set(srv.AUTH_COOKIE_NAME, "tok123")
+        resp = client.post("/auth/logout")
+        assert resp.status_code == 200
+        set_cookie = resp.headers["set-cookie"]
+        assert f'{srv.AUTH_COOKIE_NAME}=""' in set_cookie
+        assert "Domain=tail6a1dd7.ts.net" in set_cookie

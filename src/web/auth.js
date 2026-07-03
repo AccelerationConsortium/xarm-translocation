@@ -163,6 +163,13 @@
             if (e.key === 'Enter') verifyCode();
         });
         signoutBtn.addEventListener('click', async () => {
+            // End any control session this browser holds BEFORE logging out,
+            // so logout truly relinquishes the arm (main.js wires this up).
+            try {
+                if (window.labAuth.releaseClaimOnSignOut) {
+                    await window.labAuth.releaseClaimOnSignOut();
+                }
+            } catch { /* release is best-effort; proceed to logout */ }
             try {
                 await fetch(`${API_BASE_URL}/auth/logout`, { method: 'POST' });
             } catch { /* cookie clear is server-side; refresh regardless */ }

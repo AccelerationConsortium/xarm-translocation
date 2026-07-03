@@ -55,6 +55,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // workflows out (and vice-versa). STOP / Clear Errors stay ungated.
     const takeControlBtn = document.getElementById('take-control-btn');
     const claimStatusEl = document.getElementById('claim-status');
+    // Restored as the button's title whenever it isn't login-blocked.
+    const DEFAULT_TAKE_CONTROL_TITLE = takeControlBtn ? takeControlBtn.title : '';
+    // Tracks connection state so updateTakeControlBtn() can layer the login
+    // gate on top of the connection gate (setControlsState owns connection).
+    let controllerConnected = false;
     const CLAIM_OWNER = 'human@xarm-web';
     // Prefer the signed-in identity from the auth banner (auth.js) so
     // details.claimed_by and the lab audit trail name a real person.
@@ -1131,11 +1136,24 @@ document.addEventListener('DOMContentLoaded', () => {
         claimStatusEl.classList.add(mine ? 'claim-mine' : 'claim-other');
     }
 
+    // True when the auth banner is configured but nobody is signed in — the
+    // arm's server-side gate would 401 a claim, so the UI blocks it up front.
+    function loginRequiredButNotSignedIn() {
+        return Boolean(window.labAuth && window.labAuth.enabled && !window.labAuth.identity);
+    }
+
     function updateTakeControlBtn() {
         if (!takeControlBtn) return;
         const held = claimToken !== null;
         takeControlBtn.textContent = held ? 'Release Control' : 'Take Control';
         takeControlBtn.classList.toggle('is-holding', held);
+        // Releasing your own claim stays allowed even if the banner shows
+        // signed-out; only *taking* control requires a connection + sign-in.
+        const loginBlocked = !held && loginRequiredButNotSignedIn();
+        takeControlBtn.disabled = !controllerConnected || loginBlocked;
+        takeControlBtn.title = loginBlocked
+            ? 'Sign in to take control'
+            : DEFAULT_TAKE_CONTROL_TITLE;
     }
 
     function startClaimHeartbeat(intervalSeconds) {
@@ -1249,11 +1267,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function setControlsState(enabled) {
         // Enable/disable control buttons based on connection state.
-        // takeControlBtn is here (not claim-gated) because acquiring a claim
-        // needs a connected controller, but it must NOT require already
-        // holding the claim.
+        // takeControlBtn is NOT in this list: acquiring a claim needs a
+        // connected controller AND (when auth is configured) a signed-in
+        // user, so updateTakeControlBtn() owns its disabled/title state and
+        // is called at the end of this function once connection is recorded.
+        controllerConnected = enabled;
         const controlButtons = [
-            takeControlBtn,
             stopBtn, clearErrorsBtn, openGripperBtn, closeGripperBtn, enableGripperBtn, moveTrackLocBtn,
             movePredefinedBtn, moveToStrokeBtn, setGripperForceBtn, moveLinearBtn,
             moveJointsBtn,
@@ -1303,6 +1322,10 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             console.error("Disconnect button element not found");
         }
+
+        // Reconcile the Take Control button now that connection is recorded
+        // (layers the login gate on top of the connection gate).
+        updateTakeControlBtn();
     }
 
     // --- WebSocket Handling ---
@@ -1440,6 +1463,30 @@ document.addEventListener('DOMContentLoaded', () => {
                 takeControl();
             }
         });
+    }
+
+    // React to sign-in / sign-out from the auth banner (auth.js dispatches
+    // 'labauth:change' with the identity, or null when signed out).
+    document.addEventListener('labauth:change', (e) => {
+        const identity = e && e.detail;
+        // Re-evaluate the Take Control gate ("Sign in to take control").
+        updateTakeControlBtn();
+        // Backstop: if identity is lost some other way (session expiry
+        // observed on refresh) while we hold the claim, end control too.
+        // On the explicit sign-out path releaseClaimOnSignOut already ran,
+        // so claimToken is null here and this is a no-op.
+        if (claimToken !== null && !identity) {
+            releaseControl();
+        }
+    });
+
+    // auth.js calls this from its sign-out handler BEFORE POSTing /auth/logout,
+    // so logging out truly relinquishes the arm instead of leaving the claim
+    // to expire on TTL. No-op when this browser isn't holding a claim.
+    if (window.labAuth) {
+        window.labAuth.releaseClaimOnSignOut = async () => {
+            if (claimToken !== null) await releaseControl();
+        };
     }
 
     // Release the claim when the operator leaves so it doesn't linger until
