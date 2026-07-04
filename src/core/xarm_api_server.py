@@ -458,6 +458,33 @@ async def require_claim(x_claim_token: Optional[str] = Header(default=None)):
         )
 
 
+# Login gate for the mutating endpoints that are NOT claim-gated: /connect,
+# /disconnect, and the safety floor (/move/stop, /clear/errors). Requires a
+# verified identity (cookie -> /auth/me, or X-Api-Key -> /auth/verify), NOT
+# the claim token — so any signed-in operator (or a keyed workflow) can stop
+# the arm or connect/disconnect without first taking the claim. No-op unless
+# XARM_REQUIRE_LOGIN is on and the sidecar is configured. Fails closed
+# (sidecar unreachable -> 503). The verified email is stashed on
+# request.state for audit logging. Motion endpoints deliberately use
+# require_claim instead (the token already proves a logged-in holder).
+async def require_login(request: Request):
+    if not (REQUIRE_LOGIN and AUTH_SIDECAR_URL):
+        return
+    try:
+        email = await _resolve_identity(request)
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Auth service unreachable; cannot verify identity.",
+        )
+    if not email:
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "login_required", "hint": _LOGIN_HINT},
+        )
+    request.state.identity_email = email
+
+
 # Application lifespan management
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -555,12 +582,27 @@ def _env_truthy(val: Optional[str]) -> bool:
 # None -> host-only cookie (current single-UI behaviour).
 AUTH_COOKIE_DOMAIN = os.environ.get("XARM_AUTH_COOKIE_DOMAIN", "").strip() or None
 
-# Opt-in server-side gate: when truthy AND the auth sidecar is configured,
-# POST /control/claim requires a verified identity (session cookie -> the
-# sidecar's /auth/me, or X-Api-Key -> /auth/verify) and stamps the verified
-# email as the claim owner. Off by default so unconfigured/dev deployments
-# and v1.0 advisory posture are unchanged.
-REQUIRE_LOGIN_FOR_CLAIM = _env_truthy(os.environ.get("XARM_REQUIRE_LOGIN_FOR_CLAIM"))
+# Opt-in server-side login gate: when truthy AND the auth sidecar is
+# configured, every mutating endpoint requires a verified identity (session
+# cookie -> the sidecar's /auth/me, or X-Api-Key -> /auth/verify). It gates
+# POST /control/claim (and stamps the verified email as the claim owner) and,
+# via the require_login dependency, the endpoints that aren't claim-gated:
+# /connect, /disconnect, and the safety floor /move/stop + /clear/errors.
+# Motion endpoints stay claim-token-gated — the token already proves the
+# holder logged in when they claimed, so they need no extra sidecar hop.
+# Off by default so unconfigured/dev deployments are unchanged. The older
+# XARM_REQUIRE_LOGIN_FOR_CLAIM name is still honored as an alias.
+REQUIRE_LOGIN = _env_truthy(
+    os.environ.get("XARM_REQUIRE_LOGIN")
+    or os.environ.get("XARM_REQUIRE_LOGIN_FOR_CLAIM")
+)
+
+# Shared 401 hint so the claim gate and the require_login dependency speak
+# with one voice.
+_LOGIN_HINT = (
+    "sign in via /web/ (email one-time code) or present an X-Api-Key header "
+    "to use the controls on this device"
+)
 
 
 def _auth_sidecar_call(method: str, path: str, body: Optional[dict] = None,
@@ -628,8 +670,8 @@ def _identity_email(payload) -> Optional[str]:
     return None
 
 
-async def _resolve_claim_identity(request: Request) -> Optional[str]:
-    """Resolve a verified principal email for claim acquisition.
+async def _resolve_identity(request: Request) -> Optional[str]:
+    """Resolve a verified principal email for a control request.
 
     Checks, in order: an ``X-Api-Key`` header (machine principals / future
     SDK workflows -> the sidecar's GET /auth/verify), then the
@@ -937,7 +979,7 @@ async def get_configurations():
     raise HTTPException(status_code=404, detail="Main xarm_config.yaml not found in any expected location.")
 
 
-@app.post("/connect")
+@app.post("/connect", dependencies=[Depends(require_login)])
 async def connect_robot(request: ConnectionRequest, background_tasks: BackgroundTasks):
     """Connect to the robot controller.
 
@@ -1002,7 +1044,7 @@ async def connect_robot(request: ConnectionRequest, background_tasks: Background
         logger.error(f"Connection failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred during connection: {e}")
 
-@app.post("/disconnect")
+@app.post("/disconnect", dependencies=[Depends(require_login)])
 async def disconnect_robot():
     """Disconnect from the robot and ensure the state is cleaned up."""
     global controller
@@ -1252,9 +1294,14 @@ async def move_home(background_tasks: BackgroundTasks):
         logger.error(f"Home movement failed: {e}")
         raise HTTPException(status_code=500, detail=f"Home movement failed: {str(e)}")
 
-@app.post("/move/stop")
-async def stop_movement(background_tasks: BackgroundTasks):
-    """Stop all robot motion immediately."""
+@app.post("/move/stop", dependencies=[Depends(require_login)])
+async def stop_movement(request: Request, background_tasks: BackgroundTasks):
+    """Stop all robot motion immediately.
+
+    Login-gated (require_login) but NOT claim-gated: any signed-in operator
+    can halt the arm without holding the claim. The hardware e-stop remains
+    the credential-free backstop.
+    """
     c = get_controller()
 
     try:
@@ -1264,7 +1311,9 @@ async def stop_movement(background_tasks: BackgroundTasks):
         stopped = await asyncio.to_thread(c.stop_motion)
         if not stopped:
             raise HTTPException(status_code=500, detail="Stop command failed.")
-        logger.info("Stop command issued immediately.")
+        # Audit who halted the arm (identity stashed by require_login).
+        actor = getattr(request.state, "identity_email", None) or "unauthenticated"
+        logger.info(f"Stop command issued immediately by {actor}.")
     except HTTPException:
         raise
     except Exception as e:
@@ -1278,7 +1327,7 @@ async def stop_movement(background_tasks: BackgroundTasks):
     background_tasks.add_task(status_update_task)
     return {"message": "Stop command executed immediately."}
 
-@app.post("/clear/errors")
+@app.post("/clear/errors", dependencies=[Depends(require_login)])
 async def clear_errors(background_tasks: BackgroundTasks):
     """Clear all robot errors and warnings"""
     ctrl = get_controller()
@@ -1762,9 +1811,9 @@ async def acquire_claim(request: ClaimRequest, http_request: Request):
     # learns whether the arm is connected. Authenticated-but-disconnected
     # still falls through to get_controller()'s 400 ("connect first").
     owner = request.owner
-    if REQUIRE_LOGIN_FOR_CLAIM and AUTH_SIDECAR_URL:
+    if REQUIRE_LOGIN and AUTH_SIDECAR_URL:
         try:
-            email = await _resolve_claim_identity(http_request)
+            email = await _resolve_identity(http_request)
         except Exception:
             # Fail closed: sidecar unreachable -> refuse, never silently allow.
             raise HTTPException(
@@ -1774,13 +1823,7 @@ async def acquire_claim(request: ClaimRequest, http_request: Request):
         if not email:
             raise HTTPException(
                 status_code=401,
-                detail={
-                    "error": "login_required",
-                    "hint": (
-                        "sign in via /web/ (email one-time code) or present an "
-                        "X-Api-Key header to acquire a claim on this device"
-                    ),
-                },
+                detail={"error": "login_required", "hint": _LOGIN_HINT},
             )
         owner = email  # ignore client-supplied owner; keep client's session_id
     c = get_controller()

@@ -1291,34 +1291,48 @@ document.addEventListener('DOMContentLoaded', () => {
             predefinedPositionSelect, trackLocationSelect
         ];
         
+        // Every control on this device is login-gated server-side (STOP and
+        // Clear Errors included — the physical e-stop is the credential-free
+        // backstop). When the auth banner is configured but nobody is signed
+        // in, disable the whole control surface up front so clicks don't just
+        // 401. `locked` layers on top of the connection gate.
+        const locked = loginRequiredButNotSignedIn();
+        const lockTitle = 'Sign in to use the controls';
+
         controlButtons.forEach(btn => {
             if (btn) {
-                btn.disabled = !enabled;
+                btn.disabled = !enabled || locked;
+                if (locked) btn.title = lockTitle;
+                else if (btn.title === lockTitle) btn.title = '';
             }
         });
-        
+
         controlInputs.forEach(input => {
             if (input) {
                 input.disabled = !enabled;
             }
         });
-        
+
         controlSelects.forEach(select => {
             if (select) {
                 select.disabled = !enabled;
             }
         });
-        
-        // Connect button: enabled when disconnected, disabled when connected
+
+        // Connect button: enabled when disconnected AND signed in (connect is
+        // login-gated server-side too).
         if (connectBtn) {
-            connectBtn.disabled = enabled;
+            connectBtn.disabled = enabled || locked;
+            connectBtn.title = locked ? lockTitle : '';
         } else {
             console.error("Connect button element not found");
         }
-        
-        // Disconnect button: enabled when connected, disabled when disconnected
+
+        // Disconnect button: enabled when connected AND signed in.
         if (disconnectBtn) {
-            disconnectBtn.disabled = !enabled;
+            disconnectBtn.disabled = !enabled || locked;
+            if (locked) disconnectBtn.title = lockTitle;
+            else if (disconnectBtn.title === lockTitle) disconnectBtn.title = '';
         } else {
             console.error("Disconnect button element not found");
         }
@@ -1469,8 +1483,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // 'labauth:change' with the identity, or null when signed out).
     document.addEventListener('labauth:change', (e) => {
         const identity = e && e.detail;
-        // Re-evaluate the Take Control gate ("Sign in to take control").
-        updateTakeControlBtn();
+        // Re-gate the whole control surface (connect/stop/clear/motion +
+        // Take Control) for the new sign-in state, keeping the current
+        // connection state.
+        setControlsState(controllerConnected);
         // Backstop: if identity is lost some other way (session expiry
         // observed on refresh) while we hold the claim, end control too.
         // On the explicit sign-out path releaseClaimOnSignOut already ran,

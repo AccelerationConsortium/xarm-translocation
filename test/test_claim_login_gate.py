@@ -1,11 +1,16 @@
-"""Tests for the server-side login gate on POST /control/claim.
+"""Tests for the server-side login gate on the xArm control surface.
 
-When XARM_REQUIRE_LOGIN_FOR_CLAIM is on (and the auth sidecar is
-configured), acquiring a claim requires a verified identity — a signed-in
-session cookie (-> sidecar /auth/me) or an X-Api-Key (-> /auth/verify) —
-and the verified email OVERRIDES the client-supplied owner. The sidecar
-round-trip (``_auth_sidecar_call``) is monkeypatched. A real ClaimManager
-is attached to a mock controller so the acquire path runs end-to-end.
+When XARM_REQUIRE_LOGIN is on (and the auth sidecar is configured), every
+mutating endpoint requires a verified identity — a signed-in session cookie
+(-> sidecar /auth/me) or an X-Api-Key (-> /auth/verify):
+
+- POST /control/claim additionally OVERRIDES the client-supplied owner with
+  the verified email.
+- /connect, /disconnect, and the safety floor (/move/stop, /clear/errors)
+  are gated by the require_login dependency (login only, no claim needed).
+
+The sidecar round-trip (``_auth_sidecar_call``) is monkeypatched. A real
+ClaimManager is attached to a mock controller so the paths run end-to-end.
 """
 
 from __future__ import annotations
@@ -39,7 +44,7 @@ def client(monkeypatch, mock_controller):
 
 @pytest.fixture
 def gate_on(monkeypatch):
-    monkeypatch.setattr(srv, "REQUIRE_LOGIN_FOR_CLAIM", True)
+    monkeypatch.setattr(srv, "REQUIRE_LOGIN", True)
     monkeypatch.setattr(srv, "AUTH_SIDECAR_URL", "http://auth-sidecar:8009")
 
 
@@ -124,7 +129,7 @@ def test_claim_sidecar_down_returns_503(client, gate_on, monkeypatch):
 def test_claim_gate_off_passes_owner_through(
     client, mock_controller, monkeypatch,
 ):
-    monkeypatch.setattr(srv, "REQUIRE_LOGIN_FOR_CLAIM", False)
+    monkeypatch.setattr(srv, "REQUIRE_LOGIN", False)
     # No auth cookie, no key — with the gate off this is fine.
     resp = client.post("/control/claim", json={"owner": "anon", "session_id": "s1"})
     assert resp.status_code == 200
@@ -136,8 +141,67 @@ def test_claim_gate_flag_on_but_sidecar_unset_passes_through(
 ):
     """The gate needs BOTH the flag and a configured sidecar; the flag alone
     (no XARM_AUTH_URL) leaves the owner passthrough intact."""
-    monkeypatch.setattr(srv, "REQUIRE_LOGIN_FOR_CLAIM", True)
+    monkeypatch.setattr(srv, "REQUIRE_LOGIN", True)
     monkeypatch.setattr(srv, "AUTH_SIDECAR_URL", "")
     resp = client.post("/control/claim", json={"owner": "anon", "session_id": "s1"})
     assert resp.status_code == 200
     assert mock_controller.claim_manager.claimed_by()["owner"] == "anon"
+
+
+# ── require_login on the non-claim control endpoints ─────────────────
+# /connect, /disconnect, and the safety floor (/move/stop, /clear/errors)
+# are login-gated (verified identity) but NOT claim-gated.
+
+
+@pytest.fixture
+def no_broadcast(monkeypatch):
+    """Stub the status broadcast so the minimal mock controller doesn't blow
+    up in the post-action background task (build_status wants a fuller mock)."""
+    async def _noop():
+        return None
+    monkeypatch.setattr(srv, "broadcast_status_update", _noop)
+
+
+def test_stop_without_identity_401(client, gate_on):
+    resp = client.post("/move/stop", json={})
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"] == "login_required"
+
+
+def test_stop_with_identity_allowed(client, gate_on, no_broadcast, monkeypatch):
+    monkeypatch.setattr(
+        srv, "_auth_sidecar_call",
+        make_fake(200, {"identity": {"email": "op@lab"}}),
+    )
+    client.cookies.set(srv.AUTH_COOKIE_NAME, "tok")
+    resp = client.post("/move/stop", json={})
+    assert resp.status_code == 200
+
+
+def test_clear_errors_without_identity_401(client, gate_on):
+    resp = client.post("/clear/errors", json={})
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"] == "login_required"
+
+
+def test_connect_without_identity_401_before_touching_hardware(client, gate_on):
+    # require_login runs before the body, so no XArmController is constructed.
+    resp = client.post("/connect", json={"profile_name": "x"})
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"] == "login_required"
+
+
+def test_stop_sidecar_down_503(client, gate_on, monkeypatch):
+    def boom(*a, **k):
+        raise OSError("down")
+    monkeypatch.setattr(srv, "_auth_sidecar_call", boom)
+    client.cookies.set(srv.AUTH_COOKIE_NAME, "tok")
+    resp = client.post("/move/stop", json={})
+    assert resp.status_code == 503
+
+
+def test_stop_gate_off_open(client, no_broadcast, monkeypatch):
+    """With the gate off, STOP stays reachable without any identity."""
+    monkeypatch.setattr(srv, "REQUIRE_LOGIN", False)
+    resp = client.post("/move/stop", json={})
+    assert resp.status_code == 200
