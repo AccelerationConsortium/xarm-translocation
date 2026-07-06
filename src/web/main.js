@@ -754,6 +754,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const select = document.getElementById('drive-dest-select');
         const sendBtn = document.getElementById('drive-send-btn');
         const hint = document.getElementById('drive-dest-hint');
+        const currentEl = document.getElementById('drive-current-node');
         if (!select || !sendBtn || !hint) return;
 
         // Best-effort, one-time: nudge the controller into STRICT the first
@@ -767,6 +768,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const current = motionGraph.current_node;
         const reachable = motionGraph.reachable_nodes || [];
+
+        // Show the current graph node. Set before the early returns below so it
+        // stays correct whether pinned, off-grid, or mid-dropdown-interaction.
+        if (currentEl) currentEl.textContent = current || '(off-grid)';
 
         // Don't rebuild options while the operator is interacting with the
         // dropdown — that would stomp their open selection mid-pick.
