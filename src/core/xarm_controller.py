@@ -21,7 +21,7 @@ from core.xarm_utils import (
 try:
     from .motion_graph import (
         DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
-        GraphMode, MotionGraph, MoveMode, NodeMatch, RecoveryMismatch,
+        GraphMode, GripIntent, MotionGraph, MoveMode, NodeMatch, RecoveryMismatch,
         find_nearest_node,
     )
     from .claims import ClaimManager
@@ -29,7 +29,7 @@ try:
 except ImportError:
     from core.motion_graph import (
         DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
-        GraphMode, MotionGraph, MoveMode, NodeMatch, RecoveryMismatch,
+        GraphMode, GripIntent, MotionGraph, MoveMode, NodeMatch, RecoveryMismatch,
         find_nearest_node,
     )
     from core.claims import ClaimManager
@@ -317,15 +317,16 @@ class XArmController:
         # Motion state tracking
         self._motion_in_progress = False
 
-        # Motion-graph named-coordinate tracking (Phase 1). These are the
-        # named values that, when combined with the current gripper
-        # stroke and declared payload, resolve to a graph node. Any raw
-        # cartesian / joint / track move clears the relevant one — it
-        # is the operator's job to call a *named* move (or declare via
-        # recover_to(...) in a later phase) to re-pin position.
+        # Motion-graph named-coordinate tracking. These are the named values
+        # that, combined with the commanded gripper stroke, resolve to a graph
+        # node. Any raw cartesian / joint / track move clears the relevant
+        # one — re-pin via a named move or recover_to().
         self.last_arm_pose_name: Optional[str] = None
         self.last_rail_location_name: Optional[str] = None
-        self.declared_payload: str = "empty"
+        # last_gripper_position is the commanded stroke (set on every
+        # successful SDK gripper call). Used by _commanded_gripper_stroke() to
+        # resolve the current graph node. Distinct from
+        # last_gripper_position_actual which is the live hardware readback.
 
         # Last successful node-to-node transition (Phase 2). Captured by
         # the named-move methods; used by POST /control/graph/record to
@@ -1657,28 +1658,22 @@ class XArmController:
     # MOTION GRAPH (Phase 1: introspection only — no enforcement)
     # =============================================================================
 
-    def _gripper_state_name(self) -> Optional[str]:
-        """Match the current commanded gripper stroke to a named gripper_state.
+    def _commanded_gripper_stroke(self) -> Optional[float]:
+        """Return the last commanded gripper stroke, or None if unknown.
 
-        Returns the name (e.g., 'open', 'closed') or None if no named
-        state matches the current stroke within tolerance. Tolerance is
-        small because gripper SDK commands are integers.
+        ``last_gripper_position`` is set on every successful SDK gripper
+        call and serves as the commanded stroke for node resolution.
         """
-        if self.motion_graph is None:
-            return None
         stroke = getattr(self, 'last_gripper_position', None)
         if not isinstance(stroke, (int, float)):
             return None
-        for state in self.motion_graph.gripper_states:
-            if abs(float(state.stroke) - float(stroke)) < 1.0:
-                return state.name
-        return None
+        return float(stroke)
 
     @property
     def current_node(self) -> Optional[str]:
-        """Graph node id matching the controller's current 4-tuple, or None.
+        """Graph node id matching the controller's current 3-tuple, or None.
 
-        Returns None when the graph is OFF, when any of the four
+        Returns None when the graph is OFF, when any of the three
         coordinates is unpinned (e.g., after a raw move or before the
         first named move), or when no node matches the tuple.
         """
@@ -1687,8 +1682,7 @@ class XArmController:
         node = self.motion_graph.find_node(
             arm=self.last_arm_pose_name,
             rail=self.last_rail_location_name,
-            gripper=self._gripper_state_name(),
-            payload=self.declared_payload,
+            gripper_stroke=self._commanded_gripper_stroke(),
         )
         return node.id if node else None
 
@@ -1712,7 +1706,7 @@ class XArmController:
         if self.motion_graph is None:
             return NodeMatch(
                 node_id=None, arm_residual=None, rail_residual=None,
-                gripper_match=False, payload_match=False, within_tolerance=False,
+                gripper_match=False, within_tolerance=False,
             )
         # Resolve named arm poses to joint angles (skip cartesian dicts —
         # those need a different recovery path).
@@ -1734,8 +1728,7 @@ class XArmController:
             self.motion_graph,
             current_joints=self.last_joints,
             current_rail_mm=self.last_track_position,
-            current_gripper_state=self._gripper_state_name(),
-            declared_payload=self.declared_payload,
+            current_gripper_stroke=self._commanded_gripper_stroke(),
             arm_pose_joints=arm_poses,
             rail_position_mm=rail_positions,
             joint_tolerance_deg=joint_tolerance_deg,
@@ -1752,10 +1745,11 @@ class XArmController:
         for cartesian-dict presets the nearest-node algo can't score).
 
         On success, sets last_arm_pose_name + last_rail_location_name +
-        declared_payload to the node's coordinates. The gripper state
-        is derived from the stroke and not directly settable here — if
-        it disagrees, current_node will still report None until the
-        gripper is moved (intentional: gripper position is observable).
+        last_gripper_position to the node's coordinates. Note: this
+        sets the *commanded* stroke only (no physical gripper move) so
+        current_node can resolve. If the physical gripper position
+        disagrees the node will still be pinned — intentional, as a
+        manual declare-and-recover path.
         """
         if self.motion_graph is None:
             raise RuntimeError("motion_graph not loaded")
@@ -1773,11 +1767,113 @@ class XArmController:
 
         self.last_arm_pose_name = node.arm
         self.last_rail_location_name = node.rail
-        self.declared_payload = node.payload
+        self.last_gripper_position = node.gripper_stroke
         return {
             "recovered_to": node_id,
             "current_node": self.current_node,
         }
+
+    def _verify_gripper(self, commanded_stroke: float, intent: GripIntent) -> bool:
+        """Verify the gripper outcome against the node's intent.
+
+        Reads the actual hardware position and compares it to the
+        commanded stroke using tolerances from gripper_config.yaml.
+
+        GRASP:    actual must exceed commanded by at least grasp_min_offset
+                  (the object is blocking the jaws open). Returns False
+                  and prints an error when the jaws reached commanded
+                  (nothing was grabbed).
+        POSITION: actual must be within position_tolerance of commanded
+                  (free travel confirmed). Returns False when jaws were
+                  blocked early.
+        NONE:     always returns True without reading hardware.
+        """
+        if intent == GripIntent.NONE:
+            return True
+
+        actual = self.get_gripper_position()
+        if actual is None:
+            print(f"[motion_graph] _verify_gripper: could not read gripper position; skipping check")
+            return True
+
+        config = getattr(self, 'current_gripper_config', {}) or {}
+
+        if intent == GripIntent.GRASP:
+            min_offset = float(config.get('grasp_min_offset', 3))
+            max_offset = config.get('grasp_max_offset')
+            gap = float(actual) - float(commanded_stroke)
+            if gap < min_offset:
+                print(
+                    f"[motion_graph] grasp FAILED: actual={actual}, commanded={commanded_stroke}, "
+                    f"gap={gap:.1f} < required {min_offset} — object not held or slipped"
+                )
+                return False
+            if max_offset is not None and gap > float(max_offset):
+                print(
+                    f"[motion_graph] grasp FAILED: actual={actual}, commanded={commanded_stroke}, "
+                    f"gap={gap:.1f} > max_offset {max_offset} — jaws may have been obstructed early"
+                )
+                return False
+            return True
+
+        if intent == GripIntent.POSITION:
+            tolerance = float(config.get('position_tolerance', 3))
+            delta = abs(float(actual) - float(commanded_stroke))
+            if delta > tolerance:
+                print(
+                    f"[motion_graph] position close FAILED: actual={actual}, commanded={commanded_stroke}, "
+                    f"delta={delta:.1f} > tolerance {tolerance} — jaws blocked or did not reach target"
+                )
+                return False
+            return True
+
+        return True
+
+    def move_to_node(self, node_id: str, speed=None) -> bool:
+        """Move to a graph node by id, actuating the gripper when needed.
+
+        Executes the arm move (existing named-location path with edge
+        mode/speed enforcement), then — when the target node's gripper
+        stroke differs from the current commanded stroke — commands the
+        gripper and verifies the outcome per the node's grip_intent.
+
+        Returns True on full success, False on arm-move failure or
+        gripper verification failure (grasp not detected / jaws blocked).
+        Raises EdgeNotAllowedError in STRICT mode for disallowed moves.
+        """
+        if self.motion_graph is None:
+            print("[motion_graph] move_to_node: motion_graph not loaded")
+            return False
+
+        node = self.motion_graph.node(node_id)  # raises UnknownNodeError
+
+        # ── 1. Arm move ───────────────────────────────────────────────
+        success = self.move_to_named_location(node.arm, speed=speed)
+        if not success:
+            return False
+
+        # ── 2. Gripper actuation (skip when stroke unchanged) ─────────
+        current_stroke = self._commanded_gripper_stroke()
+        target_stroke = node.gripper_stroke
+        if current_stroke is None or abs(target_stroke - current_stroke) >= 1.0:
+            # Determine force from config (use default if not specified).
+            config = getattr(self, 'current_gripper_config', {}) or {}
+            force = config.get('force', None)
+
+            if abs(target_stroke - 150.0) < 1.0:
+                gripper_ok = self.open_gripper(wait=True)
+            else:
+                gripper_ok = self.move_gripper_to_stroke(target_stroke, force=force, wait=True)
+
+            if not gripper_ok:
+                print(f"[motion_graph] move_to_node: gripper move to {target_stroke} failed")
+                return False
+
+        # ── 3. Verification ───────────────────────────────────────────
+        if not self._verify_gripper(target_stroke, node.grip_intent):
+            return False
+
+        return True
 
     def set_graph_mode(self, mode: GraphMode) -> None:
         """Set the motion-graph enforcement mode. Safe at any time."""
@@ -1791,17 +1887,15 @@ class XArmController:
     def _predict_target_node_for_arm_pose(self, arm_pose_name: str) -> Optional[str]:
         """Predict the node id we'd land on after move_to_named_location.
 
-        A pure-arm move keeps rail / gripper / payload unchanged. Returns
-        None if any of the other three dimensions is unpinned or if no
-        node matches the resulting 4-tuple.
+        A pure-arm move keeps rail / gripper stroke unchanged. Returns
+        None if any dimension is unpinned or no node matches the 3-tuple.
         """
         if self.motion_graph is None:
             return None
         node = self.motion_graph.find_node(
             arm=arm_pose_name,
             rail=self.last_rail_location_name,
-            gripper=self._gripper_state_name(),
-            payload=self.declared_payload,
+            gripper_stroke=self._commanded_gripper_stroke(),
         )
         return node.id if node else None
 
@@ -1812,8 +1906,7 @@ class XArmController:
         node = self.motion_graph.find_node(
             arm=self.last_arm_pose_name,
             rail=rail_location_name,
-            gripper=self._gripper_state_name(),
-            payload=self.declared_payload,
+            gripper_stroke=self._commanded_gripper_stroke(),
         )
         return node.id if node else None
 
@@ -1836,8 +1929,7 @@ class XArmController:
             msg = (
                 f"target {target_label!r} does not resolve to a graph node "
                 f"(rail={self.last_rail_location_name!r}, "
-                f"gripper={self._gripper_state_name()!r}, "
-                f"payload={self.declared_payload!r})"
+                f"gripper_stroke={self._commanded_gripper_stroke()!r})"
             )
             if self.graph_mode == GraphMode.STRICT:
                 raise EdgeNotAllowedError(current_id, target_label, msg)

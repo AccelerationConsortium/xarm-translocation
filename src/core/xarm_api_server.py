@@ -372,35 +372,28 @@ class GraphNodeCreateRequest(BaseModel):
     """Body of POST /control/graph/node — add a new node (state) to the graph.
 
     A node is a state: a named arm pose (from joint_config.yaml) at a rail
-    location, with a gripper state and payload. Edges between nodes are added
-    separately (record / edge editor). The loader validates the result.
+    location with a gripper stroke. The stroke and intent are encoded in the
+    node id suffix (_empty, _grip_<n>, _open_<n>) or supplied as explicit
+    fields for legacy nodes. Edges are added separately (record / edge editor).
+    The loader validates the result.
     """
-    id: str = Field(description="Unique node id (convention: the pose name, +_empty/_held)")
+    id: str = Field(description="Unique node id (convention: pose_name + _empty / _grip_<n> / _open_<n>)")
     arm: str = Field(description="Arm pose name from joint_config.yaml")
     rail: str = Field(description="Rail location name from linear_track_config.yaml")
-    gripper: str = Field(description="Gripper state name (must be a declared gripper_state)")
-    payload: str = Field(description="Payload name (must be a declared payload)")
     tags: Optional[List[str]] = Field(default=None, description="Optional tags; first tag groups/colours the node")
-
-
-class GraphGripSpec(BaseModel):
-    """Grip action params for an empty->held edge."""
-    stroke: float = Field(description="Gripper SDK stroke to close to (bio_gen2 71-150)")
-    force: Optional[float] = Field(default=None, description="Optional grip force")
-
-
-class GraphReleaseSpec(BaseModel):
-    """Release action params for a held->empty edge."""
-    stroke: Optional[float] = Field(default=None, description="Open stroke; defaults to gripper_states[open]")
+    gripper_stroke: Optional[float] = Field(
+        default=None,
+        description="Explicit gripper stroke override (only needed for legacy ids that cannot be parsed)"
+    )
+    grip_intent: Optional[str] = Field(
+        default=None,
+        description="Explicit grip intent (grasp|position|none) — only needed for legacy ids"
+    )
 
 
 class GraphEdgeCreateRequest(BaseModel):
     """Body of POST /control/graph/edge/create — add a new edge (motion)
     between two existing nodes.
-
-    Payload-changing edges must carry the matching action: empty->held needs
-    `grip`, held->empty needs `release` (loader coherence rules). Same-payload
-    edges must omit both. The candidate is validated before it's written.
     """
     from_node: str = Field(description="Source node id (must exist)")
     to_node: str = Field(description="Target node id (must exist)")
@@ -408,8 +401,6 @@ class GraphEdgeCreateRequest(BaseModel):
     speed: Optional[float] = Field(default=None, gt=0, description="Edge speed (>0)")
     preconditions: Optional[List[str]] = Field(default=None, description="Named preconditions")
     comment: Optional[str] = Field(default=None, description="Free-text comment")
-    grip: Optional[GraphGripSpec] = Field(default=None, description="Required on empty->held edges")
-    release: Optional[GraphReleaseSpec] = Field(default=None, description="Required on held->empty edges")
 
 
 class EnforcementRequest(BaseModel):
@@ -1937,7 +1928,7 @@ async def get_graph_state():
         "graph_mode": c.graph_mode.value if c is not None else "off",
         "current_node": c.current_node if c is not None else None,
         "reachable_nodes": c.reachable_node_ids() if c is not None else [],
-        "declared_payload": c.declared_payload if c is not None else "empty",
+        "gripper_stroke": c.last_gripper_position if c is not None else None,
         "arm_pose_name": c.last_arm_pose_name if c is not None else None,
         "rail_location_name": c.last_rail_location_name if c is not None else None,
         "last_transition": c.last_transition if c is not None else None,
@@ -1945,24 +1936,21 @@ async def get_graph_state():
         # Full node/edge detail so the graph viewer can render the whole
         # topology (and Phase B can edit it) without a second call.
         "nodes": [
-            {"id": n.id, "arm": n.arm, "rail": n.rail,
-             "gripper": n.gripper, "payload": n.payload, "tags": list(n.tags)}
+            {
+                "id": n.id, "arm": n.arm, "rail": n.rail,
+                "gripper_stroke": n.gripper_stroke,
+                "grip_intent": n.grip_intent.value,
+                "tags": list(n.tags),
+            }
             for n in graph.nodes
         ],
         "edges": [
-            {"from": e.from_node, "to": e.to_node, "mode": e.mode.value,
-             "speed": e.speed, "grips": e.grip is not None,
-             "releases": e.release is not None,
-             "preconditions": list(e.preconditions), "comment": e.comment}
+            {
+                "from": e.from_node, "to": e.to_node, "mode": e.mode.value,
+                "speed": e.speed,
+                "preconditions": list(e.preconditions), "comment": e.comment,
+            }
             for e in graph.edges
-        ],
-        # Catalogs the add-node form needs to populate its dropdowns
-        # (arm poses + rail locations come from /locations + /track/locations).
-        "gripper_states": [
-            {"name": g.name, "stroke": g.stroke} for g in graph.gripper_states
-        ],
-        "payloads": [
-            {"name": p.name, "description": p.description} for p in graph.payloads
         ],
     }
 
@@ -2015,24 +2003,29 @@ async def save_graph_layout(layout: GraphLayoutModel):
 async def graph_move_to(request: GraphMoveToRequest, background_tasks: BackgroundTasks):
     """Move to a graph node by id.
 
-    Looks up the node's arm-pose preset name and dispatches to
-    move_to_named_location. Returns 409 (edge_not_allowed) when STRICT
-    mode refuses the transition.
+    Executes the arm move and, when the target node's gripper stroke differs
+    from the current commanded stroke, actuates the gripper and verifies the
+    outcome per the node's grip_intent (GRASP or POSITION).
+
+    Returns 409 (edge_not_allowed) when STRICT mode refuses the transition,
+    or 500 when the move or gripper verification fails.
     """
     c = get_controller()
     if c.motion_graph is None:
         raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
     try:
-        node = c.motion_graph.node(request.node_id)
+        c.motion_graph.node(request.node_id)  # validate early
     except UnknownNodeError:
         raise HTTPException(status_code=409, detail=f"unknown node: {request.node_id!r}")
 
     try:
         success = await asyncio.to_thread(
-            c.move_to_named_location,
-            location_name=node.arm,
+            c.move_to_node,
+            node_id=request.node_id,
             speed=request.speed,
         )
+    except UnknownNodeError:
+        raise HTTPException(status_code=409, detail=f"unknown node: {request.node_id!r}")
     except EdgeNotAllowedError as exc:
         raise HTTPException(
             status_code=409,
@@ -2075,7 +2068,6 @@ async def get_nearest_node(joint_tolerance_deg: float = 10.0, rail_tolerance_mm:
         "arm_residual_deg": match.arm_residual,
         "rail_residual_mm": match.rail_residual,
         "gripper_match": match.gripper_match,
-        "payload_match": match.payload_match,
         "within_tolerance": match.within_tolerance,
     }
 

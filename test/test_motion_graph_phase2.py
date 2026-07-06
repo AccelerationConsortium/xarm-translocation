@@ -36,17 +36,15 @@ from src.core.motion_graph import (
 
 def _test_graph_dict():
     """A graph aligned with conftest.mock_config_files' position_config:
-       home / pickup (both Cartesian dicts) on rail=Home, gripper=open,
-       payload=empty. The edge home->pickup is LINEAR with speed 25; the
-       reverse is JOINT with speed 40 — gives us coverage of both modes.
+       home / pickup (both Cartesian dicts) on rail=Home, gripper open (150).
+       The edge home->pickup is LINEAR with speed 25; the reverse is JOINT
+       with speed 40 — gives us coverage of both modes.
     """
     return {
         "schema_version": "0.1",
-        "gripper_states": {"open": {"stroke": 150}, "closed": {"stroke": 71}},
-        "payloads": {"empty": {}},
         "nodes": [
-            {"id": "n_home",   "arm": "home",   "rail": "Home", "gripper": "open", "payload": "empty"},
-            {"id": "n_pickup", "arm": "pickup", "rail": "Home", "gripper": "open", "payload": "empty"},
+            {"id": "n_home",   "arm": "home",   "rail": "Home"},
+            {"id": "n_pickup", "arm": "pickup", "rail": "Home"},
         ],
         "edges": [
             {"from": "n_home",   "to": "n_pickup", "mode": "linear", "speed": 25},
@@ -160,10 +158,7 @@ def test_strict_mode_rejects_no_whitelisted_edge(graph_controller):
     }
     # Inject a node for it but no incoming edge.
     data = _test_graph_dict()
-    data["nodes"].append({
-        "id": "n_other", "arm": "other", "rail": "Home",
-        "gripper": "open", "payload": "empty",
-    })
+    data["nodes"].append({"id": "n_other", "arm": "other", "rail": "Home"})
     c.motion_graph = MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
     with pytest.raises(EdgeNotAllowedError, match="no whitelisted edge"):
         c.move_to_named_location("other")

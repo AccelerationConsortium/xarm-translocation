@@ -445,13 +445,12 @@ def _build_motion_graph_details(controller: XArmController) -> dict[str, Any] | 
     Returns None when no graph is loaded (legacy / unmigrated configs)
     so the field doesn't appear in /status.details at all. When loaded:
 
-        current_node     graph node id matching the controller's 4-tuple,
+        current_node     graph node id matching the controller's 3-tuple,
                          or None when off-grid (post-STOP, after raw moves)
         reachable_nodes  outgoing target ids from current_node (empty list
                          when current_node is None)
         graph_mode       "off" | "advisory" | "strict"
-        declared_payload operator-declared payload identity (always
-                         "empty" in Phase 1; will be settable later)
+        gripper_stroke   last commanded gripper stroke (float | None)
     """
     graph = getattr(controller, "motion_graph", None)
     if graph is None:
@@ -460,7 +459,7 @@ def _build_motion_graph_details(controller: XArmController) -> dict[str, Any] | 
         "current_node": controller.current_node,
         "reachable_nodes": controller.reachable_node_ids(),
         "graph_mode": getattr(controller, "graph_mode").value,
-        "declared_payload": getattr(controller, "declared_payload", "empty"),
+        "gripper_stroke": getattr(controller, "last_gripper_position", None),
         "arm_pose_name": getattr(controller, "last_arm_pose_name", None),
         "rail_location_name": getattr(controller, "last_rail_location_name", None),
     }

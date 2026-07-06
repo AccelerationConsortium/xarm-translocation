@@ -27,6 +27,17 @@ bio_gen2:
     max: 100           # percentage
   open_position: 150   # fully open
   close_position: 71   # fully closed
+  # ── Grasp / position verification (used by move_to_node) ──
+  # grasp_min_offset: after a GRASP close, actual stroke must exceed the
+  #   commanded stroke by at least this many units to count as a good pickup.
+  #   Set conservatively — a real plate typically adds 5-15 units of gap.
+  grasp_min_offset: 3
+  # grasp_max_offset: optional upper bound (e.g. to catch "finger was already
+  #   blocked before the close"). Leave null to skip the upper-bound check.
+  grasp_max_offset: null
+  # position_tolerance: for POSITION (clearance) closes, actual stroke must
+  #   be within this many units of the commanded stroke to confirm free travel.
+  position_tolerance: 3
   capabilities:
     - "open_close"
     - "stroke_control"

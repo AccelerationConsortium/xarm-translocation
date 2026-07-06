@@ -48,7 +48,7 @@
                         <li><span class="legend-line line-release"></span> release edge</li>
                         <li><span class="legend-line line-plain"></span> move edge</li>
                     </ul>
-                    <p class="muted legend-note">Edge label = <code>mode @ speed</code>. Node colour groups by station (first tag). Every node shows its payload state: <code>▣</code> held, <code>▢</code> empty.</p>
+                    <p class="muted legend-note">Edge label = <code>mode @ speed</code>. Node colour groups by station (first tag). Every node shows its gripper intent: <code>▣</code> grip/position, <code>▢</code> open.</p>
                     <p class="muted legend-note">Each station has a <strong>home node</strong> (heavier border, e.g. <code>deck_home</code>) shown with <code>▸ N</code> hidden siblings. Click it to fan the station's nodes out from the home node; click again to collapse back to it. Drag nodes to arrange them; positions, open stations and the view are remembered across reopen. The robot's station auto-expands; manual toggling is locked while a workflow holds control.</p>
                     <div class="legend-actions">
                         <button id="fit-btn" class="btn btn-secondary">Fit view</button>
@@ -78,7 +78,7 @@
                     </div>
                     <div class="form-group">
                         <label for="node-id">Node id</label>
-                        <input type="text" id="node-id" placeholder="e.g. deck_solid_high_held">
+                        <input type="text" id="node-id" placeholder="e.g. deck_solid_high_grip_120">
                     </div>
                     <div class="form-group">
                         <label for="node-tags">Tags (comma-separated, optional)</label>

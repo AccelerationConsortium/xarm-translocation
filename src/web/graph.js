@@ -132,14 +132,12 @@
 
     // ── Element construction ─────────────────────────────────────────
 
-    // Cytoscape node data for one graph node. Every node shows its payload
-    // state in the label — ▣ holds labware, ▢ is empty — so the pick/place
-    // ladder is legible at a glance even before a move. `base` is the label
-    // without the expand/collapse caret a station's home node also carries.
+    // Cytoscape node data for one graph node. Nodes with grip intent
+    // (GRASP or POSITION) show ▣; fully-open/NONE nodes show ▢.
     function nodeData(n) {
         var station = (n.tags && n.tags.length) ? n.tags[0] : '';
-        var held = n.payload && n.payload !== 'empty';
-        var base = n.id + (held ? ' ▣' : ' ▢');
+        var gripping = n.grip_intent && n.grip_intent !== 'none';
+        var base = n.id + (gripping ? ' ▣' : ' ▢');
         return {
             id: n.id,
             base: base,
@@ -147,7 +145,8 @@
             station: station,
             color: colorForStation(station),
             rail: n.rail,
-            payload: n.payload,
+            gripper_stroke: n.gripper_stroke,
+            grip_intent: n.grip_intent || 'none',
         };
     }
 
@@ -189,7 +188,6 @@
             elements.push({ group: 'nodes', data: d });
         });
         (data.edges || []).forEach(function (e) {
-            var kind = e.grips ? 'grip' : (e.releases ? 'release' : 'plain');
             var precos = e.preconditions || [];
             elements.push({
                 group: 'edges',
@@ -198,7 +196,7 @@
                     source: e.from,
                     target: e.to,
                     label: edgeLabel(e.mode, e.speed, precos),
-                    kind: kind,
+                    kind: 'plain',
                     mode: e.mode,
                     speed: e.speed,
                     preconditions: precos,
@@ -767,12 +765,8 @@
     }
     function clearAddNodeError() { if (addNodeErrEl) addNodeErrEl.hidden = true; }
 
-    // Populate the form's dropdowns: gripper/payload from the /graph
-    // catalogs, arm poses from /locations, rail from /track/locations.
+    // Populate the form's dropdowns: arm poses from /locations, rail from /track/locations.
     function populateAddNodeForm(graphData) {
-        (graphData.gripper_states || []).forEach(function (g) { gripperStrokes[g.name] = g.stroke; });
-        fillSelect(nodeGripperEl, (graphData.gripper_states || []).map(function (g) { return g.name; }));
-        fillSelect(nodePayloadEl, (graphData.payloads || []).map(function (p) { return p.name; }));
         fetch(API_BASE + '/locations').then(function (r) { return r.json(); })
             .then(function (d) { fillSelect(nodeArmEl, (d && d.locations) || []); })
             .catch(function () {});
@@ -782,7 +776,7 @@
     }
 
     // Suggest the node id from the pose name when the id box is empty, so
-    // the convention (id == pose, + _empty/_held) is the path of least effort.
+    // the convention (id == pose + _empty/_grip_<n>/_open_<n>) is the default.
     if (nodeArmEl) {
         nodeArmEl.addEventListener('change', function () {
             if (nodeIdEl && !nodeIdEl.value.trim()) nodeIdEl.value = nodeArmEl.value;
@@ -793,11 +787,9 @@
         var id = (nodeIdEl && nodeIdEl.value.trim()) || '';
         var arm = nodeArmEl && nodeArmEl.value;
         var rail = nodeRailEl && nodeRailEl.value;
-        var gripper = nodeGripperEl && nodeGripperEl.value;
-        var payload = nodePayloadEl && nodePayloadEl.value;
         if (!id) { showAddNodeError('Node id is required.'); return; }
-        if (!arm || !rail || !gripper || !payload) {
-            showAddNodeError('Pose, rail, gripper and payload are all required.');
+        if (!arm || !rail) {
+            showAddNodeError('Pose and rail are required.');
             return;
         }
         if (cy && cy.getElementById(id).nonempty()) {
@@ -807,7 +799,7 @@
         var tags = (nodeTagsEl && nodeTagsEl.value.trim())
             ? nodeTagsEl.value.split(',').map(function (t) { return t.trim(); }).filter(Boolean)
             : null;
-        var body = { id: id, arm: arm, rail: rail, gripper: gripper, payload: payload, tags: tags };
+        var body = { id: id, arm: arm, rail: rail, tags: tags };
         clearAddNodeError();
         if (nodeAddBtn) nodeAddBtn.disabled = true;
         ensureClaim().then(function (held) {
@@ -850,7 +842,9 @@
         if (!cy || !created) return;
         var nd = nodeData({
             id: created.id, arm: created.arm, rail: created.rail,
-            gripper: created.gripper, payload: created.payload, tags: created.tags || [],
+            gripper_stroke: created.gripper_stroke,
+            grip_intent: created.grip_intent || 'none',
+            tags: created.tags || [],
         });
         var station = nd.station;
         if (station && !stationAnchors[station]) {
@@ -926,46 +920,24 @@
         }
     }
 
-    // Show the create form; reveal grip/release inputs based on the payload
-    // change implied by the two endpoints (mirrors the loader's rules).
+    // Show the create form; gripper actuation is now automatic on node arrival
+    // (driven by the target node's id suffix), so edges no longer carry
+    // grip/release action blocks.
     function openDrawForm() {
-        var fp = (cy.getElementById(drawFrom).data('payload')) || 'empty';
-        var tp = (cy.getElementById(drawTo).data('payload')) || 'empty';
-        var gripNeeded = fp === 'empty' && tp !== 'empty';
-        var releaseNeeded = fp !== 'empty' && tp === 'empty';
-        drawIdentitySwap = fp !== 'empty' && tp !== 'empty' && fp !== tp;
-        if (drawGripGroup) drawGripGroup.hidden = !gripNeeded;
-        if (drawReleaseGroup) drawReleaseGroup.hidden = !releaseNeeded;
-        if (gripNeeded && drawGripStrokeEl && !drawGripStrokeEl.value) {
-            drawGripStrokeEl.value = gripperStrokes.grip_plate || 100;
-        }
+        if (drawGripGroup) drawGripGroup.hidden = true;
+        if (drawReleaseGroup) drawReleaseGroup.hidden = true;
         clearDrawError();
-        if (drawIdentitySwap) {
-            showDrawError('Cannot connect two different non-empty payloads directly — route through an empty state.');
-        }
         if (drawFormEl) drawFormEl.hidden = false;
     }
 
     function createEdge() {
         if (!drawFrom || !drawTo) { showDrawError('Pick a source and a target node first.'); return; }
-        if (drawIdentitySwap) { showDrawError('Cannot connect two different non-empty payloads directly.'); return; }
         var body = { from_node: drawFrom, to_node: drawTo, mode: drawModeEl ? drawModeEl.value : 'joint' };
         var speedRaw = drawSpeedEl ? drawSpeedEl.value : '';
         if (speedRaw !== '' && speedRaw != null) {
             var sp = parseFloat(speedRaw);
             if (isNaN(sp) || sp <= 0) { showDrawError('Speed must be a number greater than 0.'); return; }
             body.speed = sp;
-        }
-        if (drawGripGroup && !drawGripGroup.hidden) {
-            var gs = parseFloat(drawGripStrokeEl && drawGripStrokeEl.value);
-            if (isNaN(gs)) { showDrawError('Grip stroke is required for an empty → held edge.'); return; }
-            body.grip = { stroke: gs };
-            var gf = parseFloat(drawGripForceEl && drawGripForceEl.value);
-            if (!isNaN(gf)) body.grip.force = gf;
-        }
-        if (drawReleaseGroup && !drawReleaseGroup.hidden) {
-            var rs = parseFloat(drawReleaseStrokeEl && drawReleaseStrokeEl.value);
-            body.release = isNaN(rs) ? {} : { stroke: rs };
         }
         clearDrawError();
         if (drawCreateBtn) drawCreateBtn.disabled = true;
@@ -1026,11 +998,11 @@
         if (modeEl) modeEl.textContent = live.graph_mode || 'off';
         var node = live.current_node || null;
         if (currentEl) currentEl.textContent = node || '—';
-        var payload = live.declared_payload || 'empty';
-        if (payloadEl) payloadEl.textContent = payload;
+        var stroke = live.gripper_stroke;
+        if (payloadEl) payloadEl.textContent = stroke != null ? ('stroke ' + stroke) : '—';
 
         if (!cy) return;
-        var holding = node && payload && payload !== 'empty';
+        var gripping = node && stroke != null && stroke < 149.5;
 
         // Auto-follow: expand the station the robot is in, collapse the one it
         // left. Runs on station change only (not every tick).
@@ -1056,7 +1028,7 @@
             var ele = cy.getElementById(node);
             if (ele && ele.nonempty()) {
                 ele.addClass('current');
-                if (holding) ele.addClass('holding');
+                if (gripping) ele.addClass('holding');
             }
         }
         currentNodeId = node;
@@ -1162,7 +1134,7 @@
                 applyLiveState({
                     graph_mode: mg.graph_mode,
                     current_node: mg.current_node,
-                    declared_payload: mg.declared_payload,
+                    gripper_stroke: mg.gripper_stroke,
                 });
             }
             updateClaimIndicator(details.claimed_by || null);

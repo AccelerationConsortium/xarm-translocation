@@ -38,11 +38,9 @@ from src.core.motion_graph import (
 def _test_graph_dict():
     return {
         "schema_version": "0.1",
-        "gripper_states": {"open": {"stroke": 150}},
-        "payloads": {"empty": {}},
         "nodes": [
-            {"id": "n_home",   "arm": "home",   "rail": "Home", "gripper": "open", "payload": "empty"},
-            {"id": "n_pickup", "arm": "pickup", "rail": "Home", "gripper": "open", "payload": "empty"},
+            {"id": "n_home",   "arm": "home",   "rail": "Home"},
+            {"id": "n_pickup", "arm": "pickup", "rail": "Home"},
         ],
         "edges": [
             {"from": "n_home", "to": "n_pickup", "mode": "linear", "speed": 25},
@@ -61,9 +59,9 @@ def mock_controller_with_graph():
     )
     mc.graph_mode = GraphMode.ADVISORY
     mc.current_node = "n_home"
-    mc.declared_payload = "empty"
     mc.last_arm_pose_name = "home"
     mc.last_rail_location_name = "Home"
+    mc.last_gripper_position = 150
     mc.last_transition = None
     mc.reachable_node_ids.return_value = ["n_pickup"]
     mc.is_connected.return_value = True
@@ -101,8 +99,10 @@ def test_get_graph_returns_snapshot(graph_client, mock_controller_with_graph):
     assert body["graph_mode"] == "advisory"
     assert body["current_node"] == "n_home"
     assert body["reachable_nodes"] == ["n_pickup"]
-    assert body["declared_payload"] == "empty"
     assert "adjacency" in body
+    # New fields
+    assert "nodes" in body
+    assert body["nodes"][0]["gripper_stroke"] is not None
 
 
 def test_get_graph_returns_404_when_no_graph(graph_client, mock_controller_with_graph):
@@ -193,23 +193,13 @@ def test_record_appends_edge_to_yaml_file(
     initial_yaml = """\
 schema_version: "0.1"
 
-gripper_states:
-  open: { stroke: 150 }
-
-payloads:
-  empty: {}
-
 nodes:
   - id: a
     arm: home
     rail: Home
-    gripper: open
-    payload: empty
   - id: b
     arm: pickup
     rail: Home
-    gripper: open
-    payload: empty
 
 edges:
   - from: a
@@ -260,14 +250,8 @@ def test_record_returns_400_on_validation_failure(
     import yaml as _yaml
     initial = {
         "schema_version": "0.1",
-        "gripper_states": {"open": {"stroke": 150}},
-        "payloads": {"empty": {}, "plate": {}},
         "nodes": [
-            {"id": "a", "arm": "home",   "rail": "Home", "gripper": "open", "payload": "empty"},
-            # b has payload=plate but gripper=open (illegal) — already
-            # invalid, so put just `a` and create an edge to a NEW node
-            # via the record API. Actually simpler: create an edge to
-            # itself, which the loader rejects as a malformed edge.
+            {"id": "a", "arm": "home", "rail": "Home"},
         ],
         "edges": [],
     }
