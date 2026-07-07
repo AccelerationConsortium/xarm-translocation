@@ -8,15 +8,22 @@
     'use strict';
 
     // HTTP goes through the page's own origin (the web server proxies /graph
-    // and /control to the API). The WebSocket can't be proxied by the simple
-    // http.server, so it connects straight to the API on :8000 — mirroring
-    // main.js's logic so the page works whether served on :6001 or :8000.
-    var API_BASE = window.location.protocol + '//' + window.location.host;
+    // and /control to the API). Base-path prefix the page is served under:
+    // "" direct (…/web/…), or "/xarm5" behind the single Caddy edge
+    // (…/xarm5/web/…) — API + WS must carry it (docs/SINGLE_EDGE_SSO_PLAN.md).
+    // The WebSocket can't be proxied by the legacy :6001 http.server, so there
+    // it connects straight to the API on :8000 — mirroring main.js's logic.
+    var _pathname = window.location.pathname;
+    var _webIdx = _pathname.indexOf('/web');
+    var BASE_PATH = _webIdx > 0 ? _pathname.slice(0, _webIdx) : '';
+    var API_BASE = window.location.protocol + '//' + window.location.host + BASE_PATH;
     var wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    var wsHost = window.location.port === '8000'
+    var wsHost = BASE_PATH
         ? window.location.host
-        : window.location.hostname + ':8000';
-    var WS_URL = wsProtocol + '://' + wsHost + '/ws';
+        : (window.location.port === '8000'
+            ? window.location.host
+            : window.location.hostname + ':8000');
+    var WS_URL = wsProtocol + '://' + wsHost + BASE_PATH + '/ws';
 
     // Live-push freshness: while WS pushes arrive the fallback HTTP poll for
     // live state stays idle (it only fires when the socket goes quiet).

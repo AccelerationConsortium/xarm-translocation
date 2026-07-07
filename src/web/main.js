@@ -8,12 +8,24 @@ document.addEventListener('DOMContentLoaded', () => {
         statusContainer.appendChild(connectionDetails);
     }
     
-    const API_BASE_URL = `${window.location.protocol}//${window.location.host}`;
+    // Base-path prefix this panel is served under: "" when hit directly
+    // (…/web/…), or e.g. "/xarm5" when routed through the single Caddy edge
+    // (…/xarm5/web/…). API + WS calls must carry it or the edge routes them
+    // to the dashboard. See docs/SINGLE_EDGE_SSO_PLAN.md.
+    const _pathname = window.location.pathname;
+    const _webIdx = _pathname.indexOf('/web');
+    const BASE_PATH = _webIdx > 0 ? _pathname.slice(0, _webIdx) : '';
+    const API_BASE_URL = `${window.location.protocol}//${window.location.host}${BASE_PATH}`;
     const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    const wsHost = window.location.port === '8000'
+    // WS host: behind the edge, same host (the prefix in BASE_PATH carries the
+    // route); served directly by the API, same host; on the legacy :6001
+    // front-end (which can't proxy WebSockets), connect straight to the API.
+    const wsHost = BASE_PATH
         ? window.location.host
-        : `${window.location.hostname}:8000`;
-    const WS_URL = `${wsProtocol}://${wsHost}/ws`;
+        : (window.location.port === '8000'
+            ? window.location.host
+            : `${window.location.hostname}:8000`);
+    const WS_URL = `${wsProtocol}://${wsHost}${BASE_PATH}/ws`;
 
     const connectBtn = document.getElementById('connect-btn');
     const disconnectBtn = document.getElementById('disconnect-btn');

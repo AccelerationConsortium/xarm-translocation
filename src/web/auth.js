@@ -13,7 +13,15 @@
 // main.js reads window.labAuth.identity and listens for 'labauth:change'.
 
 (() => {
-    const API_BASE_URL = `${window.location.protocol}//${window.location.host}`;
+    // Base-path prefix the panel is served under: "" when hit directly
+    // (…/web/…), or e.g. "/xarm5" when routed through the single Caddy edge
+    // (…/xarm5/web/…). The API lives one level above /web on the same origin,
+    // so /auth/* calls must carry this prefix or the edge routes them to the
+    // dashboard. See docs/SINGLE_EDGE_SSO_PLAN.md.
+    const _p = window.location.pathname;
+    const _i = _p.indexOf('/web');
+    const BASE_PATH = _i > 0 ? _p.slice(0, _i) : '';
+    const API_BASE_URL = `${window.location.protocol}//${window.location.host}${BASE_PATH}`;
 
     window.labAuth = { enabled: false, identity: null };
 
@@ -45,8 +53,13 @@
                 avatar.textContent = (identity.email || '?').charAt(0).toUpperCase();
                 avatar.classList.remove('is-anon');
                 emailLabel.textContent = identity.email;
-                emailLabel.title = `role: ${identity.role || 'user'}`;
-                signoutBtn.hidden = false;
+                const viaEdge = identity.via === 'edge';
+                emailLabel.title = viaEdge
+                    ? `role: ${identity.role || 'user'} — signed in at the lab edge`
+                    : `role: ${identity.role || 'user'}`;
+                // Behind the edge the session lives at the edge, not this
+                // panel, so a local sign-out would be a no-op — hide it.
+                signoutBtn.hidden = viaEdge;
                 signinBtn.hidden = true;
                 loginRow.hidden = true;
             } else {

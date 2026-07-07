@@ -9,6 +9,7 @@ to enable web-based control and monitoring of xArm robots.
 # TODO: planning to implement DI/DO for safety light and additional e-stop
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -497,7 +498,17 @@ async def lifespan(app: FastAPI):
         controller.disconnect()
     logger.info("xArm API Server shutdown complete")
 
-# Create FastAPI app
+# Create FastAPI app.
+#
+# NOTE on serving under the single Caddy edge (docs/SINGLE_EDGE_SSO_PLAN.md):
+# we deliberately do NOT set a FastAPI `root_path`. The edge strips the public
+# /xarm5 prefix before proxying, so this app always sees its bare paths
+# (/status, /web/, /ws, /control/*) exactly as on direct :8000 access — and
+# under Starlette 1.x an app-level root_path relocates the StaticFiles mount to
+# /xarm5/web/, which would 404 once the edge has stripped the prefix. Base-path
+# awareness lives entirely on the client instead: the panel's assets are
+# relative and its JS derives the /xarm5 prefix from window.location (see
+# main.js / graph.js / auth.js). Keep the edge strip-only (no /web rewrite).
 app = FastAPI(
     title="xArm Translocation API",
     description="REST API for controlling xArm robots with gripper and linear track support",
@@ -588,6 +599,33 @@ REQUIRE_LOGIN = _env_truthy(
     or os.environ.get("XARM_REQUIRE_LOGIN_FOR_CLAIM")
 )
 
+
+# ---------------------------------------------------------------------------
+# Single-edge SSO — trust the identity injected by the Caddy edge.
+#
+# When the panel is reached through the lab's single Caddy edge
+# (docs/SINGLE_EDGE_SSO_PLAN.md), the edge has already authenticated the human
+# (forward_auth -> ac_auth /auth/verify) and injects the verified identity as
+# `X-Auth-User` / `X-Auth-Role`. The device then trusts that identity directly,
+# so the user is NOT prompted for a second login inside the panel (that is the
+# whole point of "one login for every lab UI").
+#
+# Trust boundary: the device is still directly reachable on the Tailnet, where
+# any caller could forge `X-Auth-User`. So we trust the edge headers ONLY when
+# they arrive with a matching shared secret in `X-Edge-Auth` (the edge sets
+# `header_up X-Edge-Auth <secret>`). A direct caller hitting :8000 carries no
+# valid secret, so its identity headers are ignored and it falls back to the
+# cookie / X-Api-Key path. Unset (XARM_EDGE_SHARED_SECRET absent) => edge trust
+# is fully disabled and the headers are ignored, i.e. today's behaviour.
+#
+# This is the interim (shared-secret) trust from the SSO plan. When Phase 2
+# lands (loopback-bind or Tailscale-ACL :8000 so ONLY the edge can reach it),
+# the secret becomes belt-and-suspenders rather than the sole guard.
+EDGE_USER_HEADER = "X-Auth-User"
+EDGE_ROLE_HEADER = "X-Auth-Role"
+EDGE_TRUST_HEADER = "X-Edge-Auth"
+EDGE_SHARED_SECRET = os.environ.get("XARM_EDGE_SHARED_SECRET", "").strip() or None
+
 # Shared 401 hint so the claim gate and the require_login dependency speak
 # with one voice.
 _LOGIN_HINT = (
@@ -661,18 +699,46 @@ def _identity_email(payload) -> Optional[str]:
     return None
 
 
+def _edge_identity(request: Request) -> Optional[dict]:
+    """Identity injected by the trusted Caddy edge, or None.
+
+    Returns ``{"email": ..., "role": ...}`` when the request carries an
+    ``X-Auth-User`` accompanied by an ``X-Edge-Auth`` that matches the
+    configured shared secret; otherwise None. When no secret is configured
+    (``XARM_EDGE_SHARED_SECRET`` unset) edge trust is disabled and this always
+    returns None, so a directly-reachable device never trusts client-supplied
+    identity headers. Constant-time secret compare to avoid a timing oracle.
+    """
+    if not EDGE_SHARED_SECRET:
+        return None
+    presented = request.headers.get(EDGE_TRUST_HEADER)
+    if not presented or not hmac.compare_digest(presented, EDGE_SHARED_SECRET):
+        return None
+    email = (request.headers.get(EDGE_USER_HEADER) or "").strip()
+    if not email:
+        return None
+    role = (request.headers.get(EDGE_ROLE_HEADER) or "").strip() or None
+    return {"email": email, "role": role}
+
+
 async def _resolve_identity(request: Request) -> Optional[str]:
     """Resolve a verified principal email for a control request.
 
-    Checks, in order: an ``X-Api-Key`` header (machine principals / future
-    SDK workflows -> the sidecar's GET /auth/verify), then the
-    ``ac_auth_session`` cookie (humans -> GET /auth/me). Returns the verified
-    email, or None when no credential was presented / it didn't validate.
+    Checks, in order: the trusted edge identity (``X-Auth-User`` +
+    ``X-Edge-Auth``, see ``_edge_identity``), then an ``X-Api-Key`` header
+    (machine principals / future SDK workflows -> the sidecar's
+    GET /auth/verify), then the ``ac_auth_session`` cookie (humans ->
+    GET /auth/me). Returns the verified email, or None when no credential was
+    presented / it didn't validate.
 
     Fails closed: the sidecar round-trip runs off the event loop and any
     transport exception is propagated to the caller (which maps it to 503),
-    never silently allowed.
+    never silently allowed. (The edge path is header-only — no sidecar hop —
+    since the edge already verified the session.)
     """
+    edge = _edge_identity(request)
+    if edge:
+        return edge["email"]
     api_key = request.headers.get("X-Api-Key")
     if api_key:
         status, payload, _ = await asyncio.to_thread(
@@ -699,12 +765,32 @@ class AuthVerifyIn(BaseModel):
 
 @app.get("/auth/config", tags=["auth"])
 async def auth_config() -> dict:
-    """Banner bootstrap: is the auth integration configured on this device?"""
-    return {"enabled": bool(AUTH_SIDECAR_URL)}
+    """Banner bootstrap: is the auth integration configured on this device?
+
+    Enabled when either the auth sidecar is configured (direct on-host login)
+    or edge trust is configured (login happens once at the edge). Behind the
+    edge, /auth/me resolves the injected identity so the banner shows the
+    signed-in user with no second login form.
+    """
+    return {"enabled": bool(AUTH_SIDECAR_URL) or bool(EDGE_SHARED_SECRET)}
 
 
 @app.get("/auth/me", tags=["auth"])
 async def auth_me(request: Request):
+    # Reached through the trusted edge: the human already signed in there.
+    # Report that identity so the banner shows them signed-in and never renders
+    # its own login form (the "single source of login" outcome). `via: edge`
+    # lets the banner hide its sign-out button — you sign out at the edge.
+    edge = _edge_identity(request)
+    if edge:
+        return {
+            "authenticated": True,
+            "identity": {
+                "email": edge["email"],
+                "role": edge["role"] or "user",
+                "via": "edge",
+            },
+        }
     if not AUTH_SIDECAR_URL:
         return {"authenticated": False, "identity": None}
     token = request.cookies.get(AUTH_COOKIE_NAME)
