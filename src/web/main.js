@@ -73,8 +73,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // gate on top of the connection gate (setControlsState owns connection).
     let controllerConnected = false;
     const CLAIM_OWNER = 'human@xarm-web';
-    // Prefer the signed-in identity from the auth banner (auth.js) so
-    // details.claimed_by and the lab audit trail name a real person.
+    // Prefer the signed-in identity from the shared auth banner
+    // (/auth/banner.js, served by ac_auth) so details.claimed_by and the lab
+    // audit trail name a real person.
     // Falls back to the anonymous owner when auth is unconfigured or
     // nobody is signed in.
     function claimOwner() {
@@ -1496,7 +1497,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // React to sign-in / sign-out from the auth banner (auth.js dispatches
+    // React to sign-in / sign-out from the shared auth banner (it dispatches
     // 'labauth:change' with the identity, or null when signed out).
     document.addEventListener('labauth:change', (e) => {
         const identity = e && e.detail;
@@ -1513,9 +1514,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // auth.js calls this from its sign-out handler BEFORE POSTing /auth/logout,
-    // so logging out truly relinquishes the arm instead of leaving the claim
-    // to expire on TTL. No-op when this browser isn't holding a claim.
+    // The shared banner calls this from its sign-out handler BEFORE POSTing
+    // /auth/logout, so logging out truly relinquishes the arm instead of
+    // leaving the claim to expire on TTL. No-op when not holding a claim.
     if (window.labAuth) {
         window.labAuth.releaseClaimOnSignOut = async () => {
             if (claimToken !== null) await releaseControl();

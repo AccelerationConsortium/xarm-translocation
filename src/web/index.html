@@ -8,35 +8,10 @@
 </head>
 <body>
     <div class="container">
-        <!-- Auth banner (SDL2 Auth, ac_auth email-code login). Hidden until
-             GET /auth/config confirms the device has XARM_AUTH_URL set.
-             Advisory identity only: claims stay the gate on motion; signing
-             in stamps the operator's email into /control/claim's owner. -->
-        <div id="auth-banner" class="auth-banner" hidden>
-            <div class="auth-identity">
-                <div id="auth-avatar" class="auth-avatar is-anon">?</div>
-                <p id="auth-email" class="auth-email">Not signed in</p>
-                <button id="auth-signout-btn" class="auth-icon-btn" title="Sign out" hidden>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-                        <polyline points="16 17 21 12 16 7"/>
-                        <line x1="21" y1="12" x2="9" y2="12"/>
-                    </svg>
-                </button>
-                <button id="auth-signin-btn" class="btn auth-signin-btn" hidden>Sign in</button>
-                <div id="auth-login" class="auth-login" hidden>
-                    <select id="auth-email-select" aria-label="Account email"></select>
-                    <button id="auth-request-btn" class="btn">Send code</button>
-                    <input id="auth-code-input" inputmode="numeric" autocomplete="one-time-code"
-                           placeholder="Code" maxlength="8" hidden>
-                    <button id="auth-verify-btn" class="btn btn-success" hidden>Verify</button>
-                    <button id="auth-cancel-btn" class="auth-icon-btn" title="Cancel">✕</button>
-                </div>
-                <span id="auth-msg" class="auth-msg"></span>
-            </div>
-            <p class="auth-title">SDL2 Lab</p>
-        </div>
+        <!-- Shared SDL2 auth banner: injected by /auth/banner.js (served by
+             ac_auth, one asset for every lab UI). It renders the login/logout
+             bar and populates window.labAuth for the claim wiring in main.js.
+             Included near the end of <body>, before main.js. -->
         <header>
             <div class="header-content">
                 <div class="title-status-container">
@@ -289,7 +264,11 @@
 
         </main>
     </div>
-    <script src="auth.js?v=20260703d"></script>
+    <!-- Shared auth banner (served by ac_auth). Loaded before main.js so
+         window.labAuth exists when main.js attaches releaseClaimOnSignOut and
+         reads the signed-in identity for the claim owner. Root-absolute path →
+         resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
+    <script src="/auth/banner.js"></script>
     <script src="main.js?v=20260703d"></script>
 </body>
 </html>
