@@ -21,6 +21,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from src.core.motion_graph import (
     DEFAULT_PRECONDITIONS,
     GraphMode,
+    GripperTransitionError,
     MotionGraph,
     NodeMatch,
     RecoveryMismatch,
@@ -31,10 +32,15 @@ from src.core.motion_graph import (
 
 def _graph_dict():
     return {
-        "schema_version": "0.1",
+        "schema_version": "0.2",
+        "gripper_states": {
+            "empty":    {"stroke": 150, "intent": "none"},
+            "grip_120": {"stroke": 120, "intent": "grasp"},
+        },
         "nodes": [
             {"id": "n_home",   "arm": "robot_home",    "rail": "Home"},
-            {"id": "n_drawer", "arm": "uplc_draw_home", "rail": "Home"},
+            {"id": "n_drawer", "arm": "uplc_draw_home", "rail": "Home",
+             "gripper_states": ["empty", "grip_120"]},
             {"id": "n_local1", "arm": "robot_home",     "rail": "Local_1"},
         ],
         "edges": [
@@ -124,18 +130,54 @@ def test_rail_mismatch_disqualifies_node():
     assert match.rail_residual == pytest.approx(0.0)
 
 
-def test_gripper_mismatch_returns_no_match():
-    """No node has gripper_stroke=71; should return None."""
+def test_off_catalog_stroke_still_matches_node_but_flags_gripper():
+    """The gripper is no longer a node filter: an off-catalog stroke
+    (71) still matches the arm+rail position, but resolves to no state
+    and gripper_match is False."""
     graph = MotionGraph.from_dict(_graph_dict(), preconditions=DEFAULT_PRECONDITIONS)
     match = find_nearest_node(
         graph,
         current_joints=[180.0, -45.0, 0.0, 45.0, 90.0],
         current_rail_mm=0.0,
-        current_gripper_stroke=71.0,  # no node has this
+        current_gripper_stroke=71.0,  # matches no catalog state
         arm_pose_joints=_arm_poses(),
         rail_position_mm=_rail_positions(),
     )
-    assert match.node_id is None
+    assert match.node_id == "n_home"
+    assert match.gripper_state is None
+    assert match.gripper_match is False
+
+
+def test_resolved_state_disallowed_at_node_flags_gripper():
+    """Holding grip_120 at n_home (empty-only): the node still matches,
+    the state resolves, but gripper_match is False."""
+    graph = MotionGraph.from_dict(_graph_dict(), preconditions=DEFAULT_PRECONDITIONS)
+    match = find_nearest_node(
+        graph,
+        current_joints=[180.0, -45.0, 0.0, 45.0, 90.0],
+        current_rail_mm=0.0,
+        current_gripper_stroke=120.0,
+        arm_pose_joints=_arm_poses(),
+        rail_position_mm=_rail_positions(),
+    )
+    assert match.node_id == "n_home"
+    assert match.gripper_state == "grip_120"
+    assert match.gripper_match is False
+
+
+def test_resolved_state_allowed_at_node_sets_gripper_match():
+    graph = MotionGraph.from_dict(_graph_dict(), preconditions=DEFAULT_PRECONDITIONS)
+    match = find_nearest_node(
+        graph,
+        current_joints=[180.0, -45.0, 0.0, 45.0, 90.0],
+        current_rail_mm=0.0,
+        current_gripper_stroke=150.0,
+        arm_pose_joints=_arm_poses(),
+        rail_position_mm=_rail_positions(),
+    )
+    assert match.node_id == "n_home"
+    assert match.gripper_state == "empty"
+    assert match.gripper_match is True
 
 
 def test_missing_current_state_returns_empty():
@@ -225,6 +267,37 @@ def test_recover_to_with_force_bypasses_check(graph_controller):
     assert result["current_node"] == "n_drawer"
 
 
+def test_recover_to_reports_gripper_state(graph_controller):
+    result = graph_controller.recover_to("n_home")
+    assert result["gripper_state"] == "empty"
+
+
+def test_recover_to_with_explicit_gripper_state_sets_stroke(graph_controller):
+    """Declaring gripper_state pins the commanded stroke to the catalog
+    value (no physical move)."""
+    result = graph_controller.recover_to(
+        "n_drawer", force=True, gripper_state="grip_120",
+    )
+    assert result["current_node"] == "n_drawer"
+    assert result["gripper_state"] == "grip_120"
+    assert graph_controller.last_gripper_position == 120.0
+
+
+def test_recover_to_rejects_state_not_allowed_at_node(graph_controller):
+    """n_home is empty-only; declaring grip_120 there violates the data
+    model even under force."""
+    with pytest.raises(GripperTransitionError, match="not allowed at node"):
+        graph_controller.recover_to("n_home", force=True, gripper_state="grip_120")
+
+
+def test_recover_to_rejects_disallowed_inferred_state_without_force(graph_controller):
+    """Without force and without an explicit state, the current stroke
+    must resolve to a state the node allows."""
+    graph_controller.last_gripper_position = 120  # grip_120; n_home is empty-only
+    with pytest.raises(GripperTransitionError, match="not allowed at node"):
+        graph_controller.recover_to("n_home")
+
+
 def test_recover_to_unknown_node_raises(graph_controller):
     with pytest.raises(UnknownNodeError):
         graph_controller.recover_to("ghost_node")
@@ -258,11 +331,12 @@ def api_mock_controller():
         node_id="n_home",
         arm_residual=0.0,
         rail_residual=0.0,
+        gripper_state="empty",
         gripper_match=True,
         within_tolerance=True,
     )
 
-    def _recover(node_id, force=False):
+    def _recover(node_id, force=False, gripper_state=None):
         if node_id not in {"n_home", "n_drawer", "n_local1"}:
             raise UnknownNodeError(node_id)
         if not force:
@@ -273,7 +347,10 @@ def api_mock_controller():
                     arm_residual=suggestion.arm_residual,
                     rail_residual=suggestion.rail_residual,
                 )
-        return {"recovered_to": node_id, "current_node": node_id}
+        return {
+            "recovered_to": node_id, "current_node": node_id,
+            "gripper_state": gripper_state or "empty",
+        }
     mc.recover_to.side_effect = _recover
 
     return mc
@@ -293,6 +370,8 @@ def test_get_nearest_returns_suggestion(client):
     body = resp.json()
     assert body["suggested_node"] == "n_home"
     assert body["within_tolerance"] is True
+    assert body["gripper_state"] == "empty"
+    assert body["gripper_match"] is True
 
 
 def test_get_nearest_returns_404_when_no_graph(client, api_mock_controller):
@@ -327,3 +406,26 @@ def test_recover_to_force_bypasses_check(client):
 def test_recover_to_unknown_node_returns_409(client):
     resp = client.post("/control/graph/recover_to", json={"node_id": "ghost"})
     assert resp.status_code == 409
+
+
+def test_recover_to_passes_gripper_state_through(client, api_mock_controller):
+    resp = client.post(
+        "/control/graph/recover_to",
+        json={"node_id": "n_drawer", "force": True, "gripper_state": "grip_120"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["gripper_state"] == "grip_120"
+    kwargs = api_mock_controller.recover_to.call_args.kwargs
+    assert kwargs["gripper_state"] == "grip_120"
+
+
+def test_recover_to_disallowed_state_returns_409(client, api_mock_controller):
+    api_mock_controller.recover_to.side_effect = GripperTransitionError(
+        "n_home", "empty", "grip_120", "state 'grip_120' is not allowed at node 'n_home'",
+    )
+    resp = client.post(
+        "/control/graph/recover_to",
+        json={"node_id": "n_home", "force": True, "gripper_state": "grip_120"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["error"] == "gripper_state_not_allowed"

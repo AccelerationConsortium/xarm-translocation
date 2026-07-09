@@ -284,6 +284,26 @@ code {
     color: var(--ink);
 }
 
+/* Gripper-state checkboxes in the add-node form: one compact row. */
+.checkbox-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+}
+
+.checkbox-row .checkbox-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.85rem;
+    color: var(--ink);
+    font-weight: 500;
+}
+
+.checkbox-row input[type="checkbox"] {
+    margin: 0;
+}
+
 .edge-panel-actions {
     display: flex;
     gap: 8px;

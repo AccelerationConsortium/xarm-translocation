@@ -43,8 +43,8 @@ try:
         build_telemetry,
     )
     from .motion_graph import (
-        EdgeNotAllowedError, GraphError, GraphMode, RecoveryMismatch,
-        UnknownNodeError,
+        EdgeNotAllowedError, GraphError, GraphMode, GripperTransitionError,
+        RecoveryMismatch, UnknownNodeError,
     )
     from .claims import ClaimConflict, InvalidClaimToken
 except ImportError:
@@ -66,8 +66,8 @@ except ImportError:
         build_telemetry,
     )
     from core.motion_graph import (
-        EdgeNotAllowedError, GraphError, GraphMode, RecoveryMismatch,
-        UnknownNodeError,
+        EdgeNotAllowedError, GraphError, GraphMode, GripperTransitionError,
+        RecoveryMismatch, UnknownNodeError,
     )
     from core.claims import ClaimConflict, InvalidClaimToken
 
@@ -307,6 +307,21 @@ class GraphRecoverRequest(BaseModel):
             "that the joint-distance algo can't score)."
         ),
     )
+    gripper_state: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optionally declare the gripper leaf (catalog state name, e.g. "
+            "'empty' or 'grip_120'); must be allowed at the node. When "
+            "omitted, the current commanded stroke is kept."
+        ),
+    )
+
+
+class GraphGripperRequest(BaseModel):
+    """Body of POST /control/graph/gripper — change the gripper state
+    while parked at the current node (the only graph-sanctioned way to
+    grip/release/narrow; the stroke never changes during arm motion)."""
+    state: str = Field(description="Target catalog gripper state, e.g. 'grip_120'")
 
 
 class GraphMoveToRequest(BaseModel):
@@ -370,25 +385,25 @@ class GraphLayoutModel(BaseModel):
 
 
 class GraphNodeCreateRequest(BaseModel):
-    """Body of POST /control/graph/node — add a new node (state) to the graph.
+    """Body of POST /control/graph/node — add a new node to the graph.
 
-    A node is a state: a named arm pose (from joint_config.yaml) at a rail
-    location with a gripper stroke. The stroke and intent are encoded in the
-    node id suffix (_empty, _grip_<n>, _open_<n>) or supplied as explicit
-    fields for legacy nodes. Edges are added separately (record / edge editor).
-    The loader validates the result.
+    A node is an ARM POSITION: a named arm pose (from joint_config.yaml)
+    at a rail location. The gripper is modelled as leaves on the node:
+    ``gripper_states`` you may occupy there and ``gripper_transitions``
+    allowed while parked there. Edges are added separately (record /
+    edge editor). The loader validates the result.
     """
-    id: str = Field(description="Unique node id (convention: pose_name + _empty / _grip_<n> / _open_<n>)")
+    id: str = Field(description="Unique node id (convention: the arm pose name)")
     arm: str = Field(description="Arm pose name from joint_config.yaml")
     rail: str = Field(description="Rail location name from linear_track_config.yaml")
     tags: Optional[List[str]] = Field(default=None, description="Optional tags; first tag groups/colours the node")
-    gripper_stroke: Optional[float] = Field(
+    gripper_states: Optional[List[str]] = Field(
         default=None,
-        description="Explicit gripper stroke override (only needed for legacy ids that cannot be parsed)"
+        description="Catalog states occupiable at this node (default: ['empty'])",
     )
-    grip_intent: Optional[str] = Field(
+    gripper_transitions: Optional[List[List[str]]] = Field(
         default=None,
-        description="Explicit grip intent (grasp|position|none) — only needed for legacy ids"
+        description="[from, to] state changes allowed while parked here",
     )
 
 
@@ -2015,17 +2030,24 @@ async def get_graph_state():
         "current_node": c.current_node if c is not None else None,
         "reachable_nodes": c.reachable_node_ids() if c is not None else [],
         "gripper_stroke": c.last_gripper_position if c is not None else None,
+        "gripper_state": c.current_gripper_state if c is not None else None,
+        "allowed_gripper_targets": c.allowed_gripper_targets() if c is not None else [],
         "arm_pose_name": c.last_arm_pose_name if c is not None else None,
         "rail_location_name": c.last_rail_location_name if c is not None else None,
         "last_transition": c.last_transition if c is not None else None,
         "adjacency": graph.adjacency_summary(),
+        # The global gripper-state catalog (name -> stroke + intent).
+        "gripper_state_catalog": {
+            gs.name: {"stroke": gs.stroke, "intent": gs.intent.value}
+            for gs in graph.gripper_states
+        },
         # Full node/edge detail so the graph viewer can render the whole
         # topology (and Phase B can edit it) without a second call.
         "nodes": [
             {
                 "id": n.id, "arm": n.arm, "rail": n.rail,
-                "gripper_stroke": n.gripper_stroke,
-                "grip_intent": n.grip_intent.value,
+                "gripper_states": list(n.gripper_states),
+                "gripper_transitions": [list(t) for t in n.gripper_transitions],
                 "tags": list(n.tags),
             }
             for n in graph.nodes
@@ -2089,12 +2111,13 @@ async def save_graph_layout(layout: GraphLayoutModel):
 async def graph_move_to(request: GraphMoveToRequest, background_tasks: BackgroundTasks):
     """Move to a graph node by id.
 
-    Executes the arm move and, when the target node's gripper stroke differs
-    from the current commanded stroke, actuates the gripper and verifies the
-    outcome per the node's grip_intent (GRASP or POSITION).
+    Pure arm motion — the gripper stroke is invariant along edges and is
+    never touched here. Grip/release/narrow happens separately via
+    POST /control/graph/gripper while parked at a node.
 
-    Returns 409 (edge_not_allowed) when STRICT mode refuses the transition,
-    or 500 when the move or gripper verification fails.
+    Returns 409 (edge_not_allowed) when STRICT mode refuses the transition
+    (including edges the current gripper state may not ride), or 500 when
+    the move fails.
     """
     c = get_controller()
     if c.motion_graph is None:
@@ -2153,6 +2176,7 @@ async def get_nearest_node(joint_tolerance_deg: float = 10.0, rail_tolerance_mm:
         "suggested_node": match.node_id,
         "arm_residual_deg": match.arm_residual,
         "rail_residual_mm": match.rail_residual,
+        "gripper_state": match.gripper_state,
         "gripper_match": match.gripper_match,
         "within_tolerance": match.within_tolerance,
     }
@@ -2173,9 +2197,22 @@ async def recover_to_node(request: GraphRecoverRequest):
     if c.motion_graph is None:
         raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
     try:
-        result = c.recover_to(request.node_id, force=request.force)
+        result = c.recover_to(
+            request.node_id, force=request.force,
+            gripper_state=request.gripper_state,
+        )
     except UnknownNodeError as exc:
         raise HTTPException(status_code=409, detail=f"unknown node: {request.node_id!r}")
+    except GripperTransitionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "gripper_state_not_allowed",
+                "node": exc.node,
+                "gripper_state": exc.to_state,
+                "reason": exc.reason,
+            },
+        )
     except RecoveryMismatch as exc:
         raise HTTPException(
             status_code=422,
@@ -2189,6 +2226,59 @@ async def recover_to_node(request: GraphRecoverRequest):
             },
         )
     return result
+
+
+@app.post("/control/graph/gripper", dependencies=[Depends(require_claim)])
+async def set_gripper_state(request: GraphGripperRequest, background_tasks: BackgroundTasks):
+    """Change the gripper state while parked at the current node.
+
+    The only graph-sanctioned way to grip/release/narrow: the stroke is
+    invariant during arm motion, so this is gated on the arm being
+    stationary, a pinned current node, and the transition appearing in
+    that node's whitelist (STRICT rejects violations with 409).
+
+    After actuation the outcome is verified per the state's intent:
+    grasp states must settle ABOVE the commanded stroke (reaching it
+    exactly = nothing gripped), position states must REACH it (stalling
+    early = blocked). Verification failure returns 500.
+    """
+    c = get_controller()
+    if c.motion_graph is None:
+        raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+    if not c.motion_graph.has_gripper_state(request.state):
+        raise HTTPException(
+            status_code=422,
+            detail=f"unknown gripper state: {request.state!r}",
+        )
+
+    try:
+        success = await asyncio.to_thread(c.set_gripper_state, request.state)
+    except GripperTransitionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "gripper_transition_not_allowed",
+                "node": exc.node,
+                "from_state": exc.from_state,
+                "to_state": exc.to_state,
+                "reason": exc.reason,
+            },
+        )
+
+    background_tasks.add_task(broadcast_status_update)
+    if not success:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"gripper transition to '{request.state}' failed "
+                f"(actuation error or verification failure)"
+            ),
+        )
+    return {
+        "message": f"Gripper set to '{request.state}'",
+        "gripper_state": c.current_gripper_state,
+        "allowed_gripper_targets": c.allowed_gripper_targets(),
+    }
 
 
 @app.post("/control/graph/mode", dependencies=[Depends(require_claim)])
@@ -2419,10 +2509,10 @@ async def create_graph_edge(request: GraphEdgeCreateRequest):
     """Add a new edge (motion) between two existing nodes.
 
     Claim-gated (single-gate rule). Both endpoints must exist and there must
-    be no existing edge for that ordered pair. Payload-changing edges must
-    carry the matching grip/release action; the loader's coherence rules are
-    enforced on a candidate graph before the write (400 on violation).
-    Comments in the file are preserved (ruamel) and the graph hot-reloads.
+    be no existing edge for that ordered pair. Edges never change the
+    gripper — the loader also rejects edges whose endpoints share no
+    gripper state (untraversable). Comments in the file are preserved
+    (ruamel) and the graph hot-reloads.
     """
     c = get_controller()
     if c.motion_graph is None:
@@ -2448,16 +2538,6 @@ async def create_graph_edge(request: GraphEdgeCreateRequest):
         edge["preconditions"] = list(request.preconditions)
     if request.comment:
         edge["comment"] = request.comment
-    action = {}
-    if request.grip is not None:
-        action["grip"] = {"stroke": request.grip.stroke}
-        if request.grip.force is not None:
-            action["grip"]["force"] = request.grip.force
-    if request.release is not None:
-        action["release"] = ({"stroke": request.release.stroke}
-                             if request.release.stroke is not None else {})
-    if action:
-        edge["action"] = action
 
     try:
         new_graph = _append_edge_via_ruamel(edge)
@@ -2468,7 +2548,6 @@ async def create_graph_edge(request: GraphEdgeCreateRequest):
     return {
         "created": {
             "from": e.from_node, "to": e.to_node, "mode": e.mode.value, "speed": e.speed,
-            "grips": e.grip is not None, "releases": e.release is not None,
             "preconditions": list(e.preconditions), "comment": e.comment,
         }
     }
@@ -2509,14 +2588,14 @@ def _append_edge_via_ruamel(edge: dict) -> "MotionGraph":  # type: ignore[name-d
 
 @app.post("/control/graph/node", dependencies=[Depends(require_claim)])
 async def create_graph_node(request: GraphNodeCreateRequest):
-    """Add a new node (state) to motion_graph.yaml.
+    """Add a new node (arm position) to motion_graph.yaml.
 
     Claim-gated like every mutating endpoint (the single-gate rule). The
-    node id must be unique; gripper/payload must be declared, and the
-    result must satisfy the loader's coherence rules (e.g. a held payload
-    cannot use the fully-open gripper) — otherwise 400. Comments in the
-    file are preserved (ruamel round-trip), the candidate is validated
-    before the write, and the in-memory graph is hot-reloaded.
+    node id must be unique and the result must satisfy the loader's
+    coherence rules (unique (arm, rail), states in the catalog,
+    transitions within the node's own states) — otherwise 400. Comments
+    in the file are preserved (ruamel round-trip), the candidate is
+    validated before the write, and the in-memory graph is hot-reloaded.
     """
     c = get_controller()
     if c.motion_graph is None:
@@ -2532,7 +2611,9 @@ async def create_graph_node(request: GraphNodeCreateRequest):
     return {
         "created": {
             "id": n.id, "arm": n.arm, "rail": n.rail,
-            "gripper": n.gripper, "payload": n.payload, "tags": list(n.tags),
+            "gripper_states": list(n.gripper_states),
+            "gripper_transitions": [list(t) for t in n.gripper_transitions],
+            "tags": list(n.tags),
         }
     }
 
@@ -2542,8 +2623,8 @@ def _append_node_to_yaml(req: "GraphNodeCreateRequest") -> "MotionGraph":  # typ
     the candidate with the real loader, then hot-reload.
 
     Comments survive because ruamel preserves them; the candidate is fully
-    validated (unknown gripper/payload, coherence rules) before the write,
-    so a bad node never lands on disk."""
+    validated (unknown gripper states, duplicate (arm, rail), coherence
+    rules) before the write, so a bad node never lands on disk."""
     import io
     from ruamel.yaml import YAML
     import yaml as _pyyaml
@@ -2558,10 +2639,11 @@ def _append_node_to_yaml(req: "GraphNodeCreateRequest") -> "MotionGraph":  # typ
     with open(path) as fh:
         data = yaml_rt.load(fh)
 
-    node = {
-        "id": req.id, "arm": req.arm, "rail": req.rail,
-        "gripper": req.gripper, "payload": req.payload,
-    }
+    node = {"id": req.id, "arm": req.arm, "rail": req.rail}
+    if req.gripper_states:
+        node["gripper_states"] = list(req.gripper_states)
+    if req.gripper_transitions:
+        node["gripper_transitions"] = [list(t) for t in req.gripper_transitions]
     if req.tags:
         node["tags"] = list(req.tags)
     data.setdefault("nodes", []).append(node)
@@ -2611,21 +2693,22 @@ def _append_edge_to_yaml(proposed: dict) -> "MotionGraph":  # type: ignore[name-
 
 
 def _format_edge_yaml(edge: dict) -> str:
-    """Format an edge as a YAML list item with two-space indentation.
+    """Format an edge as a YAML list item at column 0, matching the
+    formatting of the existing edges in motion_graph.yaml.
 
     Hand-formats rather than using yaml.dump to control field order
     (matching the worked sample) and keep diffs small.
     """
-    lines = [f"  - from: {edge['from']}", f"    to:   {edge['to']}"]
-    lines.append(f"    mode: {edge['mode']}")
+    lines = [f"- from: {edge['from']}", f"  to: {edge['to']}"]
+    lines.append(f"  mode: {edge['mode']}")
     if edge.get("speed") is not None:
-        lines.append(f"    speed: {edge['speed']}")
+        lines.append(f"  speed: {edge['speed']}")
     if edge.get("preconditions"):
-        lines.append(f"    preconditions: {list(edge['preconditions'])}")
+        lines.append(f"  preconditions: {list(edge['preconditions'])}")
     if edge.get("comment"):
         # Quote the comment to handle any special characters.
         safe = str(edge["comment"]).replace('"', '\\"')
-        lines.append(f'    comment: "{safe}"')
+        lines.append(f'  comment: "{safe}"')
     return "\n".join(lines) + "\n"
 
 

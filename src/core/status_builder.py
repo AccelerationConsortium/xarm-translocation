@@ -445,12 +445,18 @@ def _build_motion_graph_details(controller: XArmController) -> dict[str, Any] | 
     Returns None when no graph is loaded (legacy / unmigrated configs)
     so the field doesn't appear in /status.details at all. When loaded:
 
-        current_node     graph node id matching the controller's 3-tuple,
-                         or None when off-grid (post-STOP, after raw moves)
-        reachable_nodes  outgoing target ids from current_node (empty list
-                         when current_node is None)
-        graph_mode       "off" | "advisory" | "strict"
-        gripper_stroke   last commanded gripper stroke (float | None)
+        current_node             graph node id matching the controller's
+                                 arm+rail position, or None when off-grid
+                                 (post-STOP, after raw moves)
+        reachable_nodes          outgoing target ids traversable with the
+                                 current gripper state (empty list when
+                                 off-grid or state unknown)
+        graph_mode               "off" | "advisory" | "strict"
+        gripper_stroke           last commanded gripper stroke (float | None)
+        gripper_state            catalog state name resolved from the stroke,
+                                 or None when off-catalog
+        allowed_gripper_targets  gripper states reachable via the current
+                                 node's transition whitelist
     """
     graph = getattr(controller, "motion_graph", None)
     if graph is None:
@@ -460,6 +466,8 @@ def _build_motion_graph_details(controller: XArmController) -> dict[str, Any] | 
         "reachable_nodes": controller.reachable_node_ids(),
         "graph_mode": getattr(controller, "graph_mode").value,
         "gripper_stroke": getattr(controller, "last_gripper_position", None),
+        "gripper_state": controller.current_gripper_state,
+        "allowed_gripper_targets": controller.allowed_gripper_targets(),
         "arm_pose_name": getattr(controller, "last_arm_pose_name", None),
         "rail_location_name": getattr(controller, "last_rail_location_name", None),
     }

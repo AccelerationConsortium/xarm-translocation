@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>xArm Control</title>
-    <link rel="stylesheet" href="style.css?v=20260703b">
+    <link rel="stylesheet" href="style.css?v=20260709a">
 </head>
 <body>
     <div class="container">
@@ -205,6 +205,16 @@
                     <div class="mg-row">
                         <span class="muted" id="drive-dest-hint">(connect and pin to a graph node to enable)</span>
                     </div>
+                    <!-- Gripper leaf: state readout + whitelisted transitions at the current node -->
+                    <div class="mg-row">
+                        <span class="inline-label">Gripper</span>
+                        <strong id="drive-gripper-state">—</strong>
+                        <select id="drive-gripper-select" class="inline-input"></select>
+                        <button id="drive-gripper-btn" class="btn btn-primary" disabled>Set Gripper</button>
+                    </div>
+                    <div class="mg-row">
+                        <span class="muted" id="drive-gripper-hint">(gripper changes only while parked at a node)</span>
+                    </div>
                 </div>
 
                 <!-- Motion Graph card — Phase 4: shows current node + reachable destinations -->
@@ -269,6 +279,6 @@
          reads the signed-in identity for the claim owner. Root-absolute path →
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
-    <script src="main.js?v=20260703d"></script>
+    <script src="main.js?v=20260709a"></script>
 </body>
 </html>

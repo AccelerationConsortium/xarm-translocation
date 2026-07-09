@@ -31,7 +31,7 @@
     var lastPushAt = 0;
 
     var cy = null;
-    var gripperStrokes = {};    // gripper_state name -> stroke (for grip defaults)
+    var gripperCatalog = {};    // gripper_state name -> {stroke, intent} (from /graph)
 
     // Persisted layout — node positions, which stations are open, and the
     // pan/zoom — kept in localStorage so a save (add node/edge) or a reopen
@@ -105,7 +105,7 @@
 
     var modeEl = document.getElementById('graph-mode');
     var currentEl = document.getElementById('graph-current');
-    var payloadEl = document.getElementById('graph-payload');
+    var gripperEl = document.getElementById('graph-gripper');
     var claimEl = document.getElementById('claim-status');
     var messageEl = document.getElementById('graph-message');
 
@@ -139,12 +139,24 @@
 
     // ── Element construction ─────────────────────────────────────────
 
-    // Cytoscape node data for one graph node. Nodes with grip intent
-    // (GRASP or POSITION) show ▣; fully-open/NONE nodes show ▢.
+    // Compact badge for one gripper leaf: ▢ empty, ▣ grasp states,
+    // ◇ position (reach) states.
+    function leafGlyph(stateName) {
+        if (stateName === 'empty') return '▢';
+        var spec = gripperCatalog[stateName] || {};
+        return spec.intent === 'position' ? '◇' : '▣';
+    }
+
+    // Cytoscape node data for one graph node. A node is an arm position;
+    // its gripper leaves render as compact badges after the id (e.g.
+    // "deck_slot1_low ▢▣"), and ⇄ marks nodes where grip/release/narrow
+    // transitions are whitelisted.
     function nodeData(n) {
         var station = (n.tags && n.tags.length) ? n.tags[0] : '';
-        var gripping = n.grip_intent && n.grip_intent !== 'none';
-        var base = n.id + (gripping ? ' ▣' : ' ▢');
+        var states = n.gripper_states || ['empty'];
+        var transitions = n.gripper_transitions || [];
+        var badges = states.map(leafGlyph).join('');
+        var base = n.id + ' ' + badges + (transitions.length ? ' ⇄' : '');
         return {
             id: n.id,
             base: base,
@@ -152,8 +164,8 @@
             station: station,
             color: colorForStation(station),
             rail: n.rail,
-            gripper_stroke: n.gripper_stroke,
-            grip_intent: n.grip_intent || 'none',
+            gripper_states: states,
+            gripper_transitions: transitions,
         };
     }
 
@@ -173,6 +185,8 @@
 
     function buildElements(data) {
         var elements = [];
+        // The catalog drives leaf badges; capture it before nodeData runs.
+        gripperCatalog = data.gripper_state_catalog || {};
         var nodes = data.nodes || [];
         // Group members by station (first tag) and elect one anchor per station.
         // No synthetic "tile" node — the station's home node IS the collapse
@@ -372,8 +386,12 @@
         var positions = savedLayout.positions || {};
         cy.nodes().forEach(function (n) {
             var id = n.id();
-            if (!placedIds[id] && positions[id]) {
-                n.position({ x: positions[id].x, y: positions[id].y });
+            // Layout migration: ids collapsed from '<id>_empty' (and the
+            // '<id>_grip_120' sibling) to bare '<id>' in schema 0.2 — reuse
+            // the old saved spot so the operator's arrangement survives.
+            var p = positions[id] || positions[id + '_empty'] || positions[id + '_grip_120'];
+            if (!placedIds[id] && p) {
+                n.position({ x: p.x, y: p.y });
                 placedIds[id] = true;
             }
         });
@@ -752,8 +770,8 @@
 
     var nodeArmEl = document.getElementById('node-arm');
     var nodeRailEl = document.getElementById('node-rail');
-    var nodeGripperEl = document.getElementById('node-gripper');
-    var nodePayloadEl = document.getElementById('node-payload');
+    var nodeStatesEl = document.getElementById('node-gripper-states');
+    var nodeTransitionsEl = document.getElementById('node-gripper-transitions');
     var nodeIdEl = document.getElementById('node-id');
     var nodeTagsEl = document.getElementById('node-tags');
     var nodeAddBtn = document.getElementById('node-add-btn');
@@ -772,7 +790,8 @@
     }
     function clearAddNodeError() { if (addNodeErrEl) addNodeErrEl.hidden = true; }
 
-    // Populate the form's dropdowns: arm poses from /locations, rail from /track/locations.
+    // Populate the form's dropdowns: arm poses from /locations, rail from
+    // /track/locations, gripper-state checkboxes from the catalog.
     function populateAddNodeForm(graphData) {
         fetch(API_BASE + '/locations').then(function (r) { return r.json(); })
             .then(function (d) { fillSelect(nodeArmEl, (d && d.locations) || []); })
@@ -780,10 +799,33 @@
         fetch(API_BASE + '/track/locations').then(function (r) { return r.json(); })
             .then(function (d) { fillSelect(nodeRailEl, (d && d.locations) || []); })
             .catch(function () {});
+        if (nodeStatesEl) {
+            var catalog = (graphData && graphData.gripper_state_catalog) || gripperCatalog;
+            nodeStatesEl.innerHTML = Object.keys(catalog).map(function (name) {
+                var checked = name === 'empty' ? ' checked' : '';
+                return '<label class="checkbox-label"><input type="checkbox" ' +
+                    'name="node-gripper-state" value="' + name + '"' + checked + '> ' +
+                    leafGlyph(name) + ' ' + name + '</label>';
+            }).join('');
+        }
+    }
+
+    // Parse the optional transitions field: "empty->grip_120, grip_120->empty"
+    // into [["empty","grip_120"], ["grip_120","empty"]]. Returns null when
+    // empty; throws (with a message) on malformed entries.
+    function parseTransitions(raw) {
+        if (!raw || !raw.trim()) return null;
+        return raw.split(',').map(function (chunk) {
+            var pair = chunk.split('->').map(function (s) { return s.trim(); });
+            if (pair.length !== 2 || !pair[0] || !pair[1]) {
+                throw new Error('Transitions must look like "empty->grip_120" (comma-separated).');
+            }
+            return pair;
+        });
     }
 
     // Suggest the node id from the pose name when the id box is empty, so
-    // the convention (id == pose + _empty/_grip_<n>/_open_<n>) is the default.
+    // the convention (id == the arm pose name) is the default.
     if (nodeArmEl) {
         nodeArmEl.addEventListener('change', function () {
             if (nodeIdEl && !nodeIdEl.value.trim()) nodeIdEl.value = nodeArmEl.value;
@@ -806,7 +848,21 @@
         var tags = (nodeTagsEl && nodeTagsEl.value.trim())
             ? nodeTagsEl.value.split(',').map(function (t) { return t.trim(); }).filter(Boolean)
             : null;
-        var body = { id: id, arm: arm, rail: rail, tags: tags };
+        var states = [];
+        if (nodeStatesEl) {
+            var checked = nodeStatesEl.querySelectorAll('input[name="node-gripper-state"]:checked');
+            Array.prototype.forEach.call(checked, function (cb) { states.push(cb.value); });
+        }
+        if (!states.length) { showAddNodeError('Pick at least one gripper state.'); return; }
+        var transitions;
+        try {
+            transitions = parseTransitions(nodeTransitionsEl ? nodeTransitionsEl.value : '');
+        } catch (e) {
+            showAddNodeError(e.message);
+            return;
+        }
+        var body = { id: id, arm: arm, rail: rail, tags: tags, gripper_states: states };
+        if (transitions) body.gripper_transitions = transitions;
         clearAddNodeError();
         if (nodeAddBtn) nodeAddBtn.disabled = true;
         ensureClaim().then(function (held) {
@@ -826,6 +882,7 @@
                         addNodeToCanvas(data.created);
                         if (nodeIdEl) nodeIdEl.value = '';
                         if (nodeTagsEl) nodeTagsEl.value = '';
+                        if (nodeTransitionsEl) nodeTransitionsEl.value = '';
                     });
                 }
                 if (resp.status === 423) {
@@ -849,8 +906,8 @@
         if (!cy || !created) return;
         var nd = nodeData({
             id: created.id, arm: created.arm, rail: created.rail,
-            gripper_stroke: created.gripper_stroke,
-            grip_intent: created.grip_intent || 'none',
+            gripper_states: created.gripper_states || ['empty'],
+            gripper_transitions: created.gripper_transitions || [],
             tags: created.tags || [],
         });
         var station = nd.station;
@@ -882,15 +939,9 @@
     var drawFormEl = document.getElementById('edge-draw-form');
     var drawModeEl = document.getElementById('draw-mode');
     var drawSpeedEl = document.getElementById('draw-speed');
-    var drawGripGroup = document.getElementById('draw-grip-group');
-    var drawGripStrokeEl = document.getElementById('draw-grip-stroke');
-    var drawGripForceEl = document.getElementById('draw-grip-force');
-    var drawReleaseGroup = document.getElementById('draw-release-group');
-    var drawReleaseStrokeEl = document.getElementById('draw-release-stroke');
     var drawCreateBtn = document.getElementById('draw-create-btn');
     var drawCancelBtn = document.getElementById('draw-cancel-btn');
     var drawErrEl = document.getElementById('edge-draw-error');
-    var drawIdentitySwap = false;
 
     function showDrawError(t) { if (drawErrEl) { drawErrEl.textContent = t; drawErrEl.hidden = false; } }
     function clearDrawError() { if (drawErrEl) drawErrEl.hidden = true; }
@@ -927,12 +978,9 @@
         }
     }
 
-    // Show the create form; gripper actuation is now automatic on node arrival
-    // (driven by the target node's id suffix), so edges no longer carry
-    // grip/release action blocks.
+    // Show the create form. Edges never change the gripper — grip/release
+    // lives on the nodes' gripper_transitions, so the form is mode/speed only.
     function openDrawForm() {
-        if (drawGripGroup) drawGripGroup.hidden = true;
-        if (drawReleaseGroup) drawReleaseGroup.hidden = true;
         clearDrawError();
         if (drawFormEl) drawFormEl.hidden = false;
     }
@@ -984,12 +1032,11 @@
 
     function addEdgeToCanvas(created) {
         if (!cy || !created) return;
-        var kind = created.grips ? 'grip' : (created.releases ? 'release' : 'plain');
         cy.add({ group: 'edges', data: {
             id: 'e:' + created.from + '->' + created.to,
             source: created.from, target: created.to,
             label: edgeLabel(created.mode, created.speed, created.preconditions || []),
-            kind: kind, mode: created.mode, speed: created.speed,
+            kind: 'plain', mode: created.mode, speed: created.speed,
             preconditions: created.preconditions || [],
         } });
         applyGroupVisibility();
@@ -1006,10 +1053,18 @@
         var node = live.current_node || null;
         if (currentEl) currentEl.textContent = node || '—';
         var stroke = live.gripper_stroke;
-        if (payloadEl) payloadEl.textContent = stroke != null ? ('stroke ' + stroke) : '—';
+        var state = live.gripper_state || null;
+        if (gripperEl) {
+            gripperEl.textContent = state
+                || (stroke != null ? ('stroke ' + stroke) : '—');
+        }
 
         if (!cy) return;
-        var gripping = node && stroke != null && stroke < 149.5;
+        // Holding = a named non-empty state; fall back to the stroke
+        // heuristic when the state is off-catalog.
+        var gripping = node && (state
+            ? state !== 'empty'
+            : (stroke != null && stroke < 149.5));
 
         // Auto-follow: expand the station the robot is in, collapse the one it
         // left. Runs on station change only (not every tick).
@@ -1142,6 +1197,7 @@
                     graph_mode: mg.graph_mode,
                     current_node: mg.current_node,
                     gripper_stroke: mg.gripper_stroke,
+                    gripper_state: mg.gripper_state,
                 });
             }
             updateClaimIndicator(details.claimed_by || null);

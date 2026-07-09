@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>xArm Motion Graph</title>
-    <link rel="stylesheet" href="style.css?v=20260604a">
-    <link rel="stylesheet" href="graph.css?v=20260604a">
+    <link rel="stylesheet" href="style.css?v=20260709a">
+    <link rel="stylesheet" href="graph.css?v=20260709a">
 </head>
 <body>
     <div class="graph-page">
@@ -22,8 +22,8 @@
                     <span class="inline-label">Current</span>
                     <strong id="graph-current">—</strong>
                     <span class="sep">|</span>
-                    <span class="inline-label">Payload</span>
-                    <strong id="graph-payload">—</strong>
+                    <span class="inline-label">Gripper</span>
+                    <strong id="graph-gripper">—</strong>
                 </div>
                 <div id="claim-status" class="claim-status claim-free">Control: nobody (open)</div>
             </div>
@@ -43,12 +43,11 @@
                     <ul class="legend-list">
                         <li><span class="legend-swatch swatch-current"></span> current node (live)</li>
                         <li><span class="legend-swatch swatch-holding"></span> holding labware</li>
-                        <li><span class="legend-glyph">▣</span> state holds a plate&nbsp;·&nbsp;<span class="legend-glyph">▢</span> empty</li>
-                        <li><span class="legend-line line-grip"></span> grip edge</li>
-                        <li><span class="legend-line line-release"></span> release edge</li>
-                        <li><span class="legend-line line-plain"></span> move edge</li>
+                        <li><span class="legend-glyph">▢</span> empty leaf&nbsp;·&nbsp;<span class="legend-glyph">▣</span> grip leaf&nbsp;·&nbsp;<span class="legend-glyph">◇</span> reach leaf</li>
+                        <li><span class="legend-glyph">⇄</span> grip/release allowed here</li>
+                        <li><span class="legend-line line-plain"></span> move edge (gripper unchanged)</li>
                     </ul>
-                    <p class="muted legend-note">Edge label = <code>mode @ speed</code>. Node colour groups by station (first tag). Every node shows its gripper intent: <code>▣</code> grip/position, <code>▢</code> open.</p>
+                    <p class="muted legend-note">Edge label = <code>mode @ speed</code>. Node colour groups by station (first tag). A node is an arm position; the badges are its gripper leaves — the states you may occupy there. The gripper only changes at nodes marked <code>⇄</code>, never along an edge.</p>
                     <p class="muted legend-note">Each station has a <strong>home node</strong> (heavier border, e.g. <code>deck_home</code>) shown with <code>▸ N</code> hidden siblings. Click it to fan the station's nodes out from the home node; click again to collapse back to it. Drag nodes to arrange them; positions, open stations and the view are remembered across reopen. The robot's station auto-expands; manual toggling is locked while a workflow holds control.</p>
                     <div class="legend-actions">
                         <button id="fit-btn" class="btn btn-secondary">Fit view</button>
@@ -69,16 +68,16 @@
                         <select id="node-rail"></select>
                     </div>
                     <div class="form-group">
-                        <label for="node-gripper">Gripper</label>
-                        <select id="node-gripper"></select>
+                        <label>Gripper states (leaves)</label>
+                        <div id="node-gripper-states" class="checkbox-row"></div>
                     </div>
                     <div class="form-group">
-                        <label for="node-payload">Payload</label>
-                        <select id="node-payload"></select>
+                        <label for="node-gripper-transitions">Gripper transitions (optional)</label>
+                        <input type="text" id="node-gripper-transitions" placeholder="e.g. empty->grip_120, grip_120->empty">
                     </div>
                     <div class="form-group">
                         <label for="node-id">Node id</label>
-                        <input type="text" id="node-id" placeholder="e.g. deck_solid_high_grip_120">
+                        <input type="text" id="node-id" placeholder="e.g. deck_solid_high">
                     </div>
                     <div class="form-group">
                         <label for="node-tags">Tags (comma-separated, optional)</label>
@@ -92,7 +91,7 @@
                 </div>
 
                 <!-- Draw edge: pick a source node then a target node, set
-                     mode/speed (+ grip/release when payload changes), create. -->
+                     mode/speed, create. Edges never change the gripper. -->
                 <div id="edge-draw-panel" class="card edge-draw-panel">
                     <h2 class="card-toggle">Draw edge <span class="card-caret">▸</span></h2>
                     <div class="card-body" hidden>
@@ -114,15 +113,6 @@
                         <div class="form-group">
                             <label for="draw-speed">Speed (optional)</label>
                             <input type="number" id="draw-speed" min="0.1" step="1" placeholder="—">
-                        </div>
-                        <div class="form-group" id="draw-grip-group" hidden>
-                            <label>Grip (empty → held)</label>
-                            <input type="number" id="draw-grip-stroke" placeholder="stroke">
-                            <input type="number" id="draw-grip-force" placeholder="force (optional)">
-                        </div>
-                        <div class="form-group" id="draw-release-group" hidden>
-                            <label for="draw-release-stroke">Release stroke (optional)</label>
-                            <input type="number" id="draw-release-stroke" placeholder="open stroke">
                         </div>
                         <div class="edge-panel-actions">
                             <button id="draw-create-btn" class="btn btn-primary">Create edge</button>
@@ -173,6 +163,6 @@
     <!-- Shared SDL2 auth banner (served by ac_auth), same top bar as every UI. -->
     <script src="/auth/banner.js"></script>
     <script src="cytoscape.min.js"></script>
-    <script src="graph.js?v=20260611a"></script>
+    <script src="graph.js?v=20260709a"></script>
 </body>
 </html>

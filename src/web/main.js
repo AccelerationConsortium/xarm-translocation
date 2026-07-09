@@ -786,6 +786,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // stays correct whether pinned, off-grid, or mid-dropdown-interaction.
         if (currentEl) currentEl.textContent = current || '(off-grid)';
 
+        // Gripper leaf row: live state readout + whitelisted transitions.
+        renderDriveGripperRow(motionGraph, gating);
+
         // Don't rebuild options while the operator is interacting with the
         // dropdown — that would stomp their open selection mid-pick.
         if (document.activeElement === select) return;
@@ -830,6 +833,72 @@ document.addEventListener('DOMContentLoaded', () => {
                 ? '(take control to drive)'
                 : '(unavailable while disconnected, in manual mode, or moving)';
             hint.hidden = false;
+        }
+    }
+
+    function renderDriveGripperRow(motionGraph, gating = {}) {
+        const stateEl = document.getElementById('drive-gripper-state');
+        const gripSelect = document.getElementById('drive-gripper-select');
+        const gripBtn = document.getElementById('drive-gripper-btn');
+        const gripHint = document.getElementById('drive-gripper-hint');
+        if (!stateEl || !gripSelect || !gripBtn || !gripHint) return;
+
+        const state = motionGraph.gripper_state;
+        stateEl.textContent = state || '(unknown)';
+
+        const targets = motionGraph.allowed_gripper_targets || [];
+
+        // Don't rebuild options while the operator has the dropdown open.
+        if (document.activeElement !== gripSelect) {
+            const previous = gripSelect.value;
+            gripSelect.innerHTML = '';
+            targets.forEach(name => {
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                gripSelect.appendChild(opt);
+            });
+            if (targets.includes(previous)) {
+                gripSelect.value = previous;
+            }
+        }
+
+        const canDrive = gating.connected === true
+            && gating.manual !== true
+            && claimToken !== null
+            && !isRobotMoving;
+        const canGrip = canDrive && targets.length > 0;
+        gripSelect.disabled = !canGrip;
+        gripBtn.disabled = !canGrip;
+        if (canGrip) {
+            gripHint.hidden = true;
+        } else if (!canDrive) {
+            gripHint.textContent = claimToken === null
+                ? '(take control to change the gripper)'
+                : '(unavailable while disconnected, in manual mode, or moving)';
+            gripHint.hidden = false;
+        } else {
+            gripHint.textContent = motionGraph.current_node
+                ? (state
+                    ? '(no gripper transitions allowed at this node)'
+                    : '(gripper state unknown — recover in Motion Graph)')
+                : '(off-grid — recover in Motion Graph)';
+            gripHint.hidden = false;
+        }
+    }
+
+    async function sendDriveGripper() {
+        const gripSelect = document.getElementById('drive-gripper-select');
+        if (!gripSelect || !gripSelect.value) {
+            showMessage('Select a gripper state first.', 'error');
+            return;
+        }
+        const result = await apiRequest('/control/graph/gripper', 'POST', {
+            state: gripSelect.value,
+        });
+        if (result) {
+            addLogEntry(`gripper -> ${result.gripper_state}`, 'info');
+            fetchAndUpdateStatus();
         }
     }
 
@@ -1076,6 +1145,8 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('drive-dest-select'),
             document.getElementById('drive-dest-speed'),
             document.getElementById('drive-send-btn'),
+            document.getElementById('drive-gripper-select'),
+            document.getElementById('drive-gripper-btn'),
             ...jogBtnIds.map(id => document.getElementById(id)),
             ...jointInputIds.map(id => document.getElementById(id)),
         ];
@@ -1112,6 +1183,8 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('drive-dest-select'),
             document.getElementById('drive-dest-speed'),
             document.getElementById('drive-send-btn'),
+            document.getElementById('drive-gripper-select'),
+            document.getElementById('drive-gripper-btn'),
             ...jogBtnIds.map(id => document.getElementById(id)),
             ...jointInputIds.map(id => document.getElementById(id)),
         ];
@@ -1572,10 +1645,15 @@ document.addEventListener('DOMContentLoaded', () => {
         mgRecoverAccept.addEventListener('click', acceptRecover);
     }
 
-    // Drive Arm card listener: Send drives the arm to the selected node.
+    // Drive Arm card listeners: Send drives the arm to the selected node;
+    // Set Gripper changes the gripper leaf while parked at a node.
     const driveSendBtn = document.getElementById('drive-send-btn');
     if (driveSendBtn) {
         driveSendBtn.addEventListener('click', sendDriveArm);
+    }
+    const driveGripperBtn = document.getElementById('drive-gripper-btn');
+    if (driveGripperBtn) {
+        driveGripperBtn.addEventListener('click', sendDriveGripper);
     }
 
     function currentGripperForce() {

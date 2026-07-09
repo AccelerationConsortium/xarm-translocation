@@ -1,12 +1,14 @@
-"""Unit tests for MotionGraph.
+"""Unit tests for MotionGraph (schema 0.2 — gripper-leaf model).
 
 Covers:
 - the real motion_graph.yaml loads and is internally consistent
-- the loader's query API (nodes, edges, outgoing, find_node, find_edge)
-- id-suffix parsing (gripper_stroke + grip_intent)
-- explicit fallback for legacy _press nodes
-- stroke range validation
-- duplicate node ids and duplicate (from, to) edges are rejected
+- the gripper-state catalog (loading, validation, resolve_gripper_state)
+- the loader's query API (nodes, edges, outgoing, 2-tuple find_node, find_edge)
+- per-node gripper_states / gripper_transitions validation
+- state-aware queries (edge_allows_gripper, outgoing_for_state,
+  allowed_gripper_targets)
+- duplicate node ids, duplicate (arm, rail) positions, duplicate edges
+- edges whose endpoints share no gripper state are rejected
 - precondition registration
 - unreachable_nodes / adjacency_summary behaviors
 """
@@ -31,7 +33,6 @@ from src.core.motion_graph import (
     MotionGraph,
     Node,
     UnknownNodeError,
-    parse_node_gripper,
 )
 
 
@@ -40,55 +41,74 @@ REAL_YAML = os.path.abspath(
 )
 
 
-def _base_dict() -> dict:
-    """Minimum valid dict using the new id-suffix convention."""
+def _catalog() -> dict:
     return {
-        "schema_version": "0.1",
+        "empty":    {"stroke": 150, "intent": "none"},
+        "grip_120": {"stroke": 120, "intent": "grasp"},
+        "reach_90": {"stroke": 90,  "intent": "position"},
+    }
+
+
+def _base_dict() -> dict:
+    """Minimum valid schema-0.2 dict: two positions, one of which allows
+    holding and can grip/release while parked."""
+    return {
+        "schema_version": "0.2",
+        "gripper_states": _catalog(),
         "nodes": [
-            {"id": "a_empty",    "arm": "robot_home",    "rail": "Home"},
-            {"id": "b_empty",    "arm": "uplc_plate_high", "rail": "Home"},
-            {"id": "b_grip_120", "arm": "uplc_plate_high", "rail": "Home"},
+            {"id": "a", "arm": "robot_home", "rail": "Home"},
+            {"id": "b", "arm": "uplc_plate_high", "rail": "Home",
+             "gripper_states": ["empty", "grip_120"],
+             "gripper_transitions": [["empty", "grip_120"], ["grip_120", "empty"]]},
         ],
         "edges": [
-            {"from": "a_empty",    "to": "b_empty",    "mode": "joint",  "speed": 30},
-            {"from": "b_empty",    "to": "a_empty",    "mode": "joint",  "speed": 30},
-            {"from": "b_empty",    "to": "b_grip_120", "mode": "linear", "speed": 10},
-            {"from": "b_grip_120", "to": "b_empty",    "mode": "linear", "speed": 10},
+            {"from": "a", "to": "b", "mode": "joint",  "speed": 30},
+            {"from": "b", "to": "a", "mode": "joint",  "speed": 30},
         ],
     }
 
 
-# ── id-suffix parsing ────────────────────────────────────────────────
+# ── Catalog ──────────────────────────────────────────────────────────
 
 
-def test_parse_node_gripper_empty_suffix():
-    stroke, intent = parse_node_gripper("deck_slot1_high_empty")
-    assert stroke == 150.0
-    assert intent == GripIntent.NONE
+def test_catalog_loads_states_with_stroke_and_intent():
+    graph = MotionGraph.from_dict(_base_dict(), preconditions=DEFAULT_PRECONDITIONS)
+    gs = graph.gripper_state("grip_120")
+    assert gs.stroke == 120.0
+    assert gs.intent == GripIntent.GRASP
+    assert graph.gripper_state("reach_90").intent == GripIntent.POSITION
+    assert graph.gripper_state("empty").intent == GripIntent.NONE
 
 
-def test_parse_node_gripper_bare_name():
-    stroke, intent = parse_node_gripper("robot_home")
-    assert stroke == 150.0
-    assert intent == GripIntent.NONE
+def test_catalog_missing_empty_is_rejected():
+    data = _base_dict()
+    del data["gripper_states"]["empty"]
+    # 'a' defaults to [empty] so this also breaks node validation — but
+    # the catalog check fires first.
+    with pytest.raises(GraphError, match="must define 'empty'"):
+        MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
 
 
-def test_parse_node_gripper_grip_suffix():
-    stroke, intent = parse_node_gripper("deck_slot1_low_grip_120")
-    assert stroke == 120.0
-    assert intent == GripIntent.GRASP
+def test_catalog_stroke_out_of_range_is_rejected():
+    data = _base_dict()
+    data["gripper_states"]["too_narrow"] = {"stroke": 50, "intent": "grasp"}
+    with pytest.raises(GraphError, match="outside the valid range"):
+        MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
 
 
-def test_parse_node_gripper_open_suffix():
-    stroke, intent = parse_node_gripper("transit_open_130")
-    assert stroke == 130.0
-    assert intent == GripIntent.POSITION
+def test_catalog_unknown_intent_is_rejected():
+    data = _base_dict()
+    data["gripper_states"]["weird"] = {"stroke": 100, "intent": "squeeze"}
+    with pytest.raises(GraphError, match="unknown intent"):
+        MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
 
 
-def test_parse_node_gripper_fractional_stroke():
-    stroke, intent = parse_node_gripper("some_pose_grip_85")
-    assert stroke == 85.0
-    assert intent == GripIntent.GRASP
+def test_resolve_gripper_state_maps_stroke_to_name():
+    graph = MotionGraph.from_dict(_base_dict(), preconditions=DEFAULT_PRECONDITIONS)
+    assert graph.resolve_gripper_state(150.0) == "empty"
+    assert graph.resolve_gripper_state(120.4) == "grip_120"
+    assert graph.resolve_gripper_state(100.0) is None
+    assert graph.resolve_gripper_state(None) is None
 
 
 # ── Real YAML loads ──────────────────────────────────────────────────
@@ -100,19 +120,36 @@ def test_real_yaml_loads_and_validates():
     nodes = {n.id for n in graph.nodes}
     assert "robot_home" in nodes
     assert "uplc_draw_open_close" in nodes
-    # _held nodes must now be _grip_120
-    assert "opentrons_2_high_grip_120" in nodes
-    assert "opentrons_2_high_held" not in nodes
+    # Nodes are bare pose names now — no gripper-state stacking.
+    assert "opentrons_2_high" in nodes
+    assert "opentrons_2_high_empty" not in nodes
+    assert "opentrons_2_high_grip_120" not in nodes
     # The drawer close pose is a leaf for direct return — must back out.
     assert graph.allowed_targets("uplc_draw_open_close") == ["uplc_draw_open_min"]
 
 
-def test_real_yaml_press_nodes_have_explicit_fields():
-    """Legacy _press nodes must still load and carry gripper_stroke=120, GRASP intent."""
+def test_real_yaml_has_four_state_catalog():
+    graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
+    names = {gs.name for gs in graph.gripper_states}
+    assert names == {"empty", "grip_120", "reach_90", "grip_80"}
+    assert graph.gripper_state("grip_120").intent == GripIntent.GRASP
+    assert graph.gripper_state("reach_90").stroke == 90.0
+
+
+def test_real_yaml_press_nodes_are_grip_only():
+    """The *_press nodes may only be occupied while holding (grip_120)."""
     graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
     press_node = graph.node("deck_slot1_low_press")
-    assert press_node.gripper_stroke == 120.0
-    assert press_node.grip_intent == GripIntent.GRASP
+    assert press_node.gripper_states == ("grip_120",)
+
+
+def test_real_yaml_pick_nodes_have_transitions():
+    graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
+    n = graph.node("deck_slot1_low")
+    assert ("empty", "grip_120") in n.gripper_transitions
+    assert ("grip_120", "empty") in n.gripper_transitions
+    # Transit nodes allow occupancy but no transitions.
+    assert graph.node("deck_high").gripper_transitions == ()
 
 
 def test_real_yaml_reachability_from_home():
@@ -128,36 +165,34 @@ def test_real_yaml_reachability_from_home():
 # ── Query API ────────────────────────────────────────────────────────
 
 
-def test_find_node_resolves_full_tuple():
+def test_find_node_resolves_arm_rail_pair():
     graph = MotionGraph.from_dict(_base_dict(), preconditions=DEFAULT_PRECONDITIONS)
-    n = graph.find_node("robot_home", "Home", 150.0)
-    assert n is not None and n.id == "a_empty"
+    n = graph.find_node("robot_home", "Home")
+    assert n is not None and n.id == "a"
 
 
-def test_find_node_returns_none_for_partial_tuple():
+def test_find_node_returns_none_for_partial_pair():
     graph = MotionGraph.from_dict(_base_dict(), preconditions=DEFAULT_PRECONDITIONS)
-    assert graph.find_node(None, "Home", 150.0) is None
-    assert graph.find_node("robot_home", None, 150.0) is None
-    assert graph.find_node("robot_home", "Home", None) is None
+    assert graph.find_node(None, "Home") is None
+    assert graph.find_node("robot_home", None) is None
 
 
-def test_find_node_returns_none_for_unmatched_stroke():
+def test_find_node_returns_none_for_unknown_position():
     graph = MotionGraph.from_dict(_base_dict(), preconditions=DEFAULT_PRECONDITIONS)
-    # There is no node at robot_home with stroke 71.
-    assert graph.find_node("robot_home", "Home", 71.0) is None
+    assert graph.find_node("robot_home", "Deck") is None
 
 
-def test_find_node_resolves_grip_node():
+def test_default_gripper_states_is_empty_only():
     graph = MotionGraph.from_dict(_base_dict(), preconditions=DEFAULT_PRECONDITIONS)
-    n = graph.find_node("uplc_plate_high", "Home", 120.0)
-    assert n is not None and n.id == "b_grip_120"
+    assert graph.node("a").gripper_states == ("empty",)
+    assert graph.node("a").gripper_transitions == ()
 
 
 def test_outgoing_handles_sentinels():
     graph = MotionGraph.from_dict(_base_dict(), preconditions=DEFAULT_PRECONDITIONS)
     assert graph.outgoing(None) == []
     assert graph.outgoing(UNKNOWN_NODE) == []
-    assert len(graph.outgoing("b_empty")) == 2  # b_empty->a_empty and b_empty->b_grip_120
+    assert len(graph.outgoing("b")) == 1
 
 
 def test_node_lookup_raises_on_missing():
@@ -168,84 +203,97 @@ def test_node_lookup_raises_on_missing():
 
 def test_find_edge_returns_edge_or_none():
     graph = MotionGraph.from_dict(_base_dict(), preconditions=DEFAULT_PRECONDITIONS)
-    e = graph.find_edge("a_empty", "b_empty")
+    e = graph.find_edge("a", "b")
     assert e is not None
     assert e.mode == MoveMode.JOINT
-    assert graph.find_edge("a_empty", "b_grip_120") is None
+    assert graph.find_edge("a", "nonexistent") is None
 
 
 def test_adjacency_summary_lists_every_node():
     graph = MotionGraph.from_dict(_base_dict(), preconditions=DEFAULT_PRECONDITIONS)
     summary = graph.adjacency_summary()
-    assert set(summary.keys()) == {"a_empty", "b_empty", "b_grip_120"}
-    assert summary["a_empty"] == ["b_empty"]
-    assert summary["b_grip_120"] == ["b_empty"]
+    assert set(summary.keys()) == {"a", "b"}
+    assert summary["a"] == ["b"]
+    assert summary["b"] == ["a"]
 
 
-# ── Stroke range validation ──────────────────────────────────────────
+# ── State-aware queries ──────────────────────────────────────────────
 
 
-def test_stroke_below_range_is_rejected():
-    data = _base_dict()
-    data["nodes"].append({
-        "id": "bad_node", "arm": "robot_home", "rail": "Home",
-        "gripper_stroke": 50, "grip_intent": "none",
-    })
-    with pytest.raises(GraphError, match="outside the valid range"):
-        MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
-
-
-def test_stroke_above_range_is_rejected():
-    data = _base_dict()
-    data["nodes"].append({
-        "id": "bad_node", "arm": "robot_home", "rail": "Home",
-        "gripper_stroke": 200, "grip_intent": "none",
-    })
-    with pytest.raises(GraphError, match="outside the valid range"):
-        MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
-
-
-# ── Legacy node with explicit fields ────────────────────────────────
-
-
-def test_legacy_node_with_explicit_fields_loads():
-    data = _base_dict()
-    data["nodes"].append({
-        "id": "some_low_press", "arm": "robot_home", "rail": "Home",
-        "gripper_stroke": 120, "grip_intent": "grasp",
-    })
-    graph = MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
-    n = graph.node("some_low_press")
-    assert n.gripper_stroke == 120.0
-    assert n.grip_intent == GripIntent.GRASP
-
-
-def test_legacy_node_without_explicit_fields_raises():
-    """A node with an explicit but invalid grip_intent value must error."""
-    data = _base_dict()
-    data["nodes"].append({
-        "id": "mystery_press", "arm": "robot_home", "rail": "Home",
-        "gripper_stroke": 120, "grip_intent": "unknown_intent",
-    })
-    with pytest.raises(GraphError, match="unknown grip_intent"):
-        MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
-
-
-# ── Node grip_intent from id suffix ─────────────────────────────────
-
-
-def test_grip_node_has_grasp_intent():
+def test_edge_allows_gripper_requires_state_at_both_ends():
     graph = MotionGraph.from_dict(_base_dict(), preconditions=DEFAULT_PRECONDITIONS)
-    n = graph.node("b_grip_120")
-    assert n.grip_intent == GripIntent.GRASP
-    assert n.gripper_stroke == 120.0
+    edge = graph.find_edge("a", "b")
+    # empty is allowed at both a and b.
+    assert graph.edge_allows_gripper(edge, "empty") is True
+    # grip_120 is allowed at b but not at a.
+    assert graph.edge_allows_gripper(edge, "grip_120") is False
+    # unknown state never rides an edge.
+    assert graph.edge_allows_gripper(edge, None) is False
 
 
-def test_empty_node_has_none_intent():
+def test_outgoing_for_state_filters_edges():
     graph = MotionGraph.from_dict(_base_dict(), preconditions=DEFAULT_PRECONDITIONS)
-    n = graph.node("a_empty")
-    assert n.grip_intent == GripIntent.NONE
-    assert n.gripper_stroke == 150.0
+    # From b with empty: b->a allowed.
+    assert [e.to_node for e in graph.outgoing_for_state("b", "empty")] == ["a"]
+    # From b while holding: b->a would carry grip_120 into a (empty-only) — blocked.
+    assert graph.outgoing_for_state("b", "grip_120") == []
+    assert graph.allowed_targets_for_state("b", "grip_120") == []
+    assert graph.allowed_targets_for_state("b", None) == []
+
+
+def test_allowed_gripper_targets_uses_node_whitelist():
+    graph = MotionGraph.from_dict(_base_dict(), preconditions=DEFAULT_PRECONDITIONS)
+    assert graph.allowed_gripper_targets("b", "empty") == ["grip_120"]
+    assert graph.allowed_gripper_targets("b", "grip_120") == ["empty"]
+    # 'a' whitelists no transitions.
+    assert graph.allowed_gripper_targets("a", "empty") == []
+    # Sentinels / unknowns yield nothing.
+    assert graph.allowed_gripper_targets(None, "empty") == []
+    assert graph.allowed_gripper_targets(UNKNOWN_NODE, "empty") == []
+    assert graph.allowed_gripper_targets("b", None) == []
+
+
+# ── Per-node validation ──────────────────────────────────────────────
+
+
+def test_node_with_unknown_gripper_state_is_rejected():
+    data = _base_dict()
+    data["nodes"][0]["gripper_states"] = ["empty", "grip_9000"]
+    with pytest.raises(GraphError, match="unknown gripper_state"):
+        MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+
+
+def test_transition_outside_node_states_is_rejected():
+    data = _base_dict()
+    # 'a' only allows empty; a transition to grip_120 is incoherent.
+    data["nodes"][0]["gripper_transitions"] = [["empty", "grip_120"]]
+    with pytest.raises(GraphError, match="outside the node's gripper_states"):
+        MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+
+
+def test_noop_transition_is_rejected():
+    data = _base_dict()
+    data["nodes"][1]["gripper_transitions"] = [["empty", "empty"]]
+    with pytest.raises(GraphError, match="no-op"):
+        MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+
+
+def test_malformed_transition_entry_is_rejected():
+    data = _base_dict()
+    data["nodes"][1]["gripper_transitions"] = ["empty->grip_120"]
+    with pytest.raises(GraphError, match="pairs"):
+        MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+
+
+def test_duplicate_arm_rail_position_is_rejected():
+    """One node per physical position — a second node at the same
+    (arm, rail) is stacking, which schema 0.2 forbids."""
+    data = _base_dict()
+    data["nodes"].append({
+        "id": "a_clone", "arm": "robot_home", "rail": "Home",
+    })
+    with pytest.raises(GraphError, match="share the same"):
+        MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
 
 
 # ── Topology error cases ─────────────────────────────────────────────
@@ -253,37 +301,48 @@ def test_empty_node_has_none_intent():
 
 def test_unknown_schema_version_is_rejected():
     data = _base_dict()
-    data["schema_version"] = "9.9"
+    data["schema_version"] = "0.1"
     with pytest.raises(GraphError, match="unsupported schema_version"):
         MotionGraph.from_dict(data)
 
 
 def test_duplicate_node_id_is_rejected():
     data = _base_dict()
-    data["nodes"].append({"id": "a_empty", "arm": "robot_home", "rail": "Home"})
+    data["nodes"].append({"id": "a", "arm": "other_pose", "rail": "Home"})
     with pytest.raises(GraphError, match="duplicate node id"):
         MotionGraph.from_dict(data)
 
 
 def test_duplicate_edge_pair_is_rejected():
     data = _base_dict()
-    data["edges"].append({"from": "a_empty", "to": "b_empty", "mode": "linear", "speed": 99})
+    data["edges"].append({"from": "a", "to": "b", "mode": "linear", "speed": 99})
     with pytest.raises(GraphError, match="duplicate edge"):
         MotionGraph.from_dict(data)
 
 
 def test_edge_to_unknown_node_is_rejected():
     data = _base_dict()
-    data["edges"].append({"from": "a_empty", "to": "ghost", "mode": "joint"})
+    data["edges"].append({"from": "a", "to": "ghost", "mode": "joint"})
     with pytest.raises(GraphError, match="edge to unknown node"):
         MotionGraph.from_dict(data)
 
 
+def test_edge_with_no_shared_gripper_state_is_rejected():
+    """An edge between an empty-only node and a grip-only node can never
+    be traversed (the state is invariant along an edge)."""
+    data = _base_dict()
+    data["nodes"].append({
+        "id": "press", "arm": "press_pose", "rail": "Home",
+        "gripper_states": ["grip_120"],
+    })
+    data["edges"].append({"from": "a", "to": "press", "mode": "linear"})
+    with pytest.raises(GraphError, match="share no gripper state"):
+        MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+
+
 def test_unregistered_precondition_is_rejected():
     data = _base_dict()
-    for e in data["edges"]:
-        if e["from"] == "a_empty" and e["to"] == "b_empty":
-            e["preconditions"] = ["mystery_guard"]
+    data["edges"][0]["preconditions"] = ["mystery_guard"]
     with pytest.raises(GraphError, match="unregistered precondition"):
         MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
 
@@ -295,4 +354,4 @@ def test_unreachable_nodes_detects_isolated_subgraphs():
     data = _base_dict()
     data["nodes"].append({"id": "isolated", "arm": "z", "rail": "Home"})
     graph = MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
-    assert "isolated" in graph.unreachable_nodes("a_empty")
+    assert "isolated" in graph.unreachable_nodes("a")

@@ -31,16 +31,24 @@ from src.core.motion_graph import (
     DEFAULT_PRECONDITIONS,
     EdgeNotAllowedError,
     GraphMode,
+    GripperTransitionError,
     MotionGraph,
 )
 
 
 def _test_graph_dict():
     return {
-        "schema_version": "0.1",
+        "schema_version": "0.2",
+        "gripper_states": {
+            "empty":    {"stroke": 150, "intent": "none"},
+            "grip_120": {"stroke": 120, "intent": "grasp"},
+        },
         "nodes": [
-            {"id": "n_home",   "arm": "home",   "rail": "Home"},
-            {"id": "n_pickup", "arm": "pickup", "rail": "Home"},
+            {"id": "n_home",   "arm": "home",   "rail": "Home",
+             "gripper_states": ["empty", "grip_120"],
+             "gripper_transitions": [["empty", "grip_120"], ["grip_120", "empty"]]},
+            {"id": "n_pickup", "arm": "pickup", "rail": "Home",
+             "gripper_states": ["empty", "grip_120"]},
         ],
         "edges": [
             {"from": "n_home", "to": "n_pickup", "mode": "linear", "speed": 25},
@@ -59,11 +67,13 @@ def mock_controller_with_graph():
     )
     mc.graph_mode = GraphMode.ADVISORY
     mc.current_node = "n_home"
+    mc.current_gripper_state = "empty"
     mc.last_arm_pose_name = "home"
     mc.last_rail_location_name = "Home"
     mc.last_gripper_position = 150
     mc.last_transition = None
     mc.reachable_node_ids.return_value = ["n_pickup"]
+    mc.allowed_gripper_targets.return_value = ["grip_120"]
     mc.is_connected.return_value = True
     mc.is_alive = True
     mc.host = "127.0.0.1"
@@ -100,9 +110,17 @@ def test_get_graph_returns_snapshot(graph_client, mock_controller_with_graph):
     assert body["current_node"] == "n_home"
     assert body["reachable_nodes"] == ["n_pickup"]
     assert "adjacency" in body
-    # New fields
-    assert "nodes" in body
-    assert body["nodes"][0]["gripper_stroke"] is not None
+    # Schema 0.2 serialization: catalog + per-node leaves + live state.
+    assert body["gripper_state"] == "empty"
+    assert body["allowed_gripper_targets"] == ["grip_120"]
+    catalog = body["gripper_state_catalog"]
+    assert catalog["grip_120"] == {"stroke": 120.0, "intent": "grasp"}
+    nodes = {n["id"]: n for n in body["nodes"]}
+    assert nodes["n_home"]["gripper_states"] == ["empty", "grip_120"]
+    assert nodes["n_home"]["gripper_transitions"] == [
+        ["empty", "grip_120"], ["grip_120", "empty"],
+    ]
+    assert "gripper_stroke" not in nodes["n_home"]
 
 
 def test_get_graph_returns_404_when_no_graph(graph_client, mock_controller_with_graph):
@@ -189,23 +207,27 @@ def test_record_appends_edge_to_yaml_file(
     """End-to-end: record a transition, verify YAML grew, in-memory
     graph reloaded with the new edge present."""
     # Hand-formatted block-style YAML with a single seed edge — text
-    # append assumes block style (matches the real motion_graph.yaml).
+    # append assumes block style with column-0 list items (matches the
+    # real motion_graph.yaml).
     initial_yaml = """\
-schema_version: "0.1"
+schema_version: "0.2"
+
+gripper_states:
+  empty: {stroke: 150, intent: none}
 
 nodes:
-  - id: a
-    arm: home
-    rail: Home
-  - id: b
-    arm: pickup
-    rail: Home
+- id: a
+  arm: home
+  rail: Home
+- id: b
+  arm: pickup
+  rail: Home
 
 edges:
-  - from: a
-    to:   b
-    mode: joint
-    speed: 30
+- from: a
+  to: b
+  mode: joint
+  speed: 30
 """
     target_dir = tmp_path / "src" / "settings"
     target_dir.mkdir(parents=True)
@@ -249,7 +271,8 @@ def test_record_returns_400_on_validation_failure(
     the YAML and must return 400."""
     import yaml as _yaml
     initial = {
-        "schema_version": "0.1",
+        "schema_version": "0.2",
+        "gripper_states": {"empty": {"stroke": 150, "intent": "none"}},
         "nodes": [
             {"id": "a", "arm": "home", "rail": "Home"},
         ],
@@ -275,3 +298,53 @@ def test_record_returns_400_on_validation_failure(
     # YAML must be unchanged.
     reloaded = _yaml.safe_load((target_dir / "motion_graph.yaml").read_text())
     assert reloaded["edges"] == []
+
+
+# ── POST /control/graph/gripper ──────────────────────────────────────
+
+
+def test_gripper_endpoint_success(graph_client, mock_controller_with_graph):
+    mock_controller_with_graph.set_gripper_state.return_value = True
+    mock_controller_with_graph.current_gripper_state = "grip_120"
+    mock_controller_with_graph.allowed_gripper_targets.return_value = ["empty"]
+    resp = graph_client.post("/control/graph/gripper", json={"state": "grip_120"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["gripper_state"] == "grip_120"
+    assert body["allowed_gripper_targets"] == ["empty"]
+    mock_controller_with_graph.set_gripper_state.assert_called_once_with("grip_120")
+
+
+def test_gripper_endpoint_unknown_state_returns_422(graph_client):
+    resp = graph_client.post("/control/graph/gripper", json={"state": "grip_9000"})
+    assert resp.status_code == 422
+
+
+def test_gripper_endpoint_transition_not_allowed_returns_409(
+    graph_client, mock_controller_with_graph,
+):
+    mock_controller_with_graph.set_gripper_state.side_effect = GripperTransitionError(
+        "n_pickup", "empty", "grip_120",
+        "transition 'empty' -> 'grip_120' is not whitelisted at node 'n_pickup'",
+    )
+    resp = graph_client.post("/control/graph/gripper", json={"state": "grip_120"})
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["error"] == "gripper_transition_not_allowed"
+    assert detail["node"] == "n_pickup"
+    assert detail["from_state"] == "empty"
+    assert detail["to_state"] == "grip_120"
+
+
+def test_gripper_endpoint_verification_failure_returns_500(
+    graph_client, mock_controller_with_graph,
+):
+    mock_controller_with_graph.set_gripper_state.return_value = False
+    resp = graph_client.post("/control/graph/gripper", json={"state": "grip_120"})
+    assert resp.status_code == 500
+
+
+def test_gripper_endpoint_404_when_no_graph(graph_client, mock_controller_with_graph):
+    mock_controller_with_graph.motion_graph = None
+    resp = graph_client.post("/control/graph/gripper", json={"state": "grip_120"})
+    assert resp.status_code == 404

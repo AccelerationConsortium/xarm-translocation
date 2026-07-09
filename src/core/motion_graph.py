@@ -2,29 +2,27 @@
 
 Loads the whitelist of allowed transitions from ``motion_graph.yaml`` and
 answers "given my current node, what can I do next?". Pure data — no
-hardware coupling. The controller is responsible for tracking the three
-dimensions (arm pose name, rail location name, gripper commanded stroke)
-and asking ``MotionGraph.find_node(...)`` to resolve them to a node id.
+hardware coupling. The controller is responsible for tracking the arm
+pose name and rail location name (which resolve to a node) plus the
+gripper state (which resolves to a leaf of that node).
 
-Node gripper stroke and intent are encoded in the node id suffix:
+Schema 0.2 model:
 
-    *_empty  (and bare pose names) → stroke 150 (fully open), intent NONE
-    *_grip_<n>                     → stroke n, intent GRASP
-                                     (object expected; actual must stay
-                                     above n or the grasp is considered
-                                     failed)
-    *_open_<n>                     → stroke n, intent POSITION
-                                     (free travel; jaws must reach n or
-                                     the move is considered blocked)
-
-Nodes whose id does not match any of the above suffixes (e.g. legacy
-``*_press`` nodes) must carry explicit ``gripper_stroke`` + ``grip_intent``
-fields in the YAML as a bridge until renamed.
+- A NODE is an arm position only: a named arm pose from
+  ``joint_config.yaml`` combined with a rail location. One node per
+  physical position — gripper state is NOT part of node identity.
+- A global ``gripper_states`` catalog names the allowed gripper leaves
+  (e.g. ``empty``, ``grip_120``, ``reach_90``, ``grip_80``), each with a
+  commanded stroke and a verification intent.
+- Each node lists the ``gripper_states`` you may OCCUPY there and the
+  ``gripper_transitions`` (state changes) allowed WHILE PARKED there.
+- EDGES never change the gripper. An edge is traversable with gripper
+  state G iff G is allowed at both endpoints. The gripper may only
+  change at a node, through that node's transition whitelist.
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -33,19 +31,19 @@ from typing import Any, Callable, Iterable
 import yaml
 
 
-SCHEMA_VERSION = "0.1"
+SCHEMA_VERSION = "0.2"
 
 # Sentinel: controller cannot pin its state to a known node (fresh boot,
 # after STOP, after a raw cartesian/joint/rail move). The graph reports
 # zero outgoing edges; recovery is by explicit operator declaration.
 UNKNOWN_NODE = "__unknown__"
 
-# Regex patterns for node id suffix parsing.
-_GRIP_SUFFIX_RE = re.compile(r'_grip_(\d+(?:\.\d+)?)$')
-_OPEN_SUFFIX_RE = re.compile(r'_open_(\d+(?:\.\d+)?)$')
+# Bio Gen2 stroke limits (mm of jaw opening).
+_STROKE_MIN = 71.0
+_STROKE_MAX = 150.0
 
-# Bio Gen2 fully-open stroke (also the default for bare / _empty nodes).
-_OPEN_STROKE = 150.0
+# Name of the mandatory no-payload catalog state.
+EMPTY_STATE = "empty"
 
 
 # ── Enums ────────────────────────────────────────────────────────────
@@ -65,54 +63,60 @@ class GraphMode(str, Enum):
 class GripIntent(str, Enum):
     GRASP = "grasp"        # object expected; actual > commanded = success
     POSITION = "position"  # free travel; actual ≈ commanded = success
-    NONE = "none"          # no verification (open moves, bare poses)
-
-
-# ── Helpers ──────────────────────────────────────────────────────────
-
-
-def parse_node_gripper(node_id: str) -> tuple[float, GripIntent]:
-    """Parse (gripper_stroke, grip_intent) from a node id suffix.
-
-    Returns (150.0, GripIntent.NONE) for bare pose names and *_empty nodes.
-    Returns (n, GripIntent.GRASP) for *_grip_<n> nodes.
-    Returns (n, GripIntent.POSITION) for *_open_<n> nodes.
-    Never returns None — explicit YAML fields take priority in the loader
-    and override this function when present.
-    """
-    m = _GRIP_SUFFIX_RE.search(node_id)
-    if m:
-        return (float(m.group(1)), GripIntent.GRASP)
-    m = _OPEN_SUFFIX_RE.search(node_id)
-    if m:
-        return (float(m.group(1)), GripIntent.POSITION)
-    # Bare pose names (robot_home, deck_home, …) and *_empty nodes all
-    # default to fully open / no verification.
-    return (_OPEN_STROKE, GripIntent.NONE)
+    NONE = "none"          # no verification (open moves)
 
 
 # ── Domain types ─────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
-class Node:
-    """A reachable state in the (arm, rail, gripper_stroke) product.
+class GripperState:
+    """A named gripper leaf from the ``gripper_states`` catalog.
 
-    ``gripper_stroke`` is the commanded stroke value (Bio Gen2: 71-150).
-    ``grip_intent`` tells the controller what to verify after moving the
-    gripper: GRASP (object expected), POSITION (free travel), NONE (skip).
+    ``stroke`` is the commanded stroke (Bio Gen2: 150 = fully open,
+    71 = fully closed). ``intent`` tells the controller what to verify
+    after actuating:
+
+    - GRASP: an object is expected between the jaws, so the actual
+      stroke must settle ABOVE the commanded value; reaching the
+      commanded value means nothing was gripped → error.
+    - POSITION: free travel is expected, so the jaws must actually
+      REACH the commanded value; stalling early means blocked → error.
+    - NONE: no verification (used by ``empty``).
+    """
+    name: str
+    stroke: float
+    intent: GripIntent
+
+
+@dataclass(frozen=True)
+class Node:
+    """An arm position: a named arm pose at a rail location.
+
+    ``gripper_states`` are the catalog states you may occupy at this
+    node (its leaves). ``gripper_transitions`` are the (from, to) state
+    changes allowed while the arm is parked here — grip/release/narrow
+    never happens during motion, only at a node that whitelists it.
     """
     id: str
-    arm: str              # name in joint_config.yaml::positions
-    rail: str             # name in linear_track_config.yaml::locations
-    gripper_stroke: float # commanded stroke; 150 = fully open, 71 = fully closed
-    grip_intent: GripIntent
+    arm: str          # name in joint_config.yaml::positions
+    rail: str         # name in linear_track_config.yaml::locations
+    gripper_states: tuple[str, ...] = (EMPTY_STATE,)
+    gripper_transitions: tuple[tuple[str, str], ...] = ()
     tags: tuple[str, ...] = ()
+
+    def allows_gripper(self, state: str | None) -> bool:
+        return state is not None and state in self.gripper_states
 
 
 @dataclass(frozen=True)
 class Edge:
-    """A whitelisted directional transition between two nodes."""
+    """A whitelisted directional transition between two nodes.
+
+    Edges carry no gripper information: the gripper state is invariant
+    along an edge, and the edge is traversable with any state allowed
+    at both endpoints.
+    """
     from_node: str
     to_node: str
     mode: MoveMode
@@ -149,8 +153,7 @@ class UnknownNodeError(GraphError):
 
 
 class EdgeNotAllowedError(GraphError):
-    """STRICT mode refused a transition. Phase 2 will raise this from
-    the controller; Phase 1 only constructs it for advisory logging."""
+    """STRICT mode refused a transition."""
 
     def __init__(self, current: str | None, target: str, reason: str):
         self.current = current
@@ -159,8 +162,23 @@ class EdgeNotAllowedError(GraphError):
         super().__init__(f"{current!r} -> {target!r}: {reason}")
 
 
+class GripperTransitionError(GraphError):
+    """A gripper state change was refused (not whitelisted at the
+    current node, unknown state, or no node pinned)."""
+
+    def __init__(self, node: str | None, from_state: str | None,
+                 to_state: str, reason: str):
+        self.node = node
+        self.from_state = from_state
+        self.to_state = to_state
+        self.reason = reason
+        super().__init__(
+            f"gripper {from_state!r} -> {to_state!r} at node {node!r}: {reason}"
+        )
+
+
 class RecoveryMismatch(GraphError):
-    """Phase 4: ``recover_to(node_id, force=False)`` refused because the
+    """``recover_to(node_id, force=False)`` refused because the
     nearest-node detector disagrees with the requested node id. Carries
     the detector's suggestion + residuals so the operator can decide
     whether to retry with ``force=True``."""
@@ -184,14 +202,18 @@ class RecoveryMismatch(GraphError):
 class NodeMatch:
     """Result of ``find_nearest_node()``.
 
-    ``node_id`` is the best match found, or None when no node satisfies
-    the rail / gripper predicates. ``within_tolerance`` is True only
-    when the arm residual is also within the joint tolerance — callers
-    can use it as a "confident snap" gate.
+    ``node_id`` is the best arm+rail match found, or None when no node
+    passes the rail predicate. ``gripper_state`` is the catalog state
+    resolved from the commanded stroke (None if the stroke matches no
+    catalog state). ``gripper_match`` is True when that resolved state
+    is one of the matched node's leaves. ``within_tolerance`` is True
+    only when the arm residual is also within the joint tolerance —
+    callers can use it as a "confident snap" gate.
     """
     node_id: str | None
     arm_residual: float | None    # sum of |angle_diff| in degrees
     rail_residual: float | None   # |position_diff| in mm
+    gripper_state: str | None
     gripper_match: bool
     within_tolerance: bool
 
@@ -204,10 +226,12 @@ class MotionGraph:
         self,
         nodes: dict[str, Node],
         edges: list[Edge],
+        gripper_states: dict[str, GripperState],
         preconditions: dict[str, PreconditionFn] | None = None,
     ):
         self._nodes = nodes
         self._edges = edges
+        self._gripper_states = gripper_states
         self._preconditions = preconditions or {}
         # Outgoing adjacency: from_node id -> [Edge]
         self._out: dict[str, list[Edge]] = {}
@@ -238,40 +262,52 @@ class MotionGraph:
                 f"unsupported schema_version {version!r}, expected {SCHEMA_VERSION!r}"
             )
 
+        # ── Gripper-state catalog ─────────────────────────────────
+        gripper_states: dict[str, GripperState] = {}
+        for name, spec in (data.get("gripper_states") or {}).items():
+            spec = spec or {}
+            try:
+                intent = GripIntent(spec.get("intent", "none"))
+            except ValueError:
+                raise GraphError(
+                    f"gripper_state {name!r}: unknown intent {spec.get('intent')!r}; "
+                    f"must be one of: grasp, position, none"
+                )
+            gripper_states[name] = GripperState(
+                name=name,
+                stroke=float(spec["stroke"]),
+                intent=intent,
+            )
+
+        # ── Nodes ─────────────────────────────────────────────────
         nodes: dict[str, Node] = {}
         for n in data.get("nodes", []) or []:
             node_id: str = n["id"]
+            raw_states = n.get("gripper_states")
+            states = tuple(raw_states) if raw_states else (EMPTY_STATE,)
 
-            # Explicit fields (gripper_stroke + grip_intent) always win —
-            # required for legacy nodes whose id is not suffix-parseable.
-            # Optional for standard nodes as an override.
-            gs = n.get("gripper_stroke")
-            if gs is not None:
-                gripper_stroke = float(gs)
-                gi_raw = n.get("grip_intent", "none")
-                try:
-                    grip_intent = GripIntent(gi_raw)
-                except ValueError:
+            transitions: list[tuple[str, str]] = []
+            for t in n.get("gripper_transitions", []) or []:
+                if not isinstance(t, (list, tuple)) or len(t) != 2:
                     raise GraphError(
-                        f"node {node_id!r}: unknown grip_intent {gi_raw!r}; "
-                        f"must be one of: grasp, position, none"
+                        f"node {node_id!r}: gripper_transitions entries must be "
+                        f"[from_state, to_state] pairs, got {t!r}"
                     )
-            else:
-                # Fall back to id-suffix parsing.
-                gripper_stroke, grip_intent = parse_node_gripper(node_id)
+                transitions.append((str(t[0]), str(t[1])))
 
             node = Node(
                 id=node_id,
                 arm=n["arm"],
                 rail=n["rail"],
-                gripper_stroke=gripper_stroke,
-                grip_intent=grip_intent,
+                gripper_states=states,
+                gripper_transitions=tuple(transitions),
                 tags=tuple(n.get("tags", [])),
             )
             if node.id in nodes:
                 raise GraphError(f"duplicate node id: {node.id!r}")
             nodes[node.id] = node
 
+        # ── Edges ─────────────────────────────────────────────────
         edges: list[Edge] = []
         seen_pairs: set[tuple[str, str]] = set()
         for e in data.get("edges", []) or []:
@@ -292,19 +328,57 @@ class MotionGraph:
             seen_pairs.add(pair)
             edges.append(edge)
 
-        return cls(nodes, edges, preconditions)
+        return cls(nodes, edges, gripper_states, preconditions)
 
     # ── Validation ───────────────────────────────────────────────
 
     def _validate_topology(self) -> None:
-        # Per-node validation.
-        for n in self._nodes.values():
-            # Stroke must be within Bio Gen2 range.
-            if not (71.0 <= n.gripper_stroke <= 150.0):
+        # Catalog validation: the empty sentinel must exist, strokes in range.
+        if EMPTY_STATE not in self._gripper_states:
+            raise GraphError(
+                f"gripper_states catalog must define {EMPTY_STATE!r} "
+                f"(the no-payload sentinel)"
+            )
+        for gs in self._gripper_states.values():
+            if not (_STROKE_MIN <= gs.stroke <= _STROKE_MAX):
                 raise GraphError(
-                    f"node {n.id!r}: gripper_stroke {n.gripper_stroke} is outside "
-                    f"the valid range 71-150"
+                    f"gripper_state {gs.name!r}: stroke {gs.stroke} is outside "
+                    f"the valid range {_STROKE_MIN:g}-{_STROKE_MAX:g}"
                 )
+
+        # Per-node validation.
+        seen_positions: dict[tuple[str, str], str] = {}
+        for n in self._nodes.values():
+            # One node per physical position — gripper state is a leaf,
+            # not part of node identity, so (arm, rail) must be unique.
+            pos = (n.arm, n.rail)
+            if pos in seen_positions:
+                raise GraphError(
+                    f"nodes {seen_positions[pos]!r} and {n.id!r} share the same "
+                    f"(arm={n.arm!r}, rail={n.rail!r}); collapse them into one "
+                    f"node with multiple gripper_states"
+                )
+            seen_positions[pos] = n.id
+
+            if not n.gripper_states:
+                raise GraphError(f"node {n.id!r}: gripper_states must not be empty")
+            for s in n.gripper_states:
+                if s not in self._gripper_states:
+                    raise GraphError(
+                        f"node {n.id!r} references unknown gripper_state {s!r}"
+                    )
+            for (a, b) in n.gripper_transitions:
+                if a not in n.gripper_states or b not in n.gripper_states:
+                    raise GraphError(
+                        f"node {n.id!r}: gripper_transition {a!r} -> {b!r} "
+                        f"references a state outside the node's gripper_states "
+                        f"{list(n.gripper_states)}"
+                    )
+                if a == b:
+                    raise GraphError(
+                        f"node {n.id!r}: gripper_transition {a!r} -> {b!r} "
+                        f"is a no-op"
+                    )
 
         # Per-edge validation.
         for e in self._edges:
@@ -318,6 +392,16 @@ class MotionGraph:
                         f"edge {e.from_node!r}->{e.to_node!r} references "
                         f"unregistered precondition: {p!r}"
                     )
+            # The gripper state is invariant along an edge, so an edge whose
+            # endpoints share no state can never be traversed.
+            from_states = set(self._nodes[e.from_node].gripper_states)
+            to_states = set(self._nodes[e.to_node].gripper_states)
+            if not (from_states & to_states):
+                raise GraphError(
+                    f"edge {e.from_node!r}->{e.to_node!r} is untraversable: "
+                    f"endpoints share no gripper state "
+                    f"({sorted(from_states)} vs {sorted(to_states)})"
+                )
 
     # ── Query API ────────────────────────────────────────────────
 
@@ -329,6 +413,33 @@ class MotionGraph:
     def edges(self) -> Iterable[Edge]:
         return iter(self._edges)
 
+    @property
+    def gripper_states(self) -> Iterable[GripperState]:
+        return self._gripper_states.values()
+
+    def gripper_state(self, name: str) -> GripperState:
+        if name not in self._gripper_states:
+            raise GraphError(f"unknown gripper_state: {name!r}")
+        return self._gripper_states[name]
+
+    def has_gripper_state(self, name: str) -> bool:
+        return name in self._gripper_states
+
+    def resolve_gripper_state(
+        self, stroke: float | None, tolerance: float = 1.0,
+    ) -> str | None:
+        """Map a commanded stroke to a catalog state name, or None.
+
+        Used by the controller to derive its current gripper state from
+        ``last_gripper_position``.
+        """
+        if stroke is None:
+            return None
+        for gs in self._gripper_states.values():
+            if abs(gs.stroke - float(stroke)) < tolerance:
+                return gs.name
+        return None
+
     def node(self, node_id: str) -> Node:
         if node_id not in self._nodes:
             raise UnknownNodeError(node_id)
@@ -337,23 +448,16 @@ class MotionGraph:
     def has_node(self, node_id: str) -> bool:
         return node_id in self._nodes
 
-    def find_node(
-        self,
-        arm: str | None,
-        rail: str | None,
-        gripper_stroke: float | None,
-    ) -> Node | None:
-        """Resolve a 3-tuple of named coordinates to a node, or None.
+    def find_node(self, arm: str | None, rail: str | None) -> Node | None:
+        """Resolve (arm pose name, rail location name) to a node, or None.
 
-        Any None coordinate causes a None result — the controller must
-        have all three before a node is pin-able. Gripper stroke is
-        matched with a tolerance of 1.0 to absorb integer rounding.
+        Either None coordinate causes a None result — the controller
+        must have both named before a node is pin-able.
         """
-        if None in (arm, rail, gripper_stroke):
+        if None in (arm, rail):
             return None
         for n in self._nodes.values():
-            if (n.arm == arm and n.rail == rail
-                    and abs(n.gripper_stroke - gripper_stroke) < 1.0):
+            if n.arm == arm and n.rail == rail:
                 return n
         return None
 
@@ -363,8 +467,41 @@ class MotionGraph:
             return []
         return list(self._out.get(node_id, []))
 
+    def edge_allows_gripper(self, edge: Edge, state: str | None) -> bool:
+        """True iff ``state`` may ride along ``edge`` (allowed at both ends)."""
+        if state is None:
+            return False
+        return (
+            self._nodes[edge.from_node].allows_gripper(state)
+            and self._nodes[edge.to_node].allows_gripper(state)
+        )
+
+    def outgoing_for_state(
+        self, node_id: str | None, state: str | None,
+    ) -> list[Edge]:
+        """Edges leaving node_id that are traversable with gripper ``state``."""
+        return [e for e in self.outgoing(node_id)
+                if self.edge_allows_gripper(e, state)]
+
     def allowed_targets(self, node_id: str | None) -> list[str]:
         return [e.to_node for e in self.outgoing(node_id)]
+
+    def allowed_targets_for_state(
+        self, node_id: str | None, state: str | None,
+    ) -> list[str]:
+        return [e.to_node for e in self.outgoing_for_state(node_id, state)]
+
+    def allowed_gripper_targets(
+        self, node_id: str | None, current_state: str | None,
+    ) -> list[str]:
+        """Gripper states reachable from ``current_state`` while parked at
+        ``node_id``, per the node's transition whitelist."""
+        if node_id is None or node_id == UNKNOWN_NODE or current_state is None:
+            return []
+        if node_id not in self._nodes:
+            return []
+        node = self._nodes[node_id]
+        return [b for (a, b) in node.gripper_transitions if a == current_state]
 
     def find_edge(self, from_id: str, to_id: str) -> Edge | None:
         for e in self._out.get(from_id, []):
@@ -402,8 +539,14 @@ class MotionGraph:
 
 
 def _gripper_empty(graph: MotionGraph, edge: Edge, view: ControllerView) -> bool:
-    """Gripper is at the open stroke (not holding anything)."""
-    return view.gripper_stroke is None or abs(view.gripper_stroke - _OPEN_STROKE) < 1.0
+    """Gripper is at the empty-state stroke (not holding anything)."""
+    if view.gripper_stroke is None:
+        return True
+    try:
+        empty_stroke = graph.gripper_state(EMPTY_STATE).stroke
+    except GraphError:
+        return True
+    return abs(view.gripper_stroke - empty_stroke) < 1.0
 
 
 DEFAULT_PRECONDITIONS: dict[str, PreconditionFn] = {
@@ -411,7 +554,7 @@ DEFAULT_PRECONDITIONS: dict[str, PreconditionFn] = {
 }
 
 
-# ── Nearest-node detection (Phase 4) ─────────────────────────────────
+# ── Nearest-node detection ───────────────────────────────────────────
 
 
 def _angle_distance_deg(a: float, b: float) -> float:
@@ -437,26 +580,32 @@ def find_nearest_node(
     rail_tolerance_mm: float = 2.0,
     gripper_stroke_tolerance: float = 1.0,
 ) -> NodeMatch:
-    """Find the graph node whose 3-tuple best matches the controller's
-    physical state.
+    """Find the graph node whose arm+rail position best matches the
+    controller's physical state.
 
-    Strategy: gripper stroke is an exact-match predicate (within
-    ``gripper_stroke_tolerance``); rail must be within
-    ``rail_tolerance_mm``; arm pose is scored by summed per-joint
-    angular distance, and we pick the candidate with the smallest score.
+    Strategy: rail must be within ``rail_tolerance_mm``; arm pose is
+    scored by summed per-joint angular distance, and we pick the
+    candidate with the smallest score. The gripper is NOT a node
+    filter — it is resolved separately against the catalog and
+    reported so the caller can pin (node, state) together.
 
     Returns a NodeMatch. ``within_tolerance`` is set when the arm
     residual is also <= joint_tolerance_deg — callers should treat that
-    as the "safe to snap" condition.
+    as the "safe to snap" condition. ``gripper_match`` is True when the
+    resolved state is one of the matched node's leaves.
 
-    Returns NodeMatch(None, ...) if no candidate passes the gripper /
-    rail predicates, or if the current state is incomplete (joints or
-    rail unknown).
+    Returns NodeMatch(None, ...) if no candidate passes the rail
+    predicate, or if the current state is incomplete (joints or rail
+    unknown).
     """
+    resolved_state = graph.resolve_gripper_state(
+        current_gripper_stroke, tolerance=gripper_stroke_tolerance,
+    )
     empty = NodeMatch(
         node_id=None,
         arm_residual=None,
         rail_residual=None,
+        gripper_state=resolved_state,
         gripper_match=False,
         within_tolerance=False,
     )
@@ -465,14 +614,6 @@ def find_nearest_node(
 
     best: NodeMatch | None = None
     for node in graph.nodes:
-        # Gripper stroke is an exact-match predicate.
-        gripper_match = (
-            current_gripper_stroke is not None
-            and abs(node.gripper_stroke - current_gripper_stroke) < gripper_stroke_tolerance
-        )
-        if not gripper_match:
-            continue
-
         # Rail must resolve and be within tolerance.
         rail_target = rail_position_mm.get(node.rail)
         if rail_target is None:
@@ -499,7 +640,8 @@ def find_nearest_node(
             node_id=node.id,
             arm_residual=arm_residual,
             rail_residual=rail_residual,
-            gripper_match=True,
+            gripper_state=resolved_state,
+            gripper_match=node.allows_gripper(resolved_state),
             within_tolerance=(arm_residual <= joint_tolerance_deg),
         )
         # best.arm_residual is always a float when best is not None

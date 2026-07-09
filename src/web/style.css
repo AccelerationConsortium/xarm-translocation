@@ -1210,7 +1210,7 @@ input#linear-speed {
     padding-top: 8px;
 }
 
-#mg-current-node, #mg-suggested-node, #drive-current-node {
+#mg-current-node, #mg-suggested-node, #drive-current-node, #drive-gripper-state {
     font-family: monospace;
     color: var(--accent, #4a90e2);
 }
@@ -1227,6 +1227,13 @@ input#linear-speed {
 #drive-dest-select {
     width: auto;
     min-width: 220px;
+    flex: 1 1 auto;
+    text-align: left;
+}
+
+#drive-gripper-select {
+    width: auto;
+    min-width: 140px;
     flex: 1 1 auto;
     text-align: left;
 }

@@ -32,12 +32,11 @@ from src.core.status_builder import build_status
 
 def _graph_dict():
     return {
-        "schema_version": "0.1",
-        "gripper_states": {"open": {"stroke": 150}},
-        "payloads": {"empty": {}},
+        "schema_version": "0.2",
+        "gripper_states": {"empty": {"stroke": 150, "intent": "none"}},
         "nodes": [
-            {"id": "n_home",   "arm": "home",   "rail": "Home", "gripper": "open", "payload": "empty"},
-            {"id": "n_pickup", "arm": "pickup", "rail": "Home", "gripper": "open", "payload": "empty"},
+            {"id": "n_home",   "arm": "home",   "rail": "Home"},
+            {"id": "n_pickup", "arm": "pickup", "rail": "Home"},
         ],
         "edges": [{"from": "n_home", "to": "n_pickup", "mode": "linear", "speed": 25}],
     }
@@ -51,11 +50,12 @@ def mock_controller():
     mc.motion_graph = MotionGraph.from_dict(_graph_dict(), preconditions=DEFAULT_PRECONDITIONS)
     mc.graph_mode = GraphMode.STRICT
     mc.current_node = "n_home"
-    mc.declared_payload = "empty"
+    mc.current_gripper_state = "empty"
     mc.last_arm_pose_name = "home"
     mc.last_rail_location_name = "Home"
     mc.last_transition = None
     mc.reachable_node_ids.return_value = ["n_pickup"]
+    mc.allowed_gripper_targets.return_value = []
     mc.is_connected.return_value = True
     mc.is_alive = True
     mc.host = "127.0.0.1"

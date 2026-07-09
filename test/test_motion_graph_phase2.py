@@ -36,15 +36,23 @@ from src.core.motion_graph import (
 
 def _test_graph_dict():
     """A graph aligned with conftest.mock_config_files' position_config:
-       home / pickup (both Cartesian dicts) on rail=Home, gripper open (150).
-       The edge home->pickup is LINEAR with speed 25; the reverse is JOINT
-       with speed 40 — gives us coverage of both modes.
+       home / pickup (both Cartesian dicts) on rail=Home. Both nodes
+       allow the empty and grip_120 leaves so occupancy gating passes by
+       default; the occupancy tests below override this. The edge
+       home->pickup is LINEAR with speed 25; the reverse is JOINT with
+       speed 40 — gives us coverage of both modes.
     """
     return {
-        "schema_version": "0.1",
+        "schema_version": "0.2",
+        "gripper_states": {
+            "empty":    {"stroke": 150, "intent": "none"},
+            "grip_120": {"stroke": 120, "intent": "grasp"},
+        },
         "nodes": [
-            {"id": "n_home",   "arm": "home",   "rail": "Home"},
-            {"id": "n_pickup", "arm": "pickup", "rail": "Home"},
+            {"id": "n_home",   "arm": "home",   "rail": "Home",
+             "gripper_states": ["empty", "grip_120"]},
+            {"id": "n_pickup", "arm": "pickup", "rail": "Home",
+             "gripper_states": ["empty", "grip_120"]},
         ],
         "edges": [
             {"from": "n_home",   "to": "n_pickup", "mode": "linear", "speed": 25},
@@ -68,7 +76,7 @@ def graph_controller(initialized_controller):
         _test_graph_dict(), preconditions=DEFAULT_PRECONDITIONS,
     )
     c.last_rail_location_name = "Home"
-    c.last_gripper_position = 150  # matches gripper_states.open.stroke
+    c.last_gripper_position = 150  # resolves to the 'empty' catalog state
     return c
 
 
@@ -162,6 +170,61 @@ def test_strict_mode_rejects_no_whitelisted_edge(graph_controller):
     c.motion_graph = MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
     with pytest.raises(EdgeNotAllowedError, match="no whitelisted edge"):
         c.move_to_named_location("other")
+
+
+# ── STRICT mode: gripper occupancy gating ────────────────────────────
+
+
+def test_strict_mode_blocks_edge_target_disallows_current_state(graph_controller):
+    """Holding grip_120 while the target node only allows empty: the
+    state would ride the edge into a node that can't occupy it, so
+    STRICT refuses."""
+    c = graph_controller
+    data = _test_graph_dict()
+    data["nodes"][1]["gripper_states"] = ["empty"]  # n_pickup: empty-only
+    c.motion_graph = MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+    c.set_graph_mode(GraphMode.STRICT)
+    c.last_arm_pose_name = "home"
+    c.last_gripper_position = 120  # grip_120
+    assert c.current_gripper_state == "grip_120"
+    with pytest.raises(EdgeNotAllowedError, match="not traversable"):
+        c.move_to_named_location("pickup")
+
+
+def test_strict_mode_blocks_when_gripper_state_unknown(graph_controller):
+    """An off-catalog stroke (e.g. after a manual stroke command) means
+    the occupancy invariant can't be checked — STRICT refuses."""
+    c = graph_controller
+    c.set_graph_mode(GraphMode.STRICT)
+    c.last_arm_pose_name = "home"
+    c.last_gripper_position = 100  # matches no catalog state
+    assert c.current_gripper_state is None
+    with pytest.raises(EdgeNotAllowedError, match="matches no catalog state"):
+        c.move_to_named_location("pickup")
+
+
+def test_strict_mode_allows_edge_when_state_allowed_at_both_ends(graph_controller):
+    c = graph_controller
+    c.set_graph_mode(GraphMode.STRICT)
+    c.last_arm_pose_name = "home"
+    c.last_gripper_position = 120  # grip_120 — allowed at both nodes
+    with patch.object(c, "move_to_position", return_value=True) as mtp:
+        assert c.move_to_named_location("pickup") is True
+        mtp.assert_called_once()
+
+
+def test_reachable_node_ids_filters_by_gripper_state(graph_controller):
+    c = graph_controller
+    data = _test_graph_dict()
+    data["nodes"][1]["gripper_states"] = ["empty"]  # n_pickup: empty-only
+    c.motion_graph = MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+    c.last_arm_pose_name = "home"
+    c.last_gripper_position = 150
+    assert c.reachable_node_ids() == ["n_pickup"]
+    c.last_gripper_position = 120  # holding — can't enter empty-only node
+    assert c.reachable_node_ids() == []
+    c.last_gripper_position = 100  # off-catalog — nothing is reachable
+    assert c.reachable_node_ids() == []
 
 
 # ── STRICT mode: edge.mode override ──────────────────────────────────

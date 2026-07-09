@@ -21,16 +21,16 @@ from core.xarm_utils import (
 try:
     from .motion_graph import (
         DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
-        GraphMode, GripIntent, MotionGraph, MoveMode, NodeMatch, RecoveryMismatch,
-        find_nearest_node,
+        GraphMode, GripIntent, GripperTransitionError, MotionGraph, MoveMode,
+        NodeMatch, RecoveryMismatch, find_nearest_node,
     )
     from .claims import ClaimManager
     from .events_exporter import EventsExporter
 except ImportError:
     from core.motion_graph import (
         DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
-        GraphMode, GripIntent, MotionGraph, MoveMode, NodeMatch, RecoveryMismatch,
-        find_nearest_node,
+        GraphMode, GripIntent, GripperTransitionError, MotionGraph, MoveMode,
+        NodeMatch, RecoveryMismatch, find_nearest_node,
     )
     from core.claims import ClaimManager
     from core.events_exporter import EventsExporter
@@ -1671,26 +1671,51 @@ class XArmController:
 
     @property
     def current_node(self) -> Optional[str]:
-        """Graph node id matching the controller's current 3-tuple, or None.
+        """Graph node id matching the controller's arm+rail position, or None.
 
-        Returns None when the graph is OFF, when any of the three
-        coordinates is unpinned (e.g., after a raw move or before the
-        first named move), or when no node matches the tuple.
+        Nodes are arm positions only (schema 0.2) — the gripper is a
+        separate leaf, exposed via ``current_gripper_state``. Returns
+        None when either coordinate is unpinned (e.g., after a raw move
+        or before the first named move), or when no node matches.
         """
         if self.motion_graph is None:
             return None
         node = self.motion_graph.find_node(
             arm=self.last_arm_pose_name,
             rail=self.last_rail_location_name,
-            gripper_stroke=self._commanded_gripper_stroke(),
         )
         return node.id if node else None
 
+    @property
+    def current_gripper_state(self) -> Optional[str]:
+        """Catalog gripper-state name matching the commanded stroke, or None.
+
+        None when the stroke is unknown or doesn't match any catalog
+        state (off-catalog stroke, e.g. after a manual stroke command).
+        """
+        if self.motion_graph is None:
+            return None
+        return self.motion_graph.resolve_gripper_state(
+            self._commanded_gripper_stroke()
+        )
+
     def reachable_node_ids(self) -> list[str]:
-        """Outgoing target node ids from the current node (empty if off-grid)."""
+        """Outgoing target node ids traversable with the current gripper
+        state (empty if off-grid or the gripper state is off-catalog)."""
         if self.motion_graph is None:
             return []
-        return self.motion_graph.allowed_targets(self.current_node)
+        return self.motion_graph.allowed_targets_for_state(
+            self.current_node, self.current_gripper_state,
+        )
+
+    def allowed_gripper_targets(self) -> list[str]:
+        """Gripper states reachable via the current node's transition
+        whitelist (empty if off-grid or state unknown)."""
+        if self.motion_graph is None:
+            return []
+        return self.motion_graph.allowed_gripper_targets(
+            self.current_node, self.current_gripper_state,
+        )
 
     def suggest_current_node(
         self,
@@ -1706,7 +1731,7 @@ class XArmController:
         if self.motion_graph is None:
             return NodeMatch(
                 node_id=None, arm_residual=None, rail_residual=None,
-                gripper_match=False, within_tolerance=False,
+                gripper_state=None, gripper_match=False, within_tolerance=False,
             )
         # Resolve named arm poses to joint angles (skip cartesian dicts —
         # those need a different recovery path).
@@ -1735,7 +1760,10 @@ class XArmController:
             rail_tolerance_mm=rail_tolerance_mm,
         )
 
-    def recover_to(self, node_id: str, force: bool = False) -> dict:
+    def recover_to(
+        self, node_id: str, force: bool = False,
+        gripper_state: Optional[str] = None,
+    ) -> dict:
         """Operator-declared re-pin to a known node after off-grid travel.
 
         Without ``force``, suggest_current_node() must agree with the
@@ -1744,16 +1772,27 @@ class XArmController:
         position is correct and the suggestion check is skipped (use
         for cartesian-dict presets the nearest-node algo can't score).
 
-        On success, sets last_arm_pose_name + last_rail_location_name +
-        last_gripper_position to the node's coordinates. Note: this
-        sets the *commanded* stroke only (no physical gripper move) so
-        current_node can resolve. If the physical gripper position
-        disagrees the node will still be pinned — intentional, as a
-        manual declare-and-recover path.
+        ``gripper_state`` optionally declares the gripper leaf (must be
+        allowed at the node); when given, last_gripper_position is set
+        to that state's catalog stroke — *commanded* only, no physical
+        gripper move. When omitted, the current commanded stroke is
+        kept and simply validated against the node's allowed states
+        (unless forced).
         """
         if self.motion_graph is None:
             raise RuntimeError("motion_graph not loaded")
         node = self.motion_graph.node(node_id)  # raises UnknownNodeError
+
+        if gripper_state is not None:
+            # An explicitly declared state must be one of the node's
+            # leaves even under force — otherwise the pinned pair would
+            # violate the data model.
+            if not node.allows_gripper(gripper_state):
+                raise GripperTransitionError(
+                    node_id, self.current_gripper_state, gripper_state,
+                    f"state {gripper_state!r} is not allowed at node "
+                    f"{node_id!r} (allowed: {list(node.gripper_states)})",
+                )
 
         if not force:
             match = self.suggest_current_node()
@@ -1764,13 +1803,25 @@ class XArmController:
                     arm_residual=match.arm_residual,
                     rail_residual=match.rail_residual,
                 )
+            if gripper_state is None and not node.allows_gripper(match.gripper_state):
+                raise GripperTransitionError(
+                    node_id, match.gripper_state, "?",
+                    f"current gripper stroke resolves to "
+                    f"{match.gripper_state!r}, which is not allowed at node "
+                    f"{node_id!r} (allowed: {list(node.gripper_states)}); "
+                    f"pass gripper_state explicitly or use force",
+                )
 
         self.last_arm_pose_name = node.arm
         self.last_rail_location_name = node.rail
-        self.last_gripper_position = node.gripper_stroke
+        if gripper_state is not None:
+            self.last_gripper_position = (
+                self.motion_graph.gripper_state(gripper_state).stroke
+            )
         return {
             "recovered_to": node_id,
             "current_node": self.current_node,
+            "gripper_state": self.current_gripper_state,
         }
 
     def _verify_gripper(self, commanded_stroke: float, intent: GripIntent) -> bool:
@@ -1830,50 +1881,112 @@ class XArmController:
         return True
 
     def move_to_node(self, node_id: str, speed=None) -> bool:
-        """Move to a graph node by id, actuating the gripper when needed.
+        """Move the ARM to a graph node by id.
 
-        Executes the arm move (existing named-location path with edge
-        mode/speed enforcement), then — when the target node's gripper
-        stroke differs from the current commanded stroke — commands the
-        gripper and verifies the outcome per the node's grip_intent.
+        Pure arm motion — the gripper stroke is invariant along edges
+        and never touched here. Grip/release/narrow happens separately
+        via ``set_gripper_state`` while parked at a node.
 
-        Returns True on full success, False on arm-move failure or
-        gripper verification failure (grasp not detected / jaws blocked).
-        Raises EdgeNotAllowedError in STRICT mode for disallowed moves.
+        Returns True on success, False on arm-move failure. Raises
+        EdgeNotAllowedError in STRICT mode for disallowed moves
+        (including edges the current gripper state may not ride).
         """
         if self.motion_graph is None:
             print("[motion_graph] move_to_node: motion_graph not loaded")
             return False
 
         node = self.motion_graph.node(node_id)  # raises UnknownNodeError
+        return self.move_to_named_location(node.arm, speed=speed)
 
-        # ── 1. Arm move ───────────────────────────────────────────────
-        success = self.move_to_named_location(node.arm, speed=speed)
-        if not success:
+    def _arm_is_moving(self) -> bool:
+        """True when the SDK reports the arm in motion (state 1)."""
+        arm = getattr(self, 'arm', None)
+        return arm is not None and getattr(arm, 'state', None) == 1
+
+    def set_gripper_state(self, state_name: str) -> bool:
+        """Change the gripper to a catalog state while parked at a node.
+
+        This is the ONLY graph-sanctioned way to change the gripper:
+        the stroke is invariant during arm motion, so transitions are
+        gated on (a) the arm not moving, (b) a pinned current node, and
+        (c) the transition appearing in that node's whitelist (STRICT
+        rejects violations; ADVISORY/OFF warn and proceed).
+
+        Actuates the gripper to the state's stroke, then verifies per
+        the state's intent:
+
+        - grasp:    jaws must settle above the commanded stroke (an
+                    object is holding them open); reaching the stroke
+                    exactly means nothing was gripped → failure.
+        - position: jaws must reach the commanded stroke; stalling
+                    early means blocked → failure.
+        - none:     no verification (empty / fully open).
+
+        Returns True on success, False on actuation or verification
+        failure. Raises GripperTransitionError for gating violations.
+        """
+        if self.motion_graph is None:
+            raise RuntimeError("motion_graph not loaded")
+        target = self.motion_graph.gripper_state(state_name)  # raises GraphError
+
+        current_state = self.current_gripper_state
+        node_id = self.current_node
+
+        # Interlock: never change the gripper while the arm is moving.
+        if self._arm_is_moving():
+            raise GripperTransitionError(
+                node_id, current_state, state_name,
+                "arm is moving; gripper state can only change while "
+                "parked at a node",
+            )
+
+        if current_state == state_name:
+            return True  # already there — no-op
+
+        # Whitelist gating against the current node's transitions.
+        allowed = self.motion_graph.allowed_gripper_targets(node_id, current_state)
+        violation: Optional[str] = None
+        if node_id is None:
+            violation = (
+                "current position is off-grid; recover to a node before "
+                "changing the gripper"
+            )
+        elif current_state is None:
+            violation = (
+                f"current gripper stroke "
+                f"({self._commanded_gripper_stroke()!r}) matches no catalog "
+                f"state; recover with an explicit gripper_state first"
+            )
+        elif state_name not in allowed:
+            violation = (
+                f"transition {current_state!r} -> {state_name!r} is not "
+                f"whitelisted at node {node_id!r} (allowed: {allowed})"
+            )
+
+        if violation is not None:
+            if self.graph_mode == GraphMode.STRICT:
+                raise GripperTransitionError(
+                    node_id, current_state, state_name, violation,
+                )
+            print(f"[motion_graph] advisory: {violation}")
+
+        # ── Actuation ─────────────────────────────────────────────────
+        config = getattr(self, 'current_gripper_config', {}) or {}
+        if state_name == "empty":
+            gripper_ok = self.open_gripper(wait=True)
+        else:
+            gripper_ok = self.move_gripper_to_stroke(
+                target.stroke, force=config.get('force', None), wait=True,
+            )
+        if not gripper_ok:
+            print(
+                f"[motion_graph] set_gripper_state: gripper move to "
+                f"{target.stroke} ({state_name}) failed"
+            )
             return False
 
-        # ── 2. Gripper actuation (skip when stroke unchanged) ─────────
-        current_stroke = self._commanded_gripper_stroke()
-        target_stroke = node.gripper_stroke
-        if current_stroke is None or abs(target_stroke - current_stroke) >= 1.0:
-            # Determine force from config (use default if not specified).
-            config = getattr(self, 'current_gripper_config', {}) or {}
-            force = config.get('force', None)
-
-            if abs(target_stroke - 150.0) < 1.0:
-                gripper_ok = self.open_gripper(wait=True)
-            else:
-                gripper_ok = self.move_gripper_to_stroke(target_stroke, force=force, wait=True)
-
-            if not gripper_ok:
-                print(f"[motion_graph] move_to_node: gripper move to {target_stroke} failed")
-                return False
-
-        # ── 3. Verification ───────────────────────────────────────────
-        if not self._verify_gripper(target_stroke, node.grip_intent):
-            return False
-
-        return True
+        # ── Verification ──────────────────────────────────────────────
+        return self._verify_gripper(target.stroke, target.intent)
 
     def set_graph_mode(self, mode: GraphMode) -> None:
         """Set the motion-graph enforcement mode. Safe at any time."""
@@ -1887,15 +2000,14 @@ class XArmController:
     def _predict_target_node_for_arm_pose(self, arm_pose_name: str) -> Optional[str]:
         """Predict the node id we'd land on after move_to_named_location.
 
-        A pure-arm move keeps rail / gripper stroke unchanged. Returns
-        None if any dimension is unpinned or no node matches the 3-tuple.
+        A pure-arm move keeps the rail unchanged. Returns None if the
+        rail is unpinned or no node matches (arm, rail).
         """
         if self.motion_graph is None:
             return None
         node = self.motion_graph.find_node(
             arm=arm_pose_name,
             rail=self.last_rail_location_name,
-            gripper_stroke=self._commanded_gripper_stroke(),
         )
         return node.id if node else None
 
@@ -1906,7 +2018,6 @@ class XArmController:
         node = self.motion_graph.find_node(
             arm=self.last_arm_pose_name,
             rail=rail_location_name,
-            gripper_stroke=self._commanded_gripper_stroke(),
         )
         return node.id if node else None
 
@@ -1928,8 +2039,7 @@ class XArmController:
         if target_node_id is None:
             msg = (
                 f"target {target_label!r} does not resolve to a graph node "
-                f"(rail={self.last_rail_location_name!r}, "
-                f"gripper_stroke={self._commanded_gripper_stroke()!r})"
+                f"(rail={self.last_rail_location_name!r})"
             )
             if self.graph_mode == GraphMode.STRICT:
                 raise EdgeNotAllowedError(current_id, target_label, msg)
@@ -1954,6 +2064,26 @@ class XArmController:
                 raise EdgeNotAllowedError(current_id, target_node_id, msg)
             print(f"[motion_graph] advisory: {msg}")
             return None
+
+        # The gripper stroke is invariant along an edge, so the current
+        # state must be allowed at both endpoints (occupancy gating).
+        gripper_state = self.current_gripper_state
+        if not self.motion_graph.edge_allows_gripper(edge, gripper_state):
+            if gripper_state is None:
+                msg = (
+                    f"gripper stroke "
+                    f"({self._commanded_gripper_stroke()!r}) matches no "
+                    f"catalog state; recover before moving on the graph"
+                )
+            else:
+                msg = (
+                    f"edge {current_id!r} -> {target_node_id!r} is not "
+                    f"traversable with gripper state {gripper_state!r}"
+                )
+            if self.graph_mode == GraphMode.STRICT:
+                raise EdgeNotAllowedError(current_id, target_node_id, msg)
+            print(f"[motion_graph] advisory: {msg}")
+            # Advisory: the edge still informs mode/speed.
 
         return edge
 
