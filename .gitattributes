@@ -1,0 +1,13 @@
+# Normalize line endings: store all text as LF in the repo.
+# Prevents CRLF churn when this tree is edited by Windows tools on the
+# NTFS mount it lives on / is accessed from under WSL.
+* text=auto eol=lf
+
+# Explicitly binary (never touch these).
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
