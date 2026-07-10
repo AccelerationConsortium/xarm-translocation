@@ -1328,16 +1328,24 @@ class XArmController:
         return False
 
     def get_gripper_position(self):
-        """Return the latest gripper position/stroke when available."""
+        """Return the latest gripper position/stroke when available.
+
+        This is a live hardware readback, so it updates
+        ``last_gripper_position_actual`` — NOT ``last_gripper_position``,
+        which holds the last commanded stroke used for graph
+        gripper-state resolution. Overwriting the commanded value here
+        would desync the graph state after a grasp (the jaws settle
+        above the commanded stroke when a plate is held).
+        """
         if self.gripper_type == 'bio_gen2' and hasattr(self.arm, 'get_bio_gripper_g2_position'):
             ret = self.arm.get_bio_gripper_g2_position()
             if ret[0] == 0:
-                self.last_gripper_position = ret[1]
+                self.last_gripper_position_actual = ret[1]
                 return ret[1]
         elif self.gripper_type == 'standard' and hasattr(self.arm, 'get_gripper_position'):
             ret = self.arm.get_gripper_position()
             if ret[0] == 0:
-                self.last_gripper_position = ret[1]
+                self.last_gripper_position_actual = ret[1]
                 return ret[1]
         return None
 

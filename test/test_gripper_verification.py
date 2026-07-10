@@ -315,3 +315,41 @@ def test_set_gripper_state_returns_false_on_actuation_failure(move_ctrl):
     c = move_ctrl
     with patch.object(c, 'move_gripper_to_stroke', return_value=False):
         assert c.set_gripper_state('grip_120') is False
+
+
+# ── Regression: grasp readback must not clobber the commanded stroke ───
+
+
+def test_get_gripper_position_updates_actual_not_commanded(move_ctrl):
+    """The live hardware readback belongs in last_gripper_position_actual;
+    it must never overwrite last_gripper_position (the commanded stroke
+    used for graph gripper-state resolution)."""
+    c = move_ctrl
+    c.gripper_type = 'bio_gen2'
+    c.last_gripper_position = 120  # commanded
+    c.arm.get_bio_gripper_g2_position.return_value = (0, 124)  # plate held
+    assert c.get_gripper_position() == 124
+    assert c.last_gripper_position == 120
+    assert c.last_gripper_position_actual == 124
+
+
+def test_successful_grasp_keeps_graph_state_resolvable(move_ctrl):
+    """Regression: a successful grasp must not desync the graph gripper
+    state. Verification reads back a stroke ABOVE the commanded value
+    (jaws held open by the plate); that readback must land in
+    last_gripper_position_actual and leave the commanded stroke — and
+    thus current_gripper_state — intact so STRICT gating keeps working."""
+    c = move_ctrl
+    c.gripper_type = 'bio_gen2'
+    c.arm.get_bio_gripper_g2_position.return_value = (0, 124)  # plate held
+
+    def fake_stroke(stroke, force=None, wait=True):
+        c.last_gripper_position = stroke  # commanded-stroke bookkeeping
+        return True
+
+    with patch.object(c, 'move_gripper_to_stroke', side_effect=fake_stroke):
+        assert c.set_gripper_state('grip_120') is True
+
+    assert c.last_gripper_position == 120.0
+    assert c.last_gripper_position_actual == 124
+    assert c.current_gripper_state == 'grip_120'
