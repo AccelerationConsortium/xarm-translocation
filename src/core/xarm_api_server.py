@@ -17,12 +17,21 @@ from collections import deque
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
+from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, HTTPException, BackgroundTasks, Header, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import uvicorn
+
+# Load a local .env file (repo root, gitignored) into the process environment
+# before anything below reads os.environ — this is what lets ANTHROPIC_API_KEY
+# (and any other XARM_*/ANTHROPIC_* setting) come from a file instead of a
+# shell export. Values already set in the real environment always win
+# (default override=False), so ops/CI exports still take precedence over a
+# stale .env. A missing .env is silently ignored — nothing breaks without one.
+load_dotenv()
 
 try:
     from .xarm_controller import XArmController, SafetyLevel, ComponentState

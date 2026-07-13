@@ -62,6 +62,10 @@ for 0.1 no longer load; node ids with gripper suffixes no longer exist.
     each step against live state, then runs it. `409` on stale/invalid steps.
   - Config: `ANTHROPIC_API_KEY` (required to enable) and `XARM_LLM_MODEL`
     (optional, default `claude-haiku-4-5`); `anthropic` added as a dependency.
+  - The API server now auto-loads a local `.env` file (`python-dotenv`,
+    added as a dependency) on startup, so the key can live in a gitignored
+    `.env` instead of a shell export. See `.env.example` for the template;
+    values already in the real environment still take precedence.
   - v1 is single-hop (direct neighbors / current-node gripper transitions only);
     the plan step list and per-step execution loop are the seam for future
     multi-hop path planning. See

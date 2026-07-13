@@ -151,14 +151,32 @@ Configured entirely through environment variables on the **server**:
 | `ANTHROPIC_API_KEY` | Yes      | —                  | Anthropic API key. Without it, the feature is unavailable. |
 | `XARM_LLM_MODEL`    | No       | `claude-haiku-4-5` | Model id/alias to use. |
 
-The `anthropic` Python package is a project dependency (`pyproject.toml`).
-Install with the rest of the package:
+The `anthropic` and `python-dotenv` Python packages are project dependencies
+(`pyproject.toml`). Install with the rest of the package:
 
 ```bash
 pip install -e .
 ```
 
-Example:
+### Setting the key
+
+`src/core/xarm_api_server.py` calls `load_dotenv()` on startup, which reads a
+`.env` file at the repo root (if present) into the process environment before
+anything else reads it. `.env` is gitignored, so it never gets committed —
+values already exported in your real shell/CI environment always take
+precedence over the file (`override=False`).
+
+The easiest path:
+
+```bash
+cp .env.example .env
+# then edit .env and paste your key:
+#   ANTHROPIC_API_KEY=sk-ant-...
+pyxarm web
+```
+
+Equivalently, without a `.env` file, export it directly in the shell that
+starts the server:
 
 ```bash
 export ANTHROPIC_API_KEY="sk-ant-..."
@@ -322,3 +340,4 @@ The seams are deliberate:
 | `src/web/index.html` | Language Command card markup |
 | `src/web/main.js` | interpret/confirm logic and gating |
 | `test/test_nl_command.py` | validator + interpreter (mocked LLM) tests |
+| `.env.example` | template for the local `.env` file (`ANTHROPIC_API_KEY`, `XARM_LLM_MODEL`) |

@@ -36,7 +36,8 @@ dependencies = [
     "fastapi>=0.104.1",
     "uvicorn[standard]>=0.24.0",
     "websockets>=12.0",
-    "anthropic>=0.40"
+    "anthropic>=0.40",
+    "python-dotenv>=1.0"
 ]
 
 [project.optional-dependencies]
