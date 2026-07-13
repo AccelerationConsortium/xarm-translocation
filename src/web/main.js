@@ -92,6 +92,15 @@ document.addEventListener('DOMContentLoaded', () => {
     let statusRefreshInterval = null;
     let isRobotMoving = false;
     let lastJointPositions = null;
+
+    // Natural-language command state. nlAvailable is fetched once from
+    // /control/nl/status (null = not yet checked). nlPendingPlan holds the
+    // steps of a validated interpretation awaiting Confirm; it's cleared
+    // whenever the current graph node changes (the plan would be stale).
+    let nlAvailable = null;
+    let nlPendingPlan = null;
+    let nlPlanNode = null;
+    let nlLastNode = null;  // most recent current_node seen by the NL card render
     // Joint-angle inputs double as the live readout AND the Move-Joints target.
     // Telemetry overwrites them every tick, but it must NOT clobber a value the
     // operator has typed-but-not-yet-submitted: focus alone is insufficient
@@ -686,6 +695,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 manual: data.manual_mode === true,
             });
 
+            // Language Command card: same gating as Drive Arm, plus a live
+            // check that the LLM is configured on the server.
+            renderNlCommandCard(data.motion_graph, {
+                connected: isConnected,
+                manual: data.manual_mode === true,
+            });
+
         } catch (error) {
             console.error('Fatal error in updateStatusUI:', error);
             console.error('Stack trace:', error.stack);
@@ -917,6 +933,133 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!ensured) return;  // mode set failed (e.g. claim lost) — abort.
 
         apiRequest('/control/graph/move_to', 'POST', { node_id: nodeId, speed });
+    }
+
+    // ── Language Command card ───────────────────────────────────────
+    // Type a command → Claude Haiku interprets → server validates against
+    // the graph → operator confirms → execute. The LLM never drives the arm
+    // directly; a valid plan runs through the same graph-gated endpoints.
+
+    // Fetch LLM availability once (cached). Safe to call repeatedly.
+    async function ensureNlAvailability() {
+        if (nlAvailable !== null) return nlAvailable;
+        const status = await apiRequest('/control/nl/status', 'GET', null, true);
+        nlAvailable = status ? status.available === true : false;
+        return nlAvailable;
+    }
+
+    function clearNlPlan() {
+        nlPendingPlan = null;
+        nlPlanNode = null;
+        const preview = document.getElementById('nl-preview');
+        const confirmRow = document.getElementById('nl-confirm-row');
+        if (preview) { preview.hidden = true; preview.classList.remove('nl-invalid'); }
+        if (confirmRow) confirmRow.hidden = true;
+    }
+
+    function renderNlCommandCard(motionGraph, gating = {}) {
+        const card = document.getElementById('nl-command-card');
+        if (!card) return;
+        if (!motionGraph) {
+            // No graph loaded — keep the card hidden.
+            card.hidden = true;
+            return;
+        }
+        card.hidden = false;
+
+        // Kick off the one-time availability check (async; the next render
+        // reflects the result).
+        ensureNlAvailability();
+
+        nlLastNode = motionGraph.current_node || null;
+
+        const input = document.getElementById('nl-command-input');
+        const interpretBtn = document.getElementById('nl-interpret-btn');
+        const hint = document.getElementById('nl-command-hint');
+        if (!input || !interpretBtn || !hint) return;
+
+        // A pending plan is stale once the current node changes underneath it.
+        if (nlPendingPlan && nlPlanNode !== nlLastNode) {
+            clearNlPlan();
+        }
+
+        const canDrive = gating.connected === true
+            && gating.manual !== true
+            && claimToken !== null
+            && !isRobotMoving;
+        const enabled = canDrive && nlAvailable === true;
+
+        input.disabled = !enabled;
+        interpretBtn.disabled = !enabled;
+
+        if (nlAvailable === false) {
+            hint.textContent = '(LLM not configured — set ANTHROPIC_API_KEY on the server)';
+            hint.hidden = false;
+        } else if (!canDrive) {
+            hint.textContent = claimToken === null
+                ? '(take control to issue commands)'
+                : '(unavailable while disconnected, in manual mode, or moving)';
+            hint.hidden = false;
+        } else {
+            hint.textContent = 'Try: "go to deck home", "pick up the tray from deck slot 1".';
+            hint.hidden = false;
+        }
+    }
+
+    async function sendNlInterpret() {
+        const input = document.getElementById('nl-command-input');
+        const text = input ? input.value.trim() : '';
+        if (!text) {
+            showMessage('Type a command first.', 'error');
+            return;
+        }
+        clearNlPlan();
+        const result = await apiRequest('/control/nl/interpret', 'POST', { text });
+        if (!result) return;  // error already surfaced by apiRequest
+
+        const preview = document.getElementById('nl-preview');
+        const explanationEl = document.getElementById('nl-explanation');
+        const summaryEl = document.getElementById('nl-plan-summary');
+        const confirmRow = document.getElementById('nl-confirm-row');
+        if (!preview || !explanationEl || !summaryEl || !confirmRow) return;
+
+        const plan = result.plan || {};
+        const intent = result.intent || {};
+        explanationEl.textContent = intent.explanation || plan.explanation || '—';
+
+        if (result.valid && Array.isArray(plan.steps) && plan.steps.length) {
+            summaryEl.textContent = plan.steps
+                .map(s => `${s.type} → ${s.target}`)
+                .join(', ');
+            nlPendingPlan = plan.steps;
+            // Pin the plan to the node it was validated against so a later
+            // status render can detect (and drop) a stale plan.
+            nlPlanNode = nlLastNode;
+            preview.classList.remove('nl-invalid');
+            confirmRow.hidden = false;
+        } else {
+            summaryEl.textContent = result.reason || 'Not executable.';
+            nlPendingPlan = null;
+            preview.classList.add('nl-invalid');
+            confirmRow.hidden = true;
+        }
+        preview.hidden = false;
+    }
+
+    async function sendNlConfirm() {
+        if (!nlPendingPlan || !nlPendingPlan.length) {
+            showMessage('Nothing to run — interpret a command first.', 'error');
+            return;
+        }
+        const steps = nlPendingPlan;
+        clearNlPlan();
+        const result = await apiRequest('/control/nl/execute', 'POST', { steps });
+        if (result) {
+            addLogEntry(`nl executed → ${result.current_node}`, 'info');
+            const input = document.getElementById('nl-command-input');
+            if (input) input.value = '';
+            fetchAndUpdateStatus();
+        }
     }
 
     async function changeGraphMode(newMode) {
@@ -1654,6 +1797,30 @@ document.addEventListener('DOMContentLoaded', () => {
     const driveGripperBtn = document.getElementById('drive-gripper-btn');
     if (driveGripperBtn) {
         driveGripperBtn.addEventListener('click', sendDriveGripper);
+    }
+
+    // Language Command card: Interpret runs the LLM; Confirm executes the
+    // validated plan; Cancel discards it. Enter in the text box interprets.
+    const nlInterpretBtn = document.getElementById('nl-interpret-btn');
+    if (nlInterpretBtn) {
+        nlInterpretBtn.addEventListener('click', sendNlInterpret);
+    }
+    const nlConfirmBtn = document.getElementById('nl-confirm-btn');
+    if (nlConfirmBtn) {
+        nlConfirmBtn.addEventListener('click', sendNlConfirm);
+    }
+    const nlCancelBtn = document.getElementById('nl-cancel-btn');
+    if (nlCancelBtn) {
+        nlCancelBtn.addEventListener('click', clearNlPlan);
+    }
+    const nlInput = document.getElementById('nl-command-input');
+    if (nlInput) {
+        nlInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !nlInput.disabled) {
+                e.preventDefault();
+                sendNlInterpret();
+            }
+        });
     }
 
     function currentGripperForce() {

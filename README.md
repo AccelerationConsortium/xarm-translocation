@@ -118,6 +118,7 @@ For detailed guides on specific topics, please see the project root:
 
 -   **[Features Overview](./src/docs/PYXARM_FEATURES.md)**: A high-level overview of the controller's features.
 -   **[API Reference](./src/docs/PYXARM_API.md)**: Detailed documentation of the `XArmController` methods and parameters.
+-   **[Natural-Language Commands](./src/docs/PYXARM_LLM_COMMANDS.md)**: The Claude Haiku-powered natural-language command layer for graph-validated moves.
 -   **[Simulation & Testing Guide](./src/docs/PYXARM_TESTING.md)**: A comprehensive guide to simulation modes and the project's testing strategy.
 -   **[Network Access](./src/docs/NETWORK_ACCESS.md)**: Tailscale port-forwarding setup for remote access to both the PyxArm API and the official UFactory Studio UI.
 

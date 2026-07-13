@@ -217,6 +217,34 @@
                     </div>
                 </div>
 
+                <!-- Language Command card — natural-language commands interpreted
+                     by Claude Haiku, validated against the motion graph, then
+                     confirmed before execution. -->
+                <div class="card" id="nl-command-card" hidden>
+                    <h2>Language Command <span class="panel-unit">LLM · graph-validated</span></h2>
+                    <div class="mg-row">
+                        <input type="text" id="nl-command-input" class="inline-input" placeholder="e.g. go to deck home">
+                        <button id="nl-interpret-btn" class="btn btn-primary" disabled>Interpret</button>
+                    </div>
+                    <div class="mg-row">
+                        <span class="muted" id="nl-command-hint">(take control to issue commands)</span>
+                    </div>
+                    <div id="nl-preview" class="nl-preview" hidden>
+                        <div class="mg-row">
+                            <span class="inline-label">Interpreted</span>
+                            <span id="nl-explanation" class="nl-explanation">—</span>
+                        </div>
+                        <div class="mg-row">
+                            <span class="inline-label">Plan</span>
+                            <strong id="nl-plan-summary">—</strong>
+                        </div>
+                        <div class="mg-row" id="nl-confirm-row" hidden>
+                            <button id="nl-confirm-btn" class="btn btn-success">Confirm &amp; Run</button>
+                            <button id="nl-cancel-btn" class="btn btn-secondary">Cancel</button>
+                        </div>
+                    </div>
+                </div>
+
                 <!-- Motion Graph card — Phase 4: shows current node + reachable destinations -->
                 <div class="card" id="motion-graph-card" hidden>
                     <h2>Motion Graph

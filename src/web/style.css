@@ -1242,3 +1242,35 @@ input#linear-speed {
     color: var(--ink-muted);
     font-style: italic;
 }
+
+/* ── Language Command card ──────────────────────────────────────── */
+#nl-command-input {
+    width: auto;
+    min-width: 240px;
+    flex: 1 1 auto;
+    text-align: left;
+}
+
+#nl-command-hint {
+    color: var(--ink-muted);
+    font-style: italic;
+}
+
+.nl-preview {
+    border-top: 1px solid var(--ink-muted);
+    margin-top: 8px;
+    padding-top: 8px;
+}
+
+.nl-explanation {
+    flex: 1 1 auto;
+}
+
+#nl-plan-summary {
+    font-family: monospace;
+    color: var(--accent, #4a90e2);
+}
+
+.nl-preview.nl-invalid #nl-plan-summary {
+    color: var(--danger, #d9534f);
+}

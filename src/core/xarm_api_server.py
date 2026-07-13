@@ -46,6 +46,10 @@ try:
         EdgeNotAllowedError, GraphError, GraphMode, GripperTransitionError,
         RecoveryMismatch, UnknownNodeError,
     )
+    from .nl_command import (
+        NLCommandError, NLCommandInterpreter, build_context, plan_from_intent,
+        NLIntent,
+    )
     from .claims import ClaimConflict, InvalidClaimToken
 except ImportError:
     from core.xarm_controller import XArmController, SafetyLevel, ComponentState
@@ -69,6 +73,10 @@ except ImportError:
         EdgeNotAllowedError, GraphError, GraphMode, GripperTransitionError,
         RecoveryMismatch, UnknownNodeError,
     )
+    from core.nl_command import (
+        NLCommandError, NLCommandInterpreter, build_context, plan_from_intent,
+        NLIntent,
+    )
     from core.claims import ClaimConflict, InvalidClaimToken
 
 # Configure logging
@@ -88,6 +96,12 @@ ws_handler = None
 
 # Global controller instance
 controller: Optional[XArmController] = None
+
+# Natural-language command interpreter (Claude Haiku). Constructed once;
+# reads ANTHROPIC_API_KEY / XARM_LLM_MODEL from the environment. When no key
+# is configured, .available is False and the NL endpoints report unavailable
+# instead of failing — the rest of the server is unaffected.
+nl_interpreter = NLCommandInterpreter()
 
 # WebSocket connections for real-time updates
 class ConnectionManager:
@@ -334,6 +348,27 @@ class GraphMoveToRequest(BaseModel):
     """
     node_id: str = Field(description="Graph node id to move to")
     speed: Optional[float] = Field(default=None, description="Movement speed (may be capped by edge.speed in STRICT)")
+
+
+class NLInterpretRequest(BaseModel):
+    """Body of POST /control/nl/interpret — a free-text robot command."""
+    text: str = Field(description="Natural-language command, e.g. 'go to deck home'")
+
+
+class NLPlanStep(BaseModel):
+    """One step of an NL plan, mirroring the graph control endpoints."""
+    type: str = Field(description="'move_to' or 'set_gripper'")
+    target: str = Field(description="Node id (move_to) or gripper state (set_gripper)")
+
+
+class NLExecuteRequest(BaseModel):
+    """Body of POST /control/nl/execute — the plan returned by interpret.
+
+    The steps are re-validated against the live graph state before running,
+    so a stale plan (the arm moved since interpret) is rejected rather than
+    executed blindly.
+    """
+    steps: List[NLPlanStep] = Field(description="Ordered plan steps to execute")
 
 
 class GraphEdgeUpdateRequest(BaseModel):
@@ -2278,6 +2313,158 @@ async def set_gripper_state(request: GraphGripperRequest, background_tasks: Back
         "message": f"Gripper set to '{request.state}'",
         "gripper_state": c.current_gripper_state,
         "allowed_gripper_targets": c.allowed_gripper_targets(),
+    }
+
+
+@app.get("/control/nl/status")
+async def nl_command_status():
+    """Whether natural-language commands are available.
+
+    Not claim-gated: it's pure capability advertisement so the web UI can
+    show "LLM not configured" instead of failing on interpret. ``available``
+    is True only when an Anthropic API key is set and the SDK is importable.
+    """
+    return {"available": nl_interpreter.available, "model": nl_interpreter.model}
+
+
+@app.post("/control/nl/interpret", dependencies=[Depends(require_claim)])
+async def nl_interpret(request: NLInterpretRequest):
+    """Interpret a natural-language command into a graph-validated plan.
+
+    Two stages: Claude Haiku maps the utterance to a structured intent,
+    then a deterministic validator gates it against the live graph state.
+    No motion happens here — the caller reviews the plan and POSTs it to
+    /control/nl/execute to run it. Claim-gated for consistency with the
+    rest of the control surface.
+
+    Returns 503 when the LLM isn't configured, 502 when the LLM call fails.
+    A merely-unmappable command comes back 200 with ``valid: false`` and a
+    human-readable reason.
+    """
+    c = get_controller()
+    if c.motion_graph is None:
+        raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+    if not nl_interpreter.available:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "llm_unavailable",
+                "reason": "ANTHROPIC_API_KEY is not configured on the server.",
+            },
+        )
+    context = build_context(c)
+    try:
+        intent = await asyncio.to_thread(
+            nl_interpreter.interpret, request.text, context,
+        )
+    except NLCommandError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "llm_error", "reason": str(exc)},
+        )
+    plan = plan_from_intent(intent, context)
+    return {
+        "intent": intent.to_dict(),
+        "plan": plan.to_dict(),
+        "valid": plan.valid,
+        "reason": plan.reason,
+    }
+
+
+@app.post("/control/nl/execute", dependencies=[Depends(require_claim)])
+async def nl_execute(request: NLExecuteRequest, background_tasks: BackgroundTasks):
+    """Execute a plan previously produced by /control/nl/interpret.
+
+    Every step is RE-VALIDATED against the live graph state right before it
+    runs (the arm may have moved since interpret), STRICT mode is forced so
+    only whitelisted transitions are possible, and each step dispatches to
+    the same controller paths the Drive Arm card uses (``move_to_node`` /
+    ``set_gripper_state``).
+
+    Returns 409 when a step is no longer valid (with the reason), mirroring
+    the graph endpoints' edge/gripper rejection behavior.
+    """
+    c = get_controller()
+    if c.motion_graph is None:
+        raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+    if not request.steps:
+        raise HTTPException(status_code=422, detail="no steps to execute")
+
+    # Force STRICT so execution can never ride an off-whitelist edge.
+    try:
+        c.set_graph_mode(GraphMode.STRICT)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    results: List[Dict[str, Any]] = []
+    for step in request.steps:
+        # Refresh the snapshot after each step: an earlier step changes the
+        # current node / gripper state, so later steps validate against it.
+        context = build_context(c)
+        intent = NLIntent(action=step.type, target=step.target)
+        plan = plan_from_intent(intent, context)
+        if not plan.valid:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "plan_invalid",
+                    "step": step.model_dump(),
+                    "reason": plan.reason,
+                },
+            )
+
+        if step.type == "move_to":
+            try:
+                success = await asyncio.to_thread(
+                    c.move_to_node, node_id=step.target,
+                )
+            except UnknownNodeError:
+                raise HTTPException(
+                    status_code=409, detail=f"unknown node: {step.target!r}",
+                )
+            except EdgeNotAllowedError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "edge_not_allowed",
+                        "current_node": exc.current,
+                        "target": exc.target,
+                        "reason": exc.reason,
+                    },
+                )
+        elif step.type == "set_gripper":
+            try:
+                success = await asyncio.to_thread(
+                    c.set_gripper_state, step.target,
+                )
+            except GripperTransitionError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "gripper_transition_not_allowed",
+                        "node": exc.node,
+                        "from_state": exc.from_state,
+                        "to_state": exc.to_state,
+                        "reason": exc.reason,
+                    },
+                )
+        else:
+            raise HTTPException(
+                status_code=422, detail=f"unsupported step type: {step.type!r}",
+            )
+
+        if not success:
+            raise HTTPException(
+                status_code=500,
+                detail=f"step {step.type} -> {step.target!r} failed",
+            )
+        results.append({"type": step.type, "target": step.target, "ok": True})
+
+    background_tasks.add_task(broadcast_status_update)
+    return {
+        "executed": results,
+        "current_node": c.current_node,
+        "gripper_state": c.current_gripper_state,
     }
 
 

@@ -47,6 +47,25 @@ for 0.1 no longer load; node ids with gripper suffixes no longer exist.
 
 ### Added
 
+- Natural-language command layer (Claude Haiku). A new **Language Command** card
+  below the Drive Arm card lets an operator type plain-English commands
+  ("go to deck home", "pick up the tray from deck slot 1"). Claude Haiku
+  interprets the utterance into a structured intent; a deterministic,
+  graph-gated validator (`plan_from_intent` in `src/core/nl_command.py`) decides
+  whether it can run; the operator confirms; execution reuses the STRICT
+  graph-gated `move_to_node` / `set_gripper_state` paths. The LLM never drives
+  the arm directly.
+  - `GET /control/nl/status`: reports whether the LLM is configured.
+  - `POST /control/nl/interpret` `{text}` (claim-gated): returns the interpreted
+    intent + validated plan without moving. `503` when no API key is set.
+  - `POST /control/nl/execute` `{steps}` (claim-gated): forces STRICT, re-validates
+    each step against live state, then runs it. `409` on stale/invalid steps.
+  - Config: `ANTHROPIC_API_KEY` (required to enable) and `XARM_LLM_MODEL`
+    (optional, default `claude-haiku-4-5`); `anthropic` added as a dependency.
+  - v1 is single-hop (direct neighbors / current-node gripper transitions only);
+    the plan step list and per-step execution loop are the seam for future
+    multi-hop path planning. See
+    [PYXARM_LLM_COMMANDS.md](src/docs/PYXARM_LLM_COMMANDS.md).
 - `POST /control/graph/gripper` `{state}` (claim-gated): change the gripper
   leaf at the current node. Returns 409 when the transition is not
   whitelisted (or the arm is moving / off-grid), 500 when actuation or
