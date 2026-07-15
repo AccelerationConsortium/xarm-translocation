@@ -147,7 +147,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 } catch {
                     errorData = {};
                 }
-                let errorMessage = errorData.detail || errorData.error || `HTTP error! status: ${response.status}`;
+                // `detail` may be a plain string (FastAPI default) or a
+                // structured object (e.g. EdgeNotAllowedError -> 409 with
+                // {error, current_node, target, reason}). Coercing an object
+                // straight into an Error yields the useless "[object Object]",
+                // so pull out the human-readable field(s) first.
+                const rawDetail = errorData.detail;
+                let detailMessage;
+                if (typeof rawDetail === 'string') {
+                    detailMessage = rawDetail;
+                } else if (rawDetail && typeof rawDetail === 'object') {
+                    detailMessage = rawDetail.reason || rawDetail.hint
+                        || rawDetail.error || rawDetail.message;
+                }
+                let errorMessage = detailMessage || errorData.error
+                    || `HTTP error! status: ${response.status}`;
                 if (response.status === 423) {
                     const heldBy = errorData?.detail?.claimed_by?.owner;
                     errorMessage = heldBy

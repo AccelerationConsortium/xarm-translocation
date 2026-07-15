@@ -290,7 +290,11 @@ class XArmController:
         self.position_history = deque(maxlen=100)
         self.last_position = [300, 0, 300, 180, 0, 0]  # Default position
         self.last_joints = [0] * self.num_joints
-        self.last_track_position = 0
+        # None (not 0) until a successful encoder read: 0 is a valid-looking
+        # rail position (== Home), so a stale 0 would masquerade as Home and
+        # make nearest-node/Recover snap to the wrong node. None means
+        # "unknown", which find_nearest_node treats as no-match.
+        self.last_track_position = None
         self.last_gripper_position = self._gripper_setting('open_position', 0)
         self.last_gripper_force = self._gripper_setting('force', 100)
         self.last_gripper_speed = self._gripper_setting('speed', 300)
@@ -323,6 +327,12 @@ class XArmController:
         # one — re-pin via a named move or recover_to().
         self.last_arm_pose_name: Optional[str] = None
         self.last_rail_location_name: Optional[str] = None
+        # Set while move_to_node dispatches the two sub-moves of a
+        # cross-rail edge (one graph edge, two physical axes). The edge is
+        # validated once at the move_to_node level; the intermediate state
+        # between the arm and rail sub-moves is a non-node by design, so
+        # per-axis graph consultation must not run during that window.
+        self._suppress_graph_consult: bool = False
         # last_gripper_position is the commanded stroke (set on every
         # successful SDK gripper call). Used by _commanded_gripper_stroke() to
         # resolve the current graph node. Distinct from
@@ -616,14 +626,29 @@ class XArmController:
             print(f"Warning: Failed to update positions: {e}")
 
     def _update_track_position(self):
-        """Update cached track position."""
-        if not self.arm or not self.enable_track or self.states['track'] != ComponentState.ENABLED:
+        """Update cached track position.
+
+        Reading the encoder is a *read*, not motion, so it is not gated on
+        the track being motion-ENABLED — only on the arm being connected
+        and a track being configured. On a non-zero SDK code or exception
+        we leave ``last_track_position`` unchanged (it stays None until a
+        real read) rather than writing a bogus value, and log why so a
+        stale/unknown rail is visible instead of silently masquerading as
+        Home (0 mm).
+        """
+        if not self.arm or not self.enable_track:
             return
 
         try:
             ret = self.arm.get_linear_track_pos()
             if ret[0] == 0:
                 self.last_track_position = ret[1]
+            else:
+                print(
+                    f"Warning: track position read returned code {ret[0]} "
+                    f"(track state={self.states.get('track')}); "
+                    f"keeping last value {self.last_track_position}"
+                )
         except Exception as e:
             print(f"Warning: Failed to update track position: {e}")
 
@@ -1596,15 +1621,29 @@ class XArmController:
         return self.move_track_to_position(0)
 
     def get_track_position(self):
-        """Get current linear track position."""
-        if not self.is_component_enabled('track'):
-            print("Linear track is not enabled")
+        """Get current linear track position.
+
+        Reading the encoder is a read, not motion, so it is not gated on
+        the track being motion-ENABLED — only on the arm being connected
+        and a track being configured. Returns None (and leaves the cache
+        untouched) when the read is unavailable or fails.
+        """
+        if not self.arm or not self.enable_track:
+            print("Linear track is not available")
             return None
 
-        ret = self.arm.get_linear_track_pos()
+        try:
+            ret = self.arm.get_linear_track_pos()
+        except Exception as e:
+            print(f"Warning: Failed to read track position: {e}")
+            return None
         if ret[0] == 0:
             self.last_track_position = ret[1]
             return ret[1]
+        print(
+            f"Warning: track position read returned code {ret[0]} "
+            f"(track state={self.states.get('track')})"
+        )
         return None
 
     # =============================================================================
@@ -1741,6 +1780,13 @@ class XArmController:
                 node_id=None, arm_residual=None, rail_residual=None,
                 gripper_state=None, gripper_match=False, within_tolerance=False,
             )
+        # Refresh live hardware readings so the match reflects where the
+        # robot physically is right now, not a possibly-stale cache — this
+        # is the Recover / nearest path, where a wrong rail read snaps to
+        # the wrong node.
+        if self.arm:
+            self._update_positions()
+            self._update_track_position()
         # Resolve named arm poses to joint angles (skip cartesian dicts —
         # those need a different recovery path).
         arm_poses: dict[str, list[float]] = {}
@@ -1889,13 +1935,20 @@ class XArmController:
         return True
 
     def move_to_node(self, node_id: str, speed=None) -> bool:
-        """Move the ARM to a graph node by id.
+        """Move to a graph node by id, driving the rail when required.
 
-        Pure arm motion — the gripper stroke is invariant along edges
-        and never touched here. Grip/release/narrow happens separately
-        via ``set_gripper_state`` while parked at a node.
+        The gripper stroke is invariant along edges and never touched
+        here — grip/release/narrow happens separately via
+        ``set_gripper_state`` while parked at a node.
 
-        Returns True on success, False on arm-move failure. Raises
+        Same-rail edges are a pure arm move. A cross-rail edge (the
+        target sits at a different rail location, e.g.
+        ``deck_home -> robot_home``) is one graph edge but two physical
+        axes: it is validated once here, then dispatched arm-first,
+        rail-second with per-axis graph consultation suppressed (the
+        state between the two sub-moves is a non-node by design).
+
+        Returns True on success, False on any sub-move failure. Raises
         EdgeNotAllowedError in STRICT mode for disallowed moves
         (including edges the current gripper state may not ride).
         """
@@ -1904,7 +1957,48 @@ class XArmController:
             return False
 
         node = self.motion_graph.node(node_id)  # raises UnknownNodeError
-        return self.move_to_named_location(node.arm, speed=speed)
+
+        # Same-rail: a pure arm move reaches the node; keep per-axis
+        # consultation intact so STRICT still gates the edge as before.
+        if node.rail == self.last_rail_location_name:
+            return self.move_to_named_location(node.arm, speed=speed)
+
+        # Cross-rail transit: validate the whole edge once (raises in
+        # STRICT if the edge is missing, we are off-grid, or the gripper
+        # state may not ride it), then dispatch the two axes.
+        from_node = self.current_node
+        edge = self._consult_graph_for_move(node_id, node_id)
+        capped = self._apply_edge_speed_cap(speed, edge)
+
+        self._suppress_graph_consult = True
+        try:
+            # Arm first: the transit gateway poses are joint-list presets,
+            # so the fallback dispatch is joint mode (matching edge.mode).
+            if not self.move_to_named_location(node.arm, speed=capped):
+                print(
+                    f"[motion_graph] move_to_node: arm move to {node.arm!r} "
+                    f"failed"
+                )
+                return False
+            # Rail second: no speed passed so the track uses its configured
+            # default (edge.speed is an arm speed, not a rail speed).
+            if not self.move_track_to_named_location(node.rail):
+                print(
+                    f"[motion_graph] move_to_node: rail move to {node.rail!r} "
+                    f"failed"
+                )
+                return False
+        finally:
+            self._suppress_graph_consult = False
+
+        # Both trackers are now set by the sub-moves; record the real edge.
+        self._store_transition(
+            from_node,
+            self.current_node,
+            edge.mode if edge is not None else MoveMode.JOINT,
+            capped,
+        )
+        return True
 
     def _arm_is_moving(self) -> bool:
         """True when the SDK reports the arm in motion (state 1)."""
@@ -2040,6 +2134,12 @@ class XArmController:
         a warning and returns None. In OFF mode returns None silently.
         """
         if self.motion_graph is None or self.graph_mode == GraphMode.OFF:
+            return None
+
+        # Cross-rail sub-moves: the edge was already validated once at the
+        # move_to_node level. The intermediate (arm, rail) state is a
+        # non-node by design, so skip the per-axis check here.
+        if self._suppress_graph_consult:
             return None
 
         current_id = self.current_node

@@ -1,4 +1,4 @@
-Speed: 500
+Speed: 100   # mm/s — kept deliberately slow for all rail moves
 Acc: 1000
 Range:
   min: 0

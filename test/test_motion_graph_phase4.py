@@ -222,6 +222,10 @@ def graph_controller(initialized_controller):
     c.position_config = {"positions": _arm_poses()}
     c.track_config = {"locations": _rail_positions()}
     c.last_gripper_position = 150  # open stroke → matches all test nodes
+    # suggest_current_node() refreshes live readings before matching, so the
+    # mock arm must report the n_home pose (not the conftest default zeros).
+    c.arm.get_servo_angle.return_value = (0, [180.0, -45.0, 0.0, 45.0, 90.0])
+    c.arm.get_linear_track_pos.return_value = (0, 0.0)
     c.last_joints = [180.0, -45.0, 0.0, 45.0, 90.0]
     c.last_track_position = 0.0
     return c

@@ -32,10 +32,10 @@ schema_version: "0.2"
 
 # ── Gripper-state catalog ───────────────────────────────────────────────────
 gripper_states:
-  empty:    {stroke: 150, intent: none}      # fully open, holding nothing
+  empty: {stroke: 150, intent: none}         # fully open, holding nothing
   grip_120: {stroke: 120, intent: grasp}     # gripping the tray (long side)
-  reach_90: {stroke: 90,  intent: position}  # narrow for clearance, no payload
-  grip_80:  {stroke: 80,  intent: grasp}     # gripping the tray (short side)
+  reach_90: {stroke: 90, intent: position}   # narrow for clearance, no payload
+  grip_80: {stroke: 80, intent: grasp}       # gripping the tray (short side)
 
 # ── Nodes ──────────────────────────────────────────────────────────────────
 nodes:
@@ -47,38 +47,40 @@ nodes:
 
   # ── Opentrons OT-2 (rail Home). Per-slot pick/place: the low pose is
   #    where grip/release happens; press poses are grip-only. ──
-- {id: opentrons_home, arm: opentrons_home, rail: Home, tags: [opentrons, transit]}
+- {id: opentrons_home, arm: opentrons_home, rail: Home, tags: [opentrons, 
+      transit]}
 
-- {id: opentrons_2_high, arm: opentrons_2_high, rail: Home,
-   gripper_states: [empty, grip_120], tags: [opentrons, slot2]}
-- {id: opentrons_2_low, arm: opentrons_2_low, rail: Home,
-   gripper_states: [empty, grip_120],
-   gripper_transitions: [[empty, grip_120]],
-   tags: [opentrons, slot2]}
-- {id: opentrons_2_low_press, arm: opentrons_2_low_press, rail: Home,
-   gripper_states: [grip_120], tags: [opentrons, slot2]}
+- {id: opentrons_2_high, arm: opentrons_2_high, rail: Home, gripper_states: [
+      empty, grip_120], tags: [opentrons, slot2]}
+- {id: opentrons_2_low, arm: opentrons_2_low, rail: Home, gripper_states: [empty,
+    grip_120], gripper_transitions: [[empty, grip_120]], tags: [opentrons, slot2]}
+- {id: opentrons_2_low_press, arm: opentrons_2_low_press, rail: Home, 
+    gripper_states: [grip_120], tags: [opentrons, slot2]}
 
-- {id: opentrons_4_high, arm: opentrons_4_high, rail: Home,
-   gripper_states: [empty, grip_120], tags: [opentrons, slot4]}
-- {id: opentrons_4_low, arm: opentrons_4_low, rail: Home,
-   gripper_states: [empty, grip_120], tags: [opentrons, slot4]}
-- {id: opentrons_4_low_press, arm: opentrons_4_low_press, rail: Home,
-   gripper_states: [grip_120], tags: [opentrons, slot4]}
+- {id: opentrons_4_high, arm: opentrons_4_high, rail: Home, gripper_states: [
+      empty, grip_120], tags: [opentrons, slot4]}
+- {id: opentrons_4_low, arm: opentrons_4_low, rail: Home, gripper_states: [empty,
+    grip_120], tags: [opentrons, slot4]}
+- {id: opentrons_4_low_press, arm: opentrons_4_low_press, rail: Home, 
+    gripper_states: [grip_120], tags: [opentrons, slot4]}
 
-- {id: opentrons_6_high, arm: opentrons_6_high, rail: Home,
-   gripper_states: [empty, grip_120], tags: [opentrons, slot6]}
-- {id: opentrons_6_low, arm: opentrons_6_low, rail: Home,
-   gripper_states: [empty, grip_120], tags: [opentrons, slot6]}
-- {id: opentrons_6_low_press, arm: opentrons_6_low_press, rail: Home,
-   gripper_states: [grip_120], tags: [opentrons, slot6]}
+- {id: opentrons_6_high, arm: opentrons_6_high, rail: Home, gripper_states: [
+      empty, grip_120], tags: [opentrons, slot6]}
+- {id: opentrons_6_low, arm: opentrons_6_low, rail: Home, gripper_states: [empty,
+    grip_120], tags: [opentrons, slot6]}
+- {id: opentrons_6_low_press, arm: opentrons_6_low_press, rail: Home, 
+    gripper_states: [grip_120], tags: [opentrons, slot6]}
 
   # ── UPLC (rail Home), empty-only (no payload allowed near the drawer). ──
 - {id: uplc_home, arm: uplc_home, rail: Home, tags: [uplc, transit]}
   # drawer open/close subgraph
 - {id: uplc_draw_home, arm: uplc_draw_home, rail: Home, tags: [uplc, drawer]}
-- {id: uplc_draw_open_max, arm: uplc_draw_open_max, rail: Home, tags: [uplc, drawer]}
-- {id: uplc_draw_open_min, arm: uplc_draw_open_min, rail: Home, tags: [uplc, drawer]}
-- {id: uplc_draw_open_close, arm: uplc_draw_open_close, rail: Home, tags: [uplc, drawer]}
+- {id: uplc_draw_open_max, arm: uplc_draw_open_max, rail: Home, tags: [uplc, 
+      drawer]}
+- {id: uplc_draw_open_min, arm: uplc_draw_open_min, rail: Home, tags: [uplc, 
+      drawer]}
+- {id: uplc_draw_open_close, arm: uplc_draw_open_close, rail: Home, tags: [uplc, 
+      drawer]}
   # plate in/out poses
 - {id: uplc_plate_home, arm: uplc_plate_home, rail: Home, tags: [uplc, plate]}
 - {id: uplc_plate_high, arm: uplc_plate_high, rail: Home, tags: [uplc, plate]}
@@ -90,62 +92,63 @@ nodes:
 - {id: deck_home, arm: deck_home, rail: Deck, tags: [deck, transit]}
 - {id: deck_high, arm: deck_high, rail: Deck, tags: [deck, transit]}
 
-- {id: deck_slot1_high, arm: deck_slot1_high, rail: Deck,
-   gripper_states: [empty, grip_120], tags: [deck, slot1]}
-- {id: deck_slot1_low, arm: deck_slot1_low, rail: Deck,
-   gripper_states: [empty, grip_120],
-   gripper_transitions: [[empty, grip_120], [grip_120, empty]],
-   tags: [deck, slot1]}
-- {id: deck_slot1_low_press, arm: deck_slot1_low_press, rail: Deck,
-   gripper_states: [grip_120], tags: [deck, slot1]}
+- {id: deck_slot1_high, arm: deck_slot1_high, rail: Deck, gripper_states: [empty,
+    grip_120], tags: [deck, slot1]}
+- {id: deck_slot1_low, arm: deck_slot1_low, rail: Deck, gripper_states: [empty, 
+      grip_120], gripper_transitions: [[empty, grip_120], [grip_120, empty]], 
+    tags: [deck, slot1]}
+- {id: deck_slot1_low_press, arm: deck_slot1_low_press, rail: Deck, 
+    gripper_states: [grip_120], tags: [deck, slot1]}
 
-- {id: deck_slot2_high, arm: deck_slot2_high, rail: Deck,
-   gripper_states: [empty, grip_120], tags: [deck, slot2]}
-- {id: deck_slot2_low, arm: deck_slot2_low, rail: Deck,
-   gripper_states: [empty, grip_120], tags: [deck, slot2]}
+- {id: deck_slot2_high, arm: deck_slot2_high, rail: Deck, gripper_states: [empty,
+    grip_120], tags: [deck, slot2]}
+- {id: deck_slot2_low, arm: deck_slot2_low, rail: Deck, gripper_states: [empty, 
+      grip_120], gripper_transitions: [[empty, grip_120], [grip_120, empty]], 
+    tags: [deck, slot2]}
 
-- {id: deck_solid_high, arm: deck_solid_high, rail: Deck,
-   gripper_states: [empty, grip_120], tags: [deck, solid]}
-- {id: deck_solid_low, arm: deck_solid_low, rail: Deck,
-   gripper_states: [empty, grip_120],
-   gripper_transitions: [[empty, grip_120], [grip_120, empty]],
-   tags: [deck, solid]}
-- {id: deck_solid_low_press, arm: deck_solid_low_press, rail: Deck,
-   gripper_states: [grip_120], tags: [deck, solid]}
+- {id: deck_solid_high, arm: deck_solid_high, rail: Deck, gripper_states: [empty,
+    grip_120], tags: [deck, solid]}
+- {id: deck_solid_low, arm: deck_solid_low, rail: Deck, gripper_states: [empty, 
+      grip_120], gripper_transitions: [[empty, grip_120], [grip_120, empty]], 
+    tags: [deck, solid]}
+- {id: deck_solid_low_press, arm: deck_solid_low_press, rail: Deck, 
+    gripper_states: [grip_120], tags: [deck, solid]}
 
   # ── Hood (rail Hood=550). shaker + filtration sub-stations. ──
 - {id: hood_home, arm: hood_home, rail: Hood, tags: [hood, transit]}
 
-- {id: hood_shaker_high, arm: hood_shaker_high, rail: Hood,
-   gripper_states: [empty, grip_120], tags: [hood, shaker]}
-- {id: hood_shaker_low, arm: hood_shaker_low, rail: Hood,
-   gripper_states: [empty, grip_120], tags: [hood, shaker]}
-- {id: hood_shaker_low_press, arm: hood_shaker_low_press, rail: Hood,
-   gripper_states: [grip_120], tags: [hood, shaker]}
+- {id: hood_shaker_high, arm: hood_shaker_high, rail: Hood, gripper_states: [
+      empty, grip_120], tags: [hood, shaker]}
+- {id: hood_shaker_low, arm: hood_shaker_low, rail: Hood, gripper_states: [empty,
+    grip_120], tags: [hood, shaker]}
+- {id: hood_shaker_low_press, arm: hood_shaker_low_press, rail: Hood, 
+    gripper_states: [grip_120], tags: [hood, shaker]}
 
 - {id: hood_filter_home, arm: hood_filter_home, rail: Hood, tags: [hood, filter]}
-- {id: hood_filter_high, arm: hood_filter_high, rail: Hood,
-   gripper_states: [empty, grip_120], tags: [hood, filter]}
-- {id: hood_filter_low, arm: hood_filter_low, rail: Hood,
-   gripper_states: [empty, grip_120], tags: [hood, filter]}
-- {id: hood_filter_top_plate, arm: hood_filter_top_plate, rail: Hood,
-   gripper_states: [empty, grip_120], tags: [hood, filter]}
+- {id: hood_filter_high, arm: hood_filter_high, rail: Hood, gripper_states: [
+      empty, grip_120], tags: [hood, filter]}
+- {id: hood_filter_low, arm: hood_filter_low, rail: Hood, gripper_states: [empty,
+    grip_120], tags: [hood, filter]}
+- {id: hood_filter_top_plate, arm: hood_filter_top_plate, rail: Hood, 
+    gripper_states: [empty, grip_120], tags: [hood, filter]}
 
   # ── Cytation 5 reader (rail Cytation=700). Poses still being tuned on
   #    hardware (see position_config TODOs). ──
-- {id: cytation_home, arm: cytation_home, rail: Cytation, tags: [cytation, transit]}
-- {id: cytation_high, arm: cytation_high, rail: Cytation,
-   gripper_states: [empty, grip_120], tags: [cytation, plate]}
-- {id: cytation_low, arm: cytation_low, rail: Cytation,
-   gripper_states: [empty, grip_120], tags: [cytation, plate]}
+- {id: cytation_home, arm: cytation_home, rail: Cytation, tags: [cytation, 
+      transit]}
+- {id: cytation_high, arm: cytation_high, rail: Cytation, gripper_states: [empty,
+    grip_120], tags: [cytation, plate]}
+- {id: cytation_low, arm: cytation_low, rail: Cytation, gripper_states: [empty, 
+      grip_120], tags: [cytation, plate]}
 
   # ── PlateLoc sealer (rail Plateloc=700). Poses still being tuned on
   #    hardware (see position_config TODOs). ──
-- {id: plateloc_home, arm: plateloc_home, rail: Plateloc, tags: [plateloc, transit]}
-- {id: plateloc_high, arm: plateloc_high, rail: Plateloc,
-   gripper_states: [empty, grip_120], tags: [plateloc, plate]}
-- {id: plateloc_low, arm: plateloc_low, rail: Plateloc,
-   gripper_states: [empty, grip_120], tags: [plateloc, plate]}
+- {id: plateloc_home, arm: plateloc_home, rail: Plateloc, tags: [plateloc, 
+      transit]}
+- {id: plateloc_high, arm: plateloc_high, rail: Plateloc, gripper_states: [empty,
+    grip_120], tags: [plateloc, plate]}
+- {id: plateloc_low, arm: plateloc_low, rail: Plateloc, gripper_states: [empty, 
+      grip_120], tags: [plateloc, plate]}
 
 # ── Edges: directional arm motions. The gripper never changes on an edge —
 #    grip/release lives on the nodes' gripper_transitions above. Where the
@@ -262,3 +265,57 @@ edges:
   to: robot_home
   mode: joint
   speed: 25.0
+- from: deck_high
+  to: deck_slot2_high
+  mode: joint
+- from: deck_slot2_high
+  to: deck_slot2_low
+  mode: linear
+- from: deck_slot2_high
+  to: deck_high
+  mode: joint
+- from: deck_slot2_low
+  to: deck_slot2_high
+  mode: linear
+- from: deck_high
+  to: deck_solid_high
+  mode: joint
+- from: deck_solid_high
+  to: deck_high
+  mode: joint
+- from: deck_solid_high
+  to: deck_solid_low
+  mode: linear
+- from: deck_solid_low
+  to: deck_solid_high
+  mode: linear
+- from: hood_home
+  to: hood_filter_home
+  mode: joint
+- from: hood_filter_home
+  to: hood_home
+  mode: joint
+- from: hood_filter_home
+  to: hood_filter_high
+  mode: joint
+- from: hood_filter_high
+  to: hood_filter_home
+  mode: joint
+- from: hood_filter_high
+  to: hood_filter_low
+  mode: linear
+- from: hood_filter_low
+  to: hood_filter_high
+  mode: linear
+- from: hood_filter_home
+  to: hood_filter_top_plate
+  mode: joint
+- from: hood_filter_top_plate
+  to: hood_filter_home
+  mode: joint
+- from: uplc_home
+  to: uplc_plate_home
+  mode: joint
+- from: uplc_plate_home
+  to: uplc_home
+  mode: joint
