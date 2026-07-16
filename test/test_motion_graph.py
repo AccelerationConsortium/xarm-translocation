@@ -152,6 +152,17 @@ def test_real_yaml_pick_nodes_have_transitions():
     assert graph.node("deck_high").gripper_transitions == ()
 
 
+def test_real_yaml_transit_nodes_allow_all_states():
+    """Non-press nodes may be occupied in any catalog state (held pass-through)
+    and still expose no grip/release transitions at transit poses."""
+    graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
+    all_states = {"empty", "grip_120", "reach_90", "grip_80"}
+    for node_id in ("deck_high", "hood_home", "robot_home", "cytation_home"):
+        n = graph.node(node_id)
+        assert set(n.gripper_states) == all_states
+        assert n.gripper_transitions == ()
+
+
 def test_real_yaml_reachability_from_home():
     graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
     unreachable = set(graph.unreachable_nodes("robot_home"))
