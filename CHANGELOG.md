@@ -7,6 +7,34 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — multi-hop travel (`/control/graph/travel_to`)
+
+- **`MotionGraph.plan_path(from, to, gripper_state)`** — shortest hop path
+  via BFS over the state-aware successor set (`allowed_targets_for_state`).
+  The gripper state is held for the whole journey (it can only change while
+  parked), so a fixed-state search is exact. Raises the new `NoPathError`
+  (carries `from_node` / `to_node` / `gripper_state`) when no whitelisted
+  corridor connects the endpoints. Companion `reachable_set(from, state)`
+  returns every multi-hop-reachable node.
+- **`XArmController.travel_to_node(node_id, speed)`** — plans once, then
+  executes hop-by-hop through `move_to_node`, so every hop keeps per-edge
+  STRICT validation, edge speed caps, cross-rail dispatch, and transition
+  recording. Fail-fast: a mid-journey failure stops the loop with the arm
+  parked at the last completed node, reported as
+  `{success, path, completed, failed_hop}`.
+- **`POST /control/graph/travel_to`** (claim-gated) — multi-hop counterpart
+  of `move_to`. Blocks until the journey completes (repo convention; live
+  progress rides the `/ws` stream). Errors: 409 `unknown node` / `no_path` /
+  `edge_not_allowed`, 500 `travel_failed` with `failed_hop` + `completed` +
+  the node the arm is parked at.
+- **`travel_targets`** published in `/status.details.motion_graph` and
+  `GET /graph` — the multi-hop reachable set for the current node + gripper
+  state (superset of the one-hop `reachable_nodes`).
+- **Web UI:** new "Travel" row in the Drive Arm card — destination picker
+  fed by `travel_targets`, same claim/manual/moving gating as the one-hop
+  Drive row; logs the executed hop path. The Motion graph viewer link moved
+  from the page header into the Motion Graph card ("Open graph viewer ↗").
+
 ### Changed — gripper-leaf motion graph (schema 0.2)
 
 **Breaking:** `motion_graph.yaml` schema bumped from 0.1 to 0.2. Graphs written

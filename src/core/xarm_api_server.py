@@ -44,7 +44,7 @@ try:
     )
     from .motion_graph import (
         EdgeNotAllowedError, GraphError, GraphMode, GripperTransitionError,
-        RecoveryMismatch, UnknownNodeError,
+        NoPathError, RecoveryMismatch, UnknownNodeError,
     )
     from .claims import ClaimConflict, InvalidClaimToken
 except ImportError:
@@ -67,7 +67,7 @@ except ImportError:
     )
     from core.motion_graph import (
         EdgeNotAllowedError, GraphError, GraphMode, GripperTransitionError,
-        RecoveryMismatch, UnknownNodeError,
+        NoPathError, RecoveryMismatch, UnknownNodeError,
     )
     from core.claims import ClaimConflict, InvalidClaimToken
 
@@ -334,6 +334,18 @@ class GraphMoveToRequest(BaseModel):
     """
     node_id: str = Field(description="Graph node id to move to")
     speed: Optional[float] = Field(default=None, description="Movement speed (may be capped by edge.speed in STRICT)")
+
+
+class GraphTravelToRequest(BaseModel):
+    """Body of POST /control/graph/travel_to.
+
+    Multi-hop counterpart of GraphMoveToRequest: the target may be any
+    node reachable through the graph with the current gripper state,
+    not just an adjacent one. The device plans a shortest hop path and
+    executes it hop-by-hop.
+    """
+    node_id: str = Field(description="Graph node id to travel to (any reachable node)")
+    speed: Optional[float] = Field(default=None, description="Per-hop movement speed (each hop may be capped by its edge.speed)")
 
 
 class GraphEdgeUpdateRequest(BaseModel):
@@ -2029,6 +2041,10 @@ async def get_graph_state():
         "graph_mode": c.graph_mode.value if c is not None else "off",
         "current_node": c.current_node if c is not None else None,
         "reachable_nodes": c.reachable_node_ids() if c is not None else [],
+        "travel_targets": (
+            graph.reachable_set(c.current_node, c.current_gripper_state)
+            if c is not None else []
+        ),
         "gripper_stroke": c.last_gripper_position if c is not None else None,
         "gripper_state": c.current_gripper_state if c is not None else None,
         "allowed_gripper_targets": c.allowed_gripper_targets() if c is not None else [],
@@ -2153,6 +2169,77 @@ async def graph_move_to(request: GraphMoveToRequest, background_tasks: Backgroun
             detail=f"Move to node '{request.node_id}' failed",
         )
     return {"message": f"Moved to node '{request.node_id}'", "current_node": c.current_node}
+
+
+@app.post("/control/graph/travel_to", dependencies=[Depends(require_claim)])
+async def graph_travel_to(request: GraphTravelToRequest, background_tasks: BackgroundTasks):
+    """Multi-hop travel to any reachable graph node.
+
+    Plans a shortest hop path (current gripper state held throughout)
+    and executes it hop-by-hop through the same machinery as
+    /control/graph/move_to. Blocks until the journey completes,
+    matching the repo's blocking-move convention; live progress is
+    visible on the /ws status stream.
+
+    Returns 409 for an unknown node, no path (no_path), or a STRICT
+    refusal (edge_not_allowed — e.g. off-grid); 500 when a hop fails
+    mid-journey (the arm is parked at the last completed node).
+    """
+    c = get_controller()
+    if c.motion_graph is None:
+        raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+    try:
+        c.motion_graph.node(request.node_id)  # validate early
+    except UnknownNodeError:
+        raise HTTPException(status_code=409, detail=f"unknown node: {request.node_id!r}")
+
+    try:
+        result = await asyncio.to_thread(
+            c.travel_to_node,
+            node_id=request.node_id,
+            speed=request.speed,
+        )
+    except UnknownNodeError:
+        raise HTTPException(status_code=409, detail=f"unknown node: {request.node_id!r}")
+    except NoPathError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "no_path",
+                "from": exc.from_node,
+                "to": exc.to_node,
+                "gripper_state": exc.gripper_state,
+                "reason": exc.reason,
+            },
+        )
+    except EdgeNotAllowedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "edge_not_allowed",
+                "current_node": exc.current,
+                "target": exc.target,
+                "reason": exc.reason,
+            },
+        )
+
+    background_tasks.add_task(broadcast_status_update)
+    if not result["success"]:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "travel_failed",
+                "failed_hop": result["failed_hop"],
+                "completed": result["completed"],
+                "current_node": c.current_node,
+            },
+        )
+    return {
+        "message": f"Traveled to node '{request.node_id}' "
+                   f"({len(result['path'])} hop(s))",
+        "path": result["path"],
+        "current_node": c.current_node,
+    }
 
 
 @app.get("/graph/nearest")

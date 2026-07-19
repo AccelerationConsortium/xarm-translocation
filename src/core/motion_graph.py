@@ -23,6 +23,7 @@ Schema 0.2 model:
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -160,6 +161,24 @@ class EdgeNotAllowedError(GraphError):
         self.target = target
         self.reason = reason
         super().__init__(f"{current!r} -> {target!r}: {reason}")
+
+
+class NoPathError(GraphError):
+    """``plan_path`` found no route between two nodes for the given
+    gripper state. Distinct from EdgeNotAllowedError (a single-edge
+    STRICT refusal): the endpoints exist, but no whitelisted corridor
+    connects them while carrying ``gripper_state``."""
+
+    def __init__(self, from_node: str, to_node: str,
+                 gripper_state: str | None, reason: str):
+        self.from_node = from_node
+        self.to_node = to_node
+        self.gripper_state = gripper_state
+        self.reason = reason
+        super().__init__(
+            f"no path {from_node!r} -> {to_node!r} "
+            f"with gripper state {gripper_state!r}: {reason}"
+        )
 
 
 class GripperTransitionError(GraphError):
@@ -508,6 +527,72 @@ class MotionGraph:
             if e.to_node == to_id:
                 return e
         return None
+
+    # ── Path planning ────────────────────────────────────────────
+
+    def plan_path(
+        self, from_node: str, to_node: str, gripper_state: str | None,
+    ) -> list[str]:
+        """Shortest hop path from ``from_node`` to ``to_node`` traversable
+        with ``gripper_state`` held throughout.
+
+        The gripper stroke is invariant along edges (changes happen only
+        while parked, via a node's transition whitelist), so a fixed-state
+        BFS is exact. Edges are unweighted — ``Edge.speed`` is a cap, not
+        a cost — so hop count is the metric.
+
+        Returns the hop list excluding ``from_node`` and including
+        ``to_node``; ``[]`` when already at the target. Raises
+        UnknownNodeError for a missing endpoint, NoPathError when no
+        whitelisted corridor carries ``gripper_state`` between them.
+        """
+        self.node(from_node)  # raises UnknownNodeError
+        self.node(to_node)
+        if from_node == to_node:
+            return []
+        parent: dict[str, str] = {}
+        frontier: deque[str] = deque([from_node])
+        while frontier:
+            cur = frontier.popleft()
+            for nxt in self.allowed_targets_for_state(cur, gripper_state):
+                if nxt in parent or nxt == from_node:
+                    continue
+                parent[nxt] = cur
+                if nxt == to_node:
+                    path = [nxt]
+                    while path[-1] != from_node:
+                        path.append(parent[path[-1]])
+                    path.pop()  # drop from_node
+                    path.reverse()
+                    return path
+                frontier.append(nxt)
+        raise NoPathError(
+            from_node, to_node, gripper_state,
+            "target unreachable with this gripper state",
+        )
+
+    def reachable_set(
+        self, from_node: str | None, gripper_state: str | None,
+    ) -> list[str]:
+        """Every node reachable from ``from_node`` in one or more hops
+        while carrying ``gripper_state`` (sorted; excludes ``from_node``
+        itself). Empty when off-grid. The multi-hop counterpart of
+        ``allowed_targets_for_state`` — feeds travel-target pickers.
+        """
+        if from_node is None or from_node == UNKNOWN_NODE:
+            return []
+        if from_node not in self._nodes:
+            return []
+        seen = {from_node}
+        frontier: deque[str] = deque([from_node])
+        while frontier:
+            cur = frontier.popleft()
+            for nxt in self.allowed_targets_for_state(cur, gripper_state):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    frontier.append(nxt)
+        seen.discard(from_node)
+        return sorted(seen)
 
     # ── Introspection ────────────────────────────────────────────
 

@@ -803,6 +803,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // Gripper leaf row: live state readout + whitelisted transitions.
         renderDriveGripperRow(motionGraph, gating);
 
+        // Travel row: multi-hop destinations (rendered independently of the
+        // one-hop Destination select and its focus guard / early returns).
+        renderDriveTravelRow(motionGraph, gating);
+
         // Don't rebuild options while the operator is interacting with the
         // dropdown — that would stomp their open selection mid-pick.
         if (document.activeElement === select) return;
@@ -848,6 +852,39 @@ document.addEventListener('DOMContentLoaded', () => {
                 : '(unavailable while disconnected, in manual mode, or moving)';
             hint.hidden = false;
         }
+    }
+
+    function renderDriveTravelRow(motionGraph, gating = {}) {
+        const select = document.getElementById('drive-travel-select');
+        const btn = document.getElementById('drive-travel-btn');
+        if (!select || !btn) return;
+
+        // Multi-hop reachable set (superset of the one-hop reachable_nodes),
+        // computed server-side with the current gripper state held throughout.
+        const targets = motionGraph.travel_targets || [];
+
+        // Don't rebuild options while the operator has the dropdown open.
+        if (document.activeElement !== select) {
+            const previous = select.value;
+            select.innerHTML = '';
+            targets.forEach(nodeId => {
+                const opt = document.createElement('option');
+                opt.value = nodeId;
+                opt.textContent = nodeId;
+                select.appendChild(opt);
+            });
+            if (targets.includes(previous)) {
+                select.value = previous;
+            }
+        }
+
+        const canDrive = gating.connected === true
+            && gating.manual !== true
+            && claimToken !== null
+            && !isRobotMoving;
+        const canTravel = canDrive && targets.length > 0;
+        select.disabled = !canTravel;
+        btn.disabled = !canTravel;
     }
 
     function renderDriveGripperRow(motionGraph, gating = {}) {
@@ -931,6 +968,32 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!ensured) return;  // mode set failed (e.g. claim lost) — abort.
 
         apiRequest('/control/graph/move_to', 'POST', { node_id: nodeId, speed });
+    }
+
+    async function sendDriveTravel() {
+        const select = document.getElementById('drive-travel-select');
+        const speedInput = document.getElementById('drive-dest-speed');
+        if (!select || !select.value) {
+            showMessage('Select a travel destination first.', 'error');
+            return;
+        }
+        const nodeId = select.value;
+        const speed = parseFloat(speedInput?.value) || undefined;
+
+        // Ensure STRICT before moving so only whitelisted edges are possible.
+        const ensured = await apiRequest('/control/graph/mode', 'POST', { mode: 'strict' });
+        if (!ensured) return;  // mode set failed (e.g. claim lost) — abort.
+
+        addLogEntry(`travel -> ${nodeId} (planning multi-hop path)`, 'info');
+        // The request blocks for the whole journey; live progress arrives on
+        // the /ws status stream meanwhile. The response carries the hop path.
+        const result = await apiRequest('/control/graph/travel_to', 'POST', {
+            node_id: nodeId, speed,
+        });
+        if (result && result.path) {
+            addLogEntry(`travel done: ${result.path.join(' → ')}`, 'info');
+            fetchAndUpdateStatus();
+        }
     }
 
     async function changeGraphMode(newMode) {
@@ -1159,6 +1222,8 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('drive-dest-select'),
             document.getElementById('drive-dest-speed'),
             document.getElementById('drive-send-btn'),
+            document.getElementById('drive-travel-select'),
+            document.getElementById('drive-travel-btn'),
             document.getElementById('drive-gripper-select'),
             document.getElementById('drive-gripper-btn'),
             ...jogBtnIds.map(id => document.getElementById(id)),
@@ -1197,6 +1262,8 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('drive-dest-select'),
             document.getElementById('drive-dest-speed'),
             document.getElementById('drive-send-btn'),
+            document.getElementById('drive-travel-select'),
+            document.getElementById('drive-travel-btn'),
             document.getElementById('drive-gripper-select'),
             document.getElementById('drive-gripper-btn'),
             ...jogBtnIds.map(id => document.getElementById(id)),
@@ -1668,6 +1735,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const driveGripperBtn = document.getElementById('drive-gripper-btn');
     if (driveGripperBtn) {
         driveGripperBtn.addEventListener('click', sendDriveGripper);
+    }
+    const driveTravelBtn = document.getElementById('drive-travel-btn');
+    if (driveTravelBtn) {
+        driveTravelBtn.addEventListener('click', sendDriveTravel);
     }
 
     function currentGripperForce() {

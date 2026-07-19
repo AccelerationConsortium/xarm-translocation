@@ -2000,6 +2000,55 @@ class XArmController:
         )
         return True
 
+    def travel_to_node(self, node_id: str, speed=None) -> dict:
+        """Multi-hop travel to any reachable graph node.
+
+        Plans a shortest hop path with the *current* gripper state held
+        throughout (the stroke is invariant along edges), then executes
+        it hop-by-hop through ``move_to_node`` — so every hop keeps the
+        per-edge STRICT validation, speed caps, cross-rail dispatch, and
+        transition recording. The path is planned once, not re-planned
+        mid-journey; STRICT re-validating each edge is the backstop.
+
+        Fail-fast: the loop stops at the first failed hop. Every hop
+        ends parked at a graph node, so a mid-journey failure leaves the
+        arm at a known node (the last completed hop).
+
+        Returns ``{"success", "path", "completed", "failed_hop"}``.
+        Raises UnknownNodeError / NoPathError from planning, and
+        EdgeNotAllowedError when off-grid or on a STRICT mid-hop refusal.
+        """
+        if self.motion_graph is None:
+            print("[motion_graph] travel_to_node: motion_graph not loaded")
+            return {"success": False, "path": [], "completed": [],
+                    "failed_hop": None}
+
+        current = self.current_node
+        if current is None:
+            raise EdgeNotAllowedError(
+                None, node_id,
+                "not pinned to a graph node — recover to a node first",
+            )
+
+        path = self.motion_graph.plan_path(
+            current, node_id, self.current_gripper_state,
+        )  # raises UnknownNodeError / NoPathError
+
+        completed: list[str] = []
+        for hop in path:
+            if not self.move_to_node(hop, speed=speed):
+                print(
+                    f"[motion_graph] travel_to_node: hop to {hop!r} failed "
+                    f"({len(completed)}/{len(path)} hops done, parked at "
+                    f"{self.current_node!r})"
+                )
+                return {"success": False, "path": path,
+                        "completed": completed, "failed_hop": hop}
+            completed.append(hop)
+
+        return {"success": True, "path": path, "completed": completed,
+                "failed_hop": None}
+
     def _arm_is_moving(self) -> bool:
         """True when the SDK reports the arm in motion (state 1)."""
         arm = getattr(self, 'arm', None)

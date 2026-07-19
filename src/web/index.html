@@ -26,7 +26,6 @@
                             <div id="connection-details"></div>
                         </div>
                         <div id="claim-status" class="claim-status claim-free">Control: nobody (open)</div>
-                        <a href="graph.html" class="graph-link" target="_blank" rel="noopener">Motion graph ↗</a>
                     </div>
                 </div>
                 <div class="log-container">
@@ -203,6 +202,11 @@
                         <button id="drive-send-btn" class="btn btn-primary" disabled>Send</button>
                     </div>
                     <div class="mg-row">
+                        <span class="inline-label">Travel</span>
+                        <select id="drive-travel-select" class="inline-input"></select>
+                        <button id="drive-travel-btn" class="btn btn-primary" disabled title="Plan a multi-hop path and drive it hop-by-hop">Travel</button>
+                    </div>
+                    <div class="mg-row">
                         <span class="muted" id="drive-dest-hint">(connect and pin to a graph node to enable)</span>
                     </div>
                     <!-- Gripper leaf: state readout + whitelisted transitions at the current node -->
@@ -221,6 +225,7 @@
                 <div class="card" id="motion-graph-card" hidden>
                     <h2>Motion Graph
                         <span class="panel-unit">interlock layer</span>
+                        <a href="graph.html" class="graph-link" target="_blank" rel="noopener" style="float:right;">Open graph viewer ↗</a>
                     </h2>
                     <div class="mg-row">
                         <span class="inline-label">Mode</span>

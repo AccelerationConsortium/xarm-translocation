@@ -451,6 +451,9 @@ def _build_motion_graph_details(controller: XArmController) -> dict[str, Any] | 
         reachable_nodes          outgoing target ids traversable with the
                                  current gripper state (empty list when
                                  off-grid or state unknown)
+        travel_targets           every node reachable in >= 1 hops with the
+                                 current gripper state (multi-hop superset
+                                 of reachable_nodes; feeds travel_to)
         graph_mode               "off" | "advisory" | "strict"
         gripper_stroke           last commanded gripper stroke (float | None)
         gripper_state            catalog state name resolved from the stroke,
@@ -464,6 +467,9 @@ def _build_motion_graph_details(controller: XArmController) -> dict[str, Any] | 
     return {
         "current_node": controller.current_node,
         "reachable_nodes": controller.reachable_node_ids(),
+        "travel_targets": graph.reachable_set(
+            controller.current_node, controller.current_gripper_state,
+        ),
         "graph_mode": getattr(controller, "graph_mode").value,
         "gripper_stroke": getattr(controller, "last_gripper_position", None),
         "gripper_state": controller.current_gripper_state,

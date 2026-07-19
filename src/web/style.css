@@ -1224,7 +1224,8 @@ input#linear-speed {
 /* ── Drive Arm card ─────────────────────────────────────────────── */
 /* Node ids are long (e.g. deck_slot1_low_held), so widen the select past
    the narrow 72px .inline-input default and let it grow to fill the row. */
-#drive-dest-select {
+#drive-dest-select,
+#drive-travel-select {
     width: auto;
     min-width: 220px;
     flex: 1 1 auto;

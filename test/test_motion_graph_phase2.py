@@ -320,3 +320,80 @@ def test_off_mode_is_fully_permissive(graph_controller):
         "x": 100, "y": 0, "z": 100, "roll": 180, "pitch": 0, "yaw": 0,
     }
     assert c.move_to_named_location("orphan") is True
+
+
+# ── travel_to_node (multi-hop) ───────────────────────────────────────
+
+
+def _three_node_graph_dict():
+    """n_home -> n_pickup -> n_far chain (plus reverses) and an
+    edge-less n_island for the no-path case. Arm names beyond the
+    conftest presets are fine: travel tests mock move_to_node, so only
+    the planner consults the topology."""
+    data = _test_graph_dict()
+    data["nodes"].append({"id": "n_far", "arm": "far", "rail": "Home",
+                          "gripper_states": ["empty", "grip_120"]})
+    data["nodes"].append({"id": "n_island", "arm": "island", "rail": "Home",
+                          "gripper_states": ["empty", "grip_120"]})
+    data["edges"].append({"from": "n_pickup", "to": "n_far", "mode": "joint"})
+    data["edges"].append({"from": "n_far", "to": "n_pickup", "mode": "joint"})
+    return data
+
+
+@pytest.fixture
+def travel_controller(graph_controller):
+    c = graph_controller
+    c.motion_graph = MotionGraph.from_dict(
+        _three_node_graph_dict(), preconditions=DEFAULT_PRECONDITIONS,
+    )
+    c.last_arm_pose_name = "home"  # pins current_node to n_home
+    return c
+
+
+def test_travel_to_node_multi_hop_success(travel_controller):
+    c = travel_controller
+    with patch.object(c, "move_to_node", return_value=True) as mock_move:
+        result = c.travel_to_node("n_far", speed=20)
+    assert result == {"success": True, "path": ["n_pickup", "n_far"],
+                      "completed": ["n_pickup", "n_far"], "failed_hop": None}
+    assert [call.args[0] for call in mock_move.call_args_list] == \
+        ["n_pickup", "n_far"]
+    assert all(call.kwargs == {"speed": 20} for call in mock_move.call_args_list)
+
+
+def test_travel_to_node_already_at_target(travel_controller):
+    c = travel_controller
+    with patch.object(c, "move_to_node") as mock_move:
+        result = c.travel_to_node("n_home")
+    assert result["success"] is True
+    assert result["path"] == []
+    mock_move.assert_not_called()
+
+
+def test_travel_to_node_fail_fast_reports_progress(travel_controller):
+    c = travel_controller
+    with patch.object(c, "move_to_node", side_effect=[True, False]):
+        result = c.travel_to_node("n_far")
+    assert result == {"success": False, "path": ["n_pickup", "n_far"],
+                      "completed": ["n_pickup"], "failed_hop": "n_far"}
+
+
+def test_travel_to_node_off_grid_raises(travel_controller):
+    c = travel_controller
+    c.last_arm_pose_name = None  # current_node -> None
+    with pytest.raises(EdgeNotAllowedError, match="not pinned"):
+        c.travel_to_node("n_far")
+
+
+def test_travel_to_node_no_path_raises(travel_controller):
+    from src.core.motion_graph import NoPathError
+    c = travel_controller
+    with pytest.raises(NoPathError):
+        c.travel_to_node("n_island")
+
+
+def test_travel_to_node_unknown_target_raises(travel_controller):
+    from src.core.motion_graph import UnknownNodeError
+    c = travel_controller
+    with pytest.raises(UnknownNodeError):
+        c.travel_to_node("n_ghost")

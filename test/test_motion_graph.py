@@ -32,6 +32,7 @@ from src.core.motion_graph import (
     MoveMode,
     MotionGraph,
     Node,
+    NoPathError,
     UnknownNodeError,
 )
 
@@ -366,3 +367,79 @@ def test_unreachable_nodes_detects_isolated_subgraphs():
     data["nodes"].append({"id": "isolated", "arm": "z", "rail": "Home"})
     graph = MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
     assert "isolated" in graph.unreachable_nodes("a")
+
+
+# ── Path planning (plan_path / reachable_set) ────────────────────────
+
+
+def _path_dict() -> dict:
+    """Three-node line a — b — c. 'a' and 'c' are empty-only, 'b' also
+    allows grip_120 — so grip_120 can ride no edge at all."""
+    data = _base_dict()
+    data["nodes"].append({
+        "id": "c", "arm": "uplc_plate_in", "rail": "Home",
+        "gripper_states": ["empty"],
+    })
+    data["edges"].append({"from": "b", "to": "c", "mode": "joint", "speed": 30})
+    data["edges"].append({"from": "c", "to": "b", "mode": "joint", "speed": 30})
+    return data
+
+
+def test_plan_path_multi_hop():
+    graph = MotionGraph.from_dict(_path_dict(), preconditions=DEFAULT_PRECONDITIONS)
+    assert graph.plan_path("a", "c", "empty") == ["b", "c"]
+
+
+def test_plan_path_single_hop_and_same_node():
+    graph = MotionGraph.from_dict(_path_dict(), preconditions=DEFAULT_PRECONDITIONS)
+    assert graph.plan_path("a", "b", "empty") == ["b"]
+    assert graph.plan_path("a", "a", "empty") == []
+
+
+def test_plan_path_unknown_endpoint_raises():
+    graph = MotionGraph.from_dict(_path_dict(), preconditions=DEFAULT_PRECONDITIONS)
+    with pytest.raises(UnknownNodeError):
+        graph.plan_path("a", "ghost", "empty")
+    with pytest.raises(UnknownNodeError):
+        graph.plan_path("ghost", "a", "empty")
+
+
+def test_plan_path_no_path_for_blocked_gripper_state():
+    """grip_120 is allowed only at 'b', so no edge can carry it — every
+    journey in that state must raise NoPathError (with context attached)."""
+    graph = MotionGraph.from_dict(_path_dict(), preconditions=DEFAULT_PRECONDITIONS)
+    with pytest.raises(NoPathError) as exc_info:
+        graph.plan_path("b", "a", "grip_120")
+    assert exc_info.value.from_node == "b"
+    assert exc_info.value.to_node == "a"
+    assert exc_info.value.gripper_state == "grip_120"
+
+
+def test_reachable_set_respects_gripper_state():
+    graph = MotionGraph.from_dict(_path_dict(), preconditions=DEFAULT_PRECONDITIONS)
+    assert graph.reachable_set("a", "empty") == ["b", "c"]
+    # grip_120 rides no edge — nothing reachable from anywhere.
+    assert graph.reachable_set("b", "grip_120") == []
+
+
+def test_reachable_set_off_grid_is_empty():
+    graph = MotionGraph.from_dict(_path_dict(), preconditions=DEFAULT_PRECONDITIONS)
+    assert graph.reachable_set(None, "empty") == []
+    assert graph.reachable_set(UNKNOWN_NODE, "empty") == []
+    assert graph.reachable_set("ghost", "empty") == []
+
+
+def test_real_yaml_plan_path_home_to_opentrons_pick():
+    """The shipped graph must offer an empty-gripper corridor from
+    robot_home to the OT-2 slot-2 pick pose, ending at the target."""
+    graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
+    path = graph.plan_path("robot_home", "opentrons_2_low", "empty")
+    assert path, "expected a non-empty path"
+    assert path[-1] == "opentrons_2_low"
+    # Every hop must be a whitelisted edge traversable while empty.
+    cur = "robot_home"
+    for hop in path:
+        assert hop in graph.allowed_targets_for_state(cur, "empty")
+        cur = hop
+    # And the travel-target set must agree the destination is reachable.
+    assert "opentrons_2_low" in graph.reachable_set("robot_home", "empty")

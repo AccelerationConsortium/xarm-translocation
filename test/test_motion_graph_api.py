@@ -33,6 +33,7 @@ from src.core.motion_graph import (
     GraphMode,
     GripperTransitionError,
     MotionGraph,
+    NoPathError,
 )
 
 
@@ -348,3 +349,94 @@ def test_gripper_endpoint_404_when_no_graph(graph_client, mock_controller_with_g
     mock_controller_with_graph.motion_graph = None
     resp = graph_client.post("/control/graph/gripper", json={"state": "grip_120"})
     assert resp.status_code == 404
+
+
+# ── /control/graph/travel_to ─────────────────────────────────────────
+
+
+def test_travel_to_returns_200_with_path(graph_client, mock_controller_with_graph):
+    mock_controller_with_graph.travel_to_node.return_value = {
+        "success": True, "path": ["n_pickup"],
+        "completed": ["n_pickup"], "failed_hop": None,
+    }
+    resp = graph_client.post(
+        "/control/graph/travel_to", json={"node_id": "n_pickup", "speed": 20},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["path"] == ["n_pickup"]
+    assert body["current_node"] == "n_home"
+    mock_controller_with_graph.travel_to_node.assert_called_once_with(
+        node_id="n_pickup", speed=20,
+    )
+
+
+def test_travel_to_returns_409_on_unknown_node(graph_client):
+    resp = graph_client.post(
+        "/control/graph/travel_to", json={"node_id": "n_ghost"},
+    )
+    assert resp.status_code == 409
+    assert "unknown node" in resp.json()["detail"]
+
+
+def test_travel_to_returns_409_on_no_path(graph_client, mock_controller_with_graph):
+    mock_controller_with_graph.travel_to_node.side_effect = NoPathError(
+        "n_home", "n_pickup", "grip_120",
+        "target unreachable with this gripper state",
+    )
+    resp = graph_client.post(
+        "/control/graph/travel_to", json={"node_id": "n_pickup"},
+    )
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["error"] == "no_path"
+    assert detail["from"] == "n_home"
+    assert detail["to"] == "n_pickup"
+    assert detail["gripper_state"] == "grip_120"
+
+
+def test_travel_to_returns_409_when_off_grid(graph_client, mock_controller_with_graph):
+    mock_controller_with_graph.travel_to_node.side_effect = EdgeNotAllowedError(
+        current=None, target="n_pickup",
+        reason="not pinned to a graph node — recover to a node first",
+    )
+    resp = graph_client.post(
+        "/control/graph/travel_to", json={"node_id": "n_pickup"},
+    )
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["error"] == "edge_not_allowed"
+    assert detail["current_node"] is None
+
+
+def test_travel_to_returns_500_on_mid_journey_failure(
+    graph_client, mock_controller_with_graph,
+):
+    mock_controller_with_graph.travel_to_node.return_value = {
+        "success": False, "path": ["n_pickup"],
+        "completed": [], "failed_hop": "n_pickup",
+    }
+    resp = graph_client.post(
+        "/control/graph/travel_to", json={"node_id": "n_pickup"},
+    )
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert detail["error"] == "travel_failed"
+    assert detail["failed_hop"] == "n_pickup"
+    assert detail["completed"] == []
+
+
+def test_travel_to_returns_404_without_graph(
+    graph_client, mock_controller_with_graph,
+):
+    mock_controller_with_graph.motion_graph = None
+    resp = graph_client.post(
+        "/control/graph/travel_to", json={"node_id": "n_pickup"},
+    )
+    assert resp.status_code == 404
+
+
+def test_get_graph_includes_travel_targets(graph_client):
+    resp = graph_client.get("/graph")
+    assert resp.status_code == 200
+    assert resp.json()["travel_targets"] == ["n_pickup"]
