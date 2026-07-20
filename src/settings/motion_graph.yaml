@@ -41,7 +41,7 @@ gripper_states:
 nodes:
   # ── Generic safe poses (rail Home). Pass-through in any gripper state. ──
 - {id: robot_home, arm: robot_home, rail: Home, gripper_states: [empty, grip_120, 
-      reach_90, grip_80], tags: [safe, home]}
+      reach_90, grip_80], tags: [safe, global_home]}
 - {id: robot_home_back, arm: robot_home_back, rail: Home, gripper_states: [empty,
     grip_120, reach_90, grip_80], tags: [safe]}
 - {id: robot_home_left, arm: robot_home_left, rail: Home, gripper_states: [empty,
@@ -52,7 +52,7 @@ nodes:
   # ── Opentrons OT-2 (rail Home). Per-slot pick/place: the low pose is
   #    where grip/release happens; press poses are grip-only. ──
 - {id: opentrons_home, arm: opentrons_home, rail: Home, gripper_states: [empty, 
-      grip_120, reach_90, grip_80], tags: [opentrons, transit]}
+      grip_120, reach_90, grip_80], tags: [opentrons, transit_home]}
 
 - {id: opentrons_2_high, arm: opentrons_2_high, rail: Home, gripper_states: [
       empty, grip_120, reach_90, grip_80], tags: [opentrons, slot2]}
@@ -78,7 +78,7 @@ nodes:
 
   # ── UPLC (rail Home). Pass-through in any gripper state. ──
 - {id: uplc_home, arm: uplc_home, rail: Home, gripper_states: [empty, grip_120, 
-      reach_90, grip_80], tags: [uplc, transit]}
+      reach_90, grip_80], tags: [uplc, transit_home]}
   # drawer open/close subgraph
 - {id: uplc_draw_home, arm: uplc_draw_home, rail: Home, gripper_states: [empty, 
       grip_120, reach_90, grip_80], tags: [uplc, drawer]}
@@ -99,9 +99,9 @@ nodes:
   # ── Deck (rail Deck=550). Transit + pick/place. Pass-through in any
   #    gripper state; grip/release only at the _low pick nodes. ──
 - {id: deck_home, arm: deck_home, rail: Deck, gripper_states: [empty, grip_120, 
-      reach_90, grip_80], tags: [deck, transit]}
+      reach_90, grip_80], tags: [deck, transit_home]}
 - {id: deck_high, arm: deck_high, rail: Deck, gripper_states: [empty, grip_120, 
-      reach_90, grip_80], tags: [deck, transit]}
+      reach_90, grip_80], tags: [deck, transit_home]}
 
 - {id: deck_slot1_high, arm: deck_slot1_high, rail: Deck, gripper_states: [empty,
     grip_120, reach_90, grip_80], tags: [deck, slot1]}
@@ -127,7 +127,7 @@ nodes:
 
   # ── Hood (rail Hood=550). shaker + filtration sub-stations. ──
 - {id: hood_home, arm: hood_home, rail: Hood, gripper_states: [empty, grip_120, 
-      reach_90, grip_80], tags: [hood, transit]}
+      reach_90, grip_80], tags: [hood, transit_home]}
 
 - {id: hood_shaker_high, arm: hood_shaker_high, rail: Hood, gripper_states: [
       empty, grip_120, reach_90, grip_80], tags: [hood, shaker]}
@@ -151,7 +151,7 @@ nodes:
   # ── Cytation 5 reader (rail Cytation=700). Poses still being tuned on
   #    hardware (see position_config TODOs). ──
 - {id: cytation_home, arm: cytation_home, rail: Cytation, gripper_states: [empty,
-    grip_120, reach_90, grip_80], tags: [cytation, transit]}
+    grip_120, reach_90, grip_80], tags: [cytation, transit_home]}
 - {id: cytation_high, arm: cytation_high, rail: Cytation, gripper_states: [empty,
     grip_120, reach_90, grip_80], tags: [cytation, plate]}
 - {id: cytation_low, arm: cytation_low, rail: Cytation, gripper_states: [empty, 
@@ -160,7 +160,7 @@ nodes:
   # ── PlateLoc sealer (rail Plateloc=700). Poses still being tuned on
   #    hardware (see position_config TODOs). ──
 - {id: plateloc_home, arm: plateloc_home, rail: Plateloc, gripper_states: [empty,
-    grip_120, reach_90, grip_80], tags: [plateloc, transit]}
+    grip_120, reach_90, grip_80], tags: [plateloc, transit_home]}
 - {id: plateloc_high, arm: plateloc_high, rail: Plateloc, gripper_states: [empty,
     grip_120, reach_90, grip_80], tags: [plateloc, plate]}
 - {id: plateloc_low, arm: plateloc_low, rail: Plateloc, gripper_states: [empty, 

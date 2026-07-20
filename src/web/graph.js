@@ -171,10 +171,10 @@
 
     // Pick a station's anchor ("home") node — the one that stays visible when
     // the station is collapsed and that the rest fan out from. Prefer a node
-    // tagged `home`, then `<station>_home`, then any `*_home`, then the lowest
-    // id (deterministic so the anchor never jumps between loads).
+    // tagged `global_home`, then `<station>_home`, then any `*_home`, then the
+    // lowest id (deterministic so the anchor never jumps between loads).
     function chooseAnchor(station, members) {
-        var tagged = members.filter(function (m) { return (m.tags || []).indexOf('home') !== -1; });
+        var tagged = members.filter(function (m) { return (m.tags || []).indexOf('global_home') !== -1; });
         if (tagged.length) return tagged[0].id;
         var exact = members.filter(function (m) { return m.id === station + '_home'; });
         if (exact.length) return exact[0].id;

@@ -46,6 +46,13 @@ _STROKE_MAX = 150.0
 # Name of the mandatory no-payload catalog state.
 EMPTY_STATE = "empty"
 
+# Tags that mark a node as a transit gateway. A rail (cross-location) move
+# is only permitted between nodes carrying one of these tags: the rail
+# translates home-to-home, and each station pose is reached by a pure arm
+# move from its local home. Station poses omit these tags, so the loader
+# forbids a cross-rail edge that lands straight on a station.
+_CROSS_RAIL_TAGS = frozenset({"global_home", "transit_home"})
+
 
 # ── Enums ────────────────────────────────────────────────────────────
 
@@ -405,16 +412,35 @@ class MotionGraph:
                 raise GraphError(f"edge from unknown node: {e.from_node!r}")
             if e.to_node not in self._nodes:
                 raise GraphError(f"edge to unknown node: {e.to_node!r}")
+            from_node = self._nodes[e.from_node]
+            to_node = self._nodes[e.to_node]
             for p in e.preconditions:
                 if p not in self._preconditions:
                     raise GraphError(
                         f"edge {e.from_node!r}->{e.to_node!r} references "
                         f"unregistered precondition: {p!r}"
                     )
+            # Cross-rail safety: a rail (cross-location) move may only
+            # connect transit gateway nodes. Station poses sit at a fixed
+            # rail location and are reached by a pure arm move from their
+            # local home, so forbidding a cross-rail edge that lands on one
+            # keeps every rail translation home-to-home and every station
+            # approach linear.
+            if from_node.rail != to_node.rail:
+                untagged = [n.id for n in (from_node, to_node)
+                            if not (set(n.tags) & _CROSS_RAIL_TAGS)]
+                if untagged:
+                    raise GraphError(
+                        f"cross-rail edge {e.from_node!r}->{e.to_node!r} "
+                        f"(rail {from_node.rail!r}->{to_node.rail!r}) is only "
+                        f"allowed between transit nodes tagged "
+                        f"{sorted(_CROSS_RAIL_TAGS)}; node(s) {untagged} "
+                        f"lack such a tag"
+                    )
             # The gripper state is invariant along an edge, so an edge whose
             # endpoints share no state can never be traversed.
-            from_states = set(self._nodes[e.from_node].gripper_states)
-            to_states = set(self._nodes[e.to_node].gripper_states)
+            from_states = set(from_node.gripper_states)
+            to_states = set(to_node.gripper_states)
             if not (from_states & to_states):
                 raise GraphError(
                     f"edge {e.from_node!r}->{e.to_node!r} is untraversable: "

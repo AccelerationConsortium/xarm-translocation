@@ -174,6 +174,47 @@ def test_real_yaml_reachability_from_home():
     assert drawer & unreachable == set()
 
 
+# Station poses whose graph edges are not wired up yet (poses still being
+# tuned on hardware — see the position_config TODOs in motion_graph.yaml).
+# These are the ONLY nodes allowed to be unreachable from robot_home. When a
+# station is wired up, drop it from this set; when a new orphan appears that
+# is NOT in this set, the guard below fails so the regression is caught before
+# STRICT mode can strand the arm.
+WIP_UNREACHABLE_FROM_HOME = {
+    "cytation_home", "cytation_high", "cytation_low",
+    "plateloc_home", "plateloc_high", "plateloc_low",
+    "opentrons_4_high", "opentrons_4_low", "opentrons_4_low_press",
+    "opentrons_6_high", "opentrons_6_low", "opentrons_6_low_press",
+    "opentrons_2_low_press",
+    "deck_slot1_low_press", "deck_solid_low_press", "hood_shaker_low_press",
+    "uplc_plate_high", "uplc_plate_in",
+    "robot_home_back", "robot_home_left", "robot_home_right",
+}
+
+
+def test_wip_allowlist_entries_are_real_nodes():
+    """The allowlist may not carry stale ids — every entry must still name a
+    node in the graph, so deleting/renaming a node forces an allowlist edit."""
+    graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
+    node_ids = {n.id for n in graph.nodes}
+    stale = WIP_UNREACHABLE_FROM_HOME - node_ids
+    assert not stale, f"allowlist names nodes that no longer exist: {sorted(stale)}"
+
+
+def test_no_unexpected_unreachable_nodes():
+    """Connectivity guard: nothing outside the documented WIP allowlist may be
+    unreachable from robot_home. Catches a previously-connected node silently
+    losing its edges — which STRICT mode would turn into a stranded arm."""
+    graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
+    unreachable = set(graph.unreachable_nodes("robot_home"))
+    unexpected = unreachable - WIP_UNREACHABLE_FROM_HOME
+    assert not unexpected, (
+        f"nodes unreachable from robot_home but not in the WIP allowlist: "
+        f"{sorted(unexpected)} — wire up their edges, or if intentionally "
+        f"deferred add them to WIP_UNREACHABLE_FROM_HOME with a reason"
+    )
+
+
 # ── Query API ────────────────────────────────────────────────────────
 
 
@@ -306,6 +347,51 @@ def test_duplicate_arm_rail_position_is_rejected():
     })
     with pytest.raises(GraphError, match="share the same"):
         MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+
+
+# ── Cross-rail safety ────────────────────────────────────────────────
+
+
+def _cross_rail_dict(*, to_tags: list[str]) -> dict:
+    """Two nodes at different rails joined by an edge. ``to_tags`` controls
+    whether the destination qualifies as a transit gateway."""
+    return {
+        "schema_version": "0.2",
+        "gripper_states": _catalog(),
+        "nodes": [
+            {"id": "gateway", "arm": "robot_home", "rail": "Home",
+             "tags": ["global_home"]},
+            {"id": "station", "arm": "cytation_low", "rail": "Cytation",
+             "tags": to_tags},
+        ],
+        "edges": [
+            {"from": "gateway", "to": "station", "mode": "joint", "speed": 25},
+        ],
+    }
+
+
+def test_cross_rail_edge_to_untagged_station_is_rejected():
+    """A rail move that lands straight on a station (no home/transit tag)
+    is a loader error — stations are reached by an arm move from local home."""
+    data = _cross_rail_dict(to_tags=["cytation", "plate"])
+    with pytest.raises(GraphError, match="cross-rail edge"):
+        MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+
+
+def test_cross_rail_edge_between_transit_nodes_is_allowed():
+    """The permitted shape: rail translates between two transit gateways."""
+    data = _cross_rail_dict(to_tags=["cytation", "transit_home"])
+    graph = MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+    assert graph.find_edge("gateway", "station") is not None
+
+
+def test_same_rail_edge_to_untagged_node_is_allowed():
+    """The rule only governs cross-rail edges; a pure arm move to an
+    untagged station pose at the same rail is fine."""
+    data = _cross_rail_dict(to_tags=["cytation", "plate"])
+    data["nodes"][1]["rail"] = "Home"  # same rail now → pure arm move
+    graph = MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+    assert graph.find_edge("gateway", "station") is not None
 
 
 # ── Topology error cases ─────────────────────────────────────────────
