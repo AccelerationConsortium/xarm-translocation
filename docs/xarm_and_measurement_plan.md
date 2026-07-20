@@ -177,6 +177,13 @@ Hardening of the graph the arm is actually driven over (schema 0.2), added on `d
 - ▢ **Gripper verification fails *open*** (`src/core/xarm_controller.py:1900`): when the hardware position can't be read, `_verify_gripper` warns and returns `True`. For a `grasp` intent (confirming an object is held) this should arguably fail *closed* — a silent "couldn't check → assume success" can drop a plate. **Decision needed:** fail-closed vs. keep-warn.
 - Note — **STRICT is not the default** (`graph_mode` boots ADVISORY): the graph advises but does not yet interlock off-whitelist moves. Flipping to STRICT is gated on closing the connectivity + one-way gaps above (else `travel_to` to any station → `NoPathError`).
 
+**Manual wiring in progress (2026-07-20).** The orphaned stations and the missing drawer return edge are being connected by hand (directly in `src/settings/motion_graph.yaml`; see the edit checklist in that file's header). The guards are deliberately edit-friendly and do **not** lock manual editing:
+- the connectivity guard is a *subset* check — wiring a node up simply makes it pass, so no test edit is forced (only a brand-new, not-yet-wired orphan turns it red);
+- the loader degrades gracefully — an invalid graph disables the interlock and logs the reason rather than crashing, so the arm stays drivable (raw moves) while iterating;
+- the graph-edit API stays claim-gated, but that governs only `/control/graph/*` calls, never direct YAML edits.
+
+As each station is wired, shrink `WIP_UNREACHABLE_FROM_HOME` in `test/test_motion_graph.py` to match. Once the one-way (drawer return edge) and reverse-reachability gaps close, the graph is ready to flip to STRICT.
+
 **Risk:** low (shipped items are validation + tests; the drawer fix is one YAML edge). **Reversible:** each item is independent and additive.
 
 ### Step 4 — Flip xArm to v1.1 + expose the control surface — ◑ PARTIAL

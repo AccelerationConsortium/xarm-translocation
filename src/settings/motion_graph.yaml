@@ -24,7 +24,22 @@
 # Loader enforcement (src/core/motion_graph.py::_validate_topology):
 # unique (arm, rail) per node, node states exist in the catalog,
 # transitions stay within the node's own states, edge endpoints share at
-# least one state, strokes within 71-150 (Bio Gen2).
+# least one state, strokes within 71-150 (Bio Gen2), and a CROSS-RAIL edge
+# (from.rail != to.rail) is allowed ONLY between transit gateways — nodes
+# tagged `global_home` (robot_home) or `transit_home` (a station's front
+# door). A bad graph is NON-FATAL: the controller logs the error and runs
+# with the graph DISABLED (raw moves, no interlock), so you can iterate.
+#
+# Wiring a station (manual-edit checklist):
+#   1. Tag the station's home pose `transit_home`; reach it with a
+#      cross-rail edge to/from robot_home (or another transit gateway).
+#   2. Reach the station's work poses by SAME-RAIL arm-move edges from its
+#      home (e.g. cytation_home -> cytation_high -> cytation_low), and add
+#      BOTH directions so the arm can always retreat home.
+#   3. Drop the node from WIP_UNREACHABLE_FROM_HOME in
+#      test/test_motion_graph.py once it is reachable from robot_home.
+# Still TODO: add the missing UPLC-drawer return edge
+#   uplc_draw_open_max -> uplc_draw_home (currently a one-way pocket).
 #
 # Rail locations: Home=0, Deck=550, Hood=550, Cytation=700, Plateloc=700.
 
