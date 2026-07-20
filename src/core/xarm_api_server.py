@@ -47,6 +47,8 @@ try:
         NoPathError, RecoveryMismatch, UnknownNodeError,
     )
     from .claims import ClaimConflict, InvalidClaimToken
+    from . import assistant_actions
+    from . import assistant_llm
 except ImportError:
     from core.xarm_controller import XArmController, SafetyLevel, ComponentState
     from core.xarm_utils import load_config
@@ -70,6 +72,8 @@ except ImportError:
         NoPathError, RecoveryMismatch, UnknownNodeError,
     )
     from core.claims import ClaimConflict, InvalidClaimToken
+    from core import assistant_actions
+    from core import assistant_llm
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -346,6 +350,58 @@ class GraphTravelToRequest(BaseModel):
     """
     node_id: str = Field(description="Graph node id to travel to (any reachable node)")
     speed: Optional[float] = Field(default=None, description="Per-hop movement speed (each hop may be capped by its edge.speed)")
+
+
+class AssistantMessage(BaseModel):
+    """One prior conversation turn passed back for light multi-turn context."""
+    role: str = Field(description="'user' or 'assistant'")
+    content: str = Field(description="The turn's plain text")
+
+
+class AssistantPlanRequest(BaseModel):
+    """Body of POST /assistant/plan.
+
+    ``message`` is the operator's free-text request. ``history`` is an
+    optional list of prior turns (user/assistant text) for context. The
+    endpoint is read-only: it interprets the request via OpenRouter
+    and computes a motion-graph step list WITHOUT moving the robot.
+    """
+    message: str = Field(description="Natural-language robot-motion request")
+    history: Optional[List[AssistantMessage]] = Field(
+        default=None, description="Prior conversation turns for context"
+    )
+
+
+class AssistantStep(BaseModel):
+    """One concrete step from a plan, replayed to /assistant/execute.
+
+    ``kind`` is 'move' (drive to graph node ``to``) or 'gripper' (change
+    gripper to catalog ``state`` while parked). Extra fields the planner
+    attaches (mode/speed) are advisory only — the controller re-derives
+    and re-validates everything under STRICT enforcement at execution.
+    """
+    kind: str = Field(description="'move' or 'gripper'")
+    to: Optional[str] = Field(default=None, description="Target node id (move steps)")
+    state: Optional[str] = Field(default=None, description="Target gripper state (gripper steps)")
+    mode: Optional[str] = Field(default=None, description="Advisory move mode")
+    speed: Optional[float] = Field(default=None, description="Advisory move speed")
+
+
+class AssistantExecuteRequest(BaseModel):
+    """Body of POST /assistant/execute.
+
+    Carries the exact step list the operator confirmed from a prior
+    /assistant/plan preview. Claim-gated; each step is executed through
+    the same STRICT-enforced controller machinery as the manual graph
+    endpoints, so a tampered step list can never bypass the interlocks.
+    """
+    steps: List[AssistantStep] = Field(description="Ordered steps to execute")
+    interpretation: Optional[str] = Field(
+        default=None, description="Human-readable label echoed into progress logs"
+    )
+    speed: Optional[float] = Field(
+        default=None, description="Optional per-move speed override (capped by edge.speed)"
+    )
 
 
 class GraphEdgeUpdateRequest(BaseModel):
@@ -2239,6 +2295,246 @@ async def graph_travel_to(request: GraphTravelToRequest, background_tasks: Backg
                    f"({len(result['path'])} hop(s))",
         "path": result["path"],
         "current_node": c.current_node,
+    }
+
+
+# =============================================================================
+# LAB ASSISTANT (natural-language motion control via OpenRouter)
+#
+# The assistant is a thin convenience over the motion-graph endpoints: the
+# LLM only maps text -> a structured intent (assistant_llm), the intent is
+# turned into a concrete step list deterministically (assistant_actions), and
+# execution replays those steps through the SAME STRICT-enforced controller
+# machinery as the manual graph endpoints. The model never touches hardware
+# and never sees the claim token.
+# =============================================================================
+
+
+def _assistant_graph_and_state():
+    """Resolve the graph plus live (node, gripper_state) for planning.
+
+    Uses the connected controller's live state when available; otherwise
+    falls back to the standalone graph (so the catalog/enabled-state can
+    be shown before /connect, though every action will read as off-grid).
+    Returns ``(graph, current_node, current_gripper_state)`` or
+    ``(None, None, None)`` when no graph is loadable.
+    """
+    c = controller  # module global; None until /connect
+    if c is not None and c.motion_graph is not None:
+        return c.motion_graph, c.current_node, c.current_gripper_state
+    return _load_standalone_graph(), None, None
+
+
+@app.get("/assistant/status")
+async def assistant_status():
+    """Whether the assistant can run, plus the place catalog for the UI.
+
+    Read-only and un-gated: the corner widget calls this on load to
+    decide whether to enable itself and to show the operator which
+    places it understands. ``enabled`` is False (with ``reason``) when
+    the openai lib/OpenRouter key is missing or the feature is toggled off.
+    """
+    graph, _, _ = _assistant_graph_and_state()
+    places = []
+    if graph is not None:
+        catalog = assistant_actions.build_place_catalog(graph)
+        places = [
+            {"key": p.key, "label": p.label}
+            for p in sorted(catalog.values(), key=lambda x: x.key)
+        ]
+    return {
+        "enabled": assistant_llm.is_enabled(),
+        "reason": assistant_llm.disabled_reason(),
+        "model": assistant_llm.model_name(),
+        "graph_loaded": graph is not None,
+        "places": places,
+    }
+
+
+@app.post("/assistant/plan")
+async def assistant_plan(request: AssistantPlanRequest):
+    """Interpret a natural-language request into a previewable step list.
+
+    Read-only with respect to hardware: no motion happens here. Returns
+    the model's interpretation plus the concrete motion-graph steps the
+    operator can confirm and replay to /assistant/execute. When the
+    model needs clarification or the request is out of scope, ``action``
+    is null and ``reply`` carries a plain-text message.
+
+    503 when the assistant is unavailable (no key / lib / disabled),
+    502 on an LLM runtime error, 404 when no motion graph is loaded.
+    """
+    graph, current_node, current_gripper_state = _assistant_graph_and_state()
+    if graph is None:
+        raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+
+    catalog = assistant_actions.build_place_catalog(graph)
+    gripper_states = [gs.name for gs in graph.gripper_states]
+    history = (
+        [{"role": m.role, "content": m.content} for m in request.history]
+        if request.history else None
+    )
+
+    try:
+        interp = await asyncio.to_thread(
+            assistant_llm.interpret,
+            request.message,
+            catalog=catalog,
+            gripper_states=gripper_states,
+            current_node=current_node,
+            current_gripper_state=current_gripper_state,
+            history=history,
+        )
+    except assistant_llm.AssistantDisabled as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "assistant_disabled", "reason": exc.reason},
+        )
+    except assistant_llm.AssistantError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"error": "assistant_error", "reason": str(exc)},
+        )
+
+    # The model chose to reply in text (clarification / refusal) instead
+    # of committing to an action.
+    if interp.action is None:
+        return {
+            "feasible": False,
+            "action": None,
+            "reply": interp.reply,
+            "interpretation": None,
+            "steps": [],
+            "reason": None,
+            "connected": controller is not None,
+        }
+
+    result = assistant_actions.resolve_action(
+        catalog, graph, current_node, current_gripper_state,
+        action=interp.action,
+        place=interp.args.get("place"),
+        gripper_state=interp.args.get("gripper_state"),
+    )
+    return {
+        "feasible": result.feasible,
+        "action": interp.action,
+        "place": result.place,
+        "interpretation": result.interpretation,
+        "reason": result.reason,
+        "reply": interp.reply,
+        "steps": result.steps,
+        "connected": controller is not None,
+    }
+
+
+@app.post("/assistant/execute", dependencies=[Depends(require_claim)])
+async def assistant_execute(request: AssistantExecuteRequest, background_tasks: BackgroundTasks):
+    """Execute a confirmed assistant step list, hop by hop.
+
+    Claim-gated. Each 'move' step drives to a graph node via
+    ``move_to_node`` and each 'gripper' step changes the gripper via
+    ``set_gripper_state`` — both under STRICT enforcement, so an invalid
+    or tampered step is refused (409) exactly as a manual graph call
+    would be. Fail-fast: the first failed step stops the run, leaving the
+    arm parked at the last completed node. Progress streams over /ws as
+    log lines.
+
+    Returns 409 for a graph refusal (edge_not_allowed / no_path /
+    gripper_transition_not_allowed), 422 for a malformed step, 500 for a
+    mid-run actuation/verification failure.
+    """
+    c = get_controller()
+    if c.motion_graph is None:
+        raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+    if not request.steps:
+        raise HTTPException(status_code=422, detail="no steps to execute")
+
+    label = request.interpretation or "assistant command"
+    total = len(request.steps)
+    completed: List[Dict[str, Any]] = []
+    logger.info(f"[assistant] executing: {label} ({total} step(s))")
+
+    def _run_step(step: AssistantStep) -> bool:
+        if step.kind == "move":
+            return c.move_to_node(node_id=step.to, speed=request.speed)
+        if step.kind == "gripper":
+            return c.set_gripper_state(step.state)
+        raise ValueError(f"unknown step kind {step.kind!r}")
+
+    for idx, step in enumerate(request.steps, start=1):
+        # Validate step shape up front so a bad payload is a clean 422.
+        if step.kind == "move" and not step.to:
+            raise HTTPException(status_code=422, detail=f"step {idx}: move step missing 'to'")
+        if step.kind == "gripper" and not step.state:
+            raise HTTPException(status_code=422, detail=f"step {idx}: gripper step missing 'state'")
+        if step.kind not in ("move", "gripper"):
+            raise HTTPException(status_code=422, detail=f"step {idx}: unknown kind {step.kind!r}")
+
+        descriptor = (
+            f"move to {step.to}" if step.kind == "move" else f"set gripper {step.state}"
+        )
+        logger.info(f"[assistant] step {idx}/{total}: {descriptor}")
+
+        try:
+            success = await asyncio.to_thread(_run_step, step)
+        except EdgeNotAllowedError as exc:
+            logger.error(f"[assistant] step {idx}/{total} refused: {exc.reason}")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "edge_not_allowed",
+                    "current_node": exc.current,
+                    "target": exc.target,
+                    "reason": exc.reason,
+                    "completed": completed,
+                    "failed_step": idx,
+                },
+            )
+        except GripperTransitionError as exc:
+            logger.error(f"[assistant] step {idx}/{total} refused: {exc.reason}")
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "gripper_transition_not_allowed",
+                    "node": exc.node,
+                    "from_state": exc.from_state,
+                    "to_state": exc.to_state,
+                    "reason": exc.reason,
+                    "completed": completed,
+                    "failed_step": idx,
+                },
+            )
+        except (UnknownNodeError, NoPathError, GraphError, ValueError) as exc:
+            logger.error(f"[assistant] step {idx}/{total} failed: {exc}")
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "step_invalid", "reason": str(exc),
+                        "completed": completed, "failed_step": idx},
+            )
+
+        if not success:
+            logger.error(f"[assistant] step {idx}/{total} failed at {c.current_node!r}")
+            background_tasks.add_task(broadcast_status_update)
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "step_failed",
+                    "failed_step": idx,
+                    "descriptor": descriptor,
+                    "completed": completed,
+                    "current_node": c.current_node,
+                },
+            )
+        completed.append({"step": idx, "kind": step.kind,
+                          "descriptor": descriptor, "current_node": c.current_node})
+
+    logger.info(f"[assistant] done: {label} — parked at {c.current_node!r}")
+    background_tasks.add_task(broadcast_status_update)
+    return {
+        "message": f"Executed {total} step(s): {label}",
+        "completed": completed,
+        "current_node": c.current_node,
+        "gripper_state": c.current_gripper_state,
     }
 
 

@@ -1873,6 +1873,206 @@ document.addEventListener('DOMContentLoaded', () => {
         if (btn) btn.addEventListener('click', () => jog(dx, dy, dz));
     });
 
+    // --- Lab Assistant (corner chat widget) ---
+    // Natural-language motion control. The widget only ever calls two
+    // endpoints: /assistant/plan (read-only preview) and, after the operator
+    // clicks Confirm, /assistant/execute (claim-gated, reuses the existing
+    // claim token via apiRequest). Progress streams back through the normal
+    // /ws log channel into the header log; here we show a compact summary.
+    function setupAssistant() {
+        const fab = document.getElementById('assistant-fab');
+        const panel = document.getElementById('assistant-panel');
+        const closeBtn = document.getElementById('assistant-close');
+        const messagesEl = document.getElementById('assistant-messages');
+        const form = document.getElementById('assistant-form');
+        const input = document.getElementById('assistant-input');
+        const sendBtn = document.getElementById('assistant-send');
+        const hintEl = document.getElementById('assistant-hint');
+        const dot = document.getElementById('assistant-dot');
+        const preview = document.getElementById('assistant-preview');
+        const previewTitle = document.getElementById('assistant-preview-title');
+        const previewSteps = document.getElementById('assistant-preview-steps');
+        const confirmBtn = document.getElementById('assistant-confirm');
+        const cancelBtn = document.getElementById('assistant-cancel');
+        if (!fab || !panel) return;   // markup missing -> no-op
+
+        let enabled = false;
+        let busy = false;
+        let pendingPlan = null;       // {steps, interpretation}
+        const history = [];           // light {role, content} context
+
+        const scrollDown = () => { messagesEl.scrollTop = messagesEl.scrollHeight; };
+
+        function addMsg(text, kind) {
+            const div = document.createElement('div');
+            div.className = 'assistant-msg assistant-msg-' + kind;
+            div.textContent = text;
+            messagesEl.appendChild(div);
+            scrollDown();
+            return div;
+        }
+
+        function pushHistory(role, content) {
+            if (!content) return;
+            history.push({ role, content });
+            // Keep the tail short — enough for pronouns like "now go home".
+            while (history.length > 6) history.shift();
+        }
+
+        function setBusy(state) {
+            busy = state;
+            input.disabled = state || !enabled;
+            sendBtn.disabled = state || !enabled;
+            if (confirmBtn) confirmBtn.disabled = state;
+            if (cancelBtn) cancelBtn.disabled = state;
+        }
+
+        function clearPreview() {
+            pendingPlan = null;
+            preview.hidden = true;
+            previewSteps.innerHTML = '';
+        }
+
+        function stepText(step) {
+            if (step.kind === 'gripper') return `Set gripper -> ${step.state}`;
+            const mode = step.mode ? ` (${step.mode})` : '';
+            return `Move to ${step.to}${mode}`;
+        }
+
+        function showPreview(interpretation, steps) {
+            pendingPlan = { steps, interpretation };
+            previewTitle.textContent = interpretation || 'Planned steps';
+            previewSteps.innerHTML = '';
+            steps.forEach(step => {
+                const li = document.createElement('li');
+                li.textContent = stepText(step);
+                if (step.kind === 'gripper') li.className = 'assistant-step-gripper';
+                previewSteps.appendChild(li);
+            });
+            preview.hidden = false;
+            scrollDown();
+        }
+
+        async function refreshStatus() {
+            const data = await apiRequest('/assistant/status', 'GET', null, true);
+            if (!data) {
+                enabled = false;
+                dot.className = 'assistant-dot is-offline';
+                hintEl.textContent = 'Assistant unavailable.';
+            } else {
+                enabled = !!data.enabled;
+                dot.className = 'assistant-dot ' + (enabled ? 'is-online' : 'is-offline');
+                hintEl.textContent = enabled
+                    ? `Model: ${data.model}`
+                    : (data.reason || 'Assistant disabled.');
+            }
+            input.disabled = !enabled || busy;
+            sendBtn.disabled = !enabled || busy;
+            if (!enabled) input.placeholder = 'Assistant unavailable';
+        }
+
+        async function sendMessage(text) {
+            addMsg(text, 'user');
+            pushHistory('user', text);
+            clearPreview();
+            setBusy(true);
+            const thinking = addMsg('Thinking…', 'bot');
+            thinking.classList.add('assistant-thinking');
+
+            const data = await apiRequest('/assistant/plan', 'POST', {
+                message: text,
+                history: history.slice(0, -1),   // exclude the just-added turn
+            }, true);
+
+            thinking.remove();
+            setBusy(false);
+
+            if (!data) {
+                addMsg("Sorry — I couldn't reach the assistant. Check the log for details.", 'error');
+                return;
+            }
+            // Clarification / refusal: the model replied in plain text.
+            if (!data.action) {
+                const reply = data.reply || "I couldn't interpret that as a motion command.";
+                addMsg(reply, 'bot');
+                pushHistory('assistant', reply);
+                return;
+            }
+            if (!data.feasible) {
+                const why = data.reason ? ` — ${data.reason}` : '';
+                const msg = `I can't do "${data.interpretation}"${why}.`;
+                addMsg(msg, 'error');
+                pushHistory('assistant', msg);
+                return;
+            }
+            if (!data.steps || data.steps.length === 0) {
+                const msg = `Already there: ${data.interpretation}.`;
+                addMsg(msg, 'bot');
+                pushHistory('assistant', msg);
+                return;
+            }
+            const summary = `${data.interpretation} — ${data.steps.length} step(s). Review and confirm below.`;
+            addMsg(summary, 'bot');
+            pushHistory('assistant', data.interpretation);
+            showPreview(data.interpretation, data.steps);
+        }
+
+        async function runPending() {
+            if (!pendingPlan) return;
+            if (claimToken === null) {
+                hintEl.textContent = 'Take Control first (top-right) so the assistant can move the arm.';
+                addMsg('You need to Take Control before I can move the arm.', 'error');
+                return;
+            }
+            const { steps, interpretation } = pendingPlan;
+            setBusy(true);
+            addMsg(`Running: ${interpretation}…`, 'bot');
+            const data = await apiRequest('/assistant/execute', 'POST', {
+                steps,
+                interpretation,
+            }, true);
+            setBusy(false);
+
+            if (!data) {
+                addMsg('The command failed or was refused. See the log; the arm is parked at the last completed step.', 'error');
+                return;   // keep the preview so the operator can retry after fixing
+            }
+            clearPreview();
+            const where = data.current_node ? ` (now at ${data.current_node})` : '';
+            addMsg(`Done: ${interpretation}${where}.`, 'bot');
+        }
+
+        // --- Wiring ---
+        function openPanel() {
+            panel.hidden = false;
+            fab.hidden = true;
+            if (enabled) input.focus();
+        }
+        function closePanel() {
+            panel.hidden = true;
+            fab.hidden = false;
+        }
+        fab.addEventListener('click', openPanel);
+        closeBtn.addEventListener('click', closePanel);
+        panel.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePanel(); });
+
+        form.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const text = input.value.trim();
+            if (!text || busy || !enabled) return;
+            input.value = '';
+            sendMessage(text);
+        });
+        confirmBtn.addEventListener('click', () => { if (!busy) runPending(); });
+        cancelBtn.addEventListener('click', () => {
+            if (busy) return;
+            clearPreview();
+            addMsg('Cancelled.', 'bot');
+        });
+
+        refreshStatus();
+    }
+
     // --- Initialization ---
     // Set initial disconnected state explicitly
     updateStatusText('Disconnected');
@@ -1884,6 +2084,9 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Finally check status (this will update if a robot is actually connected)
     fetchAndUpdateStatus();
+
+    // Wire up the corner lab-assistant widget (reads /assistant/status).
+    setupAssistant();
     
     // Initialize real-time joints display
     if (realtimeJointsDisplay) {

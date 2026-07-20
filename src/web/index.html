@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>xArm Control</title>
-    <link rel="stylesheet" href="style.css?v=20260709a">
+    <link rel="stylesheet" href="style.css?v=20260720a">
 </head>
 <body>
     <div class="container">
@@ -279,11 +279,51 @@
 
         </main>
     </div>
+
+    <!-- ── Lab Assistant (corner chat widget) ─────────────────────────────
+         Natural-language motion control backed by OpenRouter. The model
+         only maps text -> a structured intent; the backend computes and
+         STRICT-validates the motion-graph path. Every command is previewed
+         as a step list and only runs after Confirm, reusing the operator's
+         existing control claim. All wiring lives in main.js (assistant*). -->
+    <button id="assistant-fab" class="assistant-fab" title="Open the lab assistant" aria-label="Open the lab assistant">
+        <span class="assistant-fab-icon">💬</span>
+    </button>
+    <section id="assistant-panel" class="assistant-panel" hidden aria-label="Lab assistant">
+        <header class="assistant-header">
+            <div class="assistant-title">
+                <span class="assistant-dot" id="assistant-dot"></span>
+                Lab Assistant
+            </div>
+            <button id="assistant-close" class="assistant-close" title="Close" aria-label="Close">×</button>
+        </header>
+        <div id="assistant-messages" class="assistant-messages">
+            <div class="assistant-msg assistant-msg-bot">
+                Hi! I can move the arm for you. Try "move to deck" or
+                "pick up the tray from slot 1".
+            </div>
+        </div>
+        <div id="assistant-preview" class="assistant-preview" hidden>
+            <div class="assistant-preview-title" id="assistant-preview-title">Planned steps</div>
+            <ol id="assistant-preview-steps" class="assistant-preview-steps"></ol>
+            <div class="assistant-preview-actions">
+                <button id="assistant-confirm" class="btn btn-primary">Confirm &amp; Run</button>
+                <button id="assistant-cancel" class="btn btn-secondary">Cancel</button>
+            </div>
+        </div>
+        <form id="assistant-form" class="assistant-input-row" autocomplete="off">
+            <input type="text" id="assistant-input" class="assistant-input"
+                   placeholder="Tell the robot what to do…" disabled>
+            <button type="submit" id="assistant-send" class="btn btn-primary assistant-send" disabled>Send</button>
+        </form>
+        <div id="assistant-hint" class="assistant-hint"></div>
+    </section>
+
     <!-- Shared auth banner (served by ac_auth). Loaded before main.js so
          window.labAuth exists when main.js attaches releaseClaimOnSignOut and
          reads the signed-in identity for the claim owner. Root-absolute path →
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
-    <script src="main.js?v=20260709a"></script>
+    <script src="main.js?v=20260720a"></script>
 </body>
 </html>
