@@ -137,10 +137,20 @@ def test_real_yaml_has_four_state_catalog():
     assert graph.gripper_state("reach_90").stroke == 90.0
 
 
-def test_real_yaml_press_nodes_are_grip_only():
-    """The *_press nodes may only be occupied while holding (grip_120)."""
-    graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
-    press_node = graph.node("deck_slot1_low_press")
+def test_press_nodes_are_grip_only():
+    """The *_press nodes may only be occupied while holding (grip_120).
+
+    All *_press nodes in the real graph are currently commented out (they
+    are disconnected WIP stations — see motion_graph.yaml), so this is
+    exercised against the synthetic fixture instead of the real YAML.
+    """
+    data = _base_dict()
+    data["nodes"].append({
+        "id": "press", "arm": "deck_slot1_low_press", "rail": "Home",
+        "gripper_states": ["grip_120"],
+    })
+    graph = MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+    press_node = graph.node("press")
     assert press_node.gripper_states == ("grip_120",)
 
 
@@ -158,7 +168,7 @@ def test_real_yaml_transit_nodes_allow_all_states():
     and still expose no grip/release transitions at transit poses."""
     graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
     all_states = {"empty", "grip_120", "reach_90", "grip_80"}
-    for node_id in ("deck_high", "hood_home", "robot_home", "cytation_home"):
+    for node_id in ("deck_high", "hood_home", "robot_home", "uplc_home"):
         n = graph.node(node_id)
         assert set(n.gripper_states) == all_states
         assert n.gripper_transitions == ()
@@ -180,16 +190,13 @@ def test_real_yaml_reachability_from_home():
 # station is wired up, drop it from this set; when a new orphan appears that
 # is NOT in this set, the guard below fails so the regression is caught before
 # STRICT mode can strand the arm.
-WIP_UNREACHABLE_FROM_HOME = {
-    "cytation_home", "cytation_high", "cytation_low",
-    "plateloc_home", "plateloc_high", "plateloc_low",
-    "opentrons_4_high", "opentrons_4_low", "opentrons_4_low_press",
-    "opentrons_6_high", "opentrons_6_low", "opentrons_6_low_press",
-    "opentrons_2_low_press",
-    "deck_slot1_low_press", "deck_solid_low_press", "hood_shaker_low_press",
-    "uplc_plate_high", "uplc_plate_in",
-    "robot_home_back", "robot_home_left", "robot_home_right",
-}
+#
+# Formerly this allowlist carried the WIP cytation/plateloc/opentrons-4/6/
+# press/uplc-plate/extra-home nodes, but those were all disconnected (no
+# edges) and have since been commented out of motion_graph.yaml entirely —
+# so there is nothing left to allowlist. Re-populate this if a new orphan
+# node is intentionally added ahead of its edges.
+WIP_UNREACHABLE_FROM_HOME = set()
 
 
 def test_wip_allowlist_entries_are_real_nodes():

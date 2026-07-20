@@ -23,6 +23,8 @@ Schema 0.2 model:
 
 from __future__ import annotations
 
+import heapq
+import itertools
 from collections import deque
 from dataclasses import dataclass
 from enum import Enum
@@ -595,6 +597,117 @@ class MotionGraph:
         raise NoPathError(
             from_node, to_node, gripper_state,
             "target unreachable with this gripper state",
+        )
+
+    def find_path(
+        self,
+        from_node: str,
+        from_gripper_state: str | None,
+        to_node: str,
+        to_gripper_state: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Shortest route from ``(from_node, from_gripper_state)`` to
+        ``(to_node, to_gripper_state)``, interleaving arm moves with
+        in-place gripper transitions as needed.
+
+        ``plan_path()`` above assumes the gripper state is fixed for
+        the whole trip; this is the general form used to plan
+        pick/place-style requests (e.g. "carry nothing to the slot,
+        grip a tray, carry it back out") in one call. It searches the
+        state space of ``(node_id, gripper_state)`` pairs with two hop
+        kinds:
+
+        - MOVE: a whitelisted edge, gripper state carried through
+          unchanged (``allowed_targets_for_state``).
+        - GRIPPER: a whitelisted transition at the node the arm is
+          currently parked at, no arm motion (``allowed_gripper_targets``).
+
+        Move hops cost 1; gripper hops cost a hair more so, when hop
+        counts would otherwise tie, the search prefers the route with
+        fewer grip changes — without avoiding a change that's actually
+        required to make progress.
+
+        ``to_gripper_state=None`` means any gripper state is an
+        acceptable arrival state (pure travel, matching
+        ``plan_path()``'s semantics but allowing grip changes en route
+        if that is the only way to reach ``to_node``).
+
+        Returns an ordered step list, e.g.::
+
+            [{"kind": "move", "to": "deck_high", "mode": "joint", "speed": 20.0},
+             {"kind": "move", "to": "deck_slot1_high", "mode": "joint", "speed": None},
+             {"kind": "move", "to": "deck_slot1_low", "mode": "linear", "speed": 10.0},
+             {"kind": "gripper", "state": "grip_120"}]
+
+        ``[]`` when already at an acceptable goal state. Raises
+        UnknownNodeError for a missing node, NoPathError when no route
+        connects the two states.
+        """
+        self.node(from_node)  # raises UnknownNodeError
+        self.node(to_node)
+
+        State = tuple[str, str | None]
+        start: State = (from_node, from_gripper_state)
+
+        def is_goal(state: State) -> bool:
+            node_id, g = state
+            return node_id == to_node and (
+                to_gripper_state is None or g == to_gripper_state
+            )
+
+        if is_goal(start):
+            return []
+
+        GRIPPER_HOP_COST = 1.0 + 1e-3
+        tiebreak = itertools.count()
+        frontier: list[tuple[float, int, State]] = [(0.0, next(tiebreak), start)]
+        best_cost: dict[State, float] = {start: 0.0}
+        parent: dict[State, tuple[State, dict[str, Any]]] = {}
+
+        while frontier:
+            cost, _, state = heapq.heappop(frontier)
+            if cost > best_cost.get(state, float("inf")):
+                continue  # stale entry, a cheaper route already won
+            if is_goal(state):
+                steps: list[dict[str, Any]] = []
+                cur = state
+                while cur in parent:
+                    prev, step = parent[cur]
+                    steps.append(step)
+                    cur = prev
+                steps.reverse()
+                return steps
+
+            node_id, g = state
+            for edge in self.outgoing_for_state(node_id, g):
+                nxt: State = (edge.to_node, g)
+                new_cost = cost + 1.0
+                if new_cost < best_cost.get(nxt, float("inf")):
+                    best_cost[nxt] = new_cost
+                    parent[nxt] = (state, {
+                        "kind": "move",
+                        "to": edge.to_node,
+                        "mode": edge.mode.value,
+                        "speed": edge.speed,
+                    })
+                    heapq.heappush(frontier, (new_cost, next(tiebreak), nxt))
+
+            for target_state in self.allowed_gripper_targets(node_id, g):
+                nxt = (node_id, target_state)
+                new_cost = cost + GRIPPER_HOP_COST
+                if new_cost < best_cost.get(nxt, float("inf")):
+                    best_cost[nxt] = new_cost
+                    parent[nxt] = (state, {
+                        "kind": "gripper",
+                        "state": target_state,
+                    })
+                    heapq.heappush(frontier, (new_cost, next(tiebreak), nxt))
+
+        raise NoPathError(
+            from_node, to_node,
+            to_gripper_state if to_gripper_state is not None else from_gripper_state,
+            "target unreachable via moves and in-place gripper transitions "
+            "from this (node, gripper_state)",
         )
 
     def reachable_set(
