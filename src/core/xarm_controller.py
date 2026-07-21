@@ -1037,15 +1037,12 @@ class XArmController:
         # === Dispatch ===
         if mode_override == MoveMode.LINEAR:
             # Edge says linear regardless of how the preset is stored.
-            cartesian = self._position_to_cartesian(location_name, location, speed=speed)
-            if cartesian is None:
-                print(f"Error: could not resolve cartesian coordinates for {location_name!r}")
-                return False
-            success = self.move_to_position(
-                x=cartesian[0], y=cartesian[1], z=cartesian[2],
-                roll=cartesian[3], pitch=cartesian[4], yaw=cartesian[5],
-                speed=speed,
-            )
+            # Reuse the hand-verified straight-line routine: it holds the
+            # CURRENT tool orientation and skips the firmware collision
+            # pre-check. Dispatching to the FK-derived TARGET orientation
+            # instead reorients the tool mid-line, which the planner rejects
+            # on far-apart poses (e.g. the UPLC drawer open_min<->open_max edge).
+            success = self.move_plate_linear(location_name, speed=speed)
             mode_used = MoveMode.LINEAR
         elif mode_override == MoveMode.JOINT:
             # Edge says joint. Only meaningful for joint-list presets;
