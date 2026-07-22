@@ -80,6 +80,19 @@ def graph_controller(initialized_controller):
     return c
 
 
+# ── Boot default ─────────────────────────────────────────────────────
+
+
+def test_boot_mode_is_strict_when_graph_loads(initialized_controller):
+    """A controller whose motion_graph.yaml loaded must boot STRICT —
+    the whitelist interlocks moves by default, not just advises."""
+    c = initialized_controller
+    assert c.motion_graph is not None, (
+        "fixture should load the repo's real motion_graph.yaml"
+    )
+    assert c.graph_mode == GraphMode.STRICT
+
+
 # ── Mode setter ──────────────────────────────────────────────────────
 
 

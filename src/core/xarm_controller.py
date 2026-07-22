@@ -209,9 +209,11 @@ class XArmController:
             else:
                 setattr(self, config_attr, {})
 
-        # Motion graph (Phase 1: advisory only, soft-fails to OFF mode
-        # when the YAML is missing or invalid so the controller still
-        # boots on unmigrated configs).
+        # Motion graph. Boots STRICT when the YAML loads (off-whitelist
+        # moves are rejected); soft-fails to OFF mode when the YAML is
+        # missing or invalid so the controller still boots on unmigrated
+        # configs. Downgrade at runtime via set_graph_mode / the
+        # /control/graph/mode endpoint if the graph is being reworked.
         self.motion_graph: Optional[MotionGraph] = None
         self.graph_mode: GraphMode = GraphMode.OFF
         graph_path = os.path.join('src', 'settings', 'motion_graph.yaml')
@@ -219,7 +221,7 @@ class XArmController:
             self.motion_graph = MotionGraph.from_yaml(
                 graph_path, preconditions=DEFAULT_PRECONDITIONS,
             )
-            self.graph_mode = GraphMode.ADVISORY
+            self.graph_mode = GraphMode.STRICT
         except FileNotFoundError:
             print(f"Info: {graph_path} not found, motion-graph layer disabled.")
         except GraphError as exc:
@@ -1889,14 +1891,21 @@ class XArmController:
                   (free travel confirmed). Returns False when jaws were
                   blocked early.
         NONE:     always returns True without reading hardware.
+
+        Fails CLOSED: if the hardware position cannot be read, a GRASP
+        or POSITION intent is reported as failed — "couldn't check" must
+        never pass for "verified held", or a dropped plate goes unnoticed.
         """
         if intent == GripIntent.NONE:
             return True
 
         actual = self.get_gripper_position()
         if actual is None:
-            print(f"[motion_graph] _verify_gripper: could not read gripper position; skipping check")
-            return True
+            print(
+                f"[motion_graph] {intent.value} verification FAILED: could not read "
+                f"gripper position — failing closed (cannot confirm outcome)"
+            )
+            return False
 
         config = getattr(self, 'current_gripper_config', {}) or {}
 

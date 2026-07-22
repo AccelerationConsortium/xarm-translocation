@@ -129,12 +129,13 @@ def test_real_yaml_loads_and_validates():
     assert graph.allowed_targets("uplc_draw_open_close") == ["uplc_draw_open_min"]
 
 
-def test_real_yaml_has_four_state_catalog():
+def test_real_yaml_has_five_state_catalog():
     graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
     names = {gs.name for gs in graph.gripper_states}
-    assert names == {"empty", "grip_120", "reach_90", "grip_80"}
+    assert names == {"empty", "grip_120", "reach_90", "grip_80", "reach_72"}
     assert graph.gripper_state("grip_120").intent == GripIntent.GRASP
     assert graph.gripper_state("reach_90").stroke == 90.0
+    assert graph.gripper_state("reach_72").intent == GripIntent.POSITION
 
 
 def test_press_nodes_are_grip_only():
@@ -167,7 +168,7 @@ def test_real_yaml_transit_nodes_allow_all_states():
     """Non-press nodes may be occupied in any catalog state (held pass-through)
     and still expose no grip/release transitions at transit poses."""
     graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
-    all_states = {"empty", "grip_120", "reach_90", "grip_80"}
+    all_states = {"empty", "grip_120", "reach_90", "grip_80", "reach_72"}
     for node_id in ("deck_high", "hood_home", "robot_home", "uplc_home"):
         n = graph.node(node_id)
         assert set(n.gripper_states) == all_states

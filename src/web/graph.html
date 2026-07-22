@@ -47,7 +47,7 @@
                         <li><span class="legend-glyph">⇄</span> grip/release allowed here</li>
                         <li><span class="legend-line line-plain"></span> move edge (gripper unchanged)</li>
                     </ul>
-                    <p class="muted legend-note">Edge label = <code>mode @ speed</code>. Node colour groups by station (first tag). A node is an arm position; the badges are its gripper leaves — the states you may occupy there. The gripper only changes at nodes marked <code>⇄</code>, never along an edge.</p>
+                    <p class="muted legend-note"><strong>Hover any node</strong> for a plain-language read-out of its gripper states. Edge label = <code>mode @ speed</code>. Node colour groups by station (first tag). A node is an arm position; the badges are its gripper leaves — the states you may occupy there. The gripper only changes at nodes marked <code>⇄</code>, never along an edge.</p>
                     <p class="muted legend-note">Each station has a <strong>home node</strong> (heavier border, e.g. <code>deck_home</code>) shown with <code>▸ N</code> hidden siblings. Click it to fan the station's nodes out from the home node; click again to collapse back to it. Drag nodes to arrange them; positions, open stations and the view are remembered across reopen. The robot's station auto-expands; manual toggling is locked while a workflow holds control.</p>
                     <div class="legend-actions">
                         <button id="fit-btn" class="btn btn-secondary">Fit view</button>
@@ -160,9 +160,13 @@
         </main>
     </div>
 
+    <!-- Hover card: plain-language read-out of a node's gripper leaves.
+         Positioned at the cursor by graph.js; content built there too. -->
+    <div id="node-tooltip" class="node-tooltip" role="tooltip" hidden></div>
+
     <!-- Shared SDL2 auth banner (served by ac_auth), same top bar as every UI. -->
     <script src="/auth/banner.js"></script>
     <script src="cytoscape.min.js"></script>
-    <script src="graph.js?v=20260709a"></script>
+    <script src="graph.js?v=20260721a"></script>
 </body>
 </html>

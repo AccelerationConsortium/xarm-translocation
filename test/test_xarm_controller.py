@@ -13,6 +13,7 @@ import pytest
 # Ensure src is in the python path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
 
+from src.core.motion_graph import GraphMode
 from src.core.xarm_controller import XArmController, ComponentState
 from src.core.xarm_utils import SafetyLevel
 
@@ -122,6 +123,10 @@ class TestMovementMethods:
         ) is True
 
     def test_move_to_named_location(self, initialized_controller):
+        # Raw movement mechanics only — the mocked 'home'/'pickup' presets
+        # aren't graph nodes, and STRICT (the boot default) would rightly
+        # reject them. Graph enforcement has its own tests.
+        initialized_controller.graph_mode = GraphMode.OFF
         assert initialized_controller.move_to_named_location('home') is True
         assert initialized_controller.move_to_named_location('pickup') is True
 
@@ -133,6 +138,9 @@ class TestMovementMethods:
 
     def test_go_home(self, initialized_controller):
         # go_home routes through the named 'robot_home' preset, never factory home.
+        # Graph OFF: the mocked preset isn't resolvable from the mocked
+        # (rail-less) state, and STRICT boot would rightly refuse.
+        initialized_controller.graph_mode = GraphMode.OFF
         assert initialized_controller.go_home() is True
         initialized_controller.arm.move_gohome.assert_not_called()
 

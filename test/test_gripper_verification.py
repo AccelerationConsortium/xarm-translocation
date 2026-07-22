@@ -62,6 +62,22 @@ def test_verify_none_always_passes(ctrl):
     assert ctrl._verify_gripper(150.0, GripIntent.NONE) is True
 
 
+# Unreadable position fails CLOSED ───────────────────────────────────
+
+def test_verify_grasp_fails_closed_when_position_unreadable(ctrl):
+    """GRASP with an unreadable gripper position must fail — 'couldn't
+    check' must never pass for 'verified held'."""
+    set_actual(ctrl, None)
+    assert ctrl._verify_gripper(120.0, GripIntent.GRASP) is False
+
+
+def test_verify_position_fails_closed_when_position_unreadable(ctrl):
+    """POSITION with an unreadable gripper position must fail — free
+    travel was not confirmed."""
+    set_actual(ctrl, None)
+    assert ctrl._verify_gripper(100.0, GripIntent.POSITION) is False
+
+
 # GRASP intent ───────────────────────────────────────────────────────
 
 def test_verify_grasp_passes_when_gap_meets_min_offset(ctrl):
