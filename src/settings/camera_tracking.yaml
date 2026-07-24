@@ -19,13 +19,13 @@
 # Master switch. When false (or this file is missing) the tracker is an
 # inert no-op, the arm panel shows no camera card, and the arm behaves
 # exactly as before.
-enabled: false   # TODO: set true once the values below are correct
+enabled: true
 
 # Dashboard (aggregator) base URL — NOT the camera gateway itself. The
 # gateway (kasa-tapo-services) binds to loopback on the dashboard host, so
 # we go through the dashboard's control passthrough. Used for PTZ control
 # AND for reading the camera's live /status (availability + stream url).
-dashboard_base_url: "http://REPLACE-ME:8001"   # TODO: set at the lab
+dashboard_base_url: "http://100.64.254.6"
 
 # Equipment id of the camera in ac-organic-lab/equipment.yaml.
 camera_id: "cam_hte_tapo_c245"                 # TODO: confirm at the lab

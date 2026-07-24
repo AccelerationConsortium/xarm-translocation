@@ -371,6 +371,57 @@ class TestAvailability:
         assert tracker.availability()["available"] is True
 
 
+def _dashboard_payload(**detail_overrides):
+    """The dashboard's /api/equipment shape (EquipmentSnapshot): a top-level
+    ``id`` + the raw STATUS_SPEC envelope nested under ``status``. Distinct
+    from a raw device /status, which carries those fields at the top level.
+    """
+    raw = _equipment_payload(**detail_overrides)[0]
+    return {
+        "fetched_at": "2026-07-24T00:00:00Z",
+        "equipment": [{
+            "id": raw["equipment_id"],
+            "fetch_error": raw["fetch_error"],
+            "status": {
+                "equipment_status": raw["equipment_status"],
+                "details": raw["details"],
+            },
+        }],
+    }
+
+
+class TestDashboardSnapshotShape:
+    """The tracker must read the dashboard's decorated snapshot (id + nested
+    `status` envelope), not just a raw device /status. Regression for the
+    field-shape mismatch found against the live dashboard."""
+
+    def test_available_from_dashboard_snapshot(self):
+        tracker = _avail_tracker(FakeFetcher(_dashboard_payload()))
+        info = tracker.availability()
+        assert info["available"] is True
+        assert info["stream_url"] == "ws://dash:8001/streams/api/ws?src=cam_hte_tapo_c245_wide"
+
+    def test_id_keyed_camera_is_found(self):
+        # The camera id lives under `id`, not `equipment_id`, on the snapshot.
+        tracker = _avail_tracker(FakeFetcher(_dashboard_payload()))
+        assert "not found" not in (tracker.availability()["reason"] or "")
+
+    def test_privacy_mode_from_dashboard_snapshot(self):
+        tracker = _avail_tracker(FakeFetcher(_dashboard_payload(privacy_mode=True)))
+        info = tracker.availability()
+        assert info["available"] is False
+        assert "privacy" in info["reason"]
+
+    def test_lens_stream_not_connected_from_dashboard(self):
+        payload = _dashboard_payload()
+        for lens in payload["equipment"][0]["status"]["details"]["lenses"]:
+            lens["stream_connected"] = False
+        tracker = _avail_tracker(FakeFetcher(payload))
+        info = tracker.availability()
+        assert info["available"] is False
+        assert "not connected" in info["reason"]
+
+
 class TestStreamUrl:
     def test_relative_url_anchored_on_dashboard(self):
         tracker = _tracker()

@@ -229,8 +229,13 @@ class CameraTracker:
         if snap.get("fetch_error"):
             return False, "camera unreachable (dashboard fetch_error)", None
 
-        details = snap.get("details") or {}
-        status = str(snap.get("equipment_status") or "").strip()
+        # The dashboard's /api/equipment decorates each device as an
+        # EquipmentSnapshot whose raw STATUS_SPEC envelope (equipment_status,
+        # details.lenses, privacy_mode, ...) is nested under ``status``. A raw
+        # device /status carries those fields at the top level. Support both.
+        envelope = snap.get("status") if isinstance(snap.get("status"), dict) else snap
+        details = envelope.get("details") or {}
+        status = str(envelope.get("equipment_status") or "").strip()
         # Gateway-fronted cameras report `unknown` when unreachable (STATUS_SPEC §2.1).
         if status and status not in ("ready", "busy", "degraded"):
             return False, f"camera not ready (status: {status})", None
@@ -268,7 +273,11 @@ class CameraTracker:
         if not isinstance(items, list):
             return None
         for entry in items:
-            if isinstance(entry, dict) and entry.get("equipment_id") == self.camera_id:
+            # Raw device /status uses ``equipment_id``; the dashboard's
+            # EquipmentSnapshot uses ``id``. Match either.
+            if isinstance(entry, dict) and self.camera_id in (
+                entry.get("equipment_id"), entry.get("id")
+            ):
                 return entry
         return None
 
