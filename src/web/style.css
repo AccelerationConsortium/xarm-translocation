@@ -222,10 +222,41 @@ header {
 
 .title-status-container {
     display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    gap: 18px;
+    padding: 20px;
+}
+
+/* Left-hand primary action stack (Take Control / STOP / Clear Errors),
+   pulled out of the Arm Control card so they sit at the top of the page. */
+.header-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 0 0 142px;
+    width: 142px;
+}
+
+.header-actions .btn {
+    min-height: 48px;
+    border-radius: 12px;
+    font-size: 0.95rem;
+}
+
+.header-actions #stop-btn {
+    font-size: 1.2rem;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+}
+
+.title-status-main {
+    display: flex;
     flex-direction: column;
     justify-content: space-between;
-    gap: 16px;
-    padding: 20px;
+    gap: 12px;
+    min-width: 0;
+    flex: 1 1 auto;
 }
 
 .eyebrow {
@@ -833,17 +864,60 @@ input#linear-speed {
     color: var(--danger);
 }
 
-.graph-link {
-    display: inline-block;
-    margin-top: 4px;
-    font-size: 12px;
-    font-weight: 600;
+/* Motion-graph link, rendered as a clearly visible tile/button. */
+.graph-tile {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 6px;
+    padding: 10px 14px;
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    background: var(--surface-soft);
     color: var(--primary);
     text-decoration: none;
+    box-shadow: var(--shadow-sm);
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
 }
 
-.graph-link:hover {
-    text-decoration: underline;
+.graph-tile:hover {
+    background: var(--surface);
+    border-color: var(--primary-active);
+}
+
+.graph-tile:active {
+    transform: translateY(1px);
+}
+
+.graph-tile:focus-visible {
+    outline: none;
+    border-color: var(--primary-active);
+    box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.16);
+}
+
+.graph-tile-icon {
+    flex: 0 0 auto;
+}
+
+.graph-tile-text {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.2;
+    font-size: 0.95rem;
+    font-weight: 700;
+}
+
+.graph-tile-text small {
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: var(--ink-subtle);
+}
+
+.graph-tile-arrow {
+    margin-left: auto;
+    padding-left: 12px;
+    font-size: 1.1rem;
+    color: var(--ink-subtle);
 }
 
 .xarm-buttons .btn {
@@ -993,6 +1067,17 @@ input#linear-speed {
 @media (max-width: 700px) {
     .container {
         padding: 14px;
+    }
+
+    /* Stack the header vertically and lay the action buttons in a row. */
+    .title-status-container {
+        flex-direction: column;
+    }
+
+    .header-actions {
+        flex: 1 1 auto;
+        width: auto;
+        flex-direction: row;
     }
 
     .xarm-buttons {

@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260724e">
+    <link rel="stylesheet" href="style.css?v=20260724f">
 </head>
 <body>
     <div class="container">
@@ -29,18 +29,37 @@
         <header>
             <div class="header-content">
                 <div class="title-status-container">
-                    <p class="eyebrow">xArm Translocation</p>
-                    <h1>Web Control Interface</h1>
-                    <div id="status-container">
-                        <div class="status-pills">
-                            <div id="status-main">
-                                <div id="status-light" class="status-light offline"></div>
-                                <div id="status-text">Disconnected</div>
+                    <!-- Primary arm actions, moved out of the Arm Control card into a
+                         left-hand stack so Take Control / STOP / Clear Errors are
+                         reachable from the top of the page. IDs unchanged (main.js). -->
+                    <div class="header-actions">
+                        <button id="take-control-btn" class="btn btn-claim" title="Acquire the device claim so you can drive the arm. While you hold it, workflows are locked out (HTTP 423) and see you as the claim holder.">Take Control</button>
+                        <button id="stop-btn" class="btn btn-danger">STOP</button>
+                        <button id="clear-errors-btn" class="btn btn-warning" title="Clear arm + gripper faults and re-energize the servos (replaces the old separate Enable). Works without taking control.">Clear Errors</button>
+                    </div>
+                    <div class="title-status-main">
+                        <p class="eyebrow">xArm Translocation</p>
+                        <h1>Web Control Interface</h1>
+                        <div id="status-container">
+                            <div class="status-pills">
+                                <div id="status-main">
+                                    <div id="status-light" class="status-light offline"></div>
+                                    <div id="status-text">Disconnected</div>
+                                </div>
+                                <div id="connection-details"></div>
                             </div>
-                            <div id="connection-details"></div>
+                            <div id="claim-status" class="claim-status claim-free">Control: nobody (open)</div>
+                            <a href="graph.html" class="graph-tile" target="_blank" rel="noopener" title="Open the motion-graph view (interlock topology, live node)">
+                                <svg class="graph-tile-icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <circle cx="5" cy="6" r="2.2"></circle>
+                                    <circle cx="19" cy="6" r="2.2"></circle>
+                                    <circle cx="12" cy="18" r="2.2"></circle>
+                                    <path d="M6.9 7.4 10.6 15.9 M17.1 7.4 13.4 15.9 M7.2 6 h9.6"></path>
+                                </svg>
+                                <span class="graph-tile-text">Motion Graph<small>interlock topology · live node</small></span>
+                                <span class="graph-tile-arrow" aria-hidden="true">↗</span>
+                            </a>
                         </div>
-                        <div id="claim-status" class="claim-status claim-free">Control: nobody (open)</div>
-                        <a href="graph.html" class="graph-link" target="_blank" rel="noopener">Motion graph ↗</a>
                     </div>
                 </div>
                 <div class="log-container">
@@ -150,13 +169,9 @@
                     <!-- Two-column body: xArm controls (left) + XYZ jog (right) -->
                     <div class="sc-body">
 
-                        <!-- Left: xArm controls -->
+                        <!-- Left: xArm controls (Take Control / STOP / Clear Errors
+                             now live in the header action stack). -->
                         <div class="sc-left">
-                            <div class="xarm-buttons">
-                                <button id="take-control-btn" class="btn btn-claim" title="Acquire the device claim so you can drive the arm. While you hold it, workflows are locked out (HTTP 423) and see you as the claim holder.">Take Control</button>
-                                <button id="stop-btn" class="btn btn-danger">STOP</button>
-                                <button id="clear-errors-btn" class="btn btn-warning" title="Clear arm + gripper faults and re-energize the servos (replaces the old separate Enable). Works without taking control.">Clear Errors</button>
-                            </div>
                             <div class="position-controls-row">
                                 <select id="predefined-position-select" class="position-dropdown"></select>
                             </div>
