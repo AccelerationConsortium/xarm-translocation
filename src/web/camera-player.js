@@ -47,6 +47,34 @@
         }
         function hideOverlay() { overlay.hidden = true; }
 
+        // --- Keep playback at the live edge -------------------------------
+        // A live MSE stream plays at 1x from wherever decoding began, so any
+        // buffer accumulated at start (or after a stall / backgrounded tab)
+        // becomes permanent latency. Nudge toward live: ease the rate up on a
+        // small lead, hard-seek if we fall badly behind. Bounds the delay to
+        // ~LIVE_TARGET instead of letting it creep. (LAB camera has no audio,
+        // so a slightly faster rate is imperceptible.)
+        var LIVE_TARGET = 0.35;   // aim to sit this far behind the live edge (s)
+        var LIVE_NUDGE = 0.9;     // ease toward live once lead exceeds this (s)
+        var LIVE_RESYNC = 3.0;    // hard-seek to live once lead exceeds this (s)
+        function keepLiveEdge() {
+            if (!sourceBuffer) return;
+            var b;
+            try { b = video.buffered; } catch (e) { return; }
+            if (!b || !b.length) return;
+            var end = b.end(b.length - 1);
+            var lead = end - video.currentTime;
+            if (lead > LIVE_RESYNC) {
+                try { video.currentTime = end - LIVE_TARGET; } catch (e) {}
+                video.playbackRate = 1.0;
+            } else if (lead > LIVE_NUDGE) {
+                video.playbackRate = 1.08;   // smooth catch-up, no visible jump
+            } else if (video.playbackRate !== 1.0) {
+                video.playbackRate = 1.0;
+            }
+        }
+        video.addEventListener('timeupdate', keepLiveEdge);
+
         // --- HTTP helpers (plain fetch; follow is login-gated by cookie, not
         //     claim-gated, so no token plumbing is needed). ---
         function getConfig() {
@@ -75,6 +103,7 @@
             sourceBuffer = null;
             pendingBuffers = [];
             try {
+                video.playbackRate = 1.0;
                 if (video.src) { URL.revokeObjectURL(video.src); }
                 video.removeAttribute('src');
                 video.load();
