@@ -262,6 +262,11 @@ header {
     flex: 1 1 auto;
 }
 
+/* Scoped to the control-panel header so the graph page's h1 is untouched. */
+.title-status-main h1 {
+    font-size: clamp(1.2rem, 2.2vw, 1.55rem);
+}
+
 .eyebrow {
     margin: 0 0 4px;
     color: var(--ink-subtle);
@@ -867,19 +872,21 @@ input#linear-speed {
     color: var(--danger);
 }
 
-/* Motion-graph link, rendered as a clearly visible tile/button. */
+/* Motion-graph link, rendered as a compact visible tile/button. */
 .graph-tile {
+    align-self: flex-start;
     display: inline-flex;
     align-items: center;
-    gap: 10px;
-    margin-top: 6px;
-    padding: 10px 14px;
+    gap: 7px;
+    margin-top: 4px;
+    padding: 5px 10px;
     border: 1px solid var(--border-strong);
-    border-radius: 12px;
+    border-radius: 9px;
     background: var(--surface-soft);
     color: var(--primary);
+    font-size: 0.82rem;
+    font-weight: 700;
     text-decoration: none;
-    box-shadow: var(--shadow-sm);
     transition: background 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
 }
 
@@ -900,27 +907,6 @@ input#linear-speed {
 
 .graph-tile-icon {
     flex: 0 0 auto;
-}
-
-.graph-tile-text {
-    display: flex;
-    flex-direction: column;
-    line-height: 1.2;
-    font-size: 0.95rem;
-    font-weight: 700;
-}
-
-.graph-tile-text small {
-    font-size: 0.72rem;
-    font-weight: 500;
-    color: var(--ink-subtle);
-}
-
-.graph-tile-arrow {
-    margin-left: auto;
-    padding-left: 12px;
-    font-size: 1.1rem;
-    color: var(--ink-subtle);
 }
 
 .xarm-buttons .btn {
