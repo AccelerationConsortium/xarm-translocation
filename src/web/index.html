@@ -59,6 +59,31 @@
                     <button id="disconnect-btn" class="btn btn-danger" disabled>Disconnect</button>
                 </div>
 
+                <!-- Lab Camera — pans to follow the arm across the motion graph.
+                     Hidden unless src/settings/camera_tracking.yaml is configured
+                     (GET /camera/config decides). The live preview is a go2rtc MSE
+                     stream; the "Follow arm" toggle hits POST /camera/follow. Wiring
+                     is shared with graph.html via camera-player.js. See
+                     core/camera_tracker.py. -->
+                <div class="card" id="camera-card" hidden>
+                    <h2>Lab Camera <span class="panel-unit">follows the arm</span></h2>
+                    <div class="camera-stage">
+                        <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
+                        <div id="camera-overlay" class="camera-overlay">
+                            <span id="camera-overlay-text">Connecting…</span>
+                        </div>
+                    </div>
+                    <div class="camera-controls">
+                        <label id="camera-follow-switch" class="manual-switch follow-switch is-disabled"
+                               title="When on, the camera pans to the arm's station as it moves across the motion graph.">
+                            <input type="checkbox" id="camera-follow-checkbox" disabled>
+                            <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
+                            <span class="manual-switch-text">Follow arm</span>
+                        </label>
+                        <span id="camera-status" class="muted camera-status"></span>
+                    </div>
+                </div>
+
                 <!-- Gripper -->
                 <div class="card">
                     <h2>Gripper</h2>
@@ -96,30 +121,6 @@
                     <div id="track-info" class="component-info">
                         <div class="info-left">Range: <span id="track-range-display">0-700 mm</span></div>
                         <div class="info-right">Current: <span id="track-position-display">N/A</span></div>
-                    </div>
-                </div>
-
-                <!-- Lab Camera — pans to follow the arm across the motion graph.
-                     Hidden unless src/settings/camera_tracking.yaml is configured
-                     (GET /camera/config decides). The live preview is a go2rtc MSE
-                     stream; the "Follow arm" toggle hits POST /camera/follow. All
-                     wiring lives in main.js (setupCamera). See core/camera_tracker.py. -->
-                <div class="card" id="camera-card" hidden>
-                    <h2>Lab Camera <span class="panel-unit">follows the arm</span></h2>
-                    <div class="camera-stage">
-                        <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
-                        <div id="camera-overlay" class="camera-overlay">
-                            <span id="camera-overlay-text">Connecting…</span>
-                        </div>
-                    </div>
-                    <div class="camera-controls">
-                        <label id="camera-follow-switch" class="manual-switch follow-switch is-disabled"
-                               title="When on, the camera pans to the arm's station as it moves across the motion graph.">
-                            <input type="checkbox" id="camera-follow-checkbox" disabled>
-                            <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
-                            <span class="manual-switch-text">Follow arm</span>
-                        </label>
-                        <span id="camera-status" class="muted camera-status"></span>
                     </div>
                 </div>
 

@@ -249,9 +249,13 @@ class CameraTracker:
         lens = self._pick_lens(details.get("lenses"))
         if lens is None:
             return False, "camera reports no lenses", None
-        if lens.get("stream_connected") is False:
-            return False, "camera lens stream not connected", None
-
+        # Do NOT gate on lens.stream_connected. go2rtc connects to the camera
+        # on demand — the producer stays idle (stream_connected False) until a
+        # consumer subscribes, so blocking on it is a chicken-and-egg that
+        # stops the preview from ever starting. Verified live: an MSE consumer
+        # gets the codec init + a steady flow of segments even while
+        # stream_connected reports False. The privacy/streaming/go2rtc checks
+        # above are the real capability gates.
         mse_url = lens.get("mse_url")
         if not mse_url:
             return False, "camera lens has no stream url", None

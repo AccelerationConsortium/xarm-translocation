@@ -412,14 +412,17 @@ class TestDashboardSnapshotShape:
         assert info["available"] is False
         assert "privacy" in info["reason"]
 
-    def test_lens_stream_not_connected_from_dashboard(self):
+    def test_stream_connected_false_does_not_block(self):
+        # go2rtc connects to the camera on demand, so stream_connected is False
+        # while idle. It must NOT gate availability (verified live: segments
+        # flow to an MSE consumer despite stream_connected False).
         payload = _dashboard_payload()
         for lens in payload["equipment"][0]["status"]["details"]["lenses"]:
             lens["stream_connected"] = False
         tracker = _avail_tracker(FakeFetcher(payload))
         info = tracker.availability()
-        assert info["available"] is False
-        assert "not connected" in info["reason"]
+        assert info["available"] is True
+        assert info["stream_url"].endswith("src=cam_hte_tapo_c245_wide")
 
 
 class TestStreamUrl:
