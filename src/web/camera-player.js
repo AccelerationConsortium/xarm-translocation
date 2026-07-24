@@ -134,21 +134,27 @@
                 try { socket.send(JSON.stringify({ type: 'mse', value: supported.join(',') })); } catch (e) {}
             };
 
+            // Drain queued segments one at a time (appendBuffer is async, so we
+            // append again on each 'updateend'). Critically, we queue frames
+            // BEFORE the SourceBuffer exists too: go2rtc sends the init segment
+            // (ftyp+moov) as the very first binary frame — before our async
+            // 'sourceopen' fires — and dropping it means nothing ever decodes.
+            function flush() {
+                if (!sourceBuffer || sourceBuffer.updating || !pendingBuffers.length) return;
+                appendSegment(pendingBuffers.shift());
+                if (!gotData) { gotData = true; hideOverlay(); }   // first frame shown
+            }
+
             socket.onmessage = function (ev) {
                 if (ws !== socket) return;   // stale socket
                 if (typeof ev.data === 'string') {
                     var msg;
                     try { msg = JSON.parse(ev.data); } catch (e) { return; }
-                    if (msg.type === 'mse' || msg.type === 'mp4') startMediaSource(socket, msg.value);
+                    if (msg.type === 'mse' || msg.type === 'mp4') startMediaSource(socket, msg.value, flush);
                     return;
                 }
-                if (!sourceBuffer) return;
-                if (!gotData) { gotData = true; hideOverlay(); }   // first real frame
-                if (sourceBuffer.updating || pendingBuffers.length) {
-                    pendingBuffers.push(ev.data);
-                } else {
-                    appendSegment(ev.data);
-                }
+                pendingBuffers.push(ev.data);   // never drop — esp. the init segment
+                flush();
             };
 
             socket.onerror = function () { try { socket.close(); } catch (e) {} };
@@ -160,7 +166,7 @@
             };
         }
 
-        function startMediaSource(socket, mime) {
+        function startMediaSource(socket, mime, flush) {
             var media = new MediaSource();
             try { video.src = URL.createObjectURL(media); } catch (e) { scheduleReconnect(); return; }
             media.addEventListener('sourceopen', function () {
@@ -171,12 +177,10 @@
                     sb = media.addSourceBuffer(mime);
                 } catch (e) { scheduleReconnect(); return; }
                 sb.mode = 'segments';
-                sb.addEventListener('updateend', function () {
-                    if (sb.updating || !pendingBuffers.length) return;
-                    appendSegment(pendingBuffers.shift());
-                });
+                sb.addEventListener('updateend', flush);
                 sourceBuffer = sb;
                 video.play().catch(function () {});   // autoplay needs muted (it is)
+                flush();   // drain segments (incl. the init) queued before now
                 // Overlay stays until the first segment actually arrives
                 // (see onmessage) so a black frame never reads as "connected".
             }, { once: true });
