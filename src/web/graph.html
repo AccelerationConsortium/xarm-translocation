@@ -4,7 +4,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>xArm Motion Graph</title>
-    <link rel="stylesheet" href="style.css?v=20260724d">
+    <script>
+      // Match the shared SDL2 auth banner's theme before first paint (avoids a
+      // flash). Mirrors banner.js: localStorage("theme") wins, else the OS
+      // preference. banner.js re-applies the same html.dark class on load and
+      // on every toggle, so the page and banner stay in lockstep.
+      (function () {
+        try {
+          var t = localStorage.getItem("theme");
+          var dark = t === "dark" || (t !== "light" && window.matchMedia
+            && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", dark);
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="stylesheet" href="style.css?v=20260724e">
     <link rel="stylesheet" href="graph.css?v=20260709a">
 </head>
 <body>

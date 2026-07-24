@@ -1,5 +1,5 @@
 :root {
-    color-scheme: light dark;
+    color-scheme: light;   /* dark is opted in via html.dark (SDL2 banner) */
     --ink: #0f172a;
     --ink-muted: #475569;
     --ink-subtle: #64748b;
@@ -1536,52 +1536,55 @@ input#linear-speed {
 }
 
 /* ── Dark mode ───────────────────────────────────────────────────────────
-   Follows the OS theme, matching the dashboard (which is prefers-color-scheme
-   aware). The UI is almost entirely token-driven, so we remap the tokens and
-   then patch the handful of hardcoded light surfaces. */
-@media (prefers-color-scheme: dark) {
-    :root {
-        --ink: #e2e8f0;
-        --ink-muted: #94a3b8;
-        --ink-subtle: #64748b;
-        --surface: #0f172a;        /* cards (slate-900) */
-        --surface-subtle: #0b1120; /* page background */
-        --surface-soft: #1e293b;   /* raised tints (slate-800) */
-        --border: #1e293b;         /* slate-800 */
-        --border-strong: #334155;  /* slate-700 */
-        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-    }
-
-    /* Hardcoded light surfaces → dark equivalents. */
-    .component-control { background: rgba(30, 41, 59, 0.5); }
-
-    #connection-details,
-    .connection-details,
-    .error-message-info {
-        background: rgba(2, 132, 199, 0.16);   /* sky tint */
-        color: #bae6fd;                        /* sky-200 */
-    }
-
-    .error-message-error,
-    .assistant-msg-error {
-        background: rgba(190, 18, 60, 0.16);
-        border-color: rgba(244, 63, 94, 0.4);
-        color: #fecdd3;                        /* rose-200 */
-    }
-
-    #stop-btn:disabled {
-        background: rgba(190, 18, 60, 0.16);
-        border-color: rgba(244, 63, 94, 0.35);
-        color: #fda4af;
-    }
-
-    /* Fixed translucent status bar. */
-    .status-bar-card {
-        background: rgba(15, 23, 42, 0.85);
-        box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.4);
-    }
-
-    /* Give the camera stage a touch more depth than the card behind it. */
-    .camera-stage,
-    .camera-video { background: #020617; }     /* slate-950 */
+   Follows the shared SDL2 auth banner's theme toggle, NOT the OS setting. The
+   banner mirrors its toggle onto <html class="dark"> — source of truth
+   localStorage("theme"), falling back to the OS preference only when unset — so
+   every lab UI switches in lockstep. A blocking inline script in each page
+   <head> stamps the same class before first paint to avoid a flash. The UI is
+   almost entirely token-driven, so we remap the tokens under html.dark and
+   patch the handful of hardcoded light surfaces. */
+:root.dark {
+    color-scheme: dark;
+    --ink: #e2e8f0;
+    --ink-muted: #94a3b8;
+    --ink-subtle: #64748b;
+    --surface: #0f172a;        /* cards (slate-900) */
+    --surface-subtle: #0b1120; /* page background */
+    --surface-soft: #1e293b;   /* raised tints (slate-800) */
+    --border: #1e293b;         /* slate-800 */
+    --border-strong: #334155;  /* slate-700 */
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
 }
+
+/* Hardcoded light surfaces → dark equivalents. */
+:root.dark .component-control { background: rgba(30, 41, 59, 0.5); }
+
+:root.dark #connection-details,
+:root.dark .connection-details,
+:root.dark .error-message-info {
+    background: rgba(2, 132, 199, 0.16);   /* sky tint */
+    color: #bae6fd;                        /* sky-200 */
+}
+
+:root.dark .error-message-error,
+:root.dark .assistant-msg-error {
+    background: rgba(190, 18, 60, 0.16);
+    border-color: rgba(244, 63, 94, 0.4);
+    color: #fecdd3;                        /* rose-200 */
+}
+
+:root.dark #stop-btn:disabled {
+    background: rgba(190, 18, 60, 0.16);
+    border-color: rgba(244, 63, 94, 0.35);
+    color: #fda4af;
+}
+
+/* Fixed translucent status bar. */
+:root.dark .status-bar-card {
+    background: rgba(15, 23, 42, 0.85);
+    box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.4);
+}
+
+/* Give the camera stage a touch more depth than the card behind it. */
+:root.dark .camera-stage,
+:root.dark .camera-video { background: #020617; }     /* slate-950 */
