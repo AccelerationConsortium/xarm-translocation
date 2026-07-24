@@ -30,8 +30,10 @@
             <div class="header-content">
                 <div class="title-status-container">
                     <!-- Primary arm actions, moved out of the Arm Control card into a
-                         left-hand stack so Take Control / STOP / Clear Errors are
-                         reachable from the top of the page. IDs unchanged (main.js). -->
+                         right-hand stack (CSS order) so Take Control / STOP / Clear
+                         Errors are reachable from the top of the page. The title
+                         block stays first in the DOM for reading/tab order. IDs
+                         unchanged (main.js). -->
                     <div class="header-actions">
                         <button id="take-control-btn" class="btn btn-claim" title="Acquire the device claim so you can drive the arm. While you hold it, workflows are locked out (HTTP 423) and see you as the claim holder.">Take Control</button>
                         <button id="stop-btn" class="btn btn-danger">STOP</button>
