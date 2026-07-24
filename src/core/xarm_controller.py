@@ -26,6 +26,7 @@ try:
     )
     from .claims import ClaimManager
     from .events_exporter import EventsExporter
+    from .camera_tracker import CameraTracker
 except ImportError:
     from core.motion_graph import (
         DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
@@ -34,6 +35,7 @@ except ImportError:
     )
     from core.claims import ClaimManager
     from core.events_exporter import EventsExporter
+    from core.camera_tracker import CameraTracker
 
 
 # Coarse xArm SDK controller-state -> STATUS_SPEC-ish label, used only to
@@ -375,6 +377,29 @@ class XArmController:
             print(f"[events] exporter ON -> {self.events_exporter.ingest_url}")
         else:
             print("[events] exporter OFF (set XARM_INGEST_URL to enable)")
+
+        # Camera tracking: pan the lab camera to follow the arm across the
+        # motion graph. No-op unless src/settings/camera_tracking.yaml has
+        # enabled: true with a dashboard_base_url + camera_id. Construction
+        # never raises — a bad/missing config yields a disabled no-op.
+        # Anchor to the package layout (src/settings/), not the process CWD —
+        # the API server is launched from arbitrary dirs (NSSM, uv --project).
+        camera_cfg_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), 'settings', 'camera_tracking.yaml'
+        )
+        try:
+            self.camera_tracker = CameraTracker.from_config_file(camera_cfg_path)
+        except Exception as exc:  # noqa: BLE001 - never break controller boot
+            print(f"[camera] tracker init failed (ignored): {exc}")
+            self.camera_tracker = CameraTracker(None)
+        if self.camera_tracker.configured:
+            follow = "following" if self.camera_tracker.following else "paused"
+            print(
+                f"[camera] tracking configured -> {self.camera_tracker.dashboard_base_url} "
+                f"({self.camera_tracker.camera_id}); follow {follow}"
+            )
+        else:
+            print("[camera] tracking OFF (see src/settings/camera_tracking.yaml)")
 
         # State tracking
         self.alive = True
@@ -1871,6 +1896,7 @@ class XArmController:
             self.last_gripper_position = (
                 self.motion_graph.gripper_state(gripper_state).stroke
             )
+        self._notify_camera(node)
         return {
             "recovered_to": node_id,
             "current_node": self.current_node,
@@ -1940,6 +1966,21 @@ class XArmController:
 
         return True
 
+    def _notify_camera(self, node) -> None:
+        """Best-effort: pan the lab camera to the station for ``node``.
+
+        Guarded and swallowing by contract — camera tracking must never
+        block or fail arm motion (the tracker is a no-op unless configured
+        via src/settings/camera_tracking.yaml). See core/camera_tracker.py.
+        """
+        tracker = getattr(self, "camera_tracker", None)
+        if tracker is None:
+            return
+        try:
+            tracker.notify_node(node)
+        except Exception as exc:  # noqa: BLE001 - observability must not break motion
+            print(f"[camera] notify failed (ignored): {exc}")
+
     def move_to_node(self, node_id: str, speed=None) -> bool:
         """Move to a graph node by id, driving the rail when required.
 
@@ -1967,7 +2008,10 @@ class XArmController:
         # Same-rail: a pure arm move reaches the node; keep per-axis
         # consultation intact so STRICT still gates the edge as before.
         if node.rail == self.last_rail_location_name:
-            return self.move_to_named_location(node.arm, speed=speed)
+            ok = self.move_to_named_location(node.arm, speed=speed)
+            if ok:
+                self._notify_camera(node)
+            return ok
 
         # Cross-rail transit: validate the whole edge once (raises in
         # STRICT if the edge is missing, we are off-grid, or the gripper
@@ -2004,6 +2048,7 @@ class XArmController:
             edge.mode if edge is not None else MoveMode.JOINT,
             capped,
         )
+        self._notify_camera(node)
         return True
 
     def travel_to_node(self, node_id: str, speed=None) -> dict:

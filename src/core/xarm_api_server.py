@@ -47,6 +47,7 @@ try:
         NoPathError, RecoveryMismatch, UnknownNodeError,
     )
     from .claims import ClaimConflict, InvalidClaimToken
+    from .camera_tracker import CameraTracker
     from . import assistant_actions
     from . import assistant_llm
 except ImportError:
@@ -72,6 +73,7 @@ except ImportError:
         NoPathError, RecoveryMismatch, UnknownNodeError,
     )
     from core.claims import ClaimConflict, InvalidClaimToken
+    from core.camera_tracker import CameraTracker
     from core import assistant_actions
     from core import assistant_llm
 
@@ -2349,6 +2351,88 @@ async def assistant_status():
         "graph_loaded": graph is not None,
         "places": places,
     }
+
+
+# =============================================================================
+# CAMERA TRACKING (pan the lab camera to follow the arm on the motion graph)
+#
+# The arm panel calls GET /camera/config on load (and polls it) to decide
+# whether to show a camera card + live stream + "Follow arm" toggle. Actuation
+# lives entirely in core/camera_tracker.py; these endpoints are a thin view +
+# runtime toggle over the controller's CameraTracker. Config is readable before
+# /connect (via a standalone tracker) so the card + video can appear while
+# disconnected; the follow *toggle* needs a connected controller, since
+# following only acts on arm motion.
+# =============================================================================
+
+
+class CameraFollowRequest(BaseModel):
+    """Body of POST /camera/follow."""
+    enabled: bool = Field(description="true to make the camera follow the arm, false to pause")
+
+
+# A read-only CameraTracker built straight from the YAML, used to answer
+# /camera/config before the controller exists (pre-/connect). Cached so we
+# don't re-read the file on every poll. NOT used for actuation.
+_standalone_camera_tracker: Optional[CameraTracker] = None
+
+
+def _camera_tracker_for_read() -> CameraTracker:
+    """The controller's tracker when connected, else a standalone read view."""
+    global _standalone_camera_tracker
+    if controller is not None and getattr(controller, "camera_tracker", None) is not None:
+        return controller.camera_tracker
+    if _standalone_camera_tracker is None:
+        cfg_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "settings", "camera_tracking.yaml"
+        )
+        _standalone_camera_tracker = CameraTracker.from_config_file(cfg_path)
+    return _standalone_camera_tracker
+
+
+@app.get("/camera/config")
+async def camera_config():
+    """Whether the arm panel should show the camera card + follow toggle.
+
+    Read-only and un-gated (like /assistant/status). ``configured`` decides
+    whether the card appears at all; ``available`` (a short-cached live probe
+    of the camera's /status through the dashboard) decides whether the stream
+    + toggle are usable right now; ``stream_url`` is the absolute go2rtc
+    ws(s):// URL the panel's player connects to. The probe never raises.
+    """
+    tracker = _camera_tracker_for_read()
+    info = await asyncio.to_thread(tracker.availability)
+    info["connected"] = controller is not None
+    return info
+
+
+@app.post("/camera/follow", dependencies=[Depends(require_login)])
+async def camera_follow(request: CameraFollowRequest):
+    """Turn "follow the arm" on/off. Requires a connected controller.
+
+    Login-gated (no-op unless XARM_REQUIRE_LOGIN) but NOT claim-gated:
+    panning a read-only camera is not hardware actuation, so it does not
+    contend for the arm claim. When following is switched on we re-aim the
+    camera at the arm's current node immediately, rather than waiting for
+    the next move.
+    """
+    c = get_controller()
+    tracker = getattr(c, "camera_tracker", None)
+    if tracker is None or not tracker.configured:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "camera_not_configured",
+                    "hint": "set enabled + dashboard_base_url + camera_id in "
+                            "src/settings/camera_tracking.yaml"},
+        )
+    following = tracker.set_following(request.enabled)
+    # Best-effort immediate re-aim to the current node when turning on.
+    if following and c.current_node:
+        try:
+            tracker.notify_node(c.motion_graph.node(c.current_node))
+        except Exception as exc:  # noqa: BLE001 - re-aim is best-effort
+            logger.info(f"camera re-aim skipped: {exc}")
+    return {"following": following, "configured": tracker.configured}
 
 
 @app.post("/assistant/plan")

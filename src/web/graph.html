@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>xArm Motion Graph</title>
-    <link rel="stylesheet" href="style.css?v=20260709a">
+    <link rel="stylesheet" href="style.css?v=20260724a">
     <link rel="stylesheet" href="graph.css?v=20260709a">
 </head>
 <body>
@@ -37,6 +37,29 @@
 
             <aside class="graph-side">
                 <div id="graph-message" class="graph-message" hidden></div>
+
+                <!-- Lab Camera — pans to follow the arm across the motion graph.
+                     Shared card + wiring with the control panel; hidden unless
+                     src/settings/camera_tracking.yaml is configured. See
+                     camera-player.js and core/camera_tracker.py. -->
+                <div class="card" id="camera-card" hidden>
+                    <h2>Lab Camera <span class="panel-unit">follows the arm</span></h2>
+                    <div class="camera-stage">
+                        <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
+                        <div id="camera-overlay" class="camera-overlay">
+                            <span id="camera-overlay-text">Connecting…</span>
+                        </div>
+                    </div>
+                    <div class="camera-controls">
+                        <label id="camera-follow-switch" class="manual-switch follow-switch is-disabled"
+                               title="When on, the camera pans to the arm's station as it moves across the motion graph.">
+                            <input type="checkbox" id="camera-follow-checkbox" disabled>
+                            <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
+                            <span class="manual-switch-text">Follow arm</span>
+                        </label>
+                        <span id="camera-status" class="muted camera-status"></span>
+                    </div>
+                </div>
 
                 <div class="card graph-legend">
                     <h2>Legend</h2>
@@ -167,6 +190,7 @@
     <!-- Shared SDL2 auth banner (served by ac_auth), same top bar as every UI. -->
     <script src="/auth/banner.js"></script>
     <script src="cytoscape.min.js"></script>
-    <script src="graph.js?v=20260721a"></script>
+    <script src="camera-player.js?v=20260724a"></script>
+    <script src="graph.js?v=20260724a"></script>
 </body>
 </html>

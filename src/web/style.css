@@ -679,6 +679,78 @@ input#linear-speed {
     cursor: not-allowed;
 }
 
+/* ── Lab Camera card ─────────────────────────────────────────────────
+   "Follow arm" reuses the manual-switch markup but reads as an ON
+   affordance (green, no alarm pulse) rather than manual mode's red. */
+.camera-stage {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    background: #0f172a;
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+    margin-bottom: 14px;
+}
+
+.camera-video {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #0f172a;
+    display: block;
+}
+
+.camera-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 12px;
+    background: rgba(15, 23, 42, 0.72);
+    color: #e2e8f0;
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.camera-controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.camera-status {
+    font-size: 0.85rem;
+    text-align: right;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+/* ON state: green track + label, a calm ring instead of the danger pulse. */
+.follow-switch.is-on .manual-switch-track {
+    background: var(--success);
+}
+
+.follow-switch.is-on .manual-switch-thumb {
+    transform: translateX(20px);
+}
+
+.follow-switch.is-on .manual-switch-text {
+    color: var(--success);
+}
+
+.follow-switch.is-on {
+    box-shadow: 0 0 0 2px rgba(4, 120, 87, 0.35);
+    border-radius: 999px;
+    animation: none;
+}
+
 .btn-secondary {
     background: #475569;
 }

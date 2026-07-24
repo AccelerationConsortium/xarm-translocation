@@ -2132,6 +2132,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Wire up the corner lab-assistant widget (reads /assistant/status).
     setupAssistant();
+
+    // Wire up the Lab Camera card (reads /camera/config; MSE live preview +
+    // "Follow arm" toggle). Shared with graph.html via camera-player.js;
+    // no-op unless camera tracking is configured.
+    if (window.setupCameraCard) window.setupCameraCard({ apiBase: API_BASE_URL });
     
     // Initialize real-time joints display
     if (realtimeJointsDisplay) {

@@ -1359,6 +1359,11 @@
         initialLoad();
         connectWebSocket();
         setInterval(pollLiveState, 1500);
+
+        // Lab Camera card (shared with the control panel via camera-player.js):
+        // reads /camera/config, renders the MSE preview + "Follow arm" toggle.
+        // No-op unless camera tracking is configured.
+        if (window.setupCameraCard) window.setupCameraCard({ apiBase: API_BASE });
     });
 
     // Expose hooks so Phase B can extend without rewriting Phase A.

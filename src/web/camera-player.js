@@ -1,0 +1,244 @@
+/* Shared "Lab Camera" card — used by both the control panel (index.html)
+ * and the motion-graph page (graph.html). Both pages carry the same card
+ * markup (ids: camera-card, camera-video, camera-overlay, camera-overlay-text,
+ * camera-follow-switch, camera-follow-checkbox, camera-status).
+ *
+ * Reads GET {apiBase}/camera/config to decide whether to show the card
+ * (configured) and whether the live preview is usable right now (available +
+ * stream_url). The preview is a go2rtc MSE stream over WebSocket; "Follow arm"
+ * toggles POST {apiBase}/camera/follow. Everything here is best-effort — a
+ * camera outage or missing config just hides/greys the card and never touches
+ * arm control. See core/camera_tracker.py.
+ *
+ * Usage:  window.setupCameraCard({ apiBase: API_BASE });
+ */
+(function () {
+    'use strict';
+
+    window.setupCameraCard = function (opts) {
+        opts = opts || {};
+        var apiBase = opts.apiBase || '';
+
+        var card = document.getElementById('camera-card');
+        var video = document.getElementById('camera-video');
+        var overlay = document.getElementById('camera-overlay');
+        var overlayText = document.getElementById('camera-overlay-text');
+        var sw = document.getElementById('camera-follow-switch');
+        var checkbox = document.getElementById('camera-follow-checkbox');
+        var statusEl = document.getElementById('camera-status');
+        if (!card || !video || !sw || !checkbox) return;   // markup missing -> no-op
+
+        var POLL_MS = 10000;
+        var RECONNECT_MS = 3000;
+        var mseSupported = typeof window.MediaSource !== 'undefined';
+
+        var configured = false;
+        var connected = false;
+        var streamUrl = null;        // stream currently attached to the player
+        var ws = null;               // live MSE websocket
+        var sourceBuffer = null;
+        var pendingBuffers = [];     // segments waiting on the SourceBuffer
+        var reconnectTimer = null;
+        var toggling = false;        // suppress poll-driven state churn mid-toggle
+
+        function showOverlay(text) {
+            overlayText.textContent = text;
+            overlay.hidden = false;
+        }
+        function hideOverlay() { overlay.hidden = true; }
+
+        // --- HTTP helpers (plain fetch; follow is login-gated by cookie, not
+        //     claim-gated, so no token plumbing is needed). ---
+        function getConfig() {
+            return fetch(apiBase + '/camera/config', { credentials: 'same-origin' })
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .catch(function () { return null; });
+        }
+        function postFollow(enabled) {
+            return fetch(apiBase + '/camera/follow', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'same-origin',
+                body: JSON.stringify({ enabled: enabled }),
+            })
+                .then(function (r) { return r.ok ? r.json() : null; })
+                .catch(function () { return null; });
+        }
+
+        // --- MSE player (go2rtc) ---
+        function stopStream() {
+            if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+            if (ws) {
+                try { ws.onclose = null; ws.onerror = null; ws.onmessage = null; ws.close(); } catch (e) {}
+                ws = null;
+            }
+            sourceBuffer = null;
+            pendingBuffers = [];
+            try {
+                if (video.src) { URL.revokeObjectURL(video.src); }
+                video.removeAttribute('src');
+                video.load();
+            } catch (e) {}
+        }
+
+        function scheduleReconnect() {
+            if (ws) { try { ws.onclose = null; ws.close(); } catch (e) {} ws = null; }
+            sourceBuffer = null;
+            pendingBuffers = [];
+            if (!configured || !streamUrl || reconnectTimer) return;
+            reconnectTimer = setTimeout(function () {
+                reconnectTimer = null;
+                if (configured && streamUrl) connectMse(streamUrl);
+            }, RECONNECT_MS);
+        }
+
+        // Append a segment, trimming the buffer if the browser is out of room
+        // (a live stream would otherwise grow without bound).
+        function appendSegment(buf) {
+            if (!sourceBuffer) return;
+            try {
+                sourceBuffer.appendBuffer(buf);
+            } catch (e) {
+                if (e && e.name === 'QuotaExceededError' && sourceBuffer.buffered.length) {
+                    var trimTo = Math.max(sourceBuffer.buffered.start(0), video.currentTime - 5);
+                    if (trimTo > sourceBuffer.buffered.start(0)) {
+                        pendingBuffers.unshift(buf);
+                        try { sourceBuffer.remove(sourceBuffer.buffered.start(0), trimTo); } catch (e2) {}
+                    }
+                }
+                // Any other append error: let the socket's onclose reconnect.
+            }
+        }
+
+        function connectMse(url) {
+            var socket;
+            try { socket = new WebSocket(url); }
+            catch (e) { scheduleReconnect(); return; }
+            socket.binaryType = 'arraybuffer';
+            ws = socket;
+
+            socket.onopen = function () {
+                // Ask go2rtc for MSE using only the codecs this browser can play.
+                var candidates = [
+                    'avc1.640029', 'avc1.64002A', 'avc1.640033',
+                    'hvc1.1.6.L153.B0',
+                    'mp4a.40.2', 'mp4a.40.5', 'flac', 'opus'
+                ];
+                var supported = candidates.filter(function (c) {
+                    return MediaSource.isTypeSupported('video/mp4; codecs="' + c + '"');
+                });
+                try { socket.send(JSON.stringify({ type: 'mse', value: supported.join(',') })); } catch (e) {}
+            };
+
+            socket.onmessage = function (ev) {
+                if (ws !== socket) return;   // stale socket
+                if (typeof ev.data === 'string') {
+                    var msg;
+                    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+                    if (msg.type === 'mse' || msg.type === 'mp4') startMediaSource(socket, msg.value);
+                    return;
+                }
+                if (!sourceBuffer) return;
+                if (sourceBuffer.updating || pendingBuffers.length) {
+                    pendingBuffers.push(ev.data);
+                } else {
+                    appendSegment(ev.data);
+                }
+            };
+
+            socket.onerror = function () { try { socket.close(); } catch (e) {} };
+            socket.onclose = function () { if (ws === socket) scheduleReconnect(); };
+        }
+
+        function startMediaSource(socket, mime) {
+            var media = new MediaSource();
+            try { video.src = URL.createObjectURL(media); } catch (e) { scheduleReconnect(); return; }
+            media.addEventListener('sourceopen', function () {
+                if (ws !== socket) return;   // superseded before it opened
+                try { URL.revokeObjectURL(video.src); } catch (e) {}
+                var sb;
+                try {
+                    sb = media.addSourceBuffer(mime);
+                } catch (e) { scheduleReconnect(); return; }
+                sb.mode = 'segments';
+                sb.addEventListener('updateend', function () {
+                    if (sb.updating || !pendingBuffers.length) return;
+                    appendSegment(pendingBuffers.shift());
+                });
+                sourceBuffer = sb;
+                video.play().catch(function () {});   // autoplay needs muted (it is)
+                hideOverlay();
+            }, { once: true });
+        }
+
+        function startStream(url) {
+            if (url === streamUrl && ws) return;   // already streaming this url
+            stopStream();
+            streamUrl = url;
+            if (!mseSupported) {
+                showOverlay('Live preview not supported in this browser');
+                return;   // camera still pans server-side; only the preview is gone
+            }
+            showOverlay('Connecting…');
+            connectMse(url);
+        }
+
+        // --- Follow toggle ---
+        function applyFollowing(on) {
+            checkbox.checked = !!on;
+            sw.classList.toggle('is-on', !!on);
+        }
+        function setToggleEnabled(enabled) {
+            checkbox.disabled = !enabled;
+            sw.classList.toggle('is-disabled', !enabled);
+        }
+
+        sw.addEventListener('click', function (e) {
+            // It's a <label>; own the toggle so the checkbox tracks the server.
+            e.preventDefault();
+            if (sw.classList.contains('is-disabled') || toggling) return;
+            var next = !checkbox.checked;
+            toggling = true;
+            postFollow(next).then(function (data) {
+                toggling = false;
+                if (data) {
+                    applyFollowing(!!data.following);
+                } else {
+                    refresh();   // refused (not connected / locked): re-sync
+                }
+            });
+        });
+
+        // --- Poll /camera/config ---
+        function refresh() {
+            return getConfig().then(function (data) {
+                if (!data || !data.configured) {
+                    configured = false;
+                    card.hidden = true;
+                    stopStream();
+                    return;
+                }
+                configured = true;
+                connected = !!data.connected;
+                card.hidden = false;
+
+                // Follow toggle is only actionable with a connected controller
+                // (POST /camera/follow needs one). Reflect the reported state.
+                if (!toggling) applyFollowing(!!data.following);
+                setToggleEnabled(connected);
+                statusEl.textContent = connected ? '' : 'Connect the arm to change follow';
+
+                if (data.available && data.stream_url) {
+                    startStream(data.stream_url);
+                } else {
+                    stopStream();
+                    streamUrl = null;
+                    showOverlay(data.reason || 'Camera unavailable');
+                }
+            });
+        }
+
+        refresh();
+        setInterval(refresh, POLL_MS);
+    };
+})();
