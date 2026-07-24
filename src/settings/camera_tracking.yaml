@@ -48,9 +48,20 @@ stream_base_url: ""                            # TODO: set only if the stream ho
 # runtime; this is only the startup default.
 follow_by_default: true
 
-# Optional. Name of an environment variable holding an API key to send as
-# `X-Api-Key` (only needed when the dashboard auth edge is enforced). Leave
-# the env var unset in dev — the header is simply omitted.
+# Name of an environment variable holding an API key sent as `X-Api-Key`.
+#
+# REQUIRED at the lab. The dashboard's /control/* write surface is auth-gated
+# (Caddy forward_auth -> ac_auth); confirmed live -> a POST with no credential
+# gets HTTP 401 "Sign in to control equipment.". Reads (/api/equipment, used
+# by the availability probe + live preview) are open, so the camera CARD and
+# STREAM work without a key -- but the camera will NOT actually pan until this
+# is set. Because the tracker is best-effort/swallowing, a missing key fails
+# SILENTLY: follow appears on, the arm moves, the camera never turns.
+#
+# Provision a machine principal in ac_auth with control rights on the camera,
+# then set XARM_CAMERA_API_KEY=<key> in the xarm service environment (the NSSM
+# service env on the device PC) and restart. Leave unset only in dev / when the
+# dashboard runs with control auth disabled (CONTROL_AUTHZ_ENFORCE=false).
 api_key_env: "XARM_CAMERA_API_KEY"
 
 # Per-request timeout for the camera HTTP call (seconds).
