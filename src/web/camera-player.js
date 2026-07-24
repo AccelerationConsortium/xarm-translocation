@@ -120,8 +120,11 @@
 
             socket.onopen = function () {
                 // Ask go2rtc for MSE using only the codecs this browser can play.
+                // Codec preference mirrors the dashboard's go2rtc.ts — note the
+                // H.264 main/baseline entries most Tapo C-series cameras emit.
                 var candidates = [
                     'avc1.640029', 'avc1.64002A', 'avc1.640033',
+                    'avc1.4D401E', 'avc1.42E01E',
                     'hvc1.1.6.L153.B0',
                     'mp4a.40.2', 'mp4a.40.5', 'flac', 'opus'
                 ];
@@ -238,6 +241,7 @@
                 if (!data || !data.configured) {
                     configured = false;
                     card.hidden = true;
+                    card.classList.remove('camera-live');
                     stopStream();
                     return;
                 }
@@ -252,8 +256,10 @@
                 statusEl.textContent = connected ? '' : 'Connect the arm to change follow';
 
                 if (data.available && data.stream_url) {
+                    card.classList.add('camera-live');   // glowing title dot
                     startStream(data.stream_url);
                 } else {
+                    card.classList.remove('camera-live');
                     stopStream();
                     streamUrl = null;
                     showOverlay(data.reason || 'Camera unavailable');

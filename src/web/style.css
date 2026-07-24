@@ -8,8 +8,10 @@
     --surface-soft: #f1f5f9;
     --border: #e2e8f0;
     --border-strong: #cbd5e1;
-    --primary: #0369a1;
-    --primary-hover: #075985;
+    --primary: #0284c7;        /* sky-600 — matches the dashboard accent */
+    --primary-hover: #0369a1;  /* sky-700 */
+    --primary-active: #0ea5e9; /* sky-500 — active/selected + toggles */
+    --emerald: #10b981;        /* dashboard "on" / live indicator */
     --success: #047857;
     --success-hover: #065f46;
     --danger: #be123c;
@@ -213,7 +215,7 @@ header {
 .log-container,
 .card {
     border: 1px solid var(--border);
-    border-radius: 18px;
+    border-radius: 14px;
     background: var(--surface);
     box-shadow: var(--shadow-sm);
 }
@@ -682,14 +684,32 @@ input#linear-speed {
 /* ── Lab Camera card ─────────────────────────────────────────────────
    "Follow arm" reuses the manual-switch markup but reads as an ON
    affordance (green, no alarm pulse) rather than manual mode's red. */
+/* Live dot in the card title — grey when idle, glowing emerald when the
+   stream is up (mirrors the dashboard tile's per-lens connection dot). */
+.camera-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 7px;
+    border-radius: 50%;
+    background: var(--border-strong);
+    vertical-align: middle;
+    transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+#camera-card.camera-live .camera-dot {
+    background: var(--emerald);
+    box-shadow: 0 0 6px rgba(16, 185, 129, 0.7);
+}
+
 .camera-stage {
     position: relative;
     width: 350px;
     max-width: 100%;
     aspect-ratio: 16 / 9;
-    background: #0f172a;
+    background: #0f172a;              /* slate-900, same as the dashboard stage */
     border: 1px solid var(--border);
-    border-radius: 14px;
+    border-radius: 10px;             /* rounded-md, tighter than the card */
     overflow: hidden;
     margin-bottom: 14px;
 }
@@ -699,11 +719,13 @@ input#linear-speed {
     inset: 0;
     width: 100%;
     height: 100%;
-    object-fit: contain;
+    object-fit: contain;             /* letterbox 16:9, never distort */
     background: #0f172a;
     display: block;
 }
 
+/* Idle/reason overlay: subtle scrim + small uppercase label, matching the
+   dashboard's "No stream" treatment (slate-400, tracking-wider). */
 .camera-overlay {
     position: absolute;
     inset: 0;
@@ -711,11 +733,13 @@ input#linear-speed {
     align-items: center;
     justify-content: center;
     text-align: center;
-    padding: 12px;
-    background: rgba(15, 23, 42, 0.72);
-    color: #e2e8f0;
-    font-size: 0.9rem;
+    padding: 14px;
+    background: rgba(15, 23, 42, 0.55);
+    color: #94a3b8;                  /* slate-400 */
+    font-size: 0.75rem;
     font-weight: 600;
+    letter-spacing: 0.04em;
+    line-height: 1.4;
 }
 
 .camera-controls {
@@ -727,15 +751,17 @@ input#linear-speed {
 }
 
 .camera-status {
-    font-size: 0.85rem;
+    font-size: 0.8rem;
+    color: var(--ink-subtle);
     text-align: right;
     flex: 1 1 auto;
     min-width: 0;
 }
 
-/* ON state: green track + label, a calm ring instead of the danger pulse. */
+/* "Follow arm" toggle — a compact sky pill, consistent with the dashboard's
+   Privacy/Rolling toggles (sky when active, no alarm pulse). */
 .follow-switch.is-on .manual-switch-track {
-    background: var(--success);
+    background: var(--primary-active);
 }
 
 .follow-switch.is-on .manual-switch-thumb {
@@ -743,11 +769,11 @@ input#linear-speed {
 }
 
 .follow-switch.is-on .manual-switch-text {
-    color: var(--success);
+    color: var(--primary);
 }
 
 .follow-switch.is-on {
-    box-shadow: 0 0 0 2px rgba(4, 120, 87, 0.35);
+    box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.35);
     border-radius: 999px;
     animation: none;
 }

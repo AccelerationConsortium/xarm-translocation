@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>xArm Control</title>
-    <link rel="stylesheet" href="style.css?v=20260724b">
+    <link rel="stylesheet" href="style.css?v=20260724c">
 </head>
 <body>
     <div class="container">
@@ -66,7 +66,7 @@
                      is shared with graph.html via camera-player.js. See
                      core/camera_tracker.py. -->
                 <div class="card" id="camera-card" hidden>
-                    <h2>Lab Camera <span class="panel-unit">follows the arm</span></h2>
+                    <h2><span class="camera-dot" id="camera-dot" aria-hidden="true"></span>Lab Camera <span class="panel-unit">follows the arm</span></h2>
                     <div class="camera-stage">
                         <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
                         <div id="camera-overlay" class="camera-overlay">
@@ -351,7 +351,7 @@
          reads the signed-in identity for the claim owner. Root-absolute path →
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
-    <script src="camera-player.js?v=20260724b"></script>
+    <script src="camera-player.js?v=20260724c"></script>
     <script src="main.js?v=20260724a"></script>
 </body>
 </html>
