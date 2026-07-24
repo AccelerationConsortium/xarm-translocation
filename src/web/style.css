@@ -302,7 +302,7 @@ h3 {
 
 .dashboard-layout {
     display: grid;
-    grid-template-columns: minmax(280px, 360px) 1fr;
+    grid-template-columns: 400px 1fr;
     gap: 16px;
 }
 
@@ -684,7 +684,8 @@ input#linear-speed {
    affordance (green, no alarm pulse) rather than manual mode's red. */
 .camera-stage {
     position: relative;
-    width: 100%;
+    width: 350px;
+    max-width: 100%;
     aspect-ratio: 16 / 9;
     background: #0f172a;
     border: 1px solid var(--border);

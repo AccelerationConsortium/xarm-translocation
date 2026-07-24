@@ -34,7 +34,7 @@ camera_id: "cam_hte_tapo_c245"                 # TODO: confirm at the lab
 # the camera's /status `details.lenses[].id`, e.g. "wide" / "tele"). Leave
 # blank to use the camera's first lens. PTZ presets are per-camera, so this
 # only selects the video feed.
-lens: ""                                       # TODO: e.g. "wide"
+lens: "tele"                                   # HTE camera tele lens
 
 # Optional. Origin that serves the go2rtc live video (the dashboard's web
 # edge / Caddy), if it differs from dashboard_base_url. Leave blank to

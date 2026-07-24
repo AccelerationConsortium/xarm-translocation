@@ -116,6 +116,7 @@
             catch (e) { scheduleReconnect(); return; }
             socket.binaryType = 'arraybuffer';
             ws = socket;
+            var gotData = false;   // has a real video segment arrived yet?
 
             socket.onopen = function () {
                 // Ask go2rtc for MSE using only the codecs this browser can play.
@@ -139,6 +140,7 @@
                     return;
                 }
                 if (!sourceBuffer) return;
+                if (!gotData) { gotData = true; hideOverlay(); }   // first real frame
                 if (sourceBuffer.updating || pendingBuffers.length) {
                     pendingBuffers.push(ev.data);
                 } else {
@@ -147,7 +149,12 @@
             };
 
             socket.onerror = function () { try { socket.close(); } catch (e) {} };
-            socket.onclose = function () { if (ws === socket) scheduleReconnect(); };
+            socket.onclose = function () {
+                if (ws !== socket) return;
+                // Closed before any video arrived -> tell the operator, then retry.
+                if (!gotData) showOverlay('Stream unreachable — retrying…');
+                scheduleReconnect();
+            };
         }
 
         function startMediaSource(socket, mime) {
@@ -167,7 +174,8 @@
                 });
                 sourceBuffer = sb;
                 video.play().catch(function () {});   // autoplay needs muted (it is)
-                hideOverlay();
+                // Overlay stays until the first segment actually arrives
+                // (see onmessage) so a black frame never reads as "connected".
             }, { once: true });
         }
 
@@ -178,6 +186,21 @@
             if (!mseSupported) {
                 showOverlay('Live preview not supported in this browser');
                 return;   // camera still pans server-side; only the preview is gone
+            }
+            // Mixed content: a ws:// stream on an https page is silently blocked
+            // by the browser. Behind the single Caddy edge every service shares
+            // one origin, so re-anchor the stream path on the page origin as
+            // wss:// (same-origin, valid cert). If that host doesn't serve
+            // /streams the onclose handler surfaces "unreachable" and retries.
+            if (/^ws:\/\//i.test(url) && window.location.protocol === 'https:') {
+                try {
+                    var u = new URL(url);
+                    url = 'wss://' + window.location.host + u.pathname + u.search;
+                } catch (e) {
+                    showOverlay('Live preview blocked (mixed content: https page, '
+                        + 'ws:// stream). Set stream_base_url to a wss:// origin.');
+                    return;
+                }
             }
             showOverlay('Connecting…');
             connectMse(url);
