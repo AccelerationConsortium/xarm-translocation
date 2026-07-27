@@ -129,12 +129,13 @@ def test_real_yaml_loads_and_validates():
     assert graph.allowed_targets("uplc_draw_open_close") == ["uplc_draw_open_min"]
 
 
-def test_real_yaml_has_four_state_catalog():
+def test_real_yaml_has_five_state_catalog():
     graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
     names = {gs.name for gs in graph.gripper_states}
-    assert names == {"empty", "grip_120", "reach_90", "grip_80"}
+    assert names == {"empty", "grip_120", "reach_90", "grip_80", "reach_72"}
     assert graph.gripper_state("grip_120").intent == GripIntent.GRASP
     assert graph.gripper_state("reach_90").stroke == 90.0
+    assert graph.gripper_state("reach_72").intent == GripIntent.POSITION
 
 
 def test_press_nodes_are_grip_only():
@@ -167,7 +168,7 @@ def test_real_yaml_transit_nodes_allow_all_states():
     """Non-press nodes may be occupied in any catalog state (held pass-through)
     and still expose no grip/release transitions at transit poses."""
     graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
-    all_states = {"empty", "grip_120", "reach_90", "grip_80"}
+    all_states = {"empty", "grip_120", "reach_90", "grip_80", "reach_72"}
     for node_id in ("deck_high", "hood_home", "robot_home", "uplc_home"):
         n = graph.node(node_id)
         assert set(n.gripper_states) == all_states
@@ -199,13 +200,23 @@ def test_real_yaml_reachability_from_home():
 WIP_UNREACHABLE_FROM_HOME = set()
 
 
+# Nodes deliberately allowed to have NO path back to robot_home. Only
+# meaningful in a multi-mover cell (another gantry/arm services the pose);
+# in a single-arm cell this should stay empty — a node the arm cannot
+# retreat from is a trap STRICT mode would strand it in. To drop the
+# return-to-home requirement wholesale, set `enforce_return_to_home: false`
+# in motion_graph.yaml instead of allowlisting everything here.
+WIP_NO_RETURN_TO_HOME = set()
+
+
 def test_wip_allowlist_entries_are_real_nodes():
-    """The allowlist may not carry stale ids — every entry must still name a
+    """The allowlists may not carry stale ids — every entry must still name a
     node in the graph, so deleting/renaming a node forces an allowlist edit."""
     graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
     node_ids = {n.id for n in graph.nodes}
-    stale = WIP_UNREACHABLE_FROM_HOME - node_ids
-    assert not stale, f"allowlist names nodes that no longer exist: {sorted(stale)}"
+    for allowlist in (WIP_UNREACHABLE_FROM_HOME, WIP_NO_RETURN_TO_HOME):
+        stale = allowlist - node_ids
+        assert not stale, f"allowlist names nodes that no longer exist: {sorted(stale)}"
 
 
 def test_no_unexpected_unreachable_nodes():
@@ -220,6 +231,49 @@ def test_no_unexpected_unreachable_nodes():
         f"{sorted(unexpected)} — wire up their edges, or if intentionally "
         f"deferred add them to WIP_UNREACHABLE_FROM_HOME with a reason"
     )
+
+
+def test_all_connected_nodes_can_return_home():
+    """Reverse-reachability guard: every node the arm can reach from
+    robot_home must also have a path BACK to robot_home, so the arm can
+    always retreat (this is what would have caught the one-way UPLC-drawer
+    pocket). Assumes this arm is the only mover in the cell — skipped when
+    the graph opts out via `enforce_return_to_home: false` (e.g. another
+    gantry/arm shares the workspace); individual exceptions go in
+    WIP_NO_RETURN_TO_HOME."""
+    graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
+    if not graph.enforce_return_to_home:
+        pytest.skip("graph opts out via enforce_return_to_home: false")
+    # Only nodes the arm can actually get to matter; orphans are the
+    # forward guard's business.
+    connected = {n.id for n in graph.nodes} - set(graph.unreachable_nodes("robot_home"))
+    stranded = set(graph.nodes_without_return_to("robot_home")) & connected
+    unexpected = stranded - WIP_NO_RETURN_TO_HOME
+    assert not unexpected, (
+        f"one-way pocket: nodes reachable from robot_home with no path back: "
+        f"{sorted(unexpected)} — add the return edge(s), or if another mover "
+        f"services the pose add it to WIP_NO_RETURN_TO_HOME"
+    )
+
+
+def test_nodes_without_return_detects_one_way_pocket():
+    """Unit check on the reverse traversal: removing b->a makes b a trap."""
+    data = _base_dict()
+    data["edges"] = [{"from": "a", "to": "b", "mode": "joint", "speed": 30}]
+    graph = MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+    assert graph.nodes_without_return_to("a") == ["b"]
+    with pytest.raises(UnknownNodeError):
+        graph.nodes_without_return_to("nope")
+
+
+def test_enforce_return_to_home_flag_parsing():
+    """Defaults on; an explicit false in the YAML turns the guard off."""
+    graph = MotionGraph.from_dict(_base_dict(), preconditions=DEFAULT_PRECONDITIONS)
+    assert graph.enforce_return_to_home is True
+    data = _base_dict()
+    data["enforce_return_to_home"] = False
+    graph = MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+    assert graph.enforce_return_to_home is False
 
 
 # ── Query API ────────────────────────────────────────────────────────

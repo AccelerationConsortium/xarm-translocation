@@ -147,6 +147,17 @@
         return spec.intent === 'position' ? '◇' : '▣';
     }
 
+    // Plain-English gloss for one gripper leaf, used by the hover card so
+    // the badges don't have to be decoded from the legend each time.
+    function leafPlain(stateName) {
+        if (stateName === 'empty') return 'open — holding nothing';
+        var spec = gripperCatalog[stateName] || {};
+        var stroke = (spec.stroke != null) ? (' (stroke ' + spec.stroke + ')') : '';
+        if (spec.intent === 'grasp') return 'gripping a tray' + stroke;
+        if (spec.intent === 'position') return 'narrowed for clearance, no tray' + stroke;
+        return stroke.trim();
+    }
+
     // Cytoscape node data for one graph node. A node is an arm position;
     // its gripper leaves render as compact badges after the id (e.g.
     // "deck_slot1_low ▢▣"), and ⇄ marks nodes where grip/release/narrow
@@ -524,6 +535,101 @@
     var edgeErrEl = document.getElementById('edge-panel-error');
     var edgePrecosEl = document.getElementById('edge-preconditions');
 
+    // ── Node hover card ──────────────────────────────────────────────
+    // A plain-language read-out of a node's gripper leaves + whether the
+    // gripper can change there — because the on-canvas badges are hard to
+    // read at a glance. Read-only; positioned at the cursor.
+    var nodeTooltip = document.getElementById('node-tooltip');
+
+    // Build the card's DOM from node data. Uses textContent throughout
+    // (no innerHTML) so node ids can't inject markup.
+    function fillNodeTooltip(n) {
+        if (!nodeTooltip) return;
+        nodeTooltip.textContent = '';
+        var frag = document.createDocumentFragment();
+
+        var title = document.createElement('div');
+        title.className = 'tt-title';
+        title.textContent = n.data('id');
+        frag.appendChild(title);
+
+        var sub = document.createElement('div');
+        sub.className = 'tt-sub';
+        var station = n.data('station');
+        sub.textContent = 'arm position'
+            + (station ? ' · ' + station : '')
+            + (n.data('rail') ? ' · rail ' + n.data('rail') : '');
+        frag.appendChild(sub);
+
+        // Gripper states allowed here.
+        var statesHdr = document.createElement('div');
+        statesHdr.className = 'tt-section';
+        statesHdr.textContent = 'Gripper states allowed here';
+        frag.appendChild(statesHdr);
+
+        var states = n.data('gripper_states') || [];
+        var ul = document.createElement('ul');
+        states.forEach(function (name) {
+            var li = document.createElement('li');
+            var g = document.createElement('span');
+            g.className = 'tt-glyph';
+            g.textContent = leafGlyph(name);
+            var nm = document.createElement('span');
+            nm.className = 'tt-name';
+            nm.textContent = name;
+            var ds = document.createElement('span');
+            ds.className = 'tt-desc';
+            ds.textContent = leafPlain(name);
+            li.appendChild(g); li.appendChild(nm); li.appendChild(ds);
+            ul.appendChild(li);
+        });
+        frag.appendChild(ul);
+
+        // Whether the gripper can change here (⇄) and to what.
+        var transitions = n.data('gripper_transitions') || [];
+        var transHdr = document.createElement('div');
+        transHdr.className = 'tt-section';
+        transHdr.textContent = 'Change grip here';
+        frag.appendChild(transHdr);
+
+        if (transitions.length) {
+            var tul = document.createElement('ul');
+            transitions.forEach(function (pair) {
+                var li = document.createElement('li');
+                var nm = document.createElement('span');
+                nm.className = 'tt-name';
+                nm.textContent = pair[0] + ' → ' + pair[1];
+                li.appendChild(nm);
+                tul.appendChild(li);
+            });
+            frag.appendChild(tul);
+        } else {
+            var none = document.createElement('div');
+            none.className = 'tt-muted';
+            none.textContent = 'Pass-through only — gripper can’t change here.';
+            frag.appendChild(none);
+        }
+
+        nodeTooltip.appendChild(frag);
+    }
+
+    // Keep the card near the cursor and fully on-screen.
+    function positionNodeTooltip(clientX, clientY) {
+        if (!nodeTooltip || nodeTooltip.hidden) return;
+        var pad = 14;
+        var rect = nodeTooltip.getBoundingClientRect();
+        var x = clientX + pad;
+        var y = clientY + pad;
+        if (x + rect.width > window.innerWidth - 8) x = clientX - pad - rect.width;
+        if (y + rect.height > window.innerHeight - 8) y = clientY - pad - rect.height;
+        nodeTooltip.style.left = Math.max(8, x) + 'px';
+        nodeTooltip.style.top = Math.max(8, y) + 'px';
+    }
+
+    function hideNodeTooltip() {
+        if (nodeTooltip) nodeTooltip.hidden = true;
+    }
+
     // Bind edge taps once the canvas exists. Tapping empty space closes
     // the panel; tapping an edge opens it on that edge.
     function onGraphRendered(cyInstance) {
@@ -548,6 +654,24 @@
             if (expanded[s]) delete expanded[s]; else expanded[s] = true;
             applyGroupVisibility();
         });
+
+        // Hover card: show the plain-language node read-out at the cursor.
+        cyInstance.on('mouseover', 'node', function (evt) {
+            if (!nodeTooltip) return;
+            fillNodeTooltip(evt.target);
+            nodeTooltip.hidden = false;
+            var oe = evt.originalEvent;
+            if (oe) positionNodeTooltip(oe.clientX, oe.clientY);
+        });
+        cyInstance.on('mousemove', 'node', function (evt) {
+            var oe = evt.originalEvent;
+            if (oe) positionNodeTooltip(oe.clientX, oe.clientY);
+        });
+        cyInstance.on('mouseout', 'node', hideNodeTooltip);
+        // Any pan/zoom/drag or leaving the canvas dismisses a stale card.
+        cyInstance.on('pan zoom drag', hideNodeTooltip);
+        var cyContainer = cyInstance.container && cyInstance.container();
+        if (cyContainer) cyContainer.addEventListener('mouseleave', hideNodeTooltip);
     }
 
     // "Automation" = the device claim is held by someone other than this page.
@@ -1235,6 +1359,11 @@
         initialLoad();
         connectWebSocket();
         setInterval(pollLiveState, 1500);
+
+        // Lab Camera card (shared with the control panel via camera-player.js):
+        // reads /camera/config, renders the MSE preview + "Follow arm" toggle.
+        // No-op unless camera tracking is configured.
+        if (window.setupCameraCard) window.setupCameraCard({ apiBase: API_BASE });
     });
 
     // Expose hooks so Phase B can extend without rewriting Phase A.

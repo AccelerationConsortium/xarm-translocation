@@ -256,11 +256,18 @@ class MotionGraph:
         edges: list[Edge],
         gripper_states: dict[str, GripperState],
         preconditions: dict[str, PreconditionFn] | None = None,
+        enforce_return_to_home: bool = True,
     ):
         self._nodes = nodes
         self._edges = edges
         self._gripper_states = gripper_states
         self._preconditions = preconditions or {}
+        # Whether every connected node must have a path BACK to the global
+        # home ("can the arm always retreat?"). True for a single-arm cell;
+        # set false in the YAML when another gantry/arm shares the workspace
+        # and deliberate one-way poses exist. Consumed by the test-suite
+        # guard, not enforced at load time.
+        self.enforce_return_to_home = enforce_return_to_home
         # Outgoing adjacency: from_node id -> [Edge]
         self._out: dict[str, list[Edge]] = {}
         for e in edges:
@@ -356,7 +363,10 @@ class MotionGraph:
             seen_pairs.add(pair)
             edges.append(edge)
 
-        return cls(nodes, edges, gripper_states, preconditions)
+        return cls(
+            nodes, edges, gripper_states, preconditions,
+            enforce_return_to_home=bool(data.get("enforce_return_to_home", True)),
+        )
 
     # ── Validation ───────────────────────────────────────────────
 
@@ -750,6 +760,30 @@ class MotionGraph:
                     reachable.add(e.to_node)
                     frontier.append(e.to_node)
         return sorted(n for n in self._nodes if n not in reachable)
+
+    def nodes_without_return_to(self, target: str) -> list[str]:
+        """Nodes with no path TO ``target`` — the reverse of
+        ``unreachable_nodes``. With ``target`` = the global home this answers
+        the safety-critical direction: "from which poses can the arm NOT
+        retreat home?" (a one-way pocket STRICT mode would strand the arm
+        in). Only meaningful when ``enforce_return_to_home`` is set — a
+        multi-arm cell may have deliberate one-way poses.
+        """
+        if target not in self._nodes:
+            raise UnknownNodeError(target)
+        # Reverse BFS: walk incoming edges from the target.
+        incoming: dict[str, list[str]] = {}
+        for e in self._edges:
+            incoming.setdefault(e.to_node, []).append(e.from_node)
+        can_reach = {target}
+        frontier = [target]
+        while frontier:
+            cur = frontier.pop()
+            for prev in incoming.get(cur, []):
+                if prev not in can_reach:
+                    can_reach.add(prev)
+                    frontier.append(prev)
+        return sorted(n for n in self._nodes if n not in can_reach)
 
     def adjacency_summary(self) -> dict[str, list[str]]:
         """Map node id -> sorted list of outgoing target ids. For logging."""

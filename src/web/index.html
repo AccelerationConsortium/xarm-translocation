@@ -4,7 +4,21 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>xArm Control</title>
-    <link rel="stylesheet" href="style.css?v=20260720a">
+    <script>
+      // Match the shared SDL2 auth banner's theme before first paint (avoids a
+      // flash). Mirrors banner.js: localStorage("theme") wins, else the OS
+      // preference. banner.js re-applies the same html.dark class on load and
+      // on every toggle, so the panel and banner stay in lockstep.
+      (function () {
+        try {
+          var t = localStorage.getItem("theme");
+          var dark = t === "dark" || (t !== "light" && window.matchMedia
+            && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          document.documentElement.classList.toggle("dark", dark);
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="stylesheet" href="style.css?v=20260724h">
 </head>
 <body>
     <div class="container">
@@ -15,18 +29,38 @@
         <header>
             <div class="header-content">
                 <div class="title-status-container">
-                    <p class="eyebrow">xArm Translocation</p>
-                    <h1>Web Control Interface</h1>
-                    <div id="status-container">
-                        <div class="status-pills">
-                            <div id="status-main">
-                                <div id="status-light" class="status-light offline"></div>
-                                <div id="status-text">Disconnected</div>
+                    <!-- Primary arm actions, moved out of the Arm Control card into a
+                         right-hand stack (CSS order) so Take Control / STOP / Clear
+                         Errors are reachable from the top of the page. The title
+                         block stays first in the DOM for reading/tab order. IDs
+                         unchanged (main.js). -->
+                    <div class="header-actions">
+                        <button id="take-control-btn" class="btn btn-claim" title="Acquire the device claim so you can drive the arm. While you hold it, workflows are locked out (HTTP 423) and see you as the claim holder.">Take Control</button>
+                        <button id="stop-btn" class="btn btn-danger">STOP</button>
+                        <button id="clear-errors-btn" class="btn btn-warning" title="Clear arm + gripper faults and re-energize the servos (replaces the old separate Enable). Works without taking control.">Clear Errors</button>
+                    </div>
+                    <div class="title-status-main">
+                        <p class="eyebrow">xArm Translocation</p>
+                        <h1>Web Control Interface</h1>
+                        <div id="status-container">
+                            <div class="status-pills">
+                                <div id="status-main">
+                                    <div id="status-light" class="status-light offline"></div>
+                                    <div id="status-text">Disconnected</div>
+                                </div>
+                                <div id="connection-details"></div>
                             </div>
-                            <div id="connection-details"></div>
+                            <div id="claim-status" class="claim-status claim-free">Control: nobody (open)</div>
+                            <a href="graph.html" class="graph-tile" target="_blank" rel="noopener" title="Open the motion-graph view (interlock topology, live node)">
+                                <svg class="graph-tile-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                    <circle cx="5" cy="6" r="2.2"></circle>
+                                    <circle cx="19" cy="6" r="2.2"></circle>
+                                    <circle cx="12" cy="18" r="2.2"></circle>
+                                    <path d="M6.9 7.4 10.6 15.9 M17.1 7.4 13.4 15.9 M7.2 6 h9.6"></path>
+                                </svg>
+                                <span class="graph-tile-text">Motion Graph</span>
+                            </a>
                         </div>
-                        <div id="claim-status" class="claim-status claim-free">Control: nobody (open)</div>
-                        <a href="graph.html" class="graph-link" target="_blank" rel="noopener">Motion graph ↗</a>
                     </div>
                 </div>
                 <div class="log-container">
@@ -57,6 +91,31 @@
                     </div>
                     <button id="connect-btn" class="btn">Connect</button>
                     <button id="disconnect-btn" class="btn btn-danger" disabled>Disconnect</button>
+                </div>
+
+                <!-- Lab Camera — pans to follow the arm across the motion graph.
+                     Hidden unless src/settings/camera_tracking.yaml is configured
+                     (GET /camera/config decides). The live preview is a go2rtc MSE
+                     stream; the "Follow arm" toggle hits POST /camera/follow. Wiring
+                     is shared with graph.html via camera-player.js. See
+                     core/camera_tracker.py. -->
+                <div class="card" id="camera-card" hidden>
+                    <h2><span class="camera-dot" id="camera-dot" aria-hidden="true"></span>Lab Camera <span class="panel-unit">follows the arm</span></h2>
+                    <div class="camera-stage">
+                        <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
+                        <div id="camera-overlay" class="camera-overlay">
+                            <span id="camera-overlay-text">Connecting…</span>
+                        </div>
+                    </div>
+                    <div class="camera-controls">
+                        <label id="camera-follow-switch" class="manual-switch follow-switch is-disabled"
+                               title="When on, the camera pans to the arm's station as it moves across the motion graph.">
+                            <input type="checkbox" id="camera-follow-checkbox" disabled>
+                            <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
+                            <span class="manual-switch-text">Follow arm</span>
+                        </label>
+                        <span id="camera-status" class="muted camera-status"></span>
+                    </div>
                 </div>
 
                 <!-- Gripper -->
@@ -92,6 +151,7 @@
                         <select id="track-location-select"></select>
                         <button id="move-track-loc-btn" class="btn move-button">Move</button>
                     </div>
+                    <span id="track-strict-hint" class="muted" hidden></span>
                     <div id="track-info" class="component-info">
                         <div class="info-left">Range: <span id="track-range-display">0-700 mm</span></div>
                         <div class="info-right">Current: <span id="track-position-display">N/A</span></div>
@@ -110,16 +170,13 @@
                     <!-- Two-column body: xArm controls (left) + XYZ jog (right) -->
                     <div class="sc-body">
 
-                        <!-- Left: xArm controls -->
+                        <!-- Left: xArm controls (Take Control / STOP / Clear Errors
+                             now live in the header action stack). -->
                         <div class="sc-left">
-                            <div class="xarm-buttons">
-                                <button id="take-control-btn" class="btn btn-claim" title="Acquire the device claim so you can drive the arm. While you hold it, workflows are locked out (HTTP 423) and see you as the claim holder.">Take Control</button>
-                                <button id="stop-btn" class="btn btn-danger">STOP</button>
-                                <button id="clear-errors-btn" class="btn btn-warning" title="Clear arm + gripper faults and re-energize the servos (replaces the old separate Enable). Works without taking control.">Clear Errors</button>
-                            </div>
                             <div class="position-controls-row">
                                 <select id="predefined-position-select" class="position-dropdown"></select>
                             </div>
+                            <span id="predefined-strict-hint" class="muted" hidden></span>
                             <div class="joint-move-row">
                                 <button id="move-predefined-btn" class="btn move-position-button">Joint Move</button>
                                 <span class="inline-label">Speed:</span>
@@ -324,6 +381,7 @@
          reads the signed-in identity for the claim owner. Root-absolute path →
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
-    <script src="main.js?v=20260720a"></script>
+    <script src="camera-player.js?v=20260724e"></script>
+    <script src="main.js?v=20260724a"></script>
 </body>
 </html>

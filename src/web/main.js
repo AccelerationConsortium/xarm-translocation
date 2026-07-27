@@ -700,6 +700,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 manual: data.manual_mode === true,
             });
 
+            // STRICT gating for the raw named-move cards. Must run LAST so the
+            // lock functions above (which re-enable on connect/claim) don't
+            // undo it — same ordering rationale as the Drive Arm card.
+            applyStrictModeGating(data.motion_graph);
+
         } catch (error) {
             console.error('Fatal error in updateStatusUI:', error);
             console.error('Stack trace:', error.stack);
@@ -756,6 +761,46 @@ document.addEventListener('DOMContentLoaded', () => {
                 reachableEl.appendChild(btn);
             });
         }
+    }
+
+    // ── STRICT-mode gating for the raw named-move cards ─────────────
+    // Under STRICT the motion graph only permits whitelisted node-to-node
+    // edges. The raw Linear Track and Predefined Position cards call the
+    // standalone named-move endpoints, which STRICT rejects (409) because
+    // pure-rail / off-graph moves aren't modelled as edges. Disable those
+    // controls and point the operator at the graph-aware Drive Arm card
+    // (with Recover) so they don't hit a cryptic failure.
+    const STRICT_GATE_HINT =
+        'Disabled in STRICT graph mode - use Drive Arm (recover first if off-grid).';
+
+    function applyStrictModeGating(motionGraph) {
+        const isStrict = (motionGraph && motionGraph.graph_mode) === 'strict';
+        const trackHint = document.getElementById('track-strict-hint');
+        const predefinedHint = document.getElementById('predefined-strict-hint');
+        const gatedControls = [
+            moveTrackLocBtn, trackLocationSelect,
+            movePredefinedBtn, predefinedPositionSelect,
+        ];
+
+        if (isStrict) {
+            gatedControls.forEach(el => {
+                if (!el) return;
+                el.disabled = true;
+                el.title = STRICT_GATE_HINT;
+            });
+        } else {
+            // Clear only the tooltip we added; leave disabled state to the
+            // normal connection/claim/manual/moving gating.
+            gatedControls.forEach(el => {
+                if (el && el.title === STRICT_GATE_HINT) el.title = '';
+            });
+        }
+
+        [trackHint, predefinedHint].forEach(hint => {
+            if (!hint) return;
+            hint.textContent = isStrict ? STRICT_GATE_HINT : '';
+            hint.hidden = !isStrict;
+        });
     }
 
     // ── Drive Arm card ──────────────────────────────────────────────
@@ -2087,6 +2132,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Wire up the corner lab-assistant widget (reads /assistant/status).
     setupAssistant();
+
+    // Wire up the Lab Camera card (reads /camera/config; MSE live preview +
+    // "Follow arm" toggle). Shared with graph.html via camera-player.js;
+    // no-op unless camera tracking is configured.
+    if (window.setupCameraCard) window.setupCameraCard({ apiBase: API_BASE_URL });
     
     // Initialize real-time joints display
     if (realtimeJointsDisplay) {

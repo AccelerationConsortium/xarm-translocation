@@ -210,6 +210,80 @@ html, body {
     line-height: 1.4;
 }
 
+/* ── Node hover card ─────────────────────────────────────────────── */
+/* Fixed to the viewport, positioned at the cursor by graph.js. Plain
+   words for what the tiny node badges mean; style is intentionally
+   simple pending the broader UI rework. */
+.node-tooltip {
+    position: fixed;
+    z-index: 60;
+    max-width: 280px;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.14);
+    font-size: 0.82rem;
+    line-height: 1.35;
+    color: var(--ink);
+    pointer-events: none;   /* never steal hover from the canvas */
+}
+
+.node-tooltip .tt-title {
+    font-weight: 600;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    word-break: break-all;
+}
+
+.node-tooltip .tt-sub {
+    color: var(--ink-subtle);
+    font-size: 0.74rem;
+    margin: 1px 0 8px;
+}
+
+.node-tooltip .tt-section {
+    color: var(--ink-muted);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin: 8px 0 3px;
+}
+
+.node-tooltip ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.node-tooltip li {
+    display: flex;
+    gap: 7px;
+    align-items: baseline;
+    margin: 2px 0;
+}
+
+.node-tooltip .tt-glyph {
+    flex-shrink: 0;
+    width: 14px;
+    text-align: center;
+    color: var(--ink-muted);
+}
+
+.node-tooltip .tt-name {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.76rem;
+    color: var(--ink);
+}
+
+.node-tooltip .tt-desc {
+    color: var(--ink-subtle);
+}
+
+.node-tooltip .tt-muted {
+    color: var(--ink-subtle);
+    font-style: italic;
+}
+
 .legend-actions {
     display: flex;
     gap: 8px;

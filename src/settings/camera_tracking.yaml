@@ -1,0 +1,98 @@
+# Camera tracking — pan the lab camera to follow the arm on the motion graph.
+#
+# When the xArm arrives at a motion-graph node, its station tag (see
+# motion_graph.yaml, e.g. `uplc`, `opentrons`, `deck`, `shaker`, `filter`)
+# is resolved to a named camera "view", and that view is commanded on the
+# lab camera through the ac-organic-lab dashboard passthrough:
+#
+#   POST {dashboard_base_url}/api/equipment/{camera_id}/control/preset/goto
+#   POST {dashboard_base_url}/api/equipment/{camera_id}/control/ptz
+#
+# All camera positions below are PLACEHOLDERS. Fill them in at the lab:
+#   1. From the dashboard camera tile, drive the camera with the PTZ pad and
+#      "Save preset" for each of the four views you want.
+#   2. Read each preset's id from the tile's preset dropdown (or from the
+#      camera's /status `details.presets`).
+#   3. Paste the ids into `views` below and set `dashboard_base_url` /
+#      `camera_id` to the real values.
+
+# Master switch. When false (or this file is missing) the tracker is an
+# inert no-op, the arm panel shows no camera card, and the arm behaves
+# exactly as before.
+enabled: true
+
+# Dashboard (aggregator) base URL — NOT the camera gateway itself. The
+# gateway (kasa-tapo-services) binds to loopback on the dashboard host, so
+# we go through the dashboard's control passthrough. Used for PTZ control
+# AND for reading the camera's live /status (availability + stream url).
+dashboard_base_url: "http://100.64.254.6"
+
+# Equipment id of the camera in ac-organic-lab/equipment.yaml.
+camera_id: "cam_hte_tapo_c245"                 # TODO: confirm at the lab
+
+# Which lens to show in the arm panel's live view (matches a lens id from
+# the camera's /status `details.lenses[].id`, e.g. "wide" / "tele"). Leave
+# blank to use the camera's first lens. PTZ presets are per-camera, so this
+# only selects the video feed.
+lens: "tele"                                   # HTE camera tele lens
+
+# Optional. Origin that serves the go2rtc live video (the dashboard's web
+# edge / Caddy), if it differs from dashboard_base_url. Leave blank to
+# derive the stream origin from dashboard_base_url. The camera's /status
+# reports a relative mse_url (e.g. /streams/api/ws?src=...); this is the
+# host it gets anchored to when building the absolute ws(s):// stream URL.
+stream_base_url: ""                            # TODO: set only if the stream host differs
+
+# Whether the arm follows automatically as soon as the feature is configured
+# and the arm connects. The panel's "Follow arm" toggle flips this at
+# runtime; this is only the startup default.
+follow_by_default: true
+
+# Name of an environment variable holding an API key sent as `X-Api-Key`.
+#
+# REQUIRED at the lab. The dashboard's /control/* write surface is auth-gated
+# (Caddy forward_auth -> ac_auth); confirmed live -> a POST with no credential
+# gets HTTP 401 "Sign in to control equipment.". Reads (/api/equipment, used
+# by the availability probe + live preview) are open, so the camera CARD and
+# STREAM work without a key -- but the camera will NOT actually pan until this
+# is set. Because the tracker is best-effort/swallowing, a missing key fails
+# SILENTLY: follow appears on, the arm moves, the camera never turns.
+#
+# Provision a machine principal in ac_auth with control rights on the camera,
+# then set XARM_CAMERA_API_KEY=<key> in the xarm service environment (the NSSM
+# service env on the device PC) and restart. Leave unset only in dev / when the
+# dashboard runs with control auth disabled (CONTROL_AUTHZ_ENFORCE=false).
+api_key_env: "XARM_CAMERA_API_KEY"
+
+# Per-request timeout for the camera HTTP call (seconds).
+request_timeout_seconds: 5.0
+
+# Named camera views. Two forms are supported per view:
+#   preset_id: "<id>"          -> POST control/preset/goto {"preset_id": ...}
+#   ptz: { pan: .., tilt: .. } -> POST control/ptz {raw body}
+# preset_id is recommended (repeatable). If both are given, preset_id wins.
+#
+# preset_ids below are the real presets saved on cam_hte_tapo_c245 (from the
+# camera's /status details.presets): 1=UPLC, 2=OT2, 3=Cytation5, 4=PlateLoc,
+# 5=Shaker and Filtration, 6=Deck. Presets 3/4 have no motion-graph station
+# yet (no cytation/plateloc node) — add a view + stations entry when they do.
+views:
+  uplc:          { preset_id: "1" }   # preset 1 — UPLC
+  ot2:           { preset_id: "2" }   # preset 2 — OT2 (opentrons)
+  deck:          { preset_id: "6" }   # preset 6 — Deck
+  shaker_filter: { preset_id: "5" }   # preset 5 — Shaker and Filtration
+  # cytation:    { preset_id: "3" }   # preset 3 — no cytation station yet
+  # plateloc:    { preset_id: "4" }   # preset 4 — no plateloc station yet
+
+# Node-tag -> view. First matching tag wins (order below is the priority
+# when a node carries several tags, e.g. `hood` + `shaker`). Tags with no
+# entry here (e.g. `safe`, `hood`, transit homes) leave the camera as-is.
+# Station tags come from motion_graph.yaml: uplc, opentrons, deck, shaker,
+# filter. `shaker` and `filter` share preset 5, so hopping between the two
+# hood stations doesn't re-aim (the tracker dedupes on the resolved view).
+stations:
+  uplc: uplc
+  opentrons: ot2
+  deck: deck
+  shaker: shaker_filter
+  filter: shaker_filter
