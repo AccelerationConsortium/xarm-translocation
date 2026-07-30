@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from copy import deepcopy
 from unittest.mock import MagicMock
 
@@ -80,6 +81,22 @@ def _fake_controller(**overrides):
     for key, value in overrides.items():
         setattr(mc, key, value)
     return mc
+
+
+def _bare_motion_controller():
+    """A real XArmController with only its motion bookkeeping initialized.
+
+    ``__new__`` skips ``__init__`` (which would talk to hardware); the
+    motion depth / lock / latch are the only state enter_motion() and
+    exit_motion() touch.
+    """
+    from src.core.xarm_controller import XArmController
+
+    controller = XArmController.__new__(XArmController)
+    controller._motion_depth = 0
+    controller._motion_lock = threading.Lock()
+    controller._activity_since = None
+    return controller
 
 
 @pytest.fixture
@@ -166,6 +183,8 @@ def test_status_returns_busy_when_motion_in_progress(client_with_controller):
     assert response.status_code == 200
     parsed = EquipmentStatus(**response.json())
     assert parsed.equipment_status == 'busy'
+    # v1.2 §2.3 invariant: busy is definitionally healthy + running.
+    assert parsed.activity == 'running'
 
 
 def test_status_returns_ready_when_alive_and_arm_enabled(client_with_controller):
@@ -176,6 +195,8 @@ def test_status_returns_ready_when_alive_and_arm_enabled(client_with_controller)
     assert response.status_code == 200
     parsed = EquipmentStatus(**response.json())
     assert parsed.equipment_status == 'ready'
+    # v1.2 §2.3 invariant: ready ⇒ idle.
+    assert parsed.activity == 'idle'
     assert parsed.components['arm'].connected is True
     assert parsed.components['arm'].state == 'enabled'
     # Track metric with unit
@@ -195,6 +216,170 @@ def test_status_returns_requires_init_when_controller_present_but_disconnected(
     parsed = EquipmentStatus(**response.json())
     assert parsed.equipment_status == 'requires_init'
     assert parsed.required_actions == ['connect']
+
+
+# ---------------------------------------------------------------------------
+# GET /status  --  v1.2 activity axis (§2.3)
+# ---------------------------------------------------------------------------
+
+
+def test_activity_is_running_while_degraded(client_with_controller):
+    """The motivating v1.2 case: health and activity are independent.
+
+    A controller that is connected but not fully alive is ``degraded``
+    (§2.2), and a move in flight is still a run. Neither fact suppresses
+    the other, and the pair ``busy`` + ``degraded`` — which §2.3 forbids —
+    is never emitted.
+    """
+    controller = _fake_controller(alive=False, _motion_in_progress=True)
+    test_client = client_with_controller(controller)
+
+    parsed = EquipmentStatus(**test_client.get('/status').json())
+    assert parsed.equipment_status == 'degraded'
+    assert parsed.activity == 'running'
+
+
+def test_activity_is_idle_when_degraded_between_moves(client_with_controller):
+    controller = _fake_controller(alive=False, _motion_in_progress=False)
+    test_client = client_with_controller(controller)
+
+    parsed = EquipmentStatus(**test_client.get('/status').json())
+    assert parsed.equipment_status == 'degraded'
+    assert parsed.activity == 'idle'
+
+
+def test_activity_is_idle_when_disconnected(client_with_controller):
+    """§2.3 invariant: requires_init ⇒ idle, even with a latched flag.
+
+    A connection dropping mid-move can leave ``_motion_in_progress`` set.
+    A move that can no longer be executing must not read as a run.
+    """
+    controller = _fake_controller(_motion_in_progress=True)
+    controller.states['connection'] = ComponentState.DISABLED
+    controller.states['arm'] = ComponentState.DISABLED
+    test_client = client_with_controller(controller)
+
+    parsed = EquipmentStatus(**test_client.get('/status').json())
+    assert parsed.equipment_status == 'requires_init'
+    assert parsed.activity == 'idle'
+    assert parsed.activity_since is None
+
+
+def test_no_controller_envelope_is_idle_not_unknown():
+    """requires_init ⇒ idle for the no-controller envelope too."""
+    envelope = build_status(None)
+    assert envelope.equipment_status == 'requires_init'
+    assert envelope.activity == 'idle'
+    assert envelope.activity_since is None
+
+
+def test_activity_is_not_derived_from_equipment_status(client_with_controller):
+    """§2.3: activity must come from observed hardware state.
+
+    Deriving it from ``equipment_status`` would make it a pure function of
+    the state word. Two controllers sharing a state (``degraded``) but
+    differing in observed motion must report different activity — that is
+    exactly the information a derived field could not carry.
+    """
+    moving = _fake_controller(alive=False, _motion_in_progress=True)
+    parked = _fake_controller(alive=False, _motion_in_progress=False)
+
+    moving_envelope = build_status(moving)
+    parked_envelope = build_status(parked)
+
+    assert moving_envelope.equipment_status == parked_envelope.equipment_status
+    assert moving_envelope.activity != parked_envelope.activity
+
+
+def test_move_targets_withheld_while_a_motion_is_in_flight(client_with_controller):
+    """§2.3: no action that would start a second concurrent run.
+
+    ``stop`` stays listed so an abort is always reachable.
+    """
+    controller = _fake_controller(_motion_in_progress=True)
+    controller.reachable_node_ids.return_value = ['deck_home']
+    controller.graph_mode = MagicMock(value='strict')
+    test_client = client_with_controller(controller)
+
+    parsed = EquipmentStatus(**test_client.get('/status').json())
+    assert parsed.equipment_status == 'busy'
+    assert parsed.allowed_actions == ['stop']
+
+
+def test_move_targets_listed_while_idle(client_with_controller):
+    """The same controller, parked, does advertise its move targets —
+    otherwise the test above would pass for the wrong reason."""
+    controller = _fake_controller(_motion_in_progress=False)
+    controller.reachable_node_ids.return_value = ['deck_home']
+    controller.graph_mode = MagicMock(value='strict')
+    test_client = client_with_controller(controller)
+
+    parsed = EquipmentStatus(**test_client.get('/status').json())
+    assert parsed.equipment_status == 'ready'
+    assert 'move.deck_home' in parsed.allowed_actions
+
+
+def test_no_controller_envelope_advertises_connect():
+    """Both requires_init paths agree: /connect is honored, so list it."""
+    envelope = build_status(None)
+    assert envelope.allowed_actions == ['connect']
+    assert envelope.required_actions == ['connect']
+
+
+def test_activity_since_is_the_transition_instant_not_the_poll_time():
+    """``activity_since`` must not advance when nothing changed.
+
+    The pre-fix bug: it was ``datetime.now()`` on every call, so a reader
+    could never recover an in-progress move's true elapsed duration.
+    """
+    controller = _bare_motion_controller()
+
+    controller.enter_motion()
+    started_at = controller._activity_since
+    assert started_at is not None
+
+    # A nested primitive inside the same run is not a new transition.
+    controller.enter_motion()
+    assert controller._activity_since == started_at
+
+    # Two polls of an unchanged in-flight move report the same instant.
+    first = build_status(_fake_controller(
+        _motion_in_progress=True, _activity_since=started_at,
+    ))
+    second = build_status(_fake_controller(
+        _motion_in_progress=True, _activity_since=started_at,
+    ))
+    assert first.activity_since == second.activity_since == started_at
+
+    # The inner primitive finishing does not end the run...
+    controller.exit_motion()
+    assert controller._motion_in_progress is True
+    assert controller._activity_since == started_at
+
+    # ...the outer release does, and re-latches.
+    controller.exit_motion()
+    assert controller._motion_in_progress is False
+    assert controller._activity_since > started_at
+
+
+def test_exit_motion_is_clamped_at_zero():
+    """An unbalanced release must not wedge the device.
+
+    A negative depth would read as "not moving" but leave the next
+    enter/exit pair unbalanced, so the arm could end up permanently
+    refusing moves. Clamping keeps the guard fail-open.
+    """
+    controller = _bare_motion_controller()
+
+    controller.exit_motion()
+    controller.exit_motion()
+    assert controller._motion_depth == 0
+    assert controller._motion_in_progress is False
+
+    controller.enter_motion()
+    assert controller._motion_in_progress is True
+    controller.exit_motion()
+    assert controller._motion_in_progress is False
 
 
 # ---------------------------------------------------------------------------

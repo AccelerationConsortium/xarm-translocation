@@ -19,6 +19,9 @@ from src.core.xarm_api_server import app, controller as api_controller
 def mock_controller():
     """Provides a mocked XArmController instance."""
     mc = MagicMock()
+    # Idle: a MagicMock attribute is truthy by default, which would make
+    # every motion endpoint refuse with 409 (motion_in_progress).
+    mc._motion_in_progress = False
     mc.initialize.return_value = True
     mc.disconnect.return_value = True
     mc.move_to_position.return_value = True

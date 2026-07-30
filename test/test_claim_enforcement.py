@@ -89,6 +89,9 @@ def mock_controller():
     """Controller mock with a real ClaimManager so enforcement state is live."""
     mc = MagicMock()
     mc.claim_manager = ClaimManager()
+    # Idle: a MagicMock attribute is truthy by default, which would make
+    # every motion endpoint refuse with 409 (motion_in_progress).
+    mc._motion_in_progress = False
     mc.motion_graph = None  # keep simple
     mc.is_connected.return_value = True
     mc.is_alive = True

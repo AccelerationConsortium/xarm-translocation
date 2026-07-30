@@ -1,4 +1,4 @@
-"""Build a STATUS_SPEC v1.0 ``EquipmentStatus`` envelope from controller state.
+"""Build a STATUS_SPEC v1.2 ``EquipmentStatus`` envelope from controller state.
 
 This module is the single, side-effect-free source of truth for the spec
 ``GET /status`` response. It MUST NOT call any controller method that
@@ -73,6 +73,28 @@ def _component_state(controller: XArmController, key: str) -> str:
     return str(value)
 
 
+def _observe_activity(
+    controller: XArmController,
+) -> tuple[str, datetime | None]:
+    """Observed activity and the instant it last changed (spec §2.3).
+
+    ``activity`` is read from the controller's motion bookkeeping — the flag
+    every motion primitive brackets its SDK call with — and never derived
+    from ``equipment_status``, which §2.3 forbids because it would add no
+    information. ``activity_since`` is the latch the controller writes when
+    that flag flips, so a reader can recover an in-progress move's true
+    elapsed time instead of the timestamp of its own poll.
+
+    Both reads are defensive: a controller predating the latch (or a test
+    double) yields ``idle`` / ``None`` rather than raising.
+    """
+    running = bool(getattr(controller, "_motion_in_progress", False))
+    since = getattr(controller, "_activity_since", None)
+    if not isinstance(since, datetime):
+        since = None
+    return ("running" if running else "idle"), since
+
+
 def _safe_hostname() -> str | None:
     try:
         return socket.gethostname()
@@ -96,10 +118,18 @@ def _disconnected_envelope() -> EquipmentStatus:
         equipment_version=EQUIPMENT_VERSION,
         host=_safe_hostname(),
         equipment_status="requires_init",
-        activity="unknown",
+        # §2.3 invariant: requires_init ⇒ idle. Nothing is instantiated, so
+        # no primary operation can be in flight — "idle" is both the
+        # required value and the honest one. ``activity_since`` is null
+        # because there is no observed transition to timestamp.
+        activity="idle",
         activity_since=None,
         message="Controller not instantiated. POST /connect to initialize.",
         required_actions=["connect"],
+        # /connect is honored in this state (it is the one action that gets
+        # out of it), so advertise it — matching the connection-down branch
+        # of build_status, which reports the same equipment_status.
+        allowed_actions=["connect"],
         device_time=datetime.now(timezone.utc),
         uptime_seconds=time.time() - _PROCESS_START_TIME,
         components={
@@ -117,13 +147,17 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     Side-effect-free: only cached attributes are read. The controller MUST
     NOT be re-initialized, polled, or otherwise mutated by this call.
 
-    State precedence (top-most match wins):
+    ``equipment_status`` answers "is this arm healthy and suitable for a
+    run"; ``activity`` answers "is it moving right now". They are derived
+    independently (spec §2.3) — precedence below applies to the first only:
 
     1. ``controller is None`` -> ``requires_init``.
     2. controller has an active error code or string -> ``error``.
-    3. ``controller._motion_in_progress`` -> ``busy``.
-    4. ``controller.alive`` and arm enabled -> ``ready``.
-    5. otherwise -> ``degraded``.
+    3. connection not enabled -> ``requires_init``.
+    4. ``controller.alive`` and arm enabled -> ``busy`` while a motion is in
+       flight, else ``ready``.
+    5. otherwise -> ``degraded`` (with ``activity`` still reporting whether
+       a motion is in flight).
     """
     if controller is None:
         return _disconnected_envelope()
@@ -140,7 +174,7 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     if isinstance(last_error_text, int):
         last_error_text = None
 
-    motion_in_progress = bool(getattr(controller, "_motion_in_progress", False))
+    activity, activity_since = _observe_activity(controller)
     alive = bool(getattr(controller, "alive", False))
 
     # State derivation.
@@ -165,13 +199,25 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         equipment_status = "requires_init"
         message = "Controller not connected. POST /connect to initialize."
         required_actions = ["connect"]
-    elif motion_in_progress:
-        equipment_status = "busy"
-        message = "Robot motion in progress."
+        # §2.3 invariant: requires_init ⇒ idle. The connection dropping
+        # mid-move can leave the motion flag latched; a move that can no
+        # longer be executing must not be reported as a run.
+        activity, activity_since = "idle", None
     elif alive and arm_state == "enabled":
-        equipment_status = "ready"
-        message = "Idle"
+        # Healthy. §2.3 makes ``busy`` definitionally healthy + running, so
+        # deriving it here from the observed activity keeps both invariants
+        # (busy ⇒ running, ready ⇒ idle) true by construction.
+        if activity == "running":
+            equipment_status = "busy"
+            message = "Robot motion in progress."
+        else:
+            equipment_status = "ready"
+            message = "Idle"
     else:
+        # Connected but unhealthy. §2.3 forbids busy + degraded, so a move
+        # in flight here is reported as degraded + activity "running" — the
+        # health fault and the run are independent facts, and neither
+        # suppresses the other.
         equipment_status = "degraded"
         message = "Controller connected but not fully alive."
 
@@ -282,12 +328,12 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         equipment_version=EQUIPMENT_VERSION,
         host=_safe_hostname(),
         equipment_status=equipment_status,  # type: ignore[arg-type]
-        activity=("running" if equipment_status == "busy" else "idle") if equipment_status in ("ready", "busy") else "unknown",
-        activity_since=datetime.now(timezone.utc) if equipment_status in ("ready", "busy") else None,
+        activity=activity,  # type: ignore[arg-type]
+        activity_since=activity_since,
         message=message,
         required_actions=required_actions,
         allowed_actions=_build_allowed_actions(
-            controller, equipment_status, last_error is not None,
+            controller, equipment_status, last_error is not None, activity,
         ),
         device_time=datetime.now(timezone.utc),
         uptime_seconds=time.time() - _PROCESS_START_TIME,
@@ -349,18 +395,29 @@ def _build_claimed_by(controller: XArmController) -> dict[str, Any] | None:
 
 
 def _build_allowed_actions(
-    controller: XArmController, equipment_status: str, has_error: bool,
+    controller: XArmController,
+    equipment_status: str,
+    has_error: bool,
+    activity: str = "idle",
 ) -> list[str]:
     """Populate the v1.1 ``allowed_actions`` list.
 
-    Three sources:
+    Four sources:
     1. State-driven defaults (connect / clear_errors / stop) based on
        ``equipment_status`` — always present so workflow clients have
        *something* to act on even when the graph isn't enforcing.
     2. Graph-driven move targets — only when ``graph_mode == STRICT``,
        since ADVISORY/OFF modes don't actually constrain moves and
        claiming a list of allowed actions there would be misleading.
-    3. (Future) per-skill names once the xArm's skill catalog lands.
+    3. ``activity``: while a motion is in flight, every move target is
+       withheld (spec §2.3 — no second concurrent run). ``stop`` stays, so
+       an abort is always reachable.
+    4. (Future) per-skill names once the xArm's skill catalog lands.
+
+    Sources 3 and the move endpoints' HTTP 409 are the same rule on two
+    surfaces, and §6.2 requires them never to disagree: both read the
+    controller's motion state, so a client that sees ``move.<node>`` listed
+    and immediately POSTs it cannot be refused for being busy.
 
     The format ``"move.<node_id>"`` mirrors the dotted convention from
     other v1.1 devices (e.g. ``"seal.start"``, ``"stage.in"``).
@@ -380,6 +437,12 @@ def _build_allowed_actions(
         # Stop is always available while the device is reachable; spec
         # treats it as the safety floor.
         actions.append("stop")
+
+        if activity == "running":
+            # A motion is in flight. Starting a second one would be a
+            # collision, and the move endpoints refuse it with 409, so the
+            # list must not offer it either.
+            return actions
 
         graph = getattr(controller, "motion_graph", None)
         graph_mode = getattr(controller, "graph_mode", None)

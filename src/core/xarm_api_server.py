@@ -1010,6 +1010,46 @@ def get_controller() -> XArmController:
         raise HTTPException(status_code=400, detail="Robot not connected. Please connect first.")
     return controller
 
+def reserve_motion() -> XArmController:
+    """Claim the single motion slot, or refuse the request with HTTP 409.
+
+    Only one motion may be in flight at a time: two overlapping commands
+    to the same arm are a collision risk, and STATUS_SPEC v1.2 §2.3
+    requires a device to refuse a second concurrent run.
+
+    The slot is *reserved* here rather than inferred from the controller,
+    because a motion endpoint accepts and returns before the arm has
+    necessarily started moving — several schedule the SDK call as a
+    background task. A caller firing two moves back to back would find the
+    controller still idle on the second one. Reserving synchronously in the
+    request handler closes that window: handlers and background tasks all
+    run on the single event loop thread, so the check-and-set below is
+    atomic (there is no await between the two).
+
+    Every caller MUST release with ``exit_motion()`` in a ``finally`` —
+    ``/status`` reports ``activity: running`` and withholds move actions
+    for as long as the slot is held.
+
+    Raises 409 rather than 412: this is a device-state conflict, not an
+    unmet precondition the caller could have satisfied beforehand (spec
+    §6.1 reserves 412 for the latter).
+    """
+    c = get_controller()
+    if c._motion_in_progress:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "motion_in_progress",
+                "message": (
+                    "A motion is already in flight. Wait for it to finish, "
+                    "or POST /move/stop to abort it."
+                ),
+            },
+        )
+    c.enter_motion()
+    return c
+
+
 def create_error_response(message: str, status_code: int = 500) -> JSONResponse:
     """Create standardized error response"""
     return JSONResponse(
@@ -1335,22 +1375,28 @@ async def get_locations():
 # Movement endpoints
 @app.post("/move/position", dependencies=[Depends(require_claim)])
 async def move_to_position(request: PositionRequest, background_tasks: BackgroundTasks):
-    """Move the robot to a specific Cartesian position."""
-    c = get_controller()
-    
+    """Move the robot to a specific Cartesian position.
+
+    Returns 409 (motion_in_progress) when a motion is already in flight.
+    """
+    c = reserve_motion()
+
     async def move_task():
         # Run the blocking SDK call in a worker thread so the event loop
         # stays free to handle STOP and status polls while the arm moves.
-        success = await asyncio.to_thread(
-            c.move_to_position,
-            x=request.x, y=request.y, z=request.z,
-            roll=request.roll, pitch=request.pitch, yaw=request.yaw,
-            speed=request.speed,
-            check_collision=request.check_collision,
-            wait=request.wait,
-        )
-        if not success:
-            logger.error("Failed to move to position.")
+        try:
+            success = await asyncio.to_thread(
+                c.move_to_position,
+                x=request.x, y=request.y, z=request.z,
+                roll=request.roll, pitch=request.pitch, yaw=request.yaw,
+                speed=request.speed,
+                check_collision=request.check_collision,
+                wait=request.wait,
+            )
+            if not success:
+                logger.error("Failed to move to position.")
+        finally:
+            c.exit_motion()
         await broadcast_status_update()
 
     background_tasks.add_task(move_task)
@@ -1358,39 +1404,51 @@ async def move_to_position(request: PositionRequest, background_tasks: Backgroun
 
 @app.post("/move/joints", dependencies=[Depends(require_claim)])
 async def move_joints(request: JointRequest, background_tasks: BackgroundTasks):
-    """Move the robot to a specific joint configuration."""
-    c = get_controller()
+    """Move the robot to a specific joint configuration.
+
+    Returns 409 (motion_in_progress) when a motion is already in flight.
+    """
+    c = reserve_motion()
 
     async def move_task():
-        success = await asyncio.to_thread(
-            c.move_joints,
-            angles=request.angles,
-            speed=request.speed,
-            acceleration=request.acceleration,
-            check_collision=request.check_collision,
-            wait=request.wait,
-        )
-        if not success:
-            logger.error("Failed to move joints.")
+        try:
+            success = await asyncio.to_thread(
+                c.move_joints,
+                angles=request.angles,
+                speed=request.speed,
+                acceleration=request.acceleration,
+                check_collision=request.check_collision,
+                wait=request.wait,
+            )
+            if not success:
+                logger.error("Failed to move joints.")
+        finally:
+            c.exit_motion()
         await broadcast_status_update()
-    
+
     background_tasks.add_task(move_task)
     return {"message": "Move joints command accepted."}
 
 @app.post("/move/relative", dependencies=[Depends(require_claim)])
 async def move_relative(request: RelativeRequest, background_tasks: BackgroundTasks):
-    """Move the robot relative to its current position."""
-    c = get_controller()
-    
+    """Move the robot relative to its current position.
+
+    Returns 409 (motion_in_progress) when a motion is already in flight.
+    """
+    c = reserve_motion()
+
     async def move_task():
-        success = await asyncio.to_thread(
-            c.move_relative,
-            dx=request.dx, dy=request.dy, dz=request.dz,
-            droll=request.droll, dpitch=request.dpitch, dyaw=request.dyaw,
-            speed=request.speed,
-        )
-        if not success:
-            logger.error("Failed to move relative.")
+        try:
+            success = await asyncio.to_thread(
+                c.move_relative,
+                dx=request.dx, dy=request.dy, dz=request.dz,
+                droll=request.droll, dpitch=request.dpitch, dyaw=request.dyaw,
+                speed=request.speed,
+            )
+            if not success:
+                logger.error("Failed to move relative.")
+        finally:
+            c.exit_motion()
         await broadcast_status_update()
 
     background_tasks.add_task(move_task)
@@ -1404,8 +1462,11 @@ async def move_to_location(request: LocationRequest, background_tasks: Backgroun
     as HTTP 409 (rather than a silent background failure) and the caller
     learns the actual outcome. STOP remains responsive because the move
     runs in a worker thread, not on the event loop.
+
+    Also returns 409 (motion_in_progress) when a motion is already in
+    flight.
     """
-    c = get_controller()
+    c = reserve_motion()
 
     try:
         success = await asyncio.to_thread(
@@ -1423,6 +1484,8 @@ async def move_to_location(request: LocationRequest, background_tasks: Backgroun
                 "reason": exc.reason,
             },
         )
+    finally:
+        c.exit_motion()
 
     background_tasks.add_task(broadcast_status_update)
     if not success:
@@ -1435,9 +1498,12 @@ async def move_to_location(request: LocationRequest, background_tasks: Backgroun
 
 @app.post("/move/home", dependencies=[Depends(require_claim)])
 async def move_home(background_tasks: BackgroundTasks):
-    """Move robot to home position"""
-    ctrl = get_controller()
-    
+    """Move robot to home position.
+
+    Returns 409 (motion_in_progress) when a motion is already in flight.
+    """
+    ctrl = reserve_motion()
+
     try:
         # go_home() blocks until the move completes; offload to a worker
         # thread so STOP requests can interrupt the event loop.
@@ -1451,10 +1517,14 @@ async def move_home(background_tasks: BackgroundTasks):
             }
         else:
             raise HTTPException(status_code=500, detail="Home movement failed")
-            
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Home movement failed: {e}")
         raise HTTPException(status_code=500, detail=f"Home movement failed: {str(e)}")
+    finally:
+        ctrl.exit_motion()
 
 @app.post("/move/stop", dependencies=[Depends(require_login)])
 async def stop_movement(request: Request, background_tasks: BackgroundTasks):
@@ -1707,16 +1777,22 @@ async def get_gripper_position():
 # Linear track endpoints
 @app.post("/track/move", dependencies=[Depends(require_claim)])
 async def move_track(request: TrackRequest, background_tasks: BackgroundTasks):
-    """Move the linear track to a specific position."""
-    c = get_controller()
+    """Move the linear track to a specific position.
+
+    Returns 409 (motion_in_progress) when a motion is already in flight.
+    """
+    c = reserve_motion()
 
     async def track_task():
-        success = await asyncio.to_thread(
-            c.move_track_to_position,
-            position=request.position, speed=request.speed, wait=request.wait,
-        )
-        if not success:
-            logger.error("Failed to move linear track.")
+        try:
+            success = await asyncio.to_thread(
+                c.move_track_to_position,
+                position=request.position, speed=request.speed, wait=request.wait,
+            )
+            if not success:
+                logger.error("Failed to move linear track.")
+        finally:
+            c.exit_motion()
         await broadcast_status_update()
 
     background_tasks.add_task(track_task)
@@ -1726,9 +1802,10 @@ async def move_track(request: TrackRequest, background_tasks: BackgroundTasks):
 async def move_track_to_location(request: TrackLocationRequest, background_tasks: BackgroundTasks):
     """Move the linear track to a pre-configured named location.
 
-    Synchronous via to_thread (same rationale as /move/location).
+    Synchronous via to_thread (same rationale as /move/location). Returns
+    409 (motion_in_progress) when a motion is already in flight.
     """
-    c = get_controller()
+    c = reserve_motion()
 
     try:
         success = await asyncio.to_thread(
@@ -1747,6 +1824,8 @@ async def move_track_to_location(request: TrackLocationRequest, background_tasks
                 "reason": exc.reason,
             },
         )
+    finally:
+        c.exit_motion()
 
     background_tasks.add_task(broadcast_status_update)
     if not success:
@@ -1892,19 +1971,25 @@ async def check_force_torque_safety():
 
 @app.post("/force-torque/move-until-force", dependencies=[Depends(require_claim)])
 async def move_until_force(request: ForceTorqueMovementRequest, background_tasks: BackgroundTasks):
-    """Move in a linear direction until a force threshold is reached."""
-    c = get_controller()
+    """Move in a linear direction until a force threshold is reached.
+
+    Returns 409 (motion_in_progress) when a motion is already in flight.
+    """
+    c = reserve_motion()
 
     async def force_movement_task():
-        success = await asyncio.to_thread(
-            c.move_until_force,
-            direction=request.direction,
-            force_threshold=request.force_threshold,
-            speed=request.speed,
-            timeout=request.timeout,
-        )
-        if not success:
-            logger.error("Force-controlled movement failed or timed out.")
+        try:
+            success = await asyncio.to_thread(
+                c.move_until_force,
+                direction=request.direction,
+                force_threshold=request.force_threshold,
+                speed=request.speed,
+                timeout=request.timeout,
+            )
+            if not success:
+                logger.error("Force-controlled movement failed or timed out.")
+        finally:
+            c.exit_motion()
         await broadcast_status_update()
 
     background_tasks.add_task(force_movement_task)
@@ -1912,20 +1997,26 @@ async def move_until_force(request: ForceTorqueMovementRequest, background_tasks
 
 @app.post("/force-torque/move-joint-until-torque", dependencies=[Depends(require_claim)])
 async def move_joint_until_torque(request: JointTorqueMovementRequest, background_tasks: BackgroundTasks):
-    """Move a specific joint until a torque threshold is reached."""
-    c = get_controller()
+    """Move a specific joint until a torque threshold is reached.
+
+    Returns 409 (motion_in_progress) when a motion is already in flight.
+    """
+    c = reserve_motion()
 
     async def torque_movement_task():
-        success = await asyncio.to_thread(
-            c.move_joint_until_torque,
-            joint_id=request.joint_id,
-            target_angle=request.target_angle,
-            torque_threshold=request.torque_threshold,
-            speed=request.speed,
-            timeout=request.timeout,
-        )
-        if not success:
-            logger.error("Torque-controlled joint movement failed or timed out.")
+        try:
+            success = await asyncio.to_thread(
+                c.move_joint_until_torque,
+                joint_id=request.joint_id,
+                target_angle=request.target_angle,
+                torque_threshold=request.torque_threshold,
+                speed=request.speed,
+                timeout=request.timeout,
+            )
+            if not success:
+                logger.error("Torque-controlled joint movement failed or timed out.")
+        finally:
+            c.exit_motion()
         await broadcast_status_update()
 
     background_tasks.add_task(torque_movement_task)
@@ -1933,19 +2024,25 @@ async def move_joint_until_torque(request: JointTorqueMovementRequest, backgroun
 
 @app.post("/move/plate_linear", dependencies=[Depends(require_claim)])
 async def move_plate_linear(request: PlateLinearRequest, background_tasks: BackgroundTasks):
-    """Move linearly from current position to target with constant tool orientation."""
-    c = get_controller()
-    
+    """Move linearly from current position to target with constant tool orientation.
+
+    Returns 409 (motion_in_progress) when a motion is already in flight.
+    """
+    c = reserve_motion()
+
     async def plate_linear_task():
-        success = await asyncio.to_thread(
-            c.move_plate_linear,
-            target_location=request.target_location,
-            speed=request.speed,
-        )
-        if not success:
-            logger.error(f"Failed to move linearly to {request.target_location}")
+        try:
+            success = await asyncio.to_thread(
+                c.move_plate_linear,
+                target_location=request.target_location,
+                speed=request.speed,
+            )
+            if not success:
+                logger.error(f"Failed to move linearly to {request.target_location}")
+        finally:
+            c.exit_motion()
         await broadcast_status_update()
-    
+
     background_tasks.add_task(plate_linear_task)
     return {"message": f"Linear movement to '{request.target_location}' command accepted."}
 
@@ -2190,7 +2287,8 @@ async def graph_move_to(request: GraphMoveToRequest, background_tasks: Backgroun
     POST /control/graph/gripper while parked at a node.
 
     Returns 409 (edge_not_allowed) when STRICT mode refuses the transition
-    (including edges the current gripper state may not ride), or 500 when
+    (including edges the current gripper state may not ride), 409
+    (motion_in_progress) when a motion is already in flight, or 500 when
     the move fails.
     """
     c = get_controller()
@@ -2201,6 +2299,11 @@ async def graph_move_to(request: GraphMoveToRequest, background_tasks: Backgroun
     except UnknownNodeError:
         raise HTTPException(status_code=409, detail=f"unknown node: {request.node_id!r}")
 
+    # Reserved after the cheap validation above so a bad node id does not
+    # take (and have to release) the motion slot. A cross-rail edge is two
+    # sub-moves; the reservation nests over both, so the slot is not freed
+    # between them.
+    reserve_motion()
     try:
         success = await asyncio.to_thread(
             c.move_to_node,
@@ -2219,6 +2322,8 @@ async def graph_move_to(request: GraphMoveToRequest, background_tasks: Backgroun
                 "reason": exc.reason,
             },
         )
+    finally:
+        c.exit_motion()
 
     background_tasks.add_task(broadcast_status_update)
     if not success:
@@ -2239,9 +2344,10 @@ async def graph_travel_to(request: GraphTravelToRequest, background_tasks: Backg
     matching the repo's blocking-move convention; live progress is
     visible on the /ws status stream.
 
-    Returns 409 for an unknown node, no path (no_path), or a STRICT
-    refusal (edge_not_allowed — e.g. off-grid); 500 when a hop fails
-    mid-journey (the arm is parked at the last completed node).
+    Returns 409 for an unknown node, no path (no_path), a STRICT
+    refusal (edge_not_allowed — e.g. off-grid), or a motion already in
+    flight (motion_in_progress); 500 when a hop fails mid-journey (the arm
+    is parked at the last completed node).
     """
     c = get_controller()
     if c.motion_graph is None:
@@ -2251,6 +2357,10 @@ async def graph_travel_to(request: GraphTravelToRequest, background_tasks: Backg
     except UnknownNodeError:
         raise HTTPException(status_code=409, detail=f"unknown node: {request.node_id!r}")
 
+    # One reservation for the whole journey: the per-hop primitives nest
+    # inside it, so the slot is held from the first hop to the last rather
+    # than being released at every intermediate node.
+    reserve_motion()
     try:
         result = await asyncio.to_thread(
             c.travel_to_node,
@@ -2280,6 +2390,8 @@ async def graph_travel_to(request: GraphTravelToRequest, background_tasks: Backg
                 "reason": exc.reason,
             },
         )
+    finally:
+        c.exit_motion()
 
     background_tasks.add_task(broadcast_status_update)
     if not result["success"]:
@@ -2545,81 +2657,88 @@ async def assistant_execute(request: AssistantExecuteRequest, background_tasks: 
             return c.set_gripper_state(step.state)
         raise ValueError(f"unknown step kind {step.kind!r}")
 
-    for idx, step in enumerate(request.steps, start=1):
-        # Validate step shape up front so a bad payload is a clean 422.
-        if step.kind == "move" and not step.to:
-            raise HTTPException(status_code=422, detail=f"step {idx}: move step missing 'to'")
-        if step.kind == "gripper" and not step.state:
-            raise HTTPException(status_code=422, detail=f"step {idx}: gripper step missing 'state'")
-        if step.kind not in ("move", "gripper"):
-            raise HTTPException(status_code=422, detail=f"step {idx}: unknown kind {step.kind!r}")
+    # One reservation for the whole step list: a plate transfer is a
+    # sequence, and freeing the slot between steps would let another
+    # caller interleave a move into the middle of it.
+    reserve_motion()
+    try:
+        for idx, step in enumerate(request.steps, start=1):
+            # Validate step shape up front so a bad payload is a clean 422.
+            if step.kind == "move" and not step.to:
+                raise HTTPException(status_code=422, detail=f"step {idx}: move step missing 'to'")
+            if step.kind == "gripper" and not step.state:
+                raise HTTPException(status_code=422, detail=f"step {idx}: gripper step missing 'state'")
+            if step.kind not in ("move", "gripper"):
+                raise HTTPException(status_code=422, detail=f"step {idx}: unknown kind {step.kind!r}")
 
-        descriptor = (
-            f"move to {step.to}" if step.kind == "move" else f"set gripper {step.state}"
-        )
-        logger.info(f"[assistant] step {idx}/{total}: {descriptor}")
+            descriptor = (
+                f"move to {step.to}" if step.kind == "move" else f"set gripper {step.state}"
+            )
+            logger.info(f"[assistant] step {idx}/{total}: {descriptor}")
 
-        try:
-            success = await asyncio.to_thread(_run_step, step)
-        except EdgeNotAllowedError as exc:
-            logger.error(f"[assistant] step {idx}/{total} refused: {exc.reason}")
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "edge_not_allowed",
-                    "current_node": exc.current,
-                    "target": exc.target,
-                    "reason": exc.reason,
-                    "completed": completed,
-                    "failed_step": idx,
-                },
-            )
-        except GripperTransitionError as exc:
-            logger.error(f"[assistant] step {idx}/{total} refused: {exc.reason}")
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "gripper_transition_not_allowed",
-                    "node": exc.node,
-                    "from_state": exc.from_state,
-                    "to_state": exc.to_state,
-                    "reason": exc.reason,
-                    "completed": completed,
-                    "failed_step": idx,
-                },
-            )
-        except (UnknownNodeError, NoPathError, GraphError, ValueError) as exc:
-            logger.error(f"[assistant] step {idx}/{total} failed: {exc}")
-            raise HTTPException(
-                status_code=409,
-                detail={"error": "step_invalid", "reason": str(exc),
-                        "completed": completed, "failed_step": idx},
-            )
+            try:
+                success = await asyncio.to_thread(_run_step, step)
+            except EdgeNotAllowedError as exc:
+                logger.error(f"[assistant] step {idx}/{total} refused: {exc.reason}")
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "edge_not_allowed",
+                        "current_node": exc.current,
+                        "target": exc.target,
+                        "reason": exc.reason,
+                        "completed": completed,
+                        "failed_step": idx,
+                    },
+                )
+            except GripperTransitionError as exc:
+                logger.error(f"[assistant] step {idx}/{total} refused: {exc.reason}")
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "gripper_transition_not_allowed",
+                        "node": exc.node,
+                        "from_state": exc.from_state,
+                        "to_state": exc.to_state,
+                        "reason": exc.reason,
+                        "completed": completed,
+                        "failed_step": idx,
+                    },
+                )
+            except (UnknownNodeError, NoPathError, GraphError, ValueError) as exc:
+                logger.error(f"[assistant] step {idx}/{total} failed: {exc}")
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": "step_invalid", "reason": str(exc),
+                            "completed": completed, "failed_step": idx},
+                )
 
-        if not success:
-            logger.error(f"[assistant] step {idx}/{total} failed at {c.current_node!r}")
-            background_tasks.add_task(broadcast_status_update)
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error": "step_failed",
-                    "failed_step": idx,
-                    "descriptor": descriptor,
-                    "completed": completed,
-                    "current_node": c.current_node,
-                },
-            )
-        completed.append({"step": idx, "kind": step.kind,
-                          "descriptor": descriptor, "current_node": c.current_node})
+            if not success:
+                logger.error(f"[assistant] step {idx}/{total} failed at {c.current_node!r}")
+                background_tasks.add_task(broadcast_status_update)
+                raise HTTPException(
+                    status_code=500,
+                    detail={
+                        "error": "step_failed",
+                        "failed_step": idx,
+                        "descriptor": descriptor,
+                        "completed": completed,
+                        "current_node": c.current_node,
+                    },
+                )
+            completed.append({"step": idx, "kind": step.kind,
+                              "descriptor": descriptor, "current_node": c.current_node})
 
-    logger.info(f"[assistant] done: {label} — parked at {c.current_node!r}")
-    background_tasks.add_task(broadcast_status_update)
-    return {
-        "message": f"Executed {total} step(s): {label}",
-        "completed": completed,
-        "current_node": c.current_node,
-        "gripper_state": c.current_gripper_state,
-    }
+        logger.info(f"[assistant] done: {label} — parked at {c.current_node!r}")
+        background_tasks.add_task(broadcast_status_update)
+        return {
+            "message": f"Executed {total} step(s): {label}",
+            "completed": completed,
+            "current_node": c.current_node,
+            "gripper_state": c.current_gripper_state,
+        }
+    finally:
+        c.exit_motion()
 
 
 @app.get("/graph/nearest")

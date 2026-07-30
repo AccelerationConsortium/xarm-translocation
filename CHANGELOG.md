@@ -7,6 +7,70 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — STATUS_SPEC v1.2 conformance (`activity`)
+
+- **Wire-contract types come from `sdl-lab-contract` v1.2.0** instead of a
+  vendored `models.py`; `protocol_version` is `"1.2"` on `/` and `/status`.
+- **`activity` is observed, not derived.** It is read from the controller's
+  motion flag — the one every motion primitive brackets its SDK call with —
+  rather than computed from `equipment_status`, which spec §2.3 forbids
+  because it would add no information. A `degraded` controller mid-move now
+  reports `degraded` + `activity: "running"`; previously the activity axis
+  could only echo the state word.
+- **`activity_since` is the transition instant.** `XArmController._motion_in_progress`
+  is now a property that latches the timestamp when the flag flips, so
+  `/status` reports when the current activity *began*. It was previously
+  `datetime.now()` on every call, which made an in-progress move's elapsed
+  duration unrecoverable and changed the field on every poll.
+- **`equipment_status: busy` is derived from `activity`, not alongside it.**
+  §2.3 defines `busy` as healthy + running, so the invariants (`busy` ⇒
+  `running`, `ready` ⇒ `idle`) now hold by construction. Two consequences:
+  a move in flight while the controller is not fully alive reports
+  `degraded` + `running` rather than `busy` (§2.3 forbids `busy` +
+  `degraded`), and `busy` additionally covers motion the previous
+  flag-only check missed.
+- **`requires_init` ⇒ `idle`** on both the no-controller and
+  connection-down envelopes, per the §2.3 invariant table. They previously
+  reported `activity: "unknown"`, and a connection dropping mid-move could
+  leave the flag latched — a move that can no longer be executing must not
+  read as a run.
+- **README** now documents what "primary operation" means for this device
+  (v1.2 checklist requirement) and drops the stale "no `/control/*` claim
+  surface yet" note.
+
+### Added — one motion at a time (HTTP 409 `motion_in_progress`)
+
+- **Concurrent motions are refused.** Every motion endpoint now reserves a
+  single motion slot and returns **409** with
+  `{"error": "motion_in_progress", ...}` when one is already in flight.
+  Previously nothing stopped two overlapping commands from reaching the
+  same arm. Covers `/move/{position,joints,relative,location,home,plate_linear}`,
+  `/track/move{,/location}`, `/control/graph/{move_to,travel_to}`,
+  `/assistant/execute`, and both `/force-torque/move-*` endpoints. `/move/stop`,
+  `/clear/errors`, `/control/graph/recover_to`, and the gripper endpoints are
+  deliberately not gated.
+- **The slot is reserved at accept time, not inferred.** Several motion
+  endpoints accept-and-return before the arm starts moving (the SDK call is
+  a background task), so a caller firing two moves back to back would have
+  found the controller still idle on the second. Reservation happens
+  synchronously in the request handler, where check-and-set is atomic on the
+  event loop thread.
+- **`XArmController` motion state is a nesting counter** (`enter_motion()` /
+  `exit_motion()`, `_motion_in_progress` now read-only). A composite move —
+  a cross-rail edge's two sub-moves, a travel's N hops, an assistant step
+  list — reads as one continuous motion instead of flickering to idle
+  between parts, and the reservation is not released early by an inner
+  primitive finishing. `exit_motion()` clamps at zero so an unbalanced
+  release cannot wedge the arm into refusing every subsequent move.
+- **`allowed_actions` mirrors the refusal** (§6.2): while `activity` is
+  `running`, `move.<node_id>` targets are withheld and `stop` remains. A
+  property test asserts the two surfaces cannot drift.
+- **`allowed_actions` includes `connect`** on the no-controller envelope,
+  matching the connection-down branch that reports the same
+  `equipment_status`. `/connect` is honored in both.
+- `/move/home` no longer double-wraps its own 500 into
+  `"Home movement failed: 500: Home movement failed"`.
+
 ### Added — multi-hop travel (`/control/graph/travel_to`)
 
 - **`MotionGraph.plan_path(from, to, gripper_state)`** — shortest hop path

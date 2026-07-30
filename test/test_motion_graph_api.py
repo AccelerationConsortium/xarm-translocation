@@ -63,6 +63,9 @@ def mock_controller_with_graph():
     endpoints touch. Has a real MotionGraph attached so the snapshot
     endpoint returns plausible data."""
     mc = MagicMock()
+    # Idle: a MagicMock attribute is truthy by default, which would make
+    # every motion endpoint refuse with 409 (motion_in_progress).
+    mc._motion_in_progress = False
     mc.motion_graph = MotionGraph.from_dict(
         _test_graph_dict(), preconditions=DEFAULT_PRECONDITIONS,
     )
@@ -440,3 +443,93 @@ def test_get_graph_includes_travel_targets(graph_client):
     resp = graph_client.get("/graph")
     assert resp.status_code == 200
     assert resp.json()["travel_targets"] == ["n_pickup"]
+
+
+# ── concurrent-motion refusal (STATUS_SPEC v1.2 §2.3 / §6.2) ──────────
+
+
+@pytest.mark.parametrize("endpoint,body", [
+    ("/control/graph/move_to",   {"node_id": "n_pickup"}),
+    ("/control/graph/travel_to", {"node_id": "n_pickup"}),
+    ("/move/location",           {"location_name": "pickup"}),
+    ("/move/position",           {"x": 300, "y": 0, "z": 300}),
+    ("/move/joints",             {"angles": [0, 0, 0, 0, 0]}),
+    ("/track/move",              {"position": 100}),
+    ("/move/home",               None),
+])
+def test_motion_endpoints_refuse_a_second_concurrent_motion(
+    graph_client, mock_controller_with_graph, endpoint, body,
+):
+    """A move arriving while one is in flight is refused with 409.
+
+    Two overlapping commands to the same arm are a collision risk, and
+    spec §2.3 requires refusing a second concurrent run. The body is
+    distinguishable by shape (``error: motion_in_progress``) so a client
+    can branch on it rather than string-matching the detail text.
+    """
+    mock_controller_with_graph._motion_in_progress = True
+
+    resp = graph_client.post(endpoint, json=body) if body is not None \
+        else graph_client.post(endpoint)
+
+    assert resp.status_code == 409, endpoint
+    assert resp.json()["detail"]["error"] == "motion_in_progress", endpoint
+    # Refused before dispatch: the arm was never commanded.
+    mock_controller_with_graph.move_to_node.assert_not_called()
+    mock_controller_with_graph.travel_to_node.assert_not_called()
+    mock_controller_with_graph.move_to_named_location.assert_not_called()
+    mock_controller_with_graph.move_to_position.assert_not_called()
+    mock_controller_with_graph.go_home.assert_not_called()
+
+
+def test_allowed_actions_agrees_with_the_409(graph_client, mock_controller_with_graph):
+    """§6.2: the advisory list and the authoritative refusal must not drift.
+
+    For both values of the motion state, ``move.n_pickup`` appears in
+    ``allowed_actions`` if and only if POSTing it would not be refused.
+    """
+    from src.core.xarm_controller import ComponentState
+
+    mock_controller_with_graph.graph_mode = GraphMode.STRICT
+    mock_controller_with_graph.move_to_node.return_value = True
+    # A ready arm. The graph fixture leaves `states` and the error fields as
+    # bare mocks, which /status reads as error / requires_init — no move
+    # target would be listed, for reasons unrelated to the motion gate this
+    # test is about.
+    mock_controller_with_graph.last_error_code = 0
+    mock_controller_with_graph.last_error = None
+    mock_controller_with_graph.states = {
+        'connection': ComponentState.ENABLED,
+        'arm': ComponentState.ENABLED,
+        'gripper': ComponentState.ENABLED,
+        'track': ComponentState.ENABLED,
+        'force_torque': ComponentState.DISABLED,
+    }
+
+    for in_flight in (False, True):
+        mock_controller_with_graph._motion_in_progress = in_flight
+
+        listed = "move.n_pickup" in graph_client.get("/status").json()["allowed_actions"]
+        refused = graph_client.post(
+            "/control/graph/move_to", json={"node_id": "n_pickup"},
+        ).status_code == 409
+
+        assert listed is not refused, (
+            f"drift with _motion_in_progress={in_flight}: "
+            f"listed={listed} refused={refused}"
+        )
+
+
+def test_reservation_is_released_after_the_move(graph_client, mock_controller_with_graph):
+    """The slot must not leak: a second move after the first completes is
+    accepted. The real controller's enter/exit are mocked out here, so this
+    pins the endpoint's own release path."""
+    mock_controller_with_graph._motion_in_progress = False
+    mock_controller_with_graph.move_to_node.return_value = True
+
+    first = graph_client.post("/control/graph/move_to", json={"node_id": "n_pickup"})
+    second = graph_client.post("/control/graph/move_to", json={"node_id": "n_pickup"})
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert mock_controller_with_graph.exit_motion.call_count == 2

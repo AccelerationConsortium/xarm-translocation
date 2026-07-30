@@ -1,6 +1,8 @@
 import time
 import os
+import threading
 from collections import deque
+from datetime import datetime, timezone
 from enum import Enum
 from typing import List, Optional
 
@@ -322,8 +324,14 @@ class XArmController:
         self.force_torque_alerts_active = False
         self.last_alert_time = 0
 
-        # Motion state tracking
-        self._motion_in_progress = False
+        # Motion state tracking. A depth counter rather than a bool so a
+        # composite move (a cross-rail edge is two sub-moves; a travel is N
+        # hops) reads as one continuous motion instead of flickering between
+        # them, and so the API layer can reserve the motion slot around a
+        # whole run. See enter_motion() / exit_motion().
+        self._motion_depth = 0
+        self._motion_lock = threading.Lock()
+        self._activity_since = datetime.now(timezone.utc)
 
         # Motion-graph named-coordinate tracking. These are the named values
         # that, combined with the commanded gripper stroke, resolve to a graph
@@ -791,6 +799,56 @@ class XArmController:
         return True
 
     @property
+    def _motion_in_progress(self) -> bool:
+        """True while a commanded arm / linear-track motion is in flight.
+
+        This is the observation behind the STATUS_SPEC v1.2 ``activity``
+        field: every motion primitive brackets its SDK call with
+        enter_motion() / exit_motion(), so it means "the hardware is
+        performing its primary operation right now". See ``build_status`` —
+        the envelope's ``activity`` is read from here, and
+        ``equipment_status: busy`` is derived *from* it, never the other way
+        round (spec §2.3 forbids that direction).
+
+        Read-only: mutate it through enter_motion() / exit_motion() so the
+        nesting depth and the ``activity_since`` latch stay consistent.
+        """
+        return self._motion_depth > 0
+
+    def enter_motion(self) -> None:
+        """Mark a motion as in flight; nestable.
+
+        Nesting matters because one logical move can be several primitives
+        (a cross-rail graph edge dispatches an arm move then a rail move; a
+        travel runs N hops). Counting depth keeps the whole run reading as
+        one motion, so ``activity`` does not flicker to idle between
+        sub-moves and the API's motion reservation is not released early by
+        an inner primitive finishing.
+
+        ``activity_since`` is latched on the 0 -> 1 edge only: the spec
+        wants the instant activity last *changed*, so a reader can recover
+        a move's true elapsed duration rather than the poll timestamp.
+        """
+        with self._motion_lock:
+            self._motion_depth += 1
+            if self._motion_depth == 1:
+                self._activity_since = datetime.now(timezone.utc)
+
+    def exit_motion(self) -> None:
+        """Release one nesting level of motion; latch on the 1 -> 0 edge.
+
+        Clamped at zero so an unbalanced release (a caller releasing twice)
+        cannot drive the depth negative and wedge the device into a
+        permanently-busy state that refuses every subsequent move.
+        """
+        with self._motion_lock:
+            if self._motion_depth == 0:
+                return
+            self._motion_depth -= 1
+            if self._motion_depth == 0:
+                self._activity_since = datetime.now(timezone.utc)
+
+    @property
     def is_alive(self):
         """Check if the robot is in a safe operating state."""
         if self.alive and self.arm and self.arm.connected:
@@ -1014,7 +1072,7 @@ class XArmController:
                     return False
 
         # Execute the movement
-        self._motion_in_progress = True
+        self.enter_motion()
 
         try:
             code = self.arm.set_position(x, y, z, roll, pitch, yaw,
@@ -1027,7 +1085,7 @@ class XArmController:
             return success
 
         finally:
-            self._motion_in_progress = False
+            self.exit_motion()
 
     def move_to_named_location(self, location_name, speed=None):
         """
@@ -1170,7 +1228,7 @@ class XArmController:
         self.last_arm_pose_name = None
 
         # Execute movement
-        self._motion_in_progress = True
+        self.enter_motion()
 
         try:
             # check=False mirrors the Docker simulator serial-number workaround
@@ -1183,7 +1241,7 @@ class XArmController:
             return success
 
         finally:
-            self._motion_in_progress = False
+            self.exit_motion()
 
     def move_single_joint(self, joint_id, angle, speed=None, wait=True):
         """
@@ -1532,7 +1590,7 @@ class XArmController:
         # Raw rail move invalidates any pinned named rail location.
         self.last_rail_location_name = None
 
-        self._motion_in_progress = True
+        self.enter_motion()
 
         try:
             result = self.arm.set_linear_track_pos(speed=speed, pos=position, wait=wait)
@@ -1546,7 +1604,7 @@ class XArmController:
             return success
 
         finally:
-            self._motion_in_progress = False
+            self.exit_motion()
 
     def move_track_to_named_location(self, location_name: str, speed: Optional[float] = None, wait: bool = True):
         """
