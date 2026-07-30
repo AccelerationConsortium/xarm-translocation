@@ -1,4 +1,4 @@
-"""Tests for the STATUS_SPEC v1.0 endpoints (``GET /``, ``/health``, ``/status``).
+"""Tests for the STATUS_SPEC v1.2 endpoints (``GET /``, ``/health``, ``/status``).
 
 These tests validate that the FastAPI service speaks the AC Organic
 ``EquipmentStatus`` envelope and that ``GET /status`` is side-effect-free

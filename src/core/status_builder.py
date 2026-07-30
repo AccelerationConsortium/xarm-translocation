@@ -96,6 +96,8 @@ def _disconnected_envelope() -> EquipmentStatus:
         equipment_version=EQUIPMENT_VERSION,
         host=_safe_hostname(),
         equipment_status="requires_init",
+        activity="unknown",
+        activity_since=None,
         message="Controller not instantiated. POST /connect to initialize.",
         required_actions=["connect"],
         device_time=datetime.now(timezone.utc),
@@ -280,6 +282,8 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         equipment_version=EQUIPMENT_VERSION,
         host=_safe_hostname(),
         equipment_status=equipment_status,  # type: ignore[arg-type]
+        activity=("running" if equipment_status == "busy" else "idle") if equipment_status in ("ready", "busy") else "unknown",
+        activity_since=datetime.now(timezone.utc) if equipment_status in ("ready", "busy") else None,
         message=message,
         required_actions=required_actions,
         allowed_actions=_build_allowed_actions(

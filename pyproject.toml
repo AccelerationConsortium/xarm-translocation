@@ -8,10 +8,10 @@ version = "0.3.0"
 authors = [
   { name="Yang Cao", email="cyrilcaoyang@gmail.com" },
 ]
-description = "Comprehensive Python package for controlling UFACTORY xArm robots with integrated gripper, linear track, and force torque sensor support"
+description = "Comprehensive Python package for controlling UFACTORY xArm robots with integrated gripper, linear track, and force torque sensor support — STATUS_SPEC v1.2"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 keywords = ["robotics", "xarm", "ufactory", "gripper", "linear-track", "force-torque", "automation", "pyxarm"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -41,8 +41,12 @@ dependencies = [
     # unset, but the SDK ships by default.
     "openai>=1.0.0",
     # Loads OPENROUTER_API_KEY from a local .env file (git-ignored).
-    "python-dotenv>=1.0.0"
+    "python-dotenv>=1.0.0",
+    "sdl-lab-contract",
 ]
+
+[tool.uv.sources]
+sdl-lab-contract = { git = "https://github.com/AccelerationConsortium/sdl-lab-contract", tag = "v1.2.0" }
 
 [project.optional-dependencies]
 dev = [

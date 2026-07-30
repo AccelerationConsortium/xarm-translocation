@@ -268,13 +268,13 @@ def test_allowed_actions_in_error_state_is_recovery_only(mock_controller):
 # ── PROTOCOL_VERSION bump ────────────────────────────────────────────
 
 
-def test_probe_reports_protocol_version_1_1(client):
+def test_probe_reports_protocol_version_1_2(client):
     resp = client.get("/")
     assert resp.status_code == 200
-    assert resp.json()["protocol_version"] == "1.1"
+    assert resp.json()["protocol_version"] == "1.2"
 
 
-def test_status_reports_protocol_version_1_1(client):
+def test_status_reports_protocol_version_1_2(client):
     resp = client.get("/status")
     assert resp.status_code == 200
-    assert resp.json()["protocol_version"] == "1.1"
+    assert resp.json()["protocol_version"] == "1.2"
