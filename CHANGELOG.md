@@ -38,6 +38,28 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
   (v1.2 checklist requirement) and drops the stale "no `/control/*` claim
   surface yet" note.
 
+### Added — simulation self-identification (`dry_run` + panel banner)
+
+- **A docker-profile session now identifies itself on every surface.**
+  `XArmController.is_simulated` (profile name contains `docker`) is the
+  single predicate behind all simulation accommodations, replacing the two
+  inline checks.
+- **Envelope:** healthy states report `equipment_status: "dry_run"` — the
+  spec's first-class simulation state, which the dashboard's reader-side v2
+  projection already maps to `simulated: true` — with `activity` unchanged
+  (§2.3 allows any activity for `dry_run`). Fault states keep their honest
+  value so simulated failure paths stay testable. All states get a
+  `[SIMULATION]` message prefix and `details.simulated: true`.
+- **Panel:** a sticky amber banner ("SIMULATION — connected to the Docker
+  simulator, not the real arm") whenever the envelope carries
+  `details.simulated`. Controls stay live (`dry_run` counts as alive).
+- **Events exporter is suppressed while simulated** — sim telemetry never
+  reaches the lab history DB stamped as the real device, even with
+  `XARM_INGEST_URL` configured.
+- Consequence, intended: workflows gating on `equipment_status == "ready"`
+  will not run against a sim-connected service by accident; running against
+  the sim is an explicit opt-in.
+
 ### Added — one motion at a time (HTTP 409 `motion_in_progress`)
 
 - **Concurrent motions are refused.** Every motion endpoint now reserves a

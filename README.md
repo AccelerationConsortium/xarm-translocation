@@ -44,6 +44,10 @@ Covered: `/move/{position,joints,relative,location,home,plate_linear}`, `/track/
 
 Not covered, deliberately: `/move/stop` and `/clear/errors` (the safety floor must always be reachable), `/control/graph/recover_to` (a bookkeeping re-pin, not a motion), and the gripper endpoints (`set_gripper_state` already refuses while the arm is moving, and gripper actuation is not primary operation).
 
+### Simulation self-identification
+
+When the service is connected via the `docker` profile (the UFACTORY Docker simulator), it says so on every surface: healthy states report `equipment_status: "dry_run"` instead of `ready`/`busy` (with `activity` still observed — `dry_run` permits any activity per spec §2.3), every message carries a `[SIMULATION]` prefix, `details.simulated: true` is set, and the web panel shows a persistent amber banner. Fault states keep their honest values so recovery paths can be exercised against the sim. The events exporter is suppressed while simulated, so sim sessions never write into the lab's history DB as the real device. Deliberate consequence: anything gating on `equipment_status == "ready"` will not run against a simulator by accident.
+
 The contract is defined in `ac-organic-lab/docs/STATUS_SPEC.md`.
 
 ## ✨ Key Features

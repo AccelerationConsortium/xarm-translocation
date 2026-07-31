@@ -46,6 +46,7 @@ def _graph_dict():
 def mock_controller():
     """Controller mock with a real ClaimManager and motion graph attached."""
     mc = MagicMock()
+    mc.is_simulated = False
     mc.claim_manager = ClaimManager(default_ttl_s=30.0)
     mc.motion_graph = MotionGraph.from_dict(_graph_dict(), preconditions=DEFAULT_PRECONDITIONS)
     mc.graph_mode = GraphMode.STRICT

@@ -22,6 +22,7 @@ def mock_controller():
     # Idle: a MagicMock attribute is truthy by default, which would make
     # every motion endpoint refuse with 409 (motion_in_progress).
     mc._motion_in_progress = False
+    mc.is_simulated = False
     mc.initialize.return_value = True
     mc.disconnect.return_value = True
     mc.move_to_position.return_value = True

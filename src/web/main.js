@@ -364,13 +364,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Treat ``ready``, ``busy``, ``degraded`` as "controller is up and the
         // UI's control buttons should be live". ``requires_init`` and ``error``
-        // mean disabled controls.
+        // mean disabled controls. ``dry_run`` is the simulator session's
+        // ready/busy (docker profile) — controls stay live, banner comes on.
         const status = envelope.equipment_status;
-        const isAlive = ['ready', 'busy', 'degraded', 'e_stop'].includes(status);
+        const isAlive = ['ready', 'busy', 'degraded', 'e_stop', 'dry_run'].includes(status);
 
         return {
             equipment_status: status,
             is_alive: isAlive,
+            simulated: details.simulated === true,
             connection_details: details.connection_details || null,
             system_status: {
                 last_error: lastError ? lastError.message : 'None',
@@ -437,6 +439,12 @@ document.addEventListener('DOMContentLoaded', () => {
             // The `is_alive` flag is now derived from STATUS_SPEC equipment_status.
             const isConnected = data.is_alive === true;
             const equipmentStatus = data.equipment_status; // ready/busy/error/...
+
+            // Simulation banner: on whenever the envelope says the session is
+            // simulated (docker profile -> details.simulated). Off otherwise,
+            // including when disconnected.
+            const simBanner = document.getElementById('sim-banner');
+            if (simBanner) simBanner.hidden = data.simulated !== true;
 
             // Update connection text and light
             try {

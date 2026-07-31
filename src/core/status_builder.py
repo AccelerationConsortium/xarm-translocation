@@ -158,6 +158,17 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
        flight, else ``ready``.
     5. otherwise -> ``degraded`` (with ``activity`` still reporting whether
        a motion is in flight).
+
+    **Simulation** (``controller.is_simulated``, i.e. the ``docker``
+    profile): the healthy states (``ready`` / ``busy``) are reported as
+    ``dry_run`` — the spec's first-class "simulation mode" state, which the
+    dashboard already projects to ``simulated: true`` — with ``activity``
+    unchanged (the §2.3 invariant table deliberately allows any activity
+    for ``dry_run``). Fault states (``error`` / ``degraded`` /
+    ``requires_init``) keep their honest value so simulated failure paths
+    stay testable. Every state gets a ``[SIMULATION]`` message prefix and
+    ``details.simulated: true`` so no reader — human or machine — can
+    mistake a sim session for the real arm.
     """
     if controller is None:
         return _disconnected_envelope()
@@ -220,6 +231,14 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         # suppresses the other.
         equipment_status = "degraded"
         message = "Controller connected but not fully alive."
+
+    simulated = bool(getattr(controller, "is_simulated", False))
+    if simulated:
+        # Simulator session: healthy states become the spec's first-class
+        # "dry_run"; faults keep their honest value (see the docstring).
+        if equipment_status in ("ready", "busy"):
+            equipment_status = "dry_run"
+        message = f"[SIMULATION] {message}"
 
     # Components.
     components: dict[str, ComponentStatus] = {
@@ -293,6 +312,11 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         # the toggle lives on POST /robot/manual.
         "manual_mode": getattr(getattr(controller, "arm", None), "mode", None) == 2,
     }
+    if simulated:
+        # Machine-readable twin of the dry_run state / message prefix. The
+        # panel keys its banner on this; workflows can branch on it without
+        # string-matching the message.
+        details["simulated"] = True
     # Carry connection details for the local web UI's panel. Not contracted.
     details["connection_details"] = _build_connection_details(controller)
     # Motion-graph state (Phase 1: introspection only; absent when no graph
@@ -372,7 +396,7 @@ def build_telemetry(controller: XArmController | None) -> dict[str, Any]:
     track_metric = full.metrics.get("track_position")
     return {
         "equipment_status": full.equipment_status,
-        "is_alive": full.equipment_status in ("ready", "busy", "degraded", "e_stop"),
+        "is_alive": full.equipment_status in ("ready", "busy", "degraded", "e_stop", "dry_run"),
         "current_joints": details.get("current_joints"),
         "current_position": details.get("current_position"),
         "track_position": (track_metric.value if track_metric is not None else None),
@@ -433,7 +457,9 @@ def _build_allowed_actions(
         actions.extend(["clear_errors", "stop"])
         return actions
 
-    if equipment_status in ("ready", "busy", "degraded"):
+    # dry_run is the simulator session's "ready"/"busy" (see build_status):
+    # the sim honors exactly the same actions, so it advertises them too.
+    if equipment_status in ("ready", "busy", "degraded", "dry_run"):
         # Stop is always available while the device is reachable; spec
         # treats it as the safety floor.
         actions.append("stop")

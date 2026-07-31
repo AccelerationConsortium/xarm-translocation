@@ -1662,3 +1662,27 @@ input#linear-speed {
 /* Give the camera stage a touch more depth than the card behind it. */
 :root.dark .camera-stage,
 :root.dark .camera-video { background: #020617; }     /* slate-950 */
+
+/* ── Simulation banner ─────────────────────────────────────────────────
+   Shown while /status reports details.simulated (docker profile). Sticky
+   so it stays visible however far the operator scrolls; animated stripes
+   so it reads as "live mode", not a dismissed toast. Same rule in both
+   themes on purpose — amber-on-dark is legible everywhere and the point
+   is to be unmistakable, not tasteful. */
+.sim-banner {
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    padding: 0.55rem 1rem;
+    text-align: center;
+    font-weight: 700;
+    font-size: 0.95rem;
+    letter-spacing: 0.04em;
+    color: #1c1917;                          /* stone-900 */
+    background: repeating-linear-gradient(
+        -45deg,
+        #fbbf24 0 14px,                      /* amber-400 */
+        #f59e0b 14px 28px                    /* amber-500 */
+    );
+    border-bottom: 2px solid #b45309;        /* amber-700 */
+}

@@ -152,7 +152,7 @@ class XArmController:
         # For Docker simulator connections, we MUST disable the SDK's built-in
         # joint limit checking. The simulator doesn't provide a valid serial
         # number, causing the check to crash. For real hardware, we want this check enabled.
-        disable_sdk_joint_check = self.profile_name and 'docker' in self.profile_name.lower()
+        disable_sdk_joint_check = self.is_simulated
         if disable_sdk_joint_check:
             print("Docker profile detected, disabling SDK joint limit checks to prevent serial number bug.")
 
@@ -381,7 +381,15 @@ class XArmController:
         # No-op unless XARM_INGEST_URL is set. See core/events_exporter.py.
         self.events_exporter = EventsExporter.from_env()
         self._last_emitted_state: Optional[str] = None
-        if self.events_exporter.enabled:
+        if self.is_simulated and self.events_exporter.enabled:
+            # A simulated session must not write telemetry into the lab's
+            # history DB stamped as the real device (the exporter's own
+            # contract: "Docker sims emit nothing"). Suppressed here, at the
+            # one place the exporter is constructed, rather than per-emit.
+            print("[events] exporter SUPPRESSED (simulation profile "
+                  f"{self.profile_name!r}; XARM_INGEST_URL is set but sim "
+                  "telemetry never leaves the device)")
+        elif self.events_exporter.enabled:
             print(f"[events] exporter ON -> {self.events_exporter.ingest_url}")
         else:
             print("[events] exporter OFF (set XARM_INGEST_URL to enable)")
@@ -704,7 +712,7 @@ class XArmController:
         callers can override or extend via **extra. Never raises.
         """
         exporter = getattr(self, "events_exporter", None)
-        if exporter is None or not exporter.enabled:
+        if exporter is None or not exporter.enabled or self.is_simulated:
             return
         context = {
             "xarm_state": getattr(self.arm, "state", None) if self.arm else None,
@@ -799,6 +807,20 @@ class XArmController:
         return True
 
     @property
+    def is_simulated(self) -> bool:
+        """True when this controller drives a simulator, not real hardware.
+
+        Keyed on the connection profile name (the ``docker`` profile targets
+        the UFACTORY Docker simulator). Single source of truth for every
+        simulation accommodation: SDK joint-limit check disabled at
+        construction, lenient error codes in ``is_alive``, the ``dry_run``
+        envelope state in ``status_builder``, and events-exporter
+        suppression — so a simulated session can never masquerade as the
+        real arm on the dashboard or in the history DB.
+        """
+        return bool(self.profile_name and 'docker' in self.profile_name.lower())
+
+    @property
     def _motion_in_progress(self) -> bool:
         """True while a commanded arm / linear-track motion is in flight.
 
@@ -853,8 +875,8 @@ class XArmController:
         """Check if the robot is in a safe operating state."""
         if self.alive and self.arm and self.arm.connected:
             # For Docker simulator, be more lenient with error codes
-            is_docker = self.profile_name and 'docker' in self.profile_name.lower()
-            
+            is_docker = self.is_simulated
+
             if is_docker:
                 # Docker simulator can have minor errors but still be functional
                 # Check if we're in a critical error state (> 10 are usually serious)

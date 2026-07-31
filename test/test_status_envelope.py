@@ -49,6 +49,9 @@ def _fake_controller(**overrides):
     """
     mc = MagicMock()
     mc.alive = True
+    # Real hardware unless a test opts in — a bare MagicMock attribute is
+    # truthy, which would flip every envelope to dry_run.
+    mc.is_simulated = False
     mc._motion_in_progress = False
     mc.last_error_code = 0
     mc.last_error = None
@@ -380,6 +383,91 @@ def test_exit_motion_is_clamped_at_zero():
     assert controller._motion_in_progress is True
     controller.exit_motion()
     assert controller._motion_in_progress is False
+
+
+# ---------------------------------------------------------------------------
+# Simulation self-identification (docker profile -> dry_run)
+# ---------------------------------------------------------------------------
+
+
+def test_sim_healthy_idle_reports_dry_run():
+    """A simulator session must never read as the real arm being ready."""
+    controller = _fake_controller(is_simulated=True)
+    envelope = build_status(controller)
+    assert envelope.equipment_status == 'dry_run'
+    assert envelope.activity == 'idle'
+    assert envelope.message.startswith('[SIMULATION]')
+    assert envelope.details['simulated'] is True
+    # The sim honors the same actions the real arm would.
+    assert 'stop' in envelope.allowed_actions
+
+
+def test_sim_moving_reports_dry_run_running():
+    """dry_run + running is legal (§2.3 allows any activity for dry_run),
+    and the concurrent-move withholding applies in sim exactly as on
+    hardware — sim sessions are for exercising the real rules."""
+    controller = _fake_controller(is_simulated=True, _motion_in_progress=True)
+    controller.reachable_node_ids.return_value = ['deck_home']
+    controller.graph_mode = MagicMock(value='strict')
+    envelope = build_status(controller)
+    assert envelope.equipment_status == 'dry_run'
+    assert envelope.activity == 'running'
+    assert envelope.allowed_actions == ['stop']
+
+
+def test_sim_idle_advertises_move_targets():
+    controller = _fake_controller(is_simulated=True)
+    controller.reachable_node_ids.return_value = ['deck_home']
+    controller.graph_mode = MagicMock(value='strict')
+    envelope = build_status(controller)
+    assert 'move.deck_home' in envelope.allowed_actions
+
+
+def test_sim_fault_stays_error():
+    """Fault states keep their honest value in sim — a simulator that
+    cannot express failure is useless for testing recovery paths."""
+    controller = _fake_controller(is_simulated=True, last_error_code=31)
+    envelope = build_status(controller)
+    assert envelope.equipment_status == 'error'
+    assert envelope.message.startswith('[SIMULATION]')
+    assert envelope.details['simulated'] is True
+
+
+def test_real_hardware_envelope_carries_no_simulated_flag():
+    envelope = build_status(_fake_controller())
+    assert 'simulated' not in envelope.details
+    assert not envelope.message.startswith('[SIMULATION]')
+
+
+def test_sim_telemetry_reports_alive():
+    """The panel's controls key on is_alive; a sim session must keep them
+    live or the panel would be unusable against the simulator."""
+    from src.core.status_builder import build_telemetry
+
+    telemetry = build_telemetry(_fake_controller(is_simulated=True))
+    assert telemetry['equipment_status'] == 'dry_run'
+    assert telemetry['is_alive'] is True
+
+
+def test_events_exporter_suppressed_when_simulated():
+    """Sim telemetry must never land in the lab history DB as the real
+    device, even with XARM_INGEST_URL configured."""
+    from src.core.xarm_controller import XArmController
+
+    controller = XArmController.__new__(XArmController)
+    controller.arm = None
+    controller.last_error_code = 0
+    controller.last_warn_code = 0
+    controller._current_graph_node = lambda: None
+    controller.events_exporter = MagicMock(enabled=True)
+
+    controller.profile_name = 'docker'
+    controller._emit_event('startup')
+    controller.events_exporter.emit.assert_not_called()
+
+    controller.profile_name = 'robot'
+    controller._emit_event('startup')
+    controller.events_exporter.emit.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
