@@ -422,13 +422,14 @@ h3 {
     padding: 8px 12px;
 }
 
-/* Stroke / Force inputs keep a usable fixed width instead of
-   flex-collapsing in the tighter column. */
+/* Stroke / Force inputs grow with the column (bounded so the Move/Set
+   buttons keep their spot) instead of flex-collapsing. */
 .tile-sub .stroke-control-row input,
 .tile-sub .force-control-row input {
-    flex: 0 0 72px;
-    width: 72px;
-    min-width: 72px;
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 90px;
+    max-width: 150px;
 }
 
 /* Strict-gated controls pass clicks through to their row so the row's
