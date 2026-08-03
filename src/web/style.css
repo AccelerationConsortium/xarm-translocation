@@ -367,14 +367,31 @@ h3 {
     align-items: start;
 }
 
-/* Gripper | Linear Track, two ~half-width columns under the connection
-   section, split by a vertical divider. */
+/* Gripper | Linear Track under the connection section, split by a
+   vertical divider; the track column holds a narrow fixed 280px. */
 .tile-sub-cols {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr 280px;
     gap: 16px;
     border-top: 1px solid var(--border);
     padding-top: 14px;
+}
+
+/* Track dropdown narrower than the shared 200px select size. */
+#track-location-select {
+    width: 150px;
+    min-width: 150px;
+}
+
+/* Range / Current readout: one face (no monospace values) and the full
+   width of the track column. */
+#track-info {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+#track-info span {
+    font-family: inherit;
 }
 
 .tile-sub {
