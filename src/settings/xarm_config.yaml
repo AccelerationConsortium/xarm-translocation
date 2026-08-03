@@ -14,10 +14,14 @@ profiles:
     angle_speed: 20
     angle_acc: 500
 
+  # The uf_software simulator container runs on the central server, not on
+  # the device PC — the SDK dials this host on ports 502/503/30000-30003,
+  # so those must be published by the container (see PYXARM_TESTING.md).
+  # For local dev with a simulator on the same machine, use 127.0.0.1.
   docker:
     model: 5
     num_joints: 5
-    host: '127.0.0.1'
+    host: '100.64.254.6'
     port: 18333
     gripper_type: 'bio_gen2'
     tcp_speed: 100
