@@ -229,9 +229,11 @@ header {
     flex-direction: column;
     gap: 14px;
     padding: 20px;
-    /* Fixed tile width; height flows with content. */
+    /* Fixed tile width; height flows with content. max-width lets it
+       shrink on small screens but never below 560px. */
     width: 660px;
     max-width: 100%;
+    min-width: 560px;
     box-sizing: border-box;
 }
 
@@ -1360,11 +1362,8 @@ input#linear-speed {
         padding: 14px;
     }
 
-    /* Stack the header vertically and lay the action buttons in a row. */
-    .title-status-container {
-        min-width: 0;
-    }
-
+    /* Stack the header vertically and lay the action buttons in a row.
+       (The tile's 560px floor holds even here, per spec.) */
     .title-top {
         flex-direction: column;
     }
