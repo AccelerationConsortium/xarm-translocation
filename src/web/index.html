@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260803g">
+    <link rel="stylesheet" href="style.css?v=20260803h">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -245,20 +245,16 @@
                     <!-- Drive Arm card — pick an allowed (graph-reachable) destination and send -->
                     <div class="card" id="drive-arm-card" hidden>
                         <h2>Drive Arm <span class="panel-unit">graph-gated · strict</span></h2>
-                        <div class="mg-row">
-                            <span class="inline-label">Current</span>
-                            <strong id="drive-current-node">—</strong>
-                        </div>
-                        <div class="mg-row">
-                            <span class="inline-label">Destination</span>
-                            <select id="drive-dest-select" class="inline-input"></select>
-                            <span class="inline-label">Speed</span>
-                            <input type="number" id="drive-dest-speed" value="13" min="1" max="200" class="inline-input">
-                            <button id="drive-send-btn" class="btn btn-primary" disabled>Send</button>
-                        </div>
+                        <!-- Current node + one-hop Destination/Send removed as
+                             duplicates of the Motion Graph card above (same
+                             Current readout; the Reachable buttons drive the
+                             same /control/graph/move_to). Travel covers
+                             one-hop too — travel_targets ⊇ reachable_nodes. -->
                         <div class="mg-row">
                             <span class="inline-label">Travel</span>
                             <select id="drive-travel-select" class="inline-input"></select>
+                            <span class="inline-label">Speed</span>
+                            <input type="number" id="drive-dest-speed" value="13" min="1" max="200" class="inline-input">
                             <button id="drive-travel-btn" class="btn btn-primary" disabled title="Plan a multi-hop path and drive it hop-by-hop">Travel</button>
                         </div>
                         <div class="mg-row">
@@ -463,6 +459,6 @@
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
     <script src="camera-player.js?v=20260724e"></script>
-    <script src="main.js?v=20260803a"></script>
+    <script src="main.js?v=20260803b"></script>
 </body>
 </html>
