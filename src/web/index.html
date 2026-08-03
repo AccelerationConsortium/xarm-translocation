@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260803x">
+    <link rel="stylesheet" href="style.css?v=20260803y">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -185,32 +185,10 @@
             <!-- ── LEFT COLUMN ─────────────────────────────────────── -->
             <div class="column-left">
 
-                <!-- Connection controls live in the header title tile
-                     (.connection-inline); this column starts with the camera. -->
-
-                <!-- Lab Camera — pans to follow the arm across the motion graph.
-                     Hidden unless src/settings/camera_tracking.yaml is configured
-                     (GET /camera/config decides). The live preview is a go2rtc MSE
-                     stream; the "Follow arm" toggle hits POST /camera/follow. Wiring
-                     is shared with graph.html via camera-player.js. See
-                     core/camera_tracker.py. -->
-                <div class="card" id="camera-card" hidden>
-                    <h2><span class="camera-dot" id="camera-dot" aria-hidden="true"></span>Lab Camera <span class="panel-unit">follows the arm</span></h2>
-                    <div class="camera-stage">
-                        <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
-                        <div id="camera-overlay" class="camera-overlay">
-                            <span id="camera-overlay-text">Connecting…</span>
-                        </div>
-                    </div>
-                    <div class="camera-controls">
-                        <label id="camera-follow-switch" class="manual-switch follow-switch is-disabled"
-                               title="When on, the camera pans to the arm's station as it moves across the motion graph.">
-                            <input type="checkbox" id="camera-follow-checkbox" disabled>
-                            <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
-                            <span class="manual-switch-text">Follow arm</span>
-                        </label>
-                        <span id="camera-status" class="muted camera-status"></span>
-                    </div>
+                <!-- Log window (swapped with the camera, which now sits atop
+                     Control Modes in the right column) -->
+                <div class="log-container">
+                    <div id="log-stream" class="log-stream"></div>
                 </div>
 
             </div><!-- /column-left -->
@@ -255,6 +233,31 @@
             </div>
 
             <div class="page-right">
+                <!-- Lab Camera — pans to follow the arm across the motion graph.
+                     Hidden unless src/settings/camera_tracking.yaml is configured
+                     (GET /camera/config decides). The live preview is a go2rtc MSE
+                     stream; the "Follow arm" toggle hits POST /camera/follow. Wiring
+                     is shared with graph.html via camera-player.js. See
+                     core/camera_tracker.py. -->
+                <div class="card" id="camera-card" hidden>
+                    <h2><span class="camera-dot" id="camera-dot" aria-hidden="true"></span>Lab Camera <span class="panel-unit">follows the arm</span></h2>
+                    <div class="camera-stage">
+                        <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
+                        <div id="camera-overlay" class="camera-overlay">
+                            <span id="camera-overlay-text">Connecting…</span>
+                        </div>
+                    </div>
+                    <div class="camera-controls">
+                        <label id="camera-follow-switch" class="manual-switch follow-switch is-disabled"
+                               title="When on, the camera pans to the arm's station as it moves across the motion graph.">
+                            <input type="checkbox" id="camera-follow-checkbox" disabled>
+                            <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
+                            <span class="manual-switch-text">Follow arm</span>
+                        </label>
+                        <span id="camera-status" class="muted camera-status"></span>
+                    </div>
+                </div>
+
                 <!-- Control Modes card: two selectable panes — direct
                      Arm Control, and Graph Control (Motion Graph + Drive Arm).
                      Tab switching in main.js; the sub-cards inside the graph
@@ -418,11 +421,6 @@
                     </div>
                         <span class="muted mode-graph-hint">(connect and enable the motion graph to populate this pane)</span>
                     </div><!-- /mode-pane-graph -->
-                </div>
-
-                <!-- Log window -->
-                <div class="log-container">
-                    <div id="log-stream" class="log-stream"></div>
                 </div>
             </div>
 
