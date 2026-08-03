@@ -313,6 +313,11 @@ h3 {
     min-height: 0;
     overflow: hidden;
     background: #020617;
+    /* Same width as the Control Modes card in the header, right-aligned
+       so the two share both edges. */
+    width: 600px;
+    max-width: 100%;
+    margin-left: auto;
 }
 
 .log-stream {
