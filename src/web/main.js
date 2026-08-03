@@ -963,6 +963,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const canTravel = canDrive && targets.length > 0;
         select.disabled = !canTravel;
         btn.disabled = !canTravel;
+        // The speed box is claim-locked with everything else but nothing
+        // else re-enables it — without this line it stays frozen at its
+        // default forever.
+        const speedInput = document.getElementById('drive-dest-speed');
+        if (speedInput) speedInput.disabled = !canTravel;
     }
 
     function renderDriveGripperRow(motionGraph, gating = {}) {
