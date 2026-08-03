@@ -229,7 +229,7 @@ header {
     /* Fixed tile height so the header doesn't breathe as pills/messages
        come and go (the log tile stretches to match via the grid). Released
        in the <=700px stacked layout. */
-    height: 280px;
+    height: 300px;
     box-sizing: border-box;
 }
 
@@ -920,6 +920,28 @@ input#linear-speed {
     flex-wrap: wrap;
     align-items: center;
     gap: 8px;
+}
+
+/* Connection controls row at the bottom of the title tile: both
+   dropdowns on one line, Connect/Disconnect trailing, aligned to the
+   selects' baseline. Wraps gracefully when the tile gets narrow. */
+.connection-inline {
+    display: flex;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.connection-inline .form-group {
+    flex: 1 1 130px;
+    min-width: 0;
+    margin-bottom: 0;
+}
+
+.connection-inline-btns {
+    display: flex;
+    gap: 8px;
+    flex: 0 0 auto;
 }
 
 .xarm-buttons .btn {

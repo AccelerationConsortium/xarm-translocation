@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260802d">
+    <link rel="stylesheet" href="style.css?v=20260802e">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -89,6 +89,27 @@
                                 </a>
                             </div>
                         </div>
+                        <!-- Connection controls, relocated from their own card so
+                             the title tile is the single "who / what / how
+                             connected" surface. IDs unchanged (main.js). -->
+                        <div class="connection-inline">
+                            <div class="form-group">
+                                <label for="config-select">Connection Profile</label>
+                                <select id="config-select"></select>
+                            </div>
+                            <div class="form-group">
+                                <label for="safety-level-select">Safety Level</label>
+                                <select id="safety-level-select">
+                                    <option value="LOW">Low</option>
+                                    <option value="MEDIUM" selected>Medium</option>
+                                    <option value="HIGH">High</option>
+                                </select>
+                            </div>
+                            <div class="connection-inline-btns">
+                                <button id="connect-btn" class="btn">Connect</button>
+                                <button id="disconnect-btn" class="btn btn-danger" disabled>Disconnect</button>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div class="log-container">
@@ -102,24 +123,8 @@
             <!-- ── LEFT COLUMN ─────────────────────────────────────── -->
             <div class="column-left">
 
-                <!-- Connection -->
-                <div class="card">
-                    <h2>Connection</h2>
-                    <div class="form-group">
-                        <label for="config-select">Connection Profile</label>
-                        <select id="config-select"></select>
-                    </div>
-                    <div class="form-group">
-                        <label for="safety-level-select">Safety Level</label>
-                        <select id="safety-level-select">
-                            <option value="LOW">Low</option>
-                            <option value="MEDIUM" selected>Medium</option>
-                            <option value="HIGH">High</option>
-                        </select>
-                    </div>
-                    <button id="connect-btn" class="btn">Connect</button>
-                    <button id="disconnect-btn" class="btn btn-danger" disabled>Disconnect</button>
-                </div>
+                <!-- Connection controls live in the header title tile
+                     (.connection-inline); this column starts with the camera. -->
 
                 <!-- Lab Camera — pans to follow the arm across the motion graph.
                      Hidden unless src/settings/camera_tracking.yaml is configured
