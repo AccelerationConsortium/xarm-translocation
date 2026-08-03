@@ -447,24 +447,36 @@ document.addEventListener('DOMContentLoaded', () => {
             const simBanner = document.getElementById('sim-banner');
             if (simBanner) simBanner.hidden = data.simulated !== true;
 
-            // Simulator 3D-view card rides the same flag. The Studio iframe
-            // loads with the sim session and unloads when it ends, so no
-            // background Studio session outlives the sim connection.
+            // 3D-view card shows for BOTH connection targets: the iframe
+            // points at the simulator's Studio or the real arm's Studio
+            // (via the device PC's 18333 portproxy) to match the session,
+            // and unloads when the connection ends.
             const sim3dCard = document.getElementById('sim-3d-card');
             if (sim3dCard) {
                 const fr = document.getElementById('sim-3d-frame');
-                if (data.simulated === true) {
+                const studioUrl = fr && (data.simulated === true
+                    ? fr.dataset.srcSim : fr.dataset.srcHw);
+                if (isConnected) {
                     sim3dCard.hidden = false;
-                    if (fr && !fr.getAttribute('src')) fr.src = fr.dataset.src;
+                    if (fr && fr.getAttribute('src') !== studioUrl) {
+                        fr.src = studioUrl;
+                    }
                 } else if (!sim3dCard.hidden) {
                     sim3dCard.hidden = true;
                     if (fr) fr.removeAttribute('src');
                 }
             }
 
-            // Header "Open Studio" quick-link rides the same flag.
+            // Header "Open Studio" quick-link follows the same target.
             const simStudioLink = document.getElementById('sim-studio-link');
-            if (simStudioLink) simStudioLink.hidden = data.simulated !== true;
+            if (simStudioLink) {
+                simStudioLink.hidden = !isConnected;
+                const fr = document.getElementById('sim-3d-frame');
+                if (fr) {
+                    simStudioLink.href = data.simulated === true
+                        ? fr.dataset.srcSim : fr.dataset.srcHw;
+                }
+            }
 
             // Per-target connection lines (Hardware / Docker).
             updateConnLines(data);

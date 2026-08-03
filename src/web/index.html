@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260804d">
+    <link rel="stylesheet" href="style.css?v=20260804e">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -105,10 +105,9 @@
                                     </svg>
                                     <span class="graph-tile-text">Motion Graph</span>
                                 </a>
-                                <!-- Sim sessions only (toggled with details.simulated in
-                                     main.js, like the 3D card): the full UFACTORY Studio
-                                     control interface for the SIMULATOR — never point
-                                     this at a real arm's Studio. -->
+                                <!-- Shown while connected; main.js points it at the
+                                     matching Studio (simulator, or the real arm via the
+                                     device PC's 18333 portproxy). -->
                                 <a id="sim-studio-link" class="graph-tile" hidden
                                    href="http://100.64.254.6:18333/control" target="_blank" rel="noopener"
                                    title="Open the full UFACTORY Studio control interface for the simulator">
@@ -196,16 +195,13 @@
             <!-- Middle column: the simulator 3D view, between the camera
                  and the right-hand tiles. -->
             <div class="column-mid">
-                <!-- Simulator 3D view — the UFACTORY Studio web UI served by
-                     the sim container, embedded in an iframe (Studio sends no
-                     X-Frame-Options/CSP, verified 2026-08-02). Card appears
-                     only while /status reports details.simulated; the iframe
-                     loads lazily on first "Show" and is unloaded on hide /
-                     sim end so no background Studio session lingers. The URL
-                     is HARD-CODED to the simulator on the central server —
-                     never point this at a real arm's Studio: it is an
-                     un-audited, claim-bypassing control surface (fine for a
-                     sim, not for hardware). Wiring in main.js. -->
+                <!-- 3D view — the Studio arm canvas for WHICHEVER target is
+                     connected: the simulator's Studio (central server), or the
+                     REAL arm's Studio via this PC's 18333 portproxy — embedded
+                     at the operator's explicit request. The crop shows only
+                     the model canvas (Studio's buttons sit outside it; drag
+                     orbits the camera). Loads/unloads with the connection and
+                     switches URL with the target (main.js). -->
                 <div class="card" id="sim-3d-card" hidden>
                     <h2>3D View</h2>
                     <!-- The crop isolates Studio's arm panel (.xarm-container:
@@ -221,8 +217,9 @@
                     <div id="sim-3d-stage" class="sim-3d-stage">
                         <div class="sim-3d-crop">
                             <iframe id="sim-3d-frame" class="sim-3d-frame"
-                                    title="UFACTORY Studio — simulated arm"
-                                    data-src="http://100.64.254.6:18333/control"></iframe>
+                                    title="UFACTORY Studio — live arm view"
+                                    data-src-sim="http://100.64.254.6:18333/control"
+                                    data-src-hw="http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:18333/control"></iframe>
                         </div>
                     </div>
                 </div>
@@ -425,13 +422,13 @@
                 </div>
             </div>
 
-            <!-- System Status — fixed full-width footer (position: fixed in
-                 CSS). CRITICAL: updateStatusUI refuses to render AT ALL if
+            <!-- System Status — visually retired (hidden), but the elements
+                 MUST stay in the DOM: updateStatusUI refuses to render AT ALL if
                  arm-state / gripper-state / track-state / robot-mode /
                  last-error are missing, so removing this card silently
                  freezes every status readout on the page (this happened in
                  the 2026-08-03 page-grid rebuild). -->
-            <div class="card status-bar-card">
+            <div class="card status-bar-card" hidden>
                 <h2>System Status</h2>
                 <div class="status-bar-line">
                     <span>Arm: <strong id="arm-state">N/A</strong></span>
@@ -493,6 +490,6 @@
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
     <script src="camera-player.js?v=20260724e"></script>
-    <script src="main.js?v=20260804a"></script>
+    <script src="main.js?v=20260804b"></script>
 </body>
 </html>
