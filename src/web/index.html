@@ -424,6 +424,27 @@
                     <div id="log-stream" class="log-stream"></div>
                 </div>
             </div>
+
+            <!-- System Status — fixed full-width footer (position: fixed in
+                 CSS). CRITICAL: updateStatusUI refuses to render AT ALL if
+                 arm-state / gripper-state / track-state / robot-mode /
+                 last-error are missing, so removing this card silently
+                 freezes every status readout on the page (this happened in
+                 the 2026-08-03 page-grid rebuild). -->
+            <div class="card status-bar-card">
+                <h2>System Status</h2>
+                <div class="status-bar-line">
+                    <span>Arm: <strong id="arm-state">N/A</strong></span>
+                    <span class="sep">|</span>
+                    <span>Gripper: <strong id="gripper-state">N/A</strong></span>
+                    <span class="sep">|</span>
+                    <span>Track: <strong id="track-state">N/A</strong></span>
+                    <span class="sep">|</span>
+                    <span>Mode: <strong id="robot-mode">N/A</strong></span>
+                    <span class="sep">|</span>
+                    <span>Error: <strong id="last-error">None</strong></span>
+                </div>
+            </div>
         </main>
     </div>
 
