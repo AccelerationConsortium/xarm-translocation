@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260803h">
+    <link rel="stylesheet" href="style.css?v=20260803i">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -217,9 +217,11 @@
                                 <option value="advisory">advisory</option>
                                 <option value="strict">strict</option>
                             </select>
+                            <button id="mg-recover-btn" class="btn btn-secondary" style="margin-left:auto;">Recover…</button>
+                        </div>
+                        <div class="mg-row">
                             <span class="inline-label">Current</span>
                             <strong id="mg-current-node">—</strong>
-                            <button id="mg-recover-btn" class="btn btn-secondary" style="margin-left:auto;">Recover…</button>
                         </div>
                         <div class="mg-row">
                             <span class="inline-label">Reachable</span>
@@ -240,35 +242,36 @@
                                 </label>
                             </div>
                         </div>
-                    </div>
 
-                    <!-- Drive Arm card — pick an allowed (graph-reachable) destination and send -->
-                    <div class="card" id="drive-arm-card" hidden>
-                        <h2>Drive Arm <span class="panel-unit">graph-gated · strict</span></h2>
-                        <!-- Current node + one-hop Destination/Send removed as
-                             duplicates of the Motion Graph card above (same
-                             Current readout; the Reachable buttons drive the
-                             same /control/graph/move_to). Travel covers
-                             one-hop too — travel_targets ⊇ reachable_nodes. -->
-                        <div class="mg-row">
-                            <span class="inline-label">Travel</span>
-                            <select id="drive-travel-select" class="inline-input"></select>
-                            <span class="inline-label">Speed</span>
-                            <input type="number" id="drive-dest-speed" value="13" min="1" max="200" class="inline-input">
-                            <button id="drive-travel-btn" class="btn btn-primary" disabled title="Plan a multi-hop path and drive it hop-by-hop">Travel</button>
-                        </div>
-                        <div class="mg-row">
-                            <span class="muted" id="drive-dest-hint">(connect and pin to a graph node to enable)</span>
-                        </div>
-                        <!-- Gripper leaf: state readout + whitelisted transitions at the current node -->
-                        <div class="mg-row">
-                            <span class="inline-label">Gripper</span>
-                            <strong id="drive-gripper-state">—</strong>
-                            <select id="drive-gripper-select" class="inline-input"></select>
-                            <button id="drive-gripper-btn" class="btn btn-primary" disabled>Set Gripper</button>
-                        </div>
-                        <div class="mg-row">
-                            <span class="muted" id="drive-gripper-hint">(gripper changes only while parked at a node)</span>
+                        <!-- Drive rows, merged from the former Drive Arm card
+                             (its "graph-gated · strict" heading was static —
+                             wrong in advisory mode — and one tile suffices).
+                             The wrapper keeps the drive-arm-card id so
+                             main.js's hidden-toggling keeps working. One-hop
+                             Destination/Send and the Current readout were
+                             already removed as duplicates; Travel covers
+                             one-hop too (travel_targets ⊇ reachable_nodes). -->
+                        <div id="drive-arm-card" hidden>
+                            <div class="mg-row">
+                                <span class="inline-label">Node</span>
+                                <select id="drive-travel-select" class="inline-input"></select>
+                                <span class="inline-label">Speed</span>
+                                <input type="number" id="drive-dest-speed" value="13" min="1" max="200" class="inline-input">
+                                <button id="drive-travel-btn" class="btn btn-primary" disabled title="Plan a multi-hop path and drive it hop-by-hop">Travel</button>
+                            </div>
+                            <div class="mg-row">
+                                <span class="muted" id="drive-dest-hint">(connect and pin to a graph node to enable)</span>
+                            </div>
+                            <!-- Gripper leaf: state readout + whitelisted transitions at the current node -->
+                            <div class="mg-row">
+                                <span class="inline-label">Gripper</span>
+                                <strong id="drive-gripper-state">—</strong>
+                                <select id="drive-gripper-select" class="inline-input"></select>
+                                <button id="drive-gripper-btn" class="btn btn-primary" disabled>Set Gripper</button>
+                            </div>
+                            <div class="mg-row">
+                                <span class="muted" id="drive-gripper-hint">(gripper changes only while parked at a node)</span>
+                            </div>
                         </div>
                     </div>
                         <span class="muted mode-graph-hint">(connect and enable the motion graph to populate this pane)</span>
