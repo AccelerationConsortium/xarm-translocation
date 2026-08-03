@@ -1585,6 +1585,23 @@ document.addEventListener('DOMContentLoaded', () => {
         updateTakeControlBtn();
     }
 
+    // --- Control Modes tabs (Arm Control / Graph Control) ---
+    const modeTabs = [
+        { tab: document.getElementById('mode-tab-arm'), pane: document.getElementById('mode-pane-arm') },
+        { tab: document.getElementById('mode-tab-graph'), pane: document.getElementById('mode-pane-graph') },
+    ];
+    modeTabs.forEach(({ tab }) => {
+        if (!tab) return;
+        tab.addEventListener('click', () => {
+            modeTabs.forEach((m) => {
+                if (!m.tab || !m.pane) return;
+                const active = m.tab === tab;
+                m.tab.classList.toggle('active', active);
+                m.pane.hidden = !active;
+            });
+        });
+    });
+
     // --- Simulator 3D view (UFACTORY Studio iframe) ---
     // Lazy on purpose: the iframe has no src until the operator first opens
     // the stage, so an idle panel never holds a Studio session. Collapse

@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260803f">
+    <link rel="stylesheet" href="style.css?v=20260803g">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -112,10 +112,18 @@
                         </div>
                     </div>
                 </div>
-                <!-- System Control card -->
-                <div class="card">
-                    <h2>Arm Control</h2>
+                <!-- Control Modes card: two selectable panes — direct
+                     Arm Control, and Graph Control (Motion Graph + Drive Arm).
+                     Tab switching in main.js; the sub-cards inside the graph
+                     pane keep their own JS-managed hidden attributes. -->
+                <div class="card" id="control-modes-card">
+                    <h2>Control Modes</h2>
+                    <div class="mode-tabs" role="tablist">
+                        <button id="mode-tab-arm" class="mode-tab active" type="button">Arm Control</button>
+                        <button id="mode-tab-graph" class="mode-tab" type="button">Graph Control</button>
+                    </div>
 
+                    <div id="mode-pane-arm" class="mode-pane">
                     <!-- Two-column body: xArm controls (left) + XYZ jog (right) -->
                     <div class="sc-body">
 
@@ -194,6 +202,81 @@
                         <button id="copy-joints-btn" class="btn" title="Copy the current joint angles to the clipboard">Copy Joints</button>
                         <button id="move-joints-btn" class="btn btn-primary" disabled>Move Joints</button>
                     </div>
+                    </div><!-- /mode-pane-arm -->
+
+                    <div id="mode-pane-graph" class="mode-pane" hidden>
+                    <!-- Motion Graph card — Phase 4: shows current node + reachable destinations -->
+                    <div class="card" id="motion-graph-card" hidden>
+                        <h2>Motion Graph
+                            <span class="panel-unit">interlock layer</span>
+                        </h2>
+                        <div class="mg-row">
+                            <span class="inline-label">Mode</span>
+                            <select id="mg-mode-select" class="inline-input">
+                                <option value="off">off</option>
+                                <option value="advisory">advisory</option>
+                                <option value="strict">strict</option>
+                            </select>
+                            <span class="inline-label">Current</span>
+                            <strong id="mg-current-node">—</strong>
+                            <button id="mg-recover-btn" class="btn btn-secondary" style="margin-left:auto;">Recover…</button>
+                        </div>
+                        <div class="mg-row">
+                            <span class="inline-label">Reachable</span>
+                            <div id="mg-reachable" class="mg-reachable">
+                                <span class="muted">(no graph node pinned)</span>
+                            </div>
+                        </div>
+                        <div id="mg-recover-panel" class="mg-recover-panel" hidden>
+                            <div class="mg-row">
+                                <span class="inline-label">Nearest</span>
+                                <strong id="mg-suggested-node">—</strong>
+                                <span class="muted" id="mg-residuals"></span>
+                            </div>
+                            <div class="mg-row">
+                                <button id="mg-recover-accept" class="btn btn-success" disabled>Snap to suggested</button>
+                                <label class="inline-label" style="margin-left:1em;">
+                                    <input type="checkbox" id="mg-recover-force"> force
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Drive Arm card — pick an allowed (graph-reachable) destination and send -->
+                    <div class="card" id="drive-arm-card" hidden>
+                        <h2>Drive Arm <span class="panel-unit">graph-gated · strict</span></h2>
+                        <div class="mg-row">
+                            <span class="inline-label">Current</span>
+                            <strong id="drive-current-node">—</strong>
+                        </div>
+                        <div class="mg-row">
+                            <span class="inline-label">Destination</span>
+                            <select id="drive-dest-select" class="inline-input"></select>
+                            <span class="inline-label">Speed</span>
+                            <input type="number" id="drive-dest-speed" value="13" min="1" max="200" class="inline-input">
+                            <button id="drive-send-btn" class="btn btn-primary" disabled>Send</button>
+                        </div>
+                        <div class="mg-row">
+                            <span class="inline-label">Travel</span>
+                            <select id="drive-travel-select" class="inline-input"></select>
+                            <button id="drive-travel-btn" class="btn btn-primary" disabled title="Plan a multi-hop path and drive it hop-by-hop">Travel</button>
+                        </div>
+                        <div class="mg-row">
+                            <span class="muted" id="drive-dest-hint">(connect and pin to a graph node to enable)</span>
+                        </div>
+                        <!-- Gripper leaf: state readout + whitelisted transitions at the current node -->
+                        <div class="mg-row">
+                            <span class="inline-label">Gripper</span>
+                            <strong id="drive-gripper-state">—</strong>
+                            <select id="drive-gripper-select" class="inline-input"></select>
+                            <button id="drive-gripper-btn" class="btn btn-primary" disabled>Set Gripper</button>
+                        </div>
+                        <div class="mg-row">
+                            <span class="muted" id="drive-gripper-hint">(gripper changes only while parked at a node)</span>
+                        </div>
+                    </div>
+                        <span class="muted mode-graph-hint">(connect and enable the motion graph to populate this pane)</span>
+                    </div><!-- /mode-pane-graph -->
                 </div>
             </div>
         </header>
@@ -314,77 +397,6 @@
                     <div id="log-stream" class="log-stream"></div>
                 </div>
 
-                <!-- Drive Arm card — pick an allowed (graph-reachable) destination and send -->
-                <div class="card" id="drive-arm-card" hidden>
-                    <h2>Drive Arm <span class="panel-unit">graph-gated · strict</span></h2>
-                    <div class="mg-row">
-                        <span class="inline-label">Current</span>
-                        <strong id="drive-current-node">—</strong>
-                    </div>
-                    <div class="mg-row">
-                        <span class="inline-label">Destination</span>
-                        <select id="drive-dest-select" class="inline-input"></select>
-                        <span class="inline-label">Speed</span>
-                        <input type="number" id="drive-dest-speed" value="13" min="1" max="200" class="inline-input">
-                        <button id="drive-send-btn" class="btn btn-primary" disabled>Send</button>
-                    </div>
-                    <div class="mg-row">
-                        <span class="inline-label">Travel</span>
-                        <select id="drive-travel-select" class="inline-input"></select>
-                        <button id="drive-travel-btn" class="btn btn-primary" disabled title="Plan a multi-hop path and drive it hop-by-hop">Travel</button>
-                    </div>
-                    <div class="mg-row">
-                        <span class="muted" id="drive-dest-hint">(connect and pin to a graph node to enable)</span>
-                    </div>
-                    <!-- Gripper leaf: state readout + whitelisted transitions at the current node -->
-                    <div class="mg-row">
-                        <span class="inline-label">Gripper</span>
-                        <strong id="drive-gripper-state">—</strong>
-                        <select id="drive-gripper-select" class="inline-input"></select>
-                        <button id="drive-gripper-btn" class="btn btn-primary" disabled>Set Gripper</button>
-                    </div>
-                    <div class="mg-row">
-                        <span class="muted" id="drive-gripper-hint">(gripper changes only while parked at a node)</span>
-                    </div>
-                </div>
-
-                <!-- Motion Graph card — Phase 4: shows current node + reachable destinations -->
-                <div class="card" id="motion-graph-card" hidden>
-                    <h2>Motion Graph
-                        <span class="panel-unit">interlock layer</span>
-                    </h2>
-                    <div class="mg-row">
-                        <span class="inline-label">Mode</span>
-                        <select id="mg-mode-select" class="inline-input">
-                            <option value="off">off</option>
-                            <option value="advisory">advisory</option>
-                            <option value="strict">strict</option>
-                        </select>
-                        <span class="inline-label">Current</span>
-                        <strong id="mg-current-node">—</strong>
-                        <button id="mg-recover-btn" class="btn btn-secondary" style="margin-left:auto;">Recover…</button>
-                    </div>
-                    <div class="mg-row">
-                        <span class="inline-label">Reachable</span>
-                        <div id="mg-reachable" class="mg-reachable">
-                            <span class="muted">(no graph node pinned)</span>
-                        </div>
-                    </div>
-                    <div id="mg-recover-panel" class="mg-recover-panel" hidden>
-                        <div class="mg-row">
-                            <span class="inline-label">Nearest</span>
-                            <strong id="mg-suggested-node">—</strong>
-                            <span class="muted" id="mg-residuals"></span>
-                        </div>
-                        <div class="mg-row">
-                            <button id="mg-recover-accept" class="btn btn-success" disabled>Snap to suggested</button>
-                            <label class="inline-label" style="margin-left:1em;">
-                                <input type="checkbox" id="mg-recover-force"> force
-                            </label>
-                        </div>
-                    </div>
-                </div>
-
             </div><!-- /column-right -->
 
             <!-- System Status — full-width single-column row at the bottom -->
@@ -451,6 +463,6 @@
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
     <script src="camera-player.js?v=20260724e"></script>
-    <script src="main.js?v=20260802b"></script>
+    <script src="main.js?v=20260803a"></script>
 </body>
 </html>
