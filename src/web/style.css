@@ -210,7 +210,10 @@ header {
    is the fixed 600px stack of Control Modes + log. */
 .page-grid {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 600px;
+    /* Left floor = the title tile's constant 660px, so a narrowing page
+       overflows (scrolls) instead of sliding the tile under the right
+       column. */
+    grid-template-columns: minmax(660px, 1fr) 600px;
     gap: 16px;
     align-items: start;
 }
@@ -229,11 +232,8 @@ header {
     flex-direction: column;
     gap: 14px;
     padding: 20px;
-    /* Fixed tile width; height flows with content. max-width lets it
-       shrink on small screens but never below 560px. */
+    /* Constant tile width; height flows with content. */
     width: 660px;
-    max-width: 100%;
-    min-width: 560px;
     box-sizing: border-box;
 }
 
@@ -1097,6 +1097,34 @@ input#linear-speed {
 .mode-tab.active {
     color: var(--primary);
     box-shadow: inset 0 -2px 0 var(--primary-active);
+}
+
+/* Manual Mode switch lives on the tabs row, right-aligned. */
+.mode-tabs .mode-tabs-switch {
+    margin-left: auto;
+    margin-bottom: 4px;
+    align-self: center;
+}
+
+/* Direct Drive pane: controls + joint angles on the left, the XYZ jog
+   column spanning the pane's full height on the right of a divider. */
+.pane-arm-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 280px;
+    gap: 16px;
+}
+
+.pane-arm-left {
+    min-width: 0;
+}
+
+.pane-arm-right {
+    border-left: 1px solid var(--border);
+    padding-left: 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
 }
 
 /* The graph pane is one flat tile: the Motion Graph card (border kept,
@@ -1983,6 +2011,12 @@ input#linear-speed {
    then scales for display. Offsets measured on Studio v2.4.0 at
    1300x900; if a Studio update moves the panel, retune the four
    geometry vars below. */
+/* Match the CLI window's fixed height beside it. */
+#sim-3d-card {
+    height: 400px;
+    box-sizing: border-box;
+}
+
 .sim-3d-stage {
     margin-top: 12px;
 }
@@ -1993,9 +2027,9 @@ input#linear-speed {
        at (900,120) inside the fixed 1300x900 viewport, shown at native
        scale. Measured on Studio v2.4.0. */
     --sim3d-x: 900px;      /* crop origin inside the Studio viewport */
-    --sim3d-y: 120px;
+    --sim3d-y: 90px;
     --sim3d-w: 350px;
-    --sim3d-h: 350px;
+    --sim3d-h: 530px;      /* 530*0.6 = 318px display fills the 400px card */
     --sim3d-scale: 0.6;    /* fits the 350px window into the 250px card */
     position: relative;
     overflow: hidden;

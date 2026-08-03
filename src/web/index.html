@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260804e">
+    <link rel="stylesheet" href="style.css?v=20260804f">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -261,26 +261,21 @@
                      Tab switching in main.js; the sub-cards inside the graph
                      pane keep their own JS-managed hidden attributes. -->
                 <div class="card" id="control-modes-card">
-                    <h2>Control Modes</h2>
                     <div class="mode-tabs" role="tablist">
-                        <button id="mode-tab-arm" class="mode-tab active" type="button">Arm Control</button>
+                        <button id="mode-tab-arm" class="mode-tab active" type="button">Direct Drive</button>
                         <button id="mode-tab-graph" class="mode-tab" type="button">Graph Control</button>
+                        <label id="manual-mode-switch" class="manual-switch is-disabled mode-tabs-switch" title="Release the joint brakes for hand-guiding. While on, XYZ and joint commands are locked out; joint angles keep updating live.">
+                            <input type="checkbox" id="manual-mode-checkbox" disabled>
+                            <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
+                            <span class="manual-switch-text">Manual Mode</span>
+                        </label>
                     </div>
 
                     <div id="mode-pane-arm" class="mode-pane">
                     <!-- Two-column body: xArm controls (left) + XYZ jog (right) -->
-                    <div class="sc-body">
+                    <div class="pane-arm-grid">
+                        <div class="pane-arm-left">
 
-                        <!-- Left: xArm controls (Take Control / STOP / Clear Errors
-                             now live in the header action stack). -->
-                        <div class="sc-left">
-                            <div class="enable-row enable-row-jog manual-mode-row">
-                                <label id="manual-mode-switch" class="manual-switch is-disabled" title="Release the joint brakes for hand-guiding. While on, XYZ and joint commands are locked out; joint angles keep updating live.">
-                                    <input type="checkbox" id="manual-mode-checkbox" disabled>
-                                    <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
-                                    <span class="manual-switch-text">Manual Mode</span>
-                                </label>
-                            </div>
                             <div class="position-controls-row">
                                 <select id="predefined-position-select" class="position-dropdown"></select>
                             </div>
@@ -296,12 +291,29 @@
                                 <input type="number" id="linear-speed" placeholder="50" min="1" max="1000" value="50" class="inline-input">
                                 <span class="inline-unit">mm/s</span>
                             </div>
+
+                    <!-- Joint Angles (merged into Arm Control) -->
+                    <h3 class="joints-subhead">Joint Angles <span class="panel-unit">live · direct control</span></h3>
+                    <div class="joint-inputs-h">
+                        <div class="joint-col"><label>J1</label><input type="number" id="j1-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J2</label><input type="number" id="j2-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J3</label><input type="number" id="j3-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J4</label><input type="number" id="j4-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J5</label><input type="number" id="j5-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col" id="j6-col" style="display:none"><label>J6</label><input type="number" id="j6-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col" id="j7-col" style="display:none"><label>J7</label><input type="number" id="j7-input" step="0.1" placeholder="—"></div>
+                    </div>
+                    <div class="joint-action-row">
+                        <span class="inline-label">Speed</span>
+                        <input type="number" id="direct-joint-speed" value="10" min="1" max="200" class="inline-input" disabled>
+                        <span class="inline-unit">°/s</span>
+                        <button id="copy-joints-btn" class="btn" title="Copy the current joint angles to the clipboard">Copy Joints</button>
+                        <button id="move-joints-btn" class="btn btn-primary" disabled>Move Joints</button>
+                    </div>
                         </div>
 
-                        <!-- Right: XYZ jog pad -->
-                        <div class="sc-right">
-                            <!-- Manual Mode switch moved to the top of sc-left,
-                                 above the preset-pose dropdown. -->
+                        <!-- XYZ jog column: full height of the pane, divider left -->
+                        <div class="pane-arm-right">
                             <div class="jog-panel">
                                 <!-- Z buttons -->
                                 <div class="jog-z-row">
@@ -324,27 +336,7 @@
                                 </div>
                             </div>
                         </div>
-
-                    </div><!-- /sc-body -->
-
-                    <!-- Joint Angles (merged into Arm Control) -->
-                    <h3 class="joints-subhead">Joint Angles <span class="panel-unit">live · direct control</span></h3>
-                    <div class="joint-inputs-h">
-                        <div class="joint-col"><label>J1</label><input type="number" id="j1-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J2</label><input type="number" id="j2-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J3</label><input type="number" id="j3-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J4</label><input type="number" id="j4-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J5</label><input type="number" id="j5-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col" id="j6-col" style="display:none"><label>J6</label><input type="number" id="j6-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col" id="j7-col" style="display:none"><label>J7</label><input type="number" id="j7-input" step="0.1" placeholder="—"></div>
-                    </div>
-                    <div class="joint-action-row">
-                        <span class="inline-label">Speed</span>
-                        <input type="number" id="direct-joint-speed" value="10" min="1" max="200" class="inline-input" disabled>
-                        <span class="inline-unit">°/s</span>
-                        <button id="copy-joints-btn" class="btn" title="Copy the current joint angles to the clipboard">Copy Joints</button>
-                        <button id="move-joints-btn" class="btn btn-primary" disabled>Move Joints</button>
-                    </div>
+                    </div><!-- /pane-arm-grid -->
                     </div><!-- /mode-pane-arm -->
 
                     <div id="mode-pane-graph" class="mode-pane" hidden>
