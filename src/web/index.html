@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260803t">
+    <link rel="stylesheet" href="style.css?v=20260803u">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -52,6 +52,7 @@
         <main class="page-grid">
             <div class="page-left">
                 <div class="title-status-container">
+                    <div class="title-top">
                     <!-- Primary arm actions, moved out of the Arm Control card into a
                          right-hand stack (CSS order) so Take Control / STOP / Clear
                          Errors are reachable from the top of the page. The title
@@ -136,11 +137,12 @@
                                 </select>
                             </div>
                         </div>
-                        <!-- Gripper + Linear Track, folded into the title tile
-                             as two columns under the connection section (they
-                             lived in their own 250px middle column before).
-                             IDs unchanged (main.js). -->
-                        <div class="tile-sub-cols">
+                    </div>
+                    </div><!-- /title-top -->
+                    <!-- Gripper + Linear Track, two columns spanning the FULL
+                         tile width (outside .title-top so the actions stack
+                         doesn't eat their room). IDs unchanged (main.js). -->
+                    <div class="tile-sub-cols">
                             <div class="tile-sub">
                                 <h3>Gripper</h3>
                     <div class="gripper-controls">
@@ -175,9 +177,8 @@
                         <div class="info-left">Range: <span id="track-range-display">0-700 mm</span></div>
                         <div class="info-right">Current: <span id="track-position-display">N/A</span></div>
                     </div>
-                            </div>
                         </div>
-                    </div>
+                    </div><!-- /tile-sub-cols -->
                 </div>
 
                 <div class="left-tiles">

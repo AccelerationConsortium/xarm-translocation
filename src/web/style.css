@@ -226,14 +226,22 @@ header {
 
 .title-status-container {
     display: flex;
-    flex-direction: row;
-    align-items: stretch;
-    gap: 18px;
+    flex-direction: column;
+    gap: 14px;
     padding: 20px;
     /* Height flows with content (gripper + track now live inside); the
        tile never narrows below 560px. */
     min-width: 560px;
     box-sizing: border-box;
+}
+
+/* Top row of the tile: title/status block + the action stack. The
+   .tile-sub-cols below sits OUTSIDE this row, spanning full width. */
+.title-top {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    gap: 18px;
 }
 
 /* Right-hand primary action stack (Take Control / STOP / Clear Errors),
@@ -1327,8 +1335,11 @@ input#linear-speed {
 
     /* Stack the header vertically and lay the action buttons in a row. */
     .title-status-container {
+        min-width: 0;
+    }
+
+    .title-top {
         flex-direction: column;
-        height: auto;
     }
 
     .header-actions {
