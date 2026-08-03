@@ -460,6 +460,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
+            // Header "Open Studio" quick-link rides the same flag.
+            const simStudioLink = document.getElementById('sim-studio-link');
+            if (simStudioLink) simStudioLink.hidden = data.simulated !== true;
+
             // Update connection text and light
             try {
                 if (isConnected) {

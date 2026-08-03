@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260802c">
+    <link rel="stylesheet" href="style.css?v=20260802d">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -58,7 +58,7 @@
                     </div>
                     <div class="title-status-main">
                         <p class="eyebrow">xArm Translocation</p>
-                        <h1>Web Control Interface</h1>
+                        <h1>Control Interface</h1>
                         <div id="status-container">
                             <div class="status-pills">
                                 <div id="status-main">
@@ -68,15 +68,26 @@
                                 <div id="connection-details"></div>
                             </div>
                             <div id="claim-status" class="claim-status claim-free">Control: nobody (open)</div>
-                            <a href="graph.html" class="graph-tile" target="_blank" rel="noopener" title="Open the motion-graph view (interlock topology, live node)">
-                                <svg class="graph-tile-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                    <circle cx="5" cy="6" r="2.2"></circle>
-                                    <circle cx="19" cy="6" r="2.2"></circle>
-                                    <circle cx="12" cy="18" r="2.2"></circle>
-                                    <path d="M6.9 7.4 10.6 15.9 M17.1 7.4 13.4 15.9 M7.2 6 h9.6"></path>
-                                </svg>
-                                <span class="graph-tile-text">Motion Graph</span>
-                            </a>
+                            <div class="tile-links">
+                                <a href="graph.html" class="graph-tile" target="_blank" rel="noopener" title="Open the motion-graph view (interlock topology, live node)">
+                                    <svg class="graph-tile-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                                        <circle cx="5" cy="6" r="2.2"></circle>
+                                        <circle cx="19" cy="6" r="2.2"></circle>
+                                        <circle cx="12" cy="18" r="2.2"></circle>
+                                        <path d="M6.9 7.4 10.6 15.9 M17.1 7.4 13.4 15.9 M7.2 6 h9.6"></path>
+                                    </svg>
+                                    <span class="graph-tile-text">Motion Graph</span>
+                                </a>
+                                <!-- Sim sessions only (toggled with details.simulated in
+                                     main.js, like the 3D card): the full UFACTORY Studio
+                                     control interface for the SIMULATOR — never point
+                                     this at a real arm's Studio. -->
+                                <a id="sim-studio-link" class="graph-tile" hidden
+                                   href="http://100.64.254.6:18333/control" target="_blank" rel="noopener"
+                                   title="Open the full UFACTORY Studio control interface for the simulator">
+                                    <span class="graph-tile-text">Open Studio &#8599;</span>
+                                </a>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -146,11 +157,7 @@
                      un-audited, claim-bypassing control surface (fine for a
                      sim, not for hardware). Wiring in main.js. -->
                 <div class="card" id="sim-3d-card" hidden>
-                    <h2>Simulator 3D View <span class="panel-unit">UFACTORY Studio</span>
-                        <a class="studio-link" href="http://100.64.254.6:18333/control"
-                           target="_blank" rel="noopener"
-                           title="Open the full UFACTORY Studio control interface for the simulator">Open Studio ↗</a>
-                    </h2>
+                    <h2>Simulator 3D View <span class="panel-unit">UFACTORY Studio</span></h2>
                     <button id="sim-3d-toggle-btn" class="btn">Show 3D view</button>
                     <!-- The crop isolates Studio's arm panel (.xarm-container:
                          STOP, 3D canvas, Real/Sim switch, pose + joints) — the
@@ -435,6 +442,6 @@
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
     <script src="camera-player.js?v=20260724e"></script>
-    <script src="main.js?v=20260802a"></script>
+    <script src="main.js?v=20260802b"></script>
 </body>
 </html>

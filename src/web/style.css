@@ -226,6 +226,11 @@ header {
     align-items: stretch;
     gap: 18px;
     padding: 20px;
+    /* Fixed tile height so the header doesn't breathe as pills/messages
+       come and go (the log tile stretches to match via the grid). Released
+       in the <=700px stacked layout. */
+    height: 280px;
+    box-sizing: border-box;
 }
 
 /* Right-hand primary action stack (Take Control / STOP / Clear Errors),
@@ -909,6 +914,14 @@ input#linear-speed {
     flex: 0 0 auto;
 }
 
+/* Row of header quick-links (Motion Graph + the sim-only Open Studio). */
+.tile-links {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+
 .xarm-buttons .btn {
     min-height: 68px;
     padding: 14px;
@@ -1006,15 +1019,19 @@ input#linear-speed {
 }
 
 /* Render the connection-info / message element as a pill beside the state pill.
-   Overrides the full-width message-box rule above (id beats class). */
+   Overrides the full-width message-box rule above (id beats class). Same
+   neutral treatment as #status-main so the two pills read as one family;
+   the vars flip with the theme, so no separate dark rule is needed. */
 #connection-details {
     width: auto;
     min-height: 0;
     border-radius: 999px;
     padding: 5px 10px;
     font-size: 0.82rem;
-    font-weight: 600;
+    font-weight: 700;
     white-space: normal;
+    background: var(--surface-soft);
+    color: var(--ink-muted);
     box-shadow: inset 0 0 0 1px var(--border);
 }
 
@@ -1061,6 +1078,7 @@ input#linear-speed {
     /* Stack the header vertically and lay the action buttons in a row. */
     .title-status-container {
         flex-direction: column;
+        height: auto;
     }
 
     .header-actions {
@@ -1633,7 +1651,6 @@ input#linear-speed {
 /* Hardcoded light surfaces → dark equivalents. */
 :root.dark .component-control { background: rgba(30, 41, 59, 0.5); }
 
-:root.dark #connection-details,
 :root.dark .connection-details,
 :root.dark .error-message-info {
     background: rgba(2, 132, 199, 0.16);   /* sky tint */
@@ -1702,18 +1719,6 @@ input#linear-speed {
     transform-origin: top left;
 }
 
-/* "Open Studio ↗" link in the card heading. */
-.studio-link {
-    float: right;
-    font-size: 0.8rem;
-    font-weight: 500;
-    color: var(--primary);
-    text-decoration: none;
-}
-
-.studio-link:hover {
-    text-decoration: underline;
-}
 
 /* ── Top banner stack (auth bar + simulation banner) ───────────────────
    One sticky wrapper so the auth bar and the sim banner pin together
