@@ -1663,26 +1663,45 @@ input#linear-speed {
 :root.dark .camera-stage,
 :root.dark .camera-video { background: #020617; }     /* slate-950 */
 
-/* ── Simulation banner ─────────────────────────────────────────────────
-   Shown while /status reports details.simulated (docker profile). Sticky
-   so it stays visible however far the operator scrolls; animated stripes
-   so it reads as "live mode", not a dismissed toast. Same rule in both
-   themes on purpose — amber-on-dark is legible everywhere and the point
-   is to be unmistakable, not tasteful. */
-.sim-banner {
+/* ── Top banner stack (auth bar + simulation banner) ───────────────────
+   One sticky wrapper so the auth bar and the sim banner pin together
+   instead of both fighting for top:0 (banner.js's self-created host
+   out-z-indexes everything and covered the sim banner on scroll; the
+   #ac-auth-banner-slot inside this wrapper retires that host). z-index
+   just needs to clear every card/tile on the page. */
+.top-banners {
     position: sticky;
     top: 0;
-    z-index: 1000;
-    padding: 0.55rem 1rem;
+    z-index: 5000;
+}
+
+/* ── Simulation banner ─────────────────────────────────────────────────
+   Shown while /status reports details.simulated (docker profile).
+   Unmistakable but readable: a thin hazard-stripe strip along the top
+   edge carries the "live mode" cue, the text sits on a solid soft amber
+   field with bold reserved for the one load-bearing word. */
+.sim-banner {
+    padding: calc(0.5rem + 4px) 1rem 0.5rem;
     text-align: center;
-    font-weight: 700;
     font-size: 0.95rem;
-    letter-spacing: 0.04em;
-    color: #1c1917;                          /* stone-900 */
-    background: repeating-linear-gradient(
-        -45deg,
-        #fbbf24 0 14px,                      /* amber-400 */
-        #f59e0b 14px 28px                    /* amber-500 */
-    );
-    border-bottom: 2px solid #b45309;        /* amber-700 */
+    color: #78350f;                          /* amber-900 */
+    background:
+        repeating-linear-gradient(-45deg, #fbbf24 0 10px, #78350f 10px 20px)
+            top / 100% 4px no-repeat,        /* 4px hazard strip */
+        #fef3c7;                             /* amber-100 field */
+    border-bottom: 1px solid #f59e0b;        /* amber-500 */
+}
+
+.sim-banner strong {
+    font-weight: 800;
+    letter-spacing: 0.05em;
+}
+
+:root.dark .sim-banner {
+    color: #fde68a;                          /* amber-200 */
+    background:
+        repeating-linear-gradient(-45deg, #f59e0b 0 10px, #451a03 10px 20px)
+            top / 100% 4px no-repeat,
+        #451a03;                             /* amber-950 field */
+    border-bottom-color: #92400e;            /* amber-700 */
 }

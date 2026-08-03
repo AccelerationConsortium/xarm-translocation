@@ -18,15 +18,25 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260731a">
+    <link rel="stylesheet" href="style.css?v=20260802a">
 </head>
 <body>
-    <!-- Simulation banner: shown whenever /status reports details.simulated
-         (docker profile -> dry_run state). Deliberately outside .container
-         and impossible to miss, so a sim session can never be mistaken for
-         the real arm. Toggled by updateStatusUI in main.js. -->
-    <div id="sim-banner" class="sim-banner" hidden>
-        &#9888; SIMULATION &mdash; connected to the Docker simulator, not the real arm
+    <!-- Sticky top-banner stack. banner.js prefers a page-provided
+         #ac-auth-banner-slot over prepending its own sticky host — and its
+         self-made host pins at top:0 with a maximal z-index, which covered
+         the sim banner the moment the page scrolled. Hosting the slot here
+         makes both banners pin together: auth bar on top, sim banner
+         beneath, both visible at any scroll depth. -->
+    <div class="top-banners">
+        <div id="ac-auth-banner-slot"></div>
+        <!-- Simulation banner: shown whenever /status reports details.simulated
+             (docker profile -> dry_run state). Deliberately outside .container
+             and impossible to miss, so a sim session can never be mistaken for
+             the real arm. Toggled by updateStatusUI in main.js. -->
+        <div id="sim-banner" class="sim-banner" hidden>
+            <span aria-hidden="true">&#9888;</span> <strong>SIMULATION</strong>
+            &mdash; connected to the Docker simulator, not the real arm
+        </div>
     </div>
     <div class="container">
         <!-- Shared SDL2 auth banner: injected by /auth/banner.js (served by
