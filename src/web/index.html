@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260802b">
+    <link rel="stylesheet" href="style.css?v=20260802c">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -146,12 +146,28 @@
                      un-audited, claim-bypassing control surface (fine for a
                      sim, not for hardware). Wiring in main.js. -->
                 <div class="card" id="sim-3d-card" hidden>
-                    <h2>Simulator 3D View <span class="panel-unit">UFACTORY Studio</span></h2>
+                    <h2>Simulator 3D View <span class="panel-unit">UFACTORY Studio</span>
+                        <a class="studio-link" href="http://100.64.254.6:18333/control"
+                           target="_blank" rel="noopener"
+                           title="Open the full UFACTORY Studio control interface for the simulator">Open Studio ↗</a>
+                    </h2>
                     <button id="sim-3d-toggle-btn" class="btn">Show 3D view</button>
+                    <!-- The crop isolates Studio's arm panel (.xarm-container:
+                         STOP, 3D canvas, Real/Sim switch, pose + joints) — the
+                         right column of /control, x 896-1300 at a 1300x900
+                         viewport (measured on Studio v2.4.0, headless-Edge
+                         screenshot 2026-08-02). The iframe is held at that
+                         fixed viewport so Studio's vw-scaled layout is
+                         deterministic; geometry + display scale live in the
+                         .sim-3d-crop CSS variables. Cross-origin, so a crop
+                         is the only isolation available — the canvas stays
+                         fully interactive (drag to orbit). -->
                     <div id="sim-3d-stage" class="sim-3d-stage" hidden>
-                        <iframe id="sim-3d-frame" class="sim-3d-frame"
-                                title="UFACTORY Studio — simulated arm"
-                                data-src="http://100.64.254.6:18333/"></iframe>
+                        <div class="sim-3d-crop">
+                            <iframe id="sim-3d-frame" class="sim-3d-frame"
+                                    title="UFACTORY Studio — simulated arm"
+                                    data-src="http://100.64.254.6:18333/control"></iframe>
+                        </div>
                     </div>
                 </div>
 

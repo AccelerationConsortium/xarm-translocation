@@ -1663,21 +1663,56 @@ input#linear-speed {
 :root.dark .camera-stage,
 :root.dark .camera-video { background: #020617; }     /* slate-950 */
 
-/* ── Simulator 3D view (UFACTORY Studio iframe) ────────────────────────
-   Cross-origin, so the whole Studio page comes along — size the frame
-   tall enough that its 3D canvas dominates. Background matches Studio's
-   own loading surface so the lazy load doesn't flash. */
+/* ── Simulator 3D view (UFACTORY Studio iframe, cropped) ───────────────
+   Cross-origin, so Studio's DOM is untouchable — isolation is a visual
+   crop: the iframe is pinned to a FIXED 1300x900 viewport (Studio lays
+   itself out in vw units, so a fixed viewport makes the geometry
+   deterministic), and the wrapper clips to the arm panel's rectangle,
+   then scales for display. Offsets measured on Studio v2.4.0 at
+   1300x900; if a Studio update moves the panel, retune the four
+   geometry vars below. */
 .sim-3d-stage {
     margin-top: 12px;
 }
 
-.sim-3d-frame {
-    display: block;
-    width: 100%;
-    height: min(70vh, 640px);
+.sim-3d-crop {
+    --sim3d-x: 896px;      /* left edge of .xarm-container at 1300x900 */
+    --sim3d-w: 404px;      /* panel width  */
+    --sim3d-h: 900px;      /* panel height (full column) */
+    --sim3d-scale: 0.78;   /* display scale inside the card */
+    position: relative;
+    overflow: hidden;
+    width: calc(var(--sim3d-w) * var(--sim3d-scale));
+    height: calc(var(--sim3d-h) * var(--sim3d-scale));
+    max-width: 100%;
+    margin: 0 auto;
     border: 1px solid var(--border);
     border-radius: 10px;
-    background: #f7f8fa;
+    background: #17191d;   /* Studio's dark surface, avoids a load flash */
+}
+
+.sim-3d-frame {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 1300px;         /* fixed Studio viewport — do not make fluid */
+    height: 900px;
+    border: 0;
+    transform: scale(var(--sim3d-scale)) translateX(calc(-1 * var(--sim3d-x)));
+    transform-origin: top left;
+}
+
+/* "Open Studio ↗" link in the card heading. */
+.studio-link {
+    float: right;
+    font-size: 0.8rem;
+    font-weight: 500;
+    color: var(--primary);
+    text-decoration: none;
+}
+
+.studio-link:hover {
+    text-decoration: underline;
 }
 
 /* ── Top banner stack (auth bar + simulation banner) ───────────────────
