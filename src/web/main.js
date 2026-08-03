@@ -766,16 +766,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         card.hidden = false;
 
-        const modeSelect = document.getElementById('mg-mode-select');
+        const modeBtns = document.querySelectorAll('.mg-mode-btn');
         const currentEl = document.getElementById('mg-current-node');
         const reachableEl = document.getElementById('mg-reachable');
 
-        // Mode select reflects server state. Only update if it's not
-        // currently focused (so the user can change it without us
-        // stomping their selection mid-dropdown).
-        if (modeSelect && document.activeElement !== modeSelect) {
-            modeSelect.value = motionGraph.graph_mode || 'off';
-        }
+        // Mode buttons reflect server state: the active mode lights up.
+        const liveMode = motionGraph.graph_mode || 'off';
+        modeBtns.forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.mode === liveMode);
+        });
 
         // Current node + reachable buttons.
         const current = motionGraph.current_node;
@@ -1832,10 +1831,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Motion-graph card listeners (Phase 4). All elements may be
     // missing if index.html is older than this build — guard each one.
-    const mgModeSelect = document.getElementById('mg-mode-select');
-    if (mgModeSelect) {
-        mgModeSelect.addEventListener('change', (e) => changeGraphMode(e.target.value));
-    }
+    document.querySelectorAll('.mg-mode-btn').forEach(btn => {
+        btn.addEventListener('click', () => changeGraphMode(btn.dataset.mode));
+    });
     const mgRecoverBtn = document.getElementById('mg-recover-btn');
     if (mgRecoverBtn) {
         mgRecoverBtn.addEventListener('click', openRecoverPanel);

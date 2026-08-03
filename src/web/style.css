@@ -1127,6 +1127,59 @@ input#linear-speed {
     justify-content: center;
 }
 
+/* Graph mode: three equal buttons, the live mode lit. */
+.mg-mode-btns {
+    display: flex;
+    gap: 6px;
+}
+
+.mg-mode-btn {
+    width: 90px;
+    padding: 6px 0;
+    border: 1px solid var(--border-strong);
+    border-radius: 9px;
+    background: var(--surface-soft);
+    color: var(--ink-muted);
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.mg-mode-btn:hover {
+    color: var(--ink);
+    border-color: var(--primary-active);
+}
+
+.mg-mode-btn.active {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #ffffff;
+}
+
+/* Move button on the left of the stacked Node / Speed lines. */
+.drive-move-row {
+    display: flex;
+    align-items: stretch;
+    gap: 14px;
+    margin-bottom: 10px;
+}
+
+.drive-move-btn {
+    width: 90px;
+}
+
+.drive-move-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-width: 0;
+}
+
+.drive-move-fields .mg-row {
+    margin-bottom: 0;
+}
+
 /* The graph pane is one flat tile: the Motion Graph card (border kept,
    outer shadow dropped) with the drive rows merged in below a divider.
    The hint shows only while the card is JS-hidden (disconnected /

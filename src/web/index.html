@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260804f">
+    <link rel="stylesheet" href="style.css?v=20260804g">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -292,24 +292,6 @@
                                 <span class="inline-unit">mm/s</span>
                             </div>
 
-                    <!-- Joint Angles (merged into Arm Control) -->
-                    <h3 class="joints-subhead">Joint Angles <span class="panel-unit">live · direct control</span></h3>
-                    <div class="joint-inputs-h">
-                        <div class="joint-col"><label>J1</label><input type="number" id="j1-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J2</label><input type="number" id="j2-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J3</label><input type="number" id="j3-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J4</label><input type="number" id="j4-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J5</label><input type="number" id="j5-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col" id="j6-col" style="display:none"><label>J6</label><input type="number" id="j6-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col" id="j7-col" style="display:none"><label>J7</label><input type="number" id="j7-input" step="0.1" placeholder="—"></div>
-                    </div>
-                    <div class="joint-action-row">
-                        <span class="inline-label">Speed</span>
-                        <input type="number" id="direct-joint-speed" value="10" min="1" max="200" class="inline-input" disabled>
-                        <span class="inline-unit">°/s</span>
-                        <button id="copy-joints-btn" class="btn" title="Copy the current joint angles to the clipboard">Copy Joints</button>
-                        <button id="move-joints-btn" class="btn btn-primary" disabled>Move Joints</button>
-                    </div>
                         </div>
 
                         <!-- XYZ jog column: full height of the pane, divider left -->
@@ -337,6 +319,25 @@
                             </div>
                         </div>
                     </div><!-- /pane-arm-grid -->
+
+                    <!-- Joint Angles — full pane width -->
+                    <h3 class="joints-subhead">Joint Angles <span class="panel-unit">live · direct control</span></h3>
+                    <div class="joint-inputs-h">
+                        <div class="joint-col"><label>J1</label><input type="number" id="j1-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J2</label><input type="number" id="j2-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J3</label><input type="number" id="j3-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J4</label><input type="number" id="j4-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J5</label><input type="number" id="j5-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col" id="j6-col" style="display:none"><label>J6</label><input type="number" id="j6-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col" id="j7-col" style="display:none"><label>J7</label><input type="number" id="j7-input" step="0.1" placeholder="—"></div>
+                    </div>
+                    <div class="joint-action-row">
+                        <span class="inline-label">Speed</span>
+                        <input type="number" id="direct-joint-speed" value="10" min="1" max="200" class="inline-input" disabled>
+                        <span class="inline-unit">°/s</span>
+                        <button id="copy-joints-btn" class="btn" title="Copy the current joint angles to the clipboard">Copy Joints</button>
+                        <button id="move-joints-btn" class="btn btn-primary" disabled>Move Joints</button>
+                    </div>
                     </div><!-- /mode-pane-arm -->
 
                     <div id="mode-pane-graph" class="mode-pane" hidden>
@@ -347,11 +348,11 @@
                         </h2>
                         <div class="mg-row">
                             <span class="inline-label">Mode</span>
-                            <select id="mg-mode-select" class="inline-input">
-                                <option value="off">off</option>
-                                <option value="advisory">advisory</option>
-                                <option value="strict">strict</option>
-                            </select>
+                            <div class="mg-mode-btns" role="radiogroup" aria-label="Graph mode">
+                                <button type="button" class="mg-mode-btn" data-mode="off">off</button>
+                                <button type="button" class="mg-mode-btn" data-mode="advisory">advisory</button>
+                                <button type="button" class="mg-mode-btn" data-mode="strict">strict</button>
+                            </div>
                             <button id="mg-recover-btn" class="btn btn-secondary" style="margin-left:auto;">Recover…</button>
                         </div>
                         <div class="mg-row">
@@ -387,12 +388,18 @@
                              already removed as duplicates; Travel covers
                              one-hop too (travel_targets ⊇ reachable_nodes). -->
                         <div id="drive-arm-card" hidden>
-                            <div class="mg-row">
-                                <span class="inline-label">Node</span>
-                                <select id="drive-travel-select" class="inline-input"></select>
-                                <span class="inline-label">Speed</span>
-                                <input type="number" id="drive-dest-speed" value="13" min="1" max="200" class="inline-input">
-                                <button id="drive-travel-btn" class="btn btn-primary" disabled title="Plan a multi-hop path and drive it hop-by-hop">Travel</button>
+                            <div class="drive-move-row">
+                                <button id="drive-travel-btn" class="btn btn-primary drive-move-btn" disabled title="Plan a multi-hop path and drive it hop-by-hop">Move</button>
+                                <div class="drive-move-fields">
+                                    <div class="mg-row">
+                                        <span class="inline-label">Node</span>
+                                        <select id="drive-travel-select" class="inline-input"></select>
+                                    </div>
+                                    <div class="mg-row">
+                                        <span class="inline-label">Speed</span>
+                                        <input type="number" id="drive-dest-speed" value="13" min="1" max="200" class="inline-input">
+                                    </div>
+                                </div>
                             </div>
                             <div class="mg-row">
                                 <span class="muted" id="drive-dest-hint">(connect and pin to a graph node to enable)</span>
@@ -482,6 +489,6 @@
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
     <script src="camera-player.js?v=20260724e"></script>
-    <script src="main.js?v=20260804b"></script>
+    <script src="main.js?v=20260804c"></script>
 </body>
 </html>
