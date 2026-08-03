@@ -888,6 +888,14 @@ input#linear-speed {
     gap: 10px;
 }
 
+/* "Follow arm" label stacked above its switch (DOM keeps track first;
+   column-reverse flips the visual order). */
+.camera-row #camera-follow-switch {
+    flex-direction: column-reverse;
+    align-items: flex-start;
+    gap: 6px;
+}
+
 /* Inside the row the stage grows to fill; elsewhere (graph.html) it
    keeps its fixed 350px. */
 .camera-row .camera-stage {
