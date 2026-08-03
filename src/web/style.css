@@ -229,9 +229,9 @@ header {
     flex-direction: column;
     gap: 14px;
     padding: 20px;
-    /* Height flows with content (gripper + track now live inside); the
-       tile never narrows below 560px. */
-    min-width: 560px;
+    /* Fixed tile width; height flows with content. */
+    width: 660px;
+    max-width: 100%;
     box-sizing: border-box;
 }
 
@@ -366,11 +366,10 @@ h3 {
     background: rgba(190, 18, 60, 0.18);
 }
 
-/* Inside the left column: the camera (+ sim 3D) tiles. Gripper + track
-   moved into the title tile (.tile-sub-cols). */
+/* Inside the left column: camera | simulator 3D view (250px). */
 .left-tiles {
     display: grid;
-    grid-template-columns: 400px;
+    grid-template-columns: 400px 250px;
     gap: 16px;
     align-items: start;
 }
@@ -1971,7 +1970,7 @@ input#linear-speed {
     --sim3d-y: 120px;
     --sim3d-w: 350px;
     --sim3d-h: 350px;
-    --sim3d-scale: 1;      /* display scale inside the card */
+    --sim3d-scale: 0.6;    /* fits the 350px window into the 250px card */
     position: relative;
     overflow: hidden;
     width: calc(var(--sim3d-w) * var(--sim3d-scale));
