@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260803d">
+    <link rel="stylesheet" href="style.css?v=20260803e">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -122,6 +122,13 @@
                         <!-- Left: xArm controls (Take Control / STOP / Clear Errors
                              now live in the header action stack). -->
                         <div class="sc-left">
+                            <div class="enable-row enable-row-jog manual-mode-row">
+                                <label id="manual-mode-switch" class="manual-switch is-disabled" title="Release the joint brakes for hand-guiding. While on, XYZ and joint commands are locked out; joint angles keep updating live.">
+                                    <input type="checkbox" id="manual-mode-checkbox" disabled>
+                                    <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
+                                    <span class="manual-switch-text">Manual Mode</span>
+                                </label>
+                            </div>
                             <div class="position-controls-row">
                                 <select id="predefined-position-select" class="position-dropdown"></select>
                             </div>
@@ -142,13 +149,8 @@
 
                         <!-- Right: XYZ jog pad -->
                         <div class="sc-right">
-                            <div class="enable-row enable-row-jog">
-                                <label id="manual-mode-switch" class="manual-switch is-disabled" title="Release the joint brakes for hand-guiding. While on, XYZ and joint commands are locked out; joint angles keep updating live.">
-                                    <input type="checkbox" id="manual-mode-checkbox" disabled>
-                                    <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
-                                    <span class="manual-switch-text">Manual Mode</span>
-                                </label>
-                            </div>
+                            <!-- Manual Mode switch moved to the top of sc-left,
+                                 above the preset-pose dropdown. -->
                             <div class="jog-panel">
                                 <!-- Z buttons -->
                                 <div class="jog-z-row">

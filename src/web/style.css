@@ -1244,6 +1244,14 @@ input#linear-speed {
 }
 
 /* Enable + Manual-mode row sitting above the jog pad in the Jog column. */
+/* In its sc-left spot above the preset dropdown the switch left-aligns
+   (the centered variant was for the jog column it moved out of). Double
+   class outranks the .enable-row-jog centering below. */
+.enable-row-jog.manual-mode-row {
+    justify-content: flex-start;
+    margin-bottom: 10px;
+}
+
 .enable-row-jog {
     justify-content: center;
     flex-wrap: wrap;
