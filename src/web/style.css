@@ -367,7 +367,8 @@ h3 {
     align-items: start;
 }
 
-/* Gripper | Linear Track, two columns under the connection section. */
+/* Gripper | Linear Track, two ~half-width columns under the connection
+   section, split by a vertical divider. */
 .tile-sub-cols {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -378,6 +379,47 @@ h3 {
 
 .tile-sub {
     min-width: 0;
+}
+
+.tile-sub + .tile-sub {
+    border-left: 1px solid var(--border);
+    padding-left: 16px;
+}
+
+/* Open / Close / Enable sit tight as one cluster. */
+.tile-sub .gripper-controls {
+    gap: 6px;
+}
+
+/* Strict-gated controls pass clicks through to their row so the row's
+   handler can pop the explanation toast (disabled elements otherwise
+   swallow the click). */
+.strict-gated:disabled {
+    pointer-events: none;
+}
+
+/* Transient top-center popup (showToast in main.js). */
+.toast-pop {
+    position: fixed;
+    top: 18px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-8px);
+    z-index: 6000;
+    max-width: min(90vw, 480px);
+    padding: 10px 16px;
+    border-radius: 10px;
+    background: #0f172a;
+    color: #f8fafc;
+    font-size: 0.9rem;
+    box-shadow: 0 8px 24px rgba(2, 6, 23, 0.35);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.toast-pop.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
 }
 
 .column-left,

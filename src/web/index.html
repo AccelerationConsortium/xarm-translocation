@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260803q">
+    <link rel="stylesheet" href="style.css?v=20260803r">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -171,7 +171,6 @@
                         <select id="track-location-select"></select>
                         <button id="move-track-loc-btn" class="btn move-button">Move</button>
                     </div>
-                    <span id="track-strict-hint" class="muted" hidden></span>
                     <div id="track-info" class="component-info">
                         <div class="info-left">Range: <span id="track-range-display">0-700 mm</span></div>
                         <div class="info-right">Current: <span id="track-position-display">N/A</span></div>
@@ -279,7 +278,6 @@
                             <div class="position-controls-row">
                                 <select id="predefined-position-select" class="position-dropdown"></select>
                             </div>
-                            <span id="predefined-strict-hint" class="muted" hidden></span>
                             <div class="joint-move-row">
                                 <button id="move-predefined-btn" class="btn move-position-button">Joint Move</button>
                                 <span class="inline-label">Speed:</span>
@@ -491,6 +489,6 @@
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
     <script src="camera-player.js?v=20260724e"></script>
-    <script src="main.js?v=20260803d"></script>
+    <script src="main.js?v=20260803e"></script>
 </body>
 </html>

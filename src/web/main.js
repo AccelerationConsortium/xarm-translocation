@@ -803,10 +803,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const STRICT_GATE_HINT =
         'Disabled in STRICT graph mode - use Drive Arm (recover first if off-grid).';
 
+    // True while STRICT gating disables the raw named-move controls; the
+    // row click handlers below pop the explanation as a toast (the old
+    // always-visible hint lines took up tile space).
+    let strictGateActive = false;
+
     function applyStrictModeGating(motionGraph) {
         const isStrict = (motionGraph && motionGraph.graph_mode) === 'strict';
-        const trackHint = document.getElementById('track-strict-hint');
-        const predefinedHint = document.getElementById('predefined-strict-hint');
+        strictGateActive = isStrict;
         const gatedControls = [
             moveTrackLocBtn, trackLocationSelect,
             movePredefinedBtn, predefinedPositionSelect,
@@ -817,21 +821,42 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!el) return;
                 el.disabled = true;
                 el.title = STRICT_GATE_HINT;
+                // Disabled controls swallow clicks entirely; letting the
+                // click fall through to the row lets it pop the toast.
+                el.classList.add('strict-gated');
             });
         } else {
             // Clear only the tooltip we added; leave disabled state to the
             // normal connection/claim/manual/moving gating.
             gatedControls.forEach(el => {
-                if (el && el.title === STRICT_GATE_HINT) el.title = '';
+                if (!el) return;
+                if (el.title === STRICT_GATE_HINT) el.title = '';
+                el.classList.remove('strict-gated');
             });
         }
-
-        [trackHint, predefinedHint].forEach(hint => {
-            if (!hint) return;
-            hint.textContent = isStrict ? STRICT_GATE_HINT : '';
-            hint.hidden = !isStrict;
-        });
     }
+
+    // Transient top-center popup.
+    let toastTimer = null;
+    function showToast(message) {
+        let el = document.getElementById('toast-pop');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'toast-pop';
+            el.className = 'toast-pop';
+            document.body.appendChild(el);
+        }
+        el.textContent = message;
+        el.classList.add('show');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+    }
+
+    // Rows hosting strict-gated controls: a click while gated explains why.
+    document.querySelectorAll('.position-controls-row, .joint-move-row, .track-location-control')
+        .forEach(row => row.addEventListener('click', () => {
+            if (strictGateActive) showToast(STRICT_GATE_HINT);
+        }));
 
     // ── Drive Arm card ──────────────────────────────────────────────
     // Holds what the Motion Graph card does NOT already offer: multi-hop
