@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260802a">
+    <link rel="stylesheet" href="style.css?v=20260802b">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -132,6 +132,26 @@
                             <span class="manual-switch-text">Follow arm</span>
                         </label>
                         <span id="camera-status" class="muted camera-status"></span>
+                    </div>
+                </div>
+
+                <!-- Simulator 3D view — the UFACTORY Studio web UI served by
+                     the sim container, embedded in an iframe (Studio sends no
+                     X-Frame-Options/CSP, verified 2026-08-02). Card appears
+                     only while /status reports details.simulated; the iframe
+                     loads lazily on first "Show" and is unloaded on hide /
+                     sim end so no background Studio session lingers. The URL
+                     is HARD-CODED to the simulator on the central server —
+                     never point this at a real arm's Studio: it is an
+                     un-audited, claim-bypassing control surface (fine for a
+                     sim, not for hardware). Wiring in main.js. -->
+                <div class="card" id="sim-3d-card" hidden>
+                    <h2>Simulator 3D View <span class="panel-unit">UFACTORY Studio</span></h2>
+                    <button id="sim-3d-toggle-btn" class="btn">Show 3D view</button>
+                    <div id="sim-3d-stage" class="sim-3d-stage" hidden>
+                        <iframe id="sim-3d-frame" class="sim-3d-frame"
+                                title="UFACTORY Studio — simulated arm"
+                                data-src="http://100.64.254.6:18333/"></iframe>
                     </div>
                 </div>
 
@@ -399,6 +419,6 @@
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
     <script src="camera-player.js?v=20260724e"></script>
-    <script src="main.js?v=20260724a"></script>
+    <script src="main.js?v=20260802a"></script>
 </body>
 </html>

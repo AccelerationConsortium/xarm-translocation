@@ -446,6 +446,20 @@ document.addEventListener('DOMContentLoaded', () => {
             const simBanner = document.getElementById('sim-banner');
             if (simBanner) simBanner.hidden = data.simulated !== true;
 
+            // Simulator 3D-view card rides the same flag. The card stays
+            // collapsed until the operator opens it; when the session stops
+            // being simulated the card hides AND the iframe unloads, so no
+            // background Studio session outlives the sim connection.
+            const sim3dCard = document.getElementById('sim-3d-card');
+            if (sim3dCard) {
+                if (data.simulated === true) {
+                    sim3dCard.hidden = false;
+                } else if (!sim3dCard.hidden) {
+                    sim3dCard.hidden = true;
+                    collapseSim3d();
+                }
+            }
+
             // Update connection text and light
             try {
                 if (isConnected) {
@@ -1565,6 +1579,34 @@ document.addEventListener('DOMContentLoaded', () => {
         // Reconcile the Take Control button now that connection is recorded
         // (layers the login gate on top of the connection gate).
         updateTakeControlBtn();
+    }
+
+    // --- Simulator 3D view (UFACTORY Studio iframe) ---
+    // Lazy on purpose: the iframe has no src until the operator first opens
+    // the stage, so an idle panel never holds a Studio session. Collapse
+    // unloads via about:blank (removeAttribute alone doesn't free the page),
+    // and the next Show reloads fresh from data-src.
+    const sim3dToggleBtn = document.getElementById('sim-3d-toggle-btn');
+    const sim3dStage = document.getElementById('sim-3d-stage');
+    const sim3dFrame = document.getElementById('sim-3d-frame');
+
+    function collapseSim3d() {
+        if (!sim3dStage || sim3dStage.hidden) return;
+        sim3dStage.hidden = true;
+        if (sim3dFrame) sim3dFrame.src = 'about:blank';
+        if (sim3dToggleBtn) sim3dToggleBtn.textContent = 'Show 3D view';
+    }
+
+    if (sim3dToggleBtn && sim3dStage && sim3dFrame) {
+        sim3dToggleBtn.addEventListener('click', () => {
+            if (sim3dStage.hidden) {
+                sim3dFrame.src = sim3dFrame.dataset.src;
+                sim3dStage.hidden = false;
+                sim3dToggleBtn.textContent = 'Hide 3D view';
+            } else {
+                collapseSim3d();
+            }
+        });
     }
 
     // --- WebSocket Handling ---

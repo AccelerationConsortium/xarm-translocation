@@ -1663,6 +1663,23 @@ input#linear-speed {
 :root.dark .camera-stage,
 :root.dark .camera-video { background: #020617; }     /* slate-950 */
 
+/* ── Simulator 3D view (UFACTORY Studio iframe) ────────────────────────
+   Cross-origin, so the whole Studio page comes along — size the frame
+   tall enough that its 3D canvas dominates. Background matches Studio's
+   own loading surface so the lazy load doesn't flash. */
+.sim-3d-stage {
+    margin-top: 12px;
+}
+
+.sim-3d-frame {
+    display: block;
+    width: 100%;
+    height: min(70vh, 640px);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: #f7f8fa;
+}
+
 /* ── Top banner stack (auth bar + simulation banner) ───────────────────
    One sticky wrapper so the auth bar and the sim banner pin together
    instead of both fighting for top:0 (banner.js's self-created host
