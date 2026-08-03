@@ -46,9 +46,8 @@ body {
     padding: 24px;
 }
 
-header,
 .auth-banner,
-.dashboard-layout {
+.page-grid {
     max-width: 1280px;
     margin: 0 auto;
 }
@@ -205,11 +204,13 @@ header {
     margin-bottom: 16px;
 }
 
-.header-content {
+/* Two top-level columns: left flows title tile → camera/gripper tiles
+   with no reserved row height (the old header/main split left a gap
+   under the 380px title tile whenever Control Modes ran taller); right
+   is the fixed 600px stack of Control Modes + log. */
+.page-grid {
     display: grid;
-    /* Right slot holds the Arm Control card at a fixed 600px (the log
-       window it swapped with lives at the top of .column-right now). */
-    grid-template-columns: minmax(280px, 1fr) 600px;
+    grid-template-columns: minmax(0, 1fr) 600px;
     gap: 16px;
     align-items: start;
 }
@@ -313,11 +314,8 @@ h3 {
     min-height: 0;
     overflow: hidden;
     background: #020617;
-    /* Same width as the Control Modes card in the header, right-aligned
-       so the two share both edges. */
-    width: 600px;
-    max-width: 100%;
-    margin-left: auto;
+    /* Width comes from the 600px .page-right column it shares with the
+       Control Modes card. */
 }
 
 .log-stream {
@@ -354,16 +352,18 @@ h3 {
     background: rgba(190, 18, 60, 0.18);
 }
 
-.dashboard-layout {
+/* Inside the left column: camera (+ sim 3D) | gripper + track stack. */
+.left-tiles {
     display: grid;
-    /* camera (+ sim 3D) | gripper + track stack | log etc. */
-    grid-template-columns: 400px 250px 1fr;
+    grid-template-columns: 400px 250px;
     gap: 16px;
+    align-items: start;
 }
 
 .column-left,
 .column-mid,
-.column-right,
+.page-left,
+.page-right,
 .control-layout-vertical {
     display: flex;
     flex-direction: column;
@@ -1176,8 +1176,8 @@ input#linear-speed {
 }
 
 @media (max-width: 980px) {
-    .header-content,
-    .dashboard-layout,
+    .page-grid,
+    .left-tiles,
     .components-section {
         grid-template-columns: 1fr;
     }

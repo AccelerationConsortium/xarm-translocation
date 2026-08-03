@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260803l">
+    <link rel="stylesheet" href="style.css?v=20260803m">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -43,8 +43,14 @@
              ac_auth, one asset for every lab UI). It renders the login/logout
              bar and populates window.labAuth for the claim wiring in main.js.
              Included near the end of <body>, before main.js. -->
-        <header>
-            <div class="header-content">
+        <!-- Two top-level columns so nothing reserves dead space:
+             LEFT — title tile, then camera | gripper+track flowing right
+             below it; RIGHT — Control Modes with the log window beneath.
+             (The old header/main split put the 380px title tile and the
+             taller Control Modes card in one grid row, leaving a gap
+             under the title.) -->
+        <main class="page-grid">
+            <div class="page-left">
                 <div class="title-status-container">
                     <!-- Primary arm actions, moved out of the Arm Control card into a
                          right-hand stack (CSS order) so Take Control / STOP / Clear
@@ -112,6 +118,121 @@
                         </div>
                     </div>
                 </div>
+
+                <div class="left-tiles">
+            <!-- ── LEFT COLUMN ─────────────────────────────────────── -->
+            <div class="column-left">
+
+                <!-- Connection controls live in the header title tile
+                     (.connection-inline); this column starts with the camera. -->
+
+                <!-- Lab Camera — pans to follow the arm across the motion graph.
+                     Hidden unless src/settings/camera_tracking.yaml is configured
+                     (GET /camera/config decides). The live preview is a go2rtc MSE
+                     stream; the "Follow arm" toggle hits POST /camera/follow. Wiring
+                     is shared with graph.html via camera-player.js. See
+                     core/camera_tracker.py. -->
+                <div class="card" id="camera-card" hidden>
+                    <h2><span class="camera-dot" id="camera-dot" aria-hidden="true"></span>Lab Camera <span class="panel-unit">follows the arm</span></h2>
+                    <div class="camera-stage">
+                        <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
+                        <div id="camera-overlay" class="camera-overlay">
+                            <span id="camera-overlay-text">Connecting…</span>
+                        </div>
+                    </div>
+                    <div class="camera-controls">
+                        <label id="camera-follow-switch" class="manual-switch follow-switch is-disabled"
+                               title="When on, the camera pans to the arm's station as it moves across the motion graph.">
+                            <input type="checkbox" id="camera-follow-checkbox" disabled>
+                            <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
+                            <span class="manual-switch-text">Follow arm</span>
+                        </label>
+                        <span id="camera-status" class="muted camera-status"></span>
+                    </div>
+                </div>
+
+                <!-- Simulator 3D view — the UFACTORY Studio web UI served by
+                     the sim container, embedded in an iframe (Studio sends no
+                     X-Frame-Options/CSP, verified 2026-08-02). Card appears
+                     only while /status reports details.simulated; the iframe
+                     loads lazily on first "Show" and is unloaded on hide /
+                     sim end so no background Studio session lingers. The URL
+                     is HARD-CODED to the simulator on the central server —
+                     never point this at a real arm's Studio: it is an
+                     un-audited, claim-bypassing control surface (fine for a
+                     sim, not for hardware). Wiring in main.js. -->
+                <div class="card" id="sim-3d-card" hidden>
+                    <h2>Simulator 3D View <span class="panel-unit">UFACTORY Studio</span></h2>
+                    <button id="sim-3d-toggle-btn" class="btn">Show 3D view</button>
+                    <!-- The crop isolates Studio's arm panel (.xarm-container:
+                         STOP, 3D canvas, Real/Sim switch, pose + joints) — the
+                         right column of /control, x 896-1300 at a 1300x900
+                         viewport (measured on Studio v2.4.0, headless-Edge
+                         screenshot 2026-08-02). The iframe is held at that
+                         fixed viewport so Studio's vw-scaled layout is
+                         deterministic; geometry + display scale live in the
+                         .sim-3d-crop CSS variables. Cross-origin, so a crop
+                         is the only isolation available — the canvas stays
+                         fully interactive (drag to orbit). -->
+                    <div id="sim-3d-stage" class="sim-3d-stage" hidden>
+                        <div class="sim-3d-crop">
+                            <iframe id="sim-3d-frame" class="sim-3d-frame"
+                                    title="UFACTORY Studio — simulated arm"
+                                    data-src="http://100.64.254.6:18333/control"></iframe>
+                        </div>
+                    </div>
+                </div>
+
+            </div><!-- /column-left -->
+
+            <!-- ── MIDDLE COLUMN — Gripper + Linear Track, 250px ────── -->
+            <div class="column-mid">
+
+                <!-- Gripper -->
+                <div class="card">
+                    <h2>Gripper</h2>
+                    <div class="gripper-controls">
+                        <button id="open-gripper-btn" class="btn">Open</button>
+                        <button id="close-gripper-btn" class="btn">Close</button>
+                        <button id="enable-gripper-btn" class="btn btn-success">Enable</button>
+                    </div>
+                    <div class="stroke-control-row">
+                        <label for="gripper-stroke">Stroke:<br><span id="gripper-stroke-range" class="label-range"></span></label>
+                        <input type="number" id="gripper-stroke" placeholder="" disabled>
+                        <button id="move-to-stroke-btn" class="btn move-button" disabled>Move</button>
+                    </div>
+                    <div class="force-control-row">
+                        <label for="gripper-force">Force:<br><span id="gripper-force-range" class="label-range"></span></label>
+                        <input type="number" id="gripper-force" placeholder="" disabled>
+                        <button id="set-gripper-force-btn" class="btn move-button" disabled>Set</button>
+                    </div>
+                </div>
+
+                <!-- Linear Track -->
+                <div class="card">
+                    <h2>Linear Track</h2>
+                    <div class="track-controls">
+                        <div class="track-speed-group">
+                            <label for="track-speed">Speed (mm/s):</label>
+                            <input type="number" id="track-speed" placeholder="1-1000" min="1" max="1000" value="200">
+                        </div>
+                    </div>
+                    <div class="track-location-control">
+                        <select id="track-location-select"></select>
+                        <button id="move-track-loc-btn" class="btn move-button">Move</button>
+                    </div>
+                    <span id="track-strict-hint" class="muted" hidden></span>
+                    <div id="track-info" class="component-info">
+                        <div class="info-left">Range: <span id="track-range-display">0-700 mm</span></div>
+                        <div class="info-right">Current: <span id="track-position-display">N/A</span></div>
+                    </div>
+                </div>
+
+            </div><!-- /column-mid -->
+                </div>
+            </div>
+
+            <div class="page-right">
                 <!-- Control Modes card: two selectable panes — direct
                      Arm Control, and Graph Control (Motion Graph + Drive Arm).
                      Tab switching in main.js; the sub-cards inside the graph
@@ -277,148 +398,12 @@
                         <span class="muted mode-graph-hint">(connect and enable the motion graph to populate this pane)</span>
                     </div><!-- /mode-pane-graph -->
                 </div>
-            </div>
-        </header>
 
-        <main class="dashboard-layout">
-
-            <!-- ── LEFT COLUMN ─────────────────────────────────────── -->
-            <div class="column-left">
-
-                <!-- Connection controls live in the header title tile
-                     (.connection-inline); this column starts with the camera. -->
-
-                <!-- Lab Camera — pans to follow the arm across the motion graph.
-                     Hidden unless src/settings/camera_tracking.yaml is configured
-                     (GET /camera/config decides). The live preview is a go2rtc MSE
-                     stream; the "Follow arm" toggle hits POST /camera/follow. Wiring
-                     is shared with graph.html via camera-player.js. See
-                     core/camera_tracker.py. -->
-                <div class="card" id="camera-card" hidden>
-                    <h2><span class="camera-dot" id="camera-dot" aria-hidden="true"></span>Lab Camera <span class="panel-unit">follows the arm</span></h2>
-                    <div class="camera-stage">
-                        <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
-                        <div id="camera-overlay" class="camera-overlay">
-                            <span id="camera-overlay-text">Connecting…</span>
-                        </div>
-                    </div>
-                    <div class="camera-controls">
-                        <label id="camera-follow-switch" class="manual-switch follow-switch is-disabled"
-                               title="When on, the camera pans to the arm's station as it moves across the motion graph.">
-                            <input type="checkbox" id="camera-follow-checkbox" disabled>
-                            <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
-                            <span class="manual-switch-text">Follow arm</span>
-                        </label>
-                        <span id="camera-status" class="muted camera-status"></span>
-                    </div>
-                </div>
-
-                <!-- Simulator 3D view — the UFACTORY Studio web UI served by
-                     the sim container, embedded in an iframe (Studio sends no
-                     X-Frame-Options/CSP, verified 2026-08-02). Card appears
-                     only while /status reports details.simulated; the iframe
-                     loads lazily on first "Show" and is unloaded on hide /
-                     sim end so no background Studio session lingers. The URL
-                     is HARD-CODED to the simulator on the central server —
-                     never point this at a real arm's Studio: it is an
-                     un-audited, claim-bypassing control surface (fine for a
-                     sim, not for hardware). Wiring in main.js. -->
-                <div class="card" id="sim-3d-card" hidden>
-                    <h2>Simulator 3D View <span class="panel-unit">UFACTORY Studio</span></h2>
-                    <button id="sim-3d-toggle-btn" class="btn">Show 3D view</button>
-                    <!-- The crop isolates Studio's arm panel (.xarm-container:
-                         STOP, 3D canvas, Real/Sim switch, pose + joints) — the
-                         right column of /control, x 896-1300 at a 1300x900
-                         viewport (measured on Studio v2.4.0, headless-Edge
-                         screenshot 2026-08-02). The iframe is held at that
-                         fixed viewport so Studio's vw-scaled layout is
-                         deterministic; geometry + display scale live in the
-                         .sim-3d-crop CSS variables. Cross-origin, so a crop
-                         is the only isolation available — the canvas stays
-                         fully interactive (drag to orbit). -->
-                    <div id="sim-3d-stage" class="sim-3d-stage" hidden>
-                        <div class="sim-3d-crop">
-                            <iframe id="sim-3d-frame" class="sim-3d-frame"
-                                    title="UFACTORY Studio — simulated arm"
-                                    data-src="http://100.64.254.6:18333/control"></iframe>
-                        </div>
-                    </div>
-                </div>
-
-            </div><!-- /column-left -->
-
-            <!-- ── MIDDLE COLUMN — Gripper + Linear Track, 250px ────── -->
-            <div class="column-mid">
-
-                <!-- Gripper -->
-                <div class="card">
-                    <h2>Gripper</h2>
-                    <div class="gripper-controls">
-                        <button id="open-gripper-btn" class="btn">Open</button>
-                        <button id="close-gripper-btn" class="btn">Close</button>
-                        <button id="enable-gripper-btn" class="btn btn-success">Enable</button>
-                    </div>
-                    <div class="stroke-control-row">
-                        <label for="gripper-stroke">Stroke:<br><span id="gripper-stroke-range" class="label-range"></span></label>
-                        <input type="number" id="gripper-stroke" placeholder="" disabled>
-                        <button id="move-to-stroke-btn" class="btn move-button" disabled>Move</button>
-                    </div>
-                    <div class="force-control-row">
-                        <label for="gripper-force">Force:<br><span id="gripper-force-range" class="label-range"></span></label>
-                        <input type="number" id="gripper-force" placeholder="" disabled>
-                        <button id="set-gripper-force-btn" class="btn move-button" disabled>Set</button>
-                    </div>
-                </div>
-
-                <!-- Linear Track -->
-                <div class="card">
-                    <h2>Linear Track</h2>
-                    <div class="track-controls">
-                        <div class="track-speed-group">
-                            <label for="track-speed">Speed (mm/s):</label>
-                            <input type="number" id="track-speed" placeholder="1-1000" min="1" max="1000" value="200">
-                        </div>
-                    </div>
-                    <div class="track-location-control">
-                        <select id="track-location-select"></select>
-                        <button id="move-track-loc-btn" class="btn move-button">Move</button>
-                    </div>
-                    <span id="track-strict-hint" class="muted" hidden></span>
-                    <div id="track-info" class="component-info">
-                        <div class="info-left">Range: <span id="track-range-display">0-700 mm</span></div>
-                        <div class="info-right">Current: <span id="track-position-display">N/A</span></div>
-                    </div>
-                </div>
-
-            </div><!-- /column-mid -->
-
-            <!-- ── RIGHT COLUMN ────────────────────────────────────── -->
-            <div class="column-right">
-
-                <!-- Log window (swapped with Arm Control, which now lives in
-                     the header next to the title tile) -->
+                <!-- Log window -->
                 <div class="log-container">
                     <div id="log-stream" class="log-stream"></div>
                 </div>
-
-            </div><!-- /column-right -->
-
-            <!-- System Status — full-width single-column row at the bottom -->
-            <div class="card status-bar-card">
-                <h2>System Status</h2>
-                <div class="status-bar-line">
-                    <span>Arm: <strong id="arm-state">N/A</strong></span>
-                    <span class="sep">|</span>
-                    <span>Gripper: <strong id="gripper-state">N/A</strong></span>
-                    <span class="sep">|</span>
-                    <span>Track: <strong id="track-state">N/A</strong></span>
-                    <span class="sep">|</span>
-                    <span>Mode: <strong id="robot-mode">N/A</strong></span>
-                    <span class="sep">|</span>
-                    <span>Error: <strong id="last-error">None</strong></span>
-                </div>
             </div>
-
         </main>
     </div>
 
