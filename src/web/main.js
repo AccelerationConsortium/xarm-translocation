@@ -408,6 +408,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // On error, assume disconnected
             setControlsState(false);
             updateStatusText('Disconnected');
+            updateConnLines({ is_alive: false });
         }
     }
 
@@ -463,6 +464,9 @@ document.addEventListener('DOMContentLoaded', () => {
             // Header "Open Studio" quick-link rides the same flag.
             const simStudioLink = document.getElementById('sim-studio-link');
             if (simStudioLink) simStudioLink.hidden = data.simulated !== true;
+
+            // Per-target connection lines (Hardware / Docker).
+            updateConnLines(data);
 
             // Update connection text and light
             try {
@@ -1307,6 +1311,47 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!held && manualModeSwitch) {
             manualModeSwitch.classList.add('is-disabled');
         }
+    }
+
+    // Per-target connection lines. The service holds one global controller,
+    // so exactly one of Hardware / Docker can be "Connected"; the other line
+    // stays "Disconnected". The claim holder renders on the connected line so
+    // a session nobody remembers (which blocks /connect with "already
+    // connected") is always visible.
+    function updateConnLines(data) {
+        const hwState = document.getElementById('conn-hw-state');
+        const hwOwner = document.getElementById('conn-hw-owner');
+        const dkState = document.getElementById('conn-docker-state');
+        const dkOwner = document.getElementById('conn-docker-owner');
+        if (!hwState || !hwOwner || !dkState || !dkOwner) return;
+
+        const connected = data.is_alive === true;
+        const sim = data.simulated === true;
+
+        let ownerTxt = 'Control: —';
+        if (connected) {
+            const cb = data.claimed_by;
+            if (!cb) {
+                ownerTxt = 'Control: nobody (open)';
+            } else {
+                const mine = cb.session_id === claimSessionId;
+                ownerTxt = `Control: ${cb.owner}${mine ? ' (you)' : ''}`;
+            }
+        }
+        const stateTxt = data.equipment_status
+            ? `Connected (${data.equipment_status})` : 'Connected';
+        const host = data.connection_details
+            ? `${data.connection_details.host}:${data.connection_details.port}` : '';
+
+        const setLine = (stEl, owEl, isThisOne) => {
+            stEl.textContent = isThisOne ? stateTxt : 'Disconnected';
+            stEl.classList.toggle('conn-on', isThisOne);
+            stEl.classList.toggle('conn-off', !isThisOne);
+            stEl.title = isThisOne ? host : '';
+            owEl.textContent = isThisOne ? ownerTxt : 'Control: —';
+        };
+        setLine(hwState, hwOwner, connected && !sim);
+        setLine(dkState, dkOwner, connected && sim);
     }
 
     // Reflect the device-reported claim holder (details.claimed_by) in the

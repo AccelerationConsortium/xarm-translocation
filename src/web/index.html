@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260803m">
+    <link rel="stylesheet" href="style.css?v=20260803n">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -66,14 +66,34 @@
                         <p class="eyebrow">xArm Translocation</p>
                         <h1>Control Interface</h1>
                         <div id="status-container">
-                            <div class="status-pills">
+                            <!-- Per-target connection lines: the service holds ONE
+                                 global controller, so a stale docker session blocks
+                                 hardware connects (and vice versa) — show both
+                                 targets' state + claim holder so that is never
+                                 invisible. Rendered by updateConnLines (main.js). -->
+                            <div class="conn-lines">
+                                <div class="conn-line">
+                                    <span class="conn-name">Hardware</span>
+                                    <span class="conn-state conn-off" id="conn-hw-state">Disconnected</span>
+                                    <span class="conn-owner" id="conn-hw-owner">Control: —</span>
+                                </div>
+                                <div class="conn-line">
+                                    <span class="conn-name">Docker</span>
+                                    <span class="conn-state conn-off" id="conn-docker-state">Disconnected</span>
+                                    <span class="conn-owner" id="conn-docker-owner">Control: —</span>
+                                </div>
+                            </div>
+                            <!-- Legacy single-line indicators: kept hidden because
+                                 many main.js paths still write to them; the
+                                 conn-lines above are the visible surface. -->
+                            <div class="status-pills" hidden>
                                 <div id="status-main">
                                     <div id="status-light" class="status-light offline"></div>
                                     <div id="status-text">Disconnected</div>
                                 </div>
                                 <div id="connection-details"></div>
                             </div>
-                            <div id="claim-status" class="claim-status claim-free">Control: nobody (open)</div>
+                            <div id="claim-status" class="claim-status claim-free" hidden>Control: nobody (open)</div>
                             <div class="tile-links">
                                 <a href="graph.html" class="graph-tile" target="_blank" rel="noopener" title="Open the motion-graph view (interlock topology, live node)">
                                     <svg class="graph-tile-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -452,6 +472,6 @@
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
     <script src="camera-player.js?v=20260724e"></script>
-    <script src="main.js?v=20260803b"></script>
+    <script src="main.js?v=20260803c"></script>
 </body>
 </html>

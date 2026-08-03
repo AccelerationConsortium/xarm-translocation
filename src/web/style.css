@@ -1065,6 +1065,49 @@ input#linear-speed {
     gap: 6px;
 }
 
+/* Per-target connection lines (Hardware / Docker). */
+.conn-lines {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.conn-line {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.conn-name {
+    flex: 0 0 82px;
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ink-subtle);
+}
+
+.conn-state {
+    display: inline-flex;
+    align-items: center;
+    min-width: 128px;
+    justify-content: center;
+    border-radius: 999px;
+    padding: 4px 10px;
+    font-size: 0.82rem;
+    font-weight: 700;
+    background: var(--surface-soft);
+    box-shadow: inset 0 0 0 1px var(--border);
+}
+
+.conn-state.conn-on  { color: #059669; }   /* emerald-600, matches the dot */
+.conn-state.conn-off { color: var(--ink-subtle); }
+
+.conn-owner {
+    font-size: 0.82rem;
+    color: var(--ink-muted);
+}
+
 /* The state pill + connection-info pill share one row; claim-status sits below. */
 .status-pills {
     display: flex;
