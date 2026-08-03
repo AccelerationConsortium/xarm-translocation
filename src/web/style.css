@@ -356,11 +356,13 @@ h3 {
 
 .dashboard-layout {
     display: grid;
-    grid-template-columns: 400px 1fr;
+    /* camera (+ sim 3D) | gripper + track stack | log etc. */
+    grid-template-columns: 400px 250px 1fr;
     gap: 16px;
 }
 
 .column-left,
+.column-mid,
 .column-right,
 .control-layout-vertical {
     display: flex;
