@@ -248,7 +248,7 @@ header {
 }
 
 .header-actions .btn {
-    min-height: 48px;
+    min-height: 96px;
     border-radius: 12px;
     font-size: 0.95rem;
 }
@@ -945,11 +945,11 @@ input#linear-speed {
    `text-[10px] uppercase tracking-wider text-ink-subtle`, controls
    their compact `text-xs` inputs. */
 .connection-inline .form-group label {
-    flex: 0 0 122px;
+    flex: 0 0 132px;
     margin-bottom: 0;
     white-space: nowrap;
-    font-size: 10px;
-    font-weight: 400;
+    font-size: 12px;
+    font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--ink-subtle);
@@ -958,8 +958,9 @@ input#linear-speed {
 .connection-inline .form-group select {
     flex: 1 1 auto;
     min-width: 0;
-    font-size: 0.75rem;
-    padding: 6px 8px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 7px 9px;
 }
 
 .connection-inline-btns {
