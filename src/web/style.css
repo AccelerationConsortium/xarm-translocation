@@ -207,9 +207,11 @@ header {
 
 .header-content {
     display: grid;
-    grid-template-columns: minmax(280px, 1fr) minmax(320px, 560px);
+    /* Right slot holds the Arm Control card at a fixed 560px (the log
+       window it swapped with lives at the top of .column-right now). */
+    grid-template-columns: minmax(280px, 1fr) 560px;
     gap: 16px;
-    align-items: stretch;
+    align-items: start;
 }
 
 .title-status-container,

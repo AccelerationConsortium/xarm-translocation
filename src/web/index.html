@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260803c">
+    <link rel="stylesheet" href="style.css?v=20260803d">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -112,8 +112,86 @@
                         </div>
                     </div>
                 </div>
-                <div class="log-container">
-                    <div id="log-stream" class="log-stream"></div>
+                <!-- System Control card -->
+                <div class="card">
+                    <h2>Arm Control</h2>
+
+                    <!-- Two-column body: xArm controls (left) + XYZ jog (right) -->
+                    <div class="sc-body">
+
+                        <!-- Left: xArm controls (Take Control / STOP / Clear Errors
+                             now live in the header action stack). -->
+                        <div class="sc-left">
+                            <div class="position-controls-row">
+                                <select id="predefined-position-select" class="position-dropdown"></select>
+                            </div>
+                            <span id="predefined-strict-hint" class="muted" hidden></span>
+                            <div class="joint-move-row">
+                                <button id="move-predefined-btn" class="btn move-position-button">Joint Move</button>
+                                <span class="inline-label">Speed:</span>
+                                <input type="number" id="joint-speed" placeholder="10" min="1" max="200" value="10" class="inline-input">
+                                <span class="inline-unit">°/s</span>
+                            </div>
+                            <div class="linear-move-row">
+                                <button id="move-linear-btn" class="btn btn-primary move-linear-button">Linear Move</button>
+                                <span class="inline-label">Speed:</span>
+                                <input type="number" id="linear-speed" placeholder="50" min="1" max="1000" value="50" class="inline-input">
+                                <span class="inline-unit">mm/s</span>
+                            </div>
+                        </div>
+
+                        <!-- Right: XYZ jog pad -->
+                        <div class="sc-right">
+                            <div class="enable-row enable-row-jog">
+                                <label id="manual-mode-switch" class="manual-switch is-disabled" title="Release the joint brakes for hand-guiding. While on, XYZ and joint commands are locked out; joint angles keep updating live.">
+                                    <input type="checkbox" id="manual-mode-checkbox" disabled>
+                                    <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
+                                    <span class="manual-switch-text">Manual Mode</span>
+                                </label>
+                            </div>
+                            <div class="jog-panel">
+                                <!-- Z buttons -->
+                                <div class="jog-z-row">
+                                    <button id="jog-z-minus" class="btn jog-btn" disabled>Z−</button>
+                                    <button id="jog-z-plus"  class="btn jog-btn" disabled>Z+</button>
+                                </div>
+                                <!-- XY circular pad -->
+                                <div class="jog-xy-pad">
+                                    <button class="jog-btn-xy" id="jog-x-plus"  disabled>X+</button>
+                                    <button class="jog-btn-xy" id="jog-y-plus"  disabled>Y+</button>
+                                    <span class="jog-center">XYZ</span>
+                                    <button class="jog-btn-xy" id="jog-y-minus" disabled>Y−</button>
+                                    <button class="jog-btn-xy" id="jog-x-minus" disabled>X−</button>
+                                </div>
+                                <!-- Step size -->
+                                <div class="jog-step-row">
+                                    <span class="inline-label">Step</span>
+                                    <input type="number" id="jog-step" value="10" min="1" max="500" class="inline-input" disabled>
+                                    <span class="inline-unit">mm</span>
+                                </div>
+                            </div>
+                        </div>
+
+                    </div><!-- /sc-body -->
+
+                    <!-- Joint Angles (merged into Arm Control) -->
+                    <h3 class="joints-subhead">Joint Angles <span class="panel-unit">live · direct control</span></h3>
+                    <div class="joint-inputs-h">
+                        <div class="joint-col"><label>J1</label><input type="number" id="j1-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J2</label><input type="number" id="j2-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J3</label><input type="number" id="j3-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J4</label><input type="number" id="j4-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J5</label><input type="number" id="j5-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col" id="j6-col" style="display:none"><label>J6</label><input type="number" id="j6-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col" id="j7-col" style="display:none"><label>J7</label><input type="number" id="j7-input" step="0.1" placeholder="—"></div>
+                    </div>
+                    <div class="joint-action-row">
+                        <span class="inline-label">Speed</span>
+                        <input type="number" id="direct-joint-speed" value="10" min="1" max="200" class="inline-input" disabled>
+                        <span class="inline-unit">°/s</span>
+                        <button id="copy-joints-btn" class="btn" title="Copy the current joint angles to the clipboard">Copy Joints</button>
+                        <button id="move-joints-btn" class="btn btn-primary" disabled>Move Joints</button>
+                    </div>
                 </div>
             </div>
         </header>
@@ -228,86 +306,10 @@
             <!-- ── RIGHT COLUMN ────────────────────────────────────── -->
             <div class="column-right">
 
-                <!-- System Control card -->
-                <div class="card">
-                    <h2>Arm Control</h2>
-
-                    <!-- Two-column body: xArm controls (left) + XYZ jog (right) -->
-                    <div class="sc-body">
-
-                        <!-- Left: xArm controls (Take Control / STOP / Clear Errors
-                             now live in the header action stack). -->
-                        <div class="sc-left">
-                            <div class="position-controls-row">
-                                <select id="predefined-position-select" class="position-dropdown"></select>
-                            </div>
-                            <span id="predefined-strict-hint" class="muted" hidden></span>
-                            <div class="joint-move-row">
-                                <button id="move-predefined-btn" class="btn move-position-button">Joint Move</button>
-                                <span class="inline-label">Speed:</span>
-                                <input type="number" id="joint-speed" placeholder="10" min="1" max="200" value="10" class="inline-input">
-                                <span class="inline-unit">°/s</span>
-                            </div>
-                            <div class="linear-move-row">
-                                <button id="move-linear-btn" class="btn btn-primary move-linear-button">Linear Move</button>
-                                <span class="inline-label">Speed:</span>
-                                <input type="number" id="linear-speed" placeholder="50" min="1" max="1000" value="50" class="inline-input">
-                                <span class="inline-unit">mm/s</span>
-                            </div>
-                        </div>
-
-                        <!-- Right: XYZ jog pad -->
-                        <div class="sc-right">
-                            <div class="enable-row enable-row-jog">
-                                <label id="manual-mode-switch" class="manual-switch is-disabled" title="Release the joint brakes for hand-guiding. While on, XYZ and joint commands are locked out; joint angles keep updating live.">
-                                    <input type="checkbox" id="manual-mode-checkbox" disabled>
-                                    <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
-                                    <span class="manual-switch-text">Manual Mode</span>
-                                </label>
-                            </div>
-                            <div class="jog-panel">
-                                <!-- Z buttons -->
-                                <div class="jog-z-row">
-                                    <button id="jog-z-minus" class="btn jog-btn" disabled>Z−</button>
-                                    <button id="jog-z-plus"  class="btn jog-btn" disabled>Z+</button>
-                                </div>
-                                <!-- XY circular pad -->
-                                <div class="jog-xy-pad">
-                                    <button class="jog-btn-xy" id="jog-x-plus"  disabled>X+</button>
-                                    <button class="jog-btn-xy" id="jog-y-plus"  disabled>Y+</button>
-                                    <span class="jog-center">XYZ</span>
-                                    <button class="jog-btn-xy" id="jog-y-minus" disabled>Y−</button>
-                                    <button class="jog-btn-xy" id="jog-x-minus" disabled>X−</button>
-                                </div>
-                                <!-- Step size -->
-                                <div class="jog-step-row">
-                                    <span class="inline-label">Step</span>
-                                    <input type="number" id="jog-step" value="10" min="1" max="500" class="inline-input" disabled>
-                                    <span class="inline-unit">mm</span>
-                                </div>
-                            </div>
-                        </div>
-
-                    </div><!-- /sc-body -->
-
-                    <!-- Joint Angles (merged into Arm Control) -->
-                    <h3 class="joints-subhead">Joint Angles <span class="panel-unit">live · direct control</span></h3>
-                    <div class="joint-inputs-h">
-                        <div class="joint-col"><label>J1</label><input type="number" id="j1-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J2</label><input type="number" id="j2-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J3</label><input type="number" id="j3-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J4</label><input type="number" id="j4-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J5</label><input type="number" id="j5-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col" id="j6-col" style="display:none"><label>J6</label><input type="number" id="j6-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col" id="j7-col" style="display:none"><label>J7</label><input type="number" id="j7-input" step="0.1" placeholder="—"></div>
-                    </div>
-                    <div class="joint-action-row">
-                        <span class="inline-label">Speed</span>
-                        <input type="number" id="direct-joint-speed" value="10" min="1" max="200" class="inline-input" disabled>
-                        <span class="inline-unit">°/s</span>
-                        <button id="copy-joints-btn" class="btn" title="Copy the current joint angles to the clipboard">Copy Joints</button>
-                        <button id="move-joints-btn" class="btn btn-primary" disabled>Move Joints</button>
-                    </div>
+                <!-- Log window (swapped with Arm Control, which now lives in
+                     the header next to the title tile) -->
+                <div class="log-container">
+                    <div id="log-stream" class="log-stream"></div>
                 </div>
 
                 <!-- Drive Arm card — pick an allowed (graph-reachable) destination and send -->
