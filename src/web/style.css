@@ -403,9 +403,24 @@ h3 {
     padding-left: 16px;
 }
 
-/* Open / Close / Enable sit tight as one cluster. */
+/* Open / Close / Enable sit tight as one cluster; compact paddings so
+   all three fit the narrower gripper column (wrap as a fallback). */
 .tile-sub .gripper-controls {
     gap: 6px;
+    flex-wrap: wrap;
+}
+
+.tile-sub .gripper-controls .btn {
+    padding: 8px 12px;
+}
+
+/* Stroke / Force inputs keep a usable fixed width instead of
+   flex-collapsing in the tighter column. */
+.tile-sub .stroke-control-row input,
+.tile-sub .force-control-row input {
+    flex: 0 0 72px;
+    width: 72px;
+    min-width: 72px;
 }
 
 /* Strict-gated controls pass clicks through to their row so the row's
