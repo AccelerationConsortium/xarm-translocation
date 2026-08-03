@@ -366,17 +366,21 @@ h3 {
     background: rgba(190, 18, 60, 0.18);
 }
 
-/* Inside the left column: log window | simulator 3D view (250px).
-   Stretch so the log matches the neighbouring tile's height. */
+/* Inside the left column: log window (fixed 400px tall) | simulator
+   3D view (250px). */
 .left-tiles {
     display: grid;
     grid-template-columns: 400px 250px;
     gap: 16px;
-    align-items: stretch;
+    align-items: start;
+}
+
+.left-tiles .log-container {
+    height: 400px;
 }
 
 .left-tiles .log-stream {
-    min-height: 260px;
+    min-height: 0;
     max-height: none;
 }
 
