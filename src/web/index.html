@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260803y">
+    <link rel="stylesheet" href="style.css?v=20260803z">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -241,6 +241,7 @@
                      core/camera_tracker.py. -->
                 <div class="card" id="camera-card" hidden>
                     <h2><span class="camera-dot" id="camera-dot" aria-hidden="true"></span>Lab Camera <span class="panel-unit">follows the arm</span></h2>
+                    <div class="camera-row">
                     <div class="camera-stage">
                         <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
                         <div id="camera-overlay" class="camera-overlay">
@@ -256,6 +257,7 @@
                         </label>
                         <span id="camera-status" class="muted camera-status"></span>
                     </div>
+                    </div><!-- /camera-row -->
                 </div>
 
                 <!-- Control Modes card: two selectable panes — direct
