@@ -366,12 +366,18 @@ h3 {
     background: rgba(190, 18, 60, 0.18);
 }
 
-/* Inside the left column: camera | simulator 3D view (250px). */
+/* Inside the left column: log window | simulator 3D view (250px).
+   Stretch so the log matches the neighbouring tile's height. */
 .left-tiles {
     display: grid;
     grid-template-columns: 400px 250px;
     gap: 16px;
-    align-items: start;
+    align-items: stretch;
+}
+
+.left-tiles .log-stream {
+    min-height: 260px;
+    max-height: none;
 }
 
 /* Gripper | Linear Track under the connection section, split by a
@@ -874,34 +880,23 @@ input#linear-speed {
     box-shadow: 0 0 6px rgba(16, 185, 129, 0.7);
 }
 
-/* Stage fills the card with the Follow-arm controls on its right. */
-.camera-row {
+/* Camera card header: title left, Follow-arm controls on the same
+   line, stage filling the card beneath (graph.html keeps its own
+   350px stage — these rules are panel-scoped). */
+.camera-head {
     display: flex;
-    align-items: flex-start;
-    gap: 14px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 14px;
 }
 
-.camera-row .camera-controls {
-    flex: 0 0 auto;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 10px;
+.camera-head h2 {
+    margin-bottom: 0;
 }
 
-/* "Follow arm" label stacked above its switch (DOM keeps track first;
-   column-reverse flips the visual order). */
-.camera-row #camera-follow-switch {
-    flex-direction: column-reverse;
-    align-items: flex-start;
-    gap: 6px;
-}
-
-/* Inside the row the stage grows to fill; elsewhere (graph.html) it
-   keeps its fixed 350px. */
-.camera-row .camera-stage {
-    flex: 1 1 auto;
-    width: auto;
-    min-width: 0;
+#camera-card .camera-stage {
+    width: 100%;
 }
 
 .camera-stage {
@@ -975,8 +970,6 @@ input#linear-speed {
 }
 
 .follow-switch.is-on {
-    box-shadow: 0 0 0 2px rgba(14, 165, 233, 0.35);
-    border-radius: 999px;
     animation: none;
 }
 

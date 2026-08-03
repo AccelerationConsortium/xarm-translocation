@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260804a">
+    <link rel="stylesheet" href="style.css?v=20260804b">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -207,8 +207,7 @@
                      un-audited, claim-bypassing control surface (fine for a
                      sim, not for hardware). Wiring in main.js. -->
                 <div class="card" id="sim-3d-card" hidden>
-                    <h2>Simulator 3D View <span class="panel-unit">UFACTORY Studio</span></h2>
-                    <button id="sim-3d-toggle-btn" class="btn">Show 3D view</button>
+                    <h2>3D View</h2>
                     <!-- The crop isolates Studio's arm panel (.xarm-container:
                          STOP, 3D canvas, Real/Sim switch, pose + joints) — the
                          right column of /control, x 896-1300 at a 1300x900
@@ -219,7 +218,7 @@
                          .sim-3d-crop CSS variables. Cross-origin, so a crop
                          is the only isolation available — the canvas stays
                          fully interactive (drag to orbit). -->
-                    <div id="sim-3d-stage" class="sim-3d-stage" hidden>
+                    <div id="sim-3d-stage" class="sim-3d-stage">
                         <div class="sim-3d-crop">
                             <iframe id="sim-3d-frame" class="sim-3d-frame"
                                     title="UFACTORY Studio — simulated arm"
@@ -240,24 +239,24 @@
                      is shared with graph.html via camera-player.js. See
                      core/camera_tracker.py. -->
                 <div class="card" id="camera-card" hidden>
-                    <h2><span class="camera-dot" id="camera-dot" aria-hidden="true"></span>Lab Camera</h2>
-                    <div class="camera-row">
+                    <div class="camera-head">
+                        <h2><span class="camera-dot" id="camera-dot" aria-hidden="true"></span>Lab Camera</h2>
+                        <div class="camera-controls">
+                            <span id="camera-status" class="muted camera-status"></span>
+                            <label id="camera-follow-switch" class="manual-switch follow-switch is-disabled"
+                                   title="When on, the camera pans to the arm's station as it moves across the motion graph.">
+                                <input type="checkbox" id="camera-follow-checkbox" disabled>
+                                <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
+                                <span class="manual-switch-text">Follow arm</span>
+                            </label>
+                        </div>
+                    </div>
                     <div class="camera-stage">
                         <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
                         <div id="camera-overlay" class="camera-overlay">
                             <span id="camera-overlay-text">Connecting…</span>
                         </div>
                     </div>
-                    <div class="camera-controls">
-                        <label id="camera-follow-switch" class="manual-switch follow-switch is-disabled"
-                               title="When on, the camera pans to the arm's station as it moves across the motion graph.">
-                            <input type="checkbox" id="camera-follow-checkbox" disabled>
-                            <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
-                            <span class="manual-switch-text">Follow arm</span>
-                        </label>
-                        <span id="camera-status" class="muted camera-status"></span>
-                    </div>
-                    </div><!-- /camera-row -->
                 </div>
 
                 <!-- Control Modes card: two selectable panes — direct
@@ -494,6 +493,6 @@
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
     <script src="camera-player.js?v=20260724e"></script>
-    <script src="main.js?v=20260803e"></script>
+    <script src="main.js?v=20260804a"></script>
 </body>
 </html>
