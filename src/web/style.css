@@ -253,11 +253,12 @@ header {
 .header-actions .btn {
     min-height: 96px;
     border-radius: 12px;
-    font-size: 0.95rem;
+    font-size: 1.15rem;
+    font-weight: 700;
 }
 
 .header-actions #stop-btn {
-    font-size: 1.2rem;
+    font-size: 1.5rem;
     font-weight: 800;
     letter-spacing: 0.06em;
 }
@@ -1087,21 +1088,21 @@ input#linear-speed {
     color: var(--ink-subtle);
 }
 
+/* Color-only status pill — the state text ("Connected (ready) ·
+   host:port") is the tooltip/aria-label, set by updateConnLines. */
 .conn-state {
-    display: inline-flex;
-    align-items: center;
-    min-width: 128px;
-    justify-content: center;
+    display: inline-block;
+    width: 14px;
+    height: 14px;
     border-radius: 999px;
-    padding: 4px 10px;
-    font-size: 0.82rem;
-    font-weight: 700;
-    background: var(--surface-soft);
-    box-shadow: inset 0 0 0 1px var(--border);
+    cursor: help;
+    box-shadow: inset 0 0 0 1px rgba(2, 6, 23, 0.12);
 }
 
-.conn-state.conn-on  { color: #059669; }   /* emerald-600, matches the dot */
-.conn-state.conn-off { color: var(--ink-subtle); }
+.conn-state.conn-on  { background: #10b981; }   /* emerald-500 */
+.conn-state.conn-off { background: #cbd5e1; }   /* slate-300  */
+
+:root.dark .conn-state.conn-off { background: #475569; }   /* slate-600 */
 
 .conn-owner {
     font-size: 0.82rem;

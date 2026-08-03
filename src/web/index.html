@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260803n">
+    <link rel="stylesheet" href="style.css?v=20260803o">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -74,12 +74,12 @@
                             <div class="conn-lines">
                                 <div class="conn-line">
                                     <span class="conn-name">Hardware</span>
-                                    <span class="conn-state conn-off" id="conn-hw-state">Disconnected</span>
+                                    <span class="conn-state conn-off" id="conn-hw-state" title="Disconnected"></span>
                                     <span class="conn-owner" id="conn-hw-owner">Control: —</span>
                                 </div>
                                 <div class="conn-line">
                                     <span class="conn-name">Docker</span>
-                                    <span class="conn-state conn-off" id="conn-docker-state">Disconnected</span>
+                                    <span class="conn-state conn-off" id="conn-docker-state" title="Disconnected"></span>
                                     <span class="conn-owner" id="conn-docker-owner">Control: —</span>
                                 </div>
                             </div>
@@ -120,7 +120,7 @@
                              connected" surface. IDs unchanged (main.js). -->
                         <div class="connection-inline">
                             <div class="form-group">
-                                <label for="config-select">Connection Profile</label>
+                                <label for="config-select">Connect To</label>
                                 <select id="config-select"></select>
                             </div>
                             <div class="form-group">
@@ -493,6 +493,6 @@
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
     <script src="camera-player.js?v=20260724e"></script>
-    <script src="main.js?v=20260803c"></script>
+    <script src="main.js?v=20260803d"></script>
 </body>
 </html>

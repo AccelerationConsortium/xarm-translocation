@@ -1343,11 +1343,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const host = data.connection_details
             ? `${data.connection_details.host}:${data.connection_details.port}` : '';
 
+        // Color-only pills: the state text lives in the tooltip.
         const setLine = (stEl, owEl, isThisOne) => {
-            stEl.textContent = isThisOne ? stateTxt : 'Disconnected';
+            const label = isThisOne
+                ? `${stateTxt}${host ? ' · ' + host : ''}` : 'Disconnected';
             stEl.classList.toggle('conn-on', isThisOne);
             stEl.classList.toggle('conn-off', !isThisOne);
-            stEl.title = isThisOne ? host : '';
+            stEl.title = label;
+            stEl.setAttribute('aria-label', label);
             owEl.textContent = isThisOne ? ownerTxt : 'Control: —';
         };
         setLine(hwState, hwOwner, connected && !sim);
