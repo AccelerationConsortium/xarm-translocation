@@ -230,10 +230,9 @@ header {
     align-items: stretch;
     gap: 18px;
     padding: 20px;
-    /* Fixed tile height so the header doesn't breathe as pills/messages
-       come and go (the log tile stretches to match via the grid). Released
-       in the <=700px stacked layout. */
-    height: 380px;
+    /* Height flows with content (gripper + track now live inside); the
+       tile never narrows below 560px. */
+    min-width: 560px;
     box-sizing: border-box;
 }
 
@@ -266,8 +265,10 @@ header {
 .title-status-main {
     display: flex;
     flex-direction: column;
-    justify-content: space-between;
-    gap: 12px;
+    /* Uniform 14px rhythm between every block (space-between produced
+       uneven gaps that grew with the tile). */
+    justify-content: flex-start;
+    gap: 14px;
     min-width: 0;
     flex: 1 1 auto;
 }
@@ -353,12 +354,26 @@ h3 {
     background: rgba(190, 18, 60, 0.18);
 }
 
-/* Inside the left column: camera (+ sim 3D) | gripper + track stack. */
+/* Inside the left column: the camera (+ sim 3D) tiles. Gripper + track
+   moved into the title tile (.tile-sub-cols). */
 .left-tiles {
     display: grid;
-    grid-template-columns: 400px 250px;
+    grid-template-columns: 400px;
     gap: 16px;
     align-items: start;
+}
+
+/* Gripper | Linear Track, two columns under the connection section. */
+.tile-sub-cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    border-top: 1px solid var(--border);
+    padding-top: 14px;
+}
+
+.tile-sub {
+    min-width: 0;
 }
 
 .column-left,

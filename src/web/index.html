@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260803o">
+    <link rel="stylesheet" href="style.css?v=20260803p">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -119,6 +119,10 @@
                              the title tile is the single "who / what / how
                              connected" surface. IDs unchanged (main.js). -->
                         <div class="connection-inline">
+                            <div class="connection-inline-btns">
+                                <button id="connect-btn" class="btn">Connect</button>
+                                <button id="disconnect-btn" class="btn btn-danger" disabled>Disconnect</button>
+                            </div>
                             <div class="form-group">
                                 <label for="config-select">Connect To</label>
                                 <select id="config-select"></select>
@@ -131,9 +135,47 @@
                                     <option value="HIGH">High</option>
                                 </select>
                             </div>
-                            <div class="connection-inline-btns">
-                                <button id="connect-btn" class="btn">Connect</button>
-                                <button id="disconnect-btn" class="btn btn-danger" disabled>Disconnect</button>
+                        </div>
+                        <!-- Gripper + Linear Track, folded into the title tile
+                             as two columns under the connection section (they
+                             lived in their own 250px middle column before).
+                             IDs unchanged (main.js). -->
+                        <div class="tile-sub-cols">
+                            <div class="tile-sub">
+                                <h3>Gripper</h3>
+                    <div class="gripper-controls">
+                        <button id="open-gripper-btn" class="btn">Open</button>
+                        <button id="close-gripper-btn" class="btn">Close</button>
+                        <button id="enable-gripper-btn" class="btn btn-success">Enable</button>
+                    </div>
+                    <div class="stroke-control-row">
+                        <label for="gripper-stroke">Stroke:<br><span id="gripper-stroke-range" class="label-range"></span></label>
+                        <input type="number" id="gripper-stroke" placeholder="" disabled>
+                        <button id="move-to-stroke-btn" class="btn move-button" disabled>Move</button>
+                    </div>
+                    <div class="force-control-row">
+                        <label for="gripper-force">Force:<br><span id="gripper-force-range" class="label-range"></span></label>
+                        <input type="number" id="gripper-force" placeholder="" disabled>
+                        <button id="set-gripper-force-btn" class="btn move-button" disabled>Set</button>
+                    </div>
+                            </div>
+                            <div class="tile-sub">
+                                <h3>Linear Track</h3>
+                    <div class="track-controls">
+                        <div class="track-speed-group">
+                            <label for="track-speed">Speed (mm/s):</label>
+                            <input type="number" id="track-speed" placeholder="1-1000" min="1" max="1000" value="200">
+                        </div>
+                    </div>
+                    <div class="track-location-control">
+                        <select id="track-location-select"></select>
+                        <button id="move-track-loc-btn" class="btn move-button">Move</button>
+                    </div>
+                    <span id="track-strict-hint" class="muted" hidden></span>
+                    <div id="track-info" class="component-info">
+                        <div class="info-left">Range: <span id="track-range-display">0-700 mm</span></div>
+                        <div class="info-right">Current: <span id="track-position-display">N/A</span></div>
+                    </div>
                             </div>
                         </div>
                     </div>
@@ -205,50 +247,6 @@
 
             </div><!-- /column-left -->
 
-            <!-- ── MIDDLE COLUMN — Gripper + Linear Track, 250px ────── -->
-            <div class="column-mid">
-
-                <!-- Gripper -->
-                <div class="card">
-                    <h2>Gripper</h2>
-                    <div class="gripper-controls">
-                        <button id="open-gripper-btn" class="btn">Open</button>
-                        <button id="close-gripper-btn" class="btn">Close</button>
-                        <button id="enable-gripper-btn" class="btn btn-success">Enable</button>
-                    </div>
-                    <div class="stroke-control-row">
-                        <label for="gripper-stroke">Stroke:<br><span id="gripper-stroke-range" class="label-range"></span></label>
-                        <input type="number" id="gripper-stroke" placeholder="" disabled>
-                        <button id="move-to-stroke-btn" class="btn move-button" disabled>Move</button>
-                    </div>
-                    <div class="force-control-row">
-                        <label for="gripper-force">Force:<br><span id="gripper-force-range" class="label-range"></span></label>
-                        <input type="number" id="gripper-force" placeholder="" disabled>
-                        <button id="set-gripper-force-btn" class="btn move-button" disabled>Set</button>
-                    </div>
-                </div>
-
-                <!-- Linear Track -->
-                <div class="card">
-                    <h2>Linear Track</h2>
-                    <div class="track-controls">
-                        <div class="track-speed-group">
-                            <label for="track-speed">Speed (mm/s):</label>
-                            <input type="number" id="track-speed" placeholder="1-1000" min="1" max="1000" value="200">
-                        </div>
-                    </div>
-                    <div class="track-location-control">
-                        <select id="track-location-select"></select>
-                        <button id="move-track-loc-btn" class="btn move-button">Move</button>
-                    </div>
-                    <span id="track-strict-hint" class="muted" hidden></span>
-                    <div id="track-info" class="component-info">
-                        <div class="info-left">Range: <span id="track-range-display">0-700 mm</span></div>
-                        <div class="info-right">Current: <span id="track-position-display">N/A</span></div>
-                    </div>
-                </div>
-
-            </div><!-- /column-mid -->
                 </div>
             </div>
 
