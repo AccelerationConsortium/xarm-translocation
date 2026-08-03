@@ -478,6 +478,22 @@ input:focus {
     box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.16);
 }
 
+/* Every dropdown shares one size and type treatment, matching the
+   Connection Profile / Safety Level pair: 200 x 30, compact semibold.
+   The select.* forms outrank the width overrides that classes like
+   .inline-input (72px) and .position-dropdown (100%) apply to inputs. */
+select,
+select.inline-input,
+select.position-dropdown {
+    width: 200px;
+    min-width: 200px;
+    height: 30px;
+    box-sizing: border-box;
+    padding: 4px 8px;
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
 input:disabled,
 select:disabled {
     background: var(--surface-soft);
@@ -1004,11 +1020,7 @@ input#linear-speed {
 }
 
 .connection-inline .form-group select {
-    flex: 1 1 auto;
-    min-width: 0;
-    font-size: 0.85rem;
-    font-weight: 600;
-    padding: 7px 9px;
+    flex: 0 0 auto;   /* sizing comes from the shared 200x30 select rule */
 }
 
 .connection-inline-btns {
