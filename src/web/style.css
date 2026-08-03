@@ -1963,10 +1963,15 @@ input#linear-speed {
 }
 
 .sim-3d-crop {
-    --sim3d-x: 896px;      /* left edge of .xarm-container at 1300x900 */
-    --sim3d-w: 404px;      /* panel width  */
-    --sim3d-h: 900px;      /* panel height (full column) */
-    --sim3d-scale: 0.78;   /* display scale inside the card */
+    /* Window onto Studio's #model-container canvas only (no STOP, no
+       Real/Sim switch, no pose grid, no view tools): a 350x350 square
+       at (900,120) inside the fixed 1300x900 viewport, shown at native
+       scale. Measured on Studio v2.4.0. */
+    --sim3d-x: 900px;      /* crop origin inside the Studio viewport */
+    --sim3d-y: 120px;
+    --sim3d-w: 350px;
+    --sim3d-h: 350px;
+    --sim3d-scale: 1;      /* display scale inside the card */
     position: relative;
     overflow: hidden;
     width: calc(var(--sim3d-w) * var(--sim3d-scale));
@@ -1985,7 +1990,8 @@ input#linear-speed {
     width: 1300px;         /* fixed Studio viewport — do not make fluid */
     height: 900px;
     border: 0;
-    transform: scale(var(--sim3d-scale)) translateX(calc(-1 * var(--sim3d-x)));
+    transform: scale(var(--sim3d-scale))
+        translate(calc(-1 * var(--sim3d-x)), calc(-1 * var(--sim3d-y)));
     transform-origin: top left;
 }
 
