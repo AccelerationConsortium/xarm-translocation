@@ -2394,6 +2394,17 @@ async def graph_travel_to(request: GraphTravelToRequest, background_tasks: Backg
         c.exit_motion()
 
     background_tasks.add_task(broadcast_status_update)
+
+    # Surface edge speed-cap clamps: the requested max is only a ceiling of
+    # the caller's own, and STRICT clamps it per hop to edge.speed. Logging
+    # through `logger` puts it on the panel's log stream (bare prints in the
+    # controller never reach the browser).
+    for clamp in result.get("speed_clamps") or []:
+        logger.warning(
+            "speed clamped %s->%s: %s -> %s deg/s (graph edge limit)",
+            clamp["from"], clamp["to"], clamp["requested"], clamp["applied"],
+        )
+
     if not result["success"]:
         raise HTTPException(
             status_code=500,

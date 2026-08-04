@@ -213,7 +213,7 @@ header {
     /* Left floor = the title tile's constant 660px, so a narrowing page
        overflows (scrolls) instead of sliding the tile under the right
        column. */
-    grid-template-columns: minmax(660px, 1fr) 600px;
+    grid-template-columns: 660px 600px;
     gap: 16px;
     align-items: start;
 }
@@ -367,22 +367,18 @@ h3 {
     background: rgba(190, 18, 60, 0.18);
 }
 
-/* Inside the left column: the log window (fixed 400px tall). The 3D
-   preview moved into the title tile. */
-.left-tiles {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 16px;
-    align-items: start;
-}
-
-.left-tiles .log-container {
+/* Log window in the right column: fixed box, content scrolls inside
+   (both axes — long lines scroll horizontally rather than widening it). */
+.page-right .log-container {
+    width: 600px;
+    max-width: 100%;
     height: 400px;
 }
 
-.left-tiles .log-stream {
+.page-right .log-stream {
     min-height: 0;
     max-height: none;
+    overflow: auto;
 }
 
 /* Gripper | Linear Track under the connection section, split by a

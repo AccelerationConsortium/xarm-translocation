@@ -380,6 +380,9 @@ class XArmController:
         # callbacks; the aggregator's 60 s poll stays the coarse backstop).
         # No-op unless XARM_INGEST_URL is set. See core/events_exporter.py.
         self.events_exporter = EventsExporter.from_env()
+        # Per-journey record of edge speed-cap clamps (see
+        # _apply_edge_speed_cap); the API reports these to the operator.
+        self.last_speed_clamps: list[dict] = []
         self._last_emitted_state: Optional[str] = None
         if self.is_simulated and self.events_exporter.enabled:
             # A simulated session must not write telemetry into the lab's
@@ -2154,6 +2157,8 @@ class XArmController:
             return {"success": False, "path": [], "completed": [],
                     "failed_hop": None}
 
+        self.last_speed_clamps = []   # fresh per journey
+
         current = self.current_node
         if current is None:
             raise EdgeNotAllowedError(
@@ -2174,11 +2179,12 @@ class XArmController:
                     f"{self.current_node!r})"
                 )
                 return {"success": False, "path": path,
-                        "completed": completed, "failed_hop": hop}
+                        "completed": completed, "failed_hop": hop,
+                        "speed_clamps": self.last_speed_clamps}
             completed.append(hop)
 
         return {"success": True, "path": path, "completed": completed,
-                "failed_hop": None}
+                "failed_hop": None, "speed_clamps": self.last_speed_clamps}
 
     def _arm_is_moving(self) -> bool:
         """True when the SDK reports the arm in motion (state 1)."""
@@ -2390,6 +2396,12 @@ class XArmController:
                     f"[motion_graph] clamping speed {requested} -> "
                     f"{edge.speed} (edge.speed cap)"
                 )
+                # Record for the caller: the API surfaces these in the
+                # panel's log so a silently-capped request is visible.
+                self.last_speed_clamps.append({
+                    "from": edge.from_node, "to": edge.to_node,
+                    "requested": requested, "applied": edge.speed,
+                })
             return edge.speed
         return requested
 
