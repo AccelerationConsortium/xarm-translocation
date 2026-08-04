@@ -895,10 +895,12 @@ input#linear-speed {
 
 /* Left column beside the frame: follow toggle, pad, preset buttons. */
 .camera-side {
-    flex: 0 0 auto;
+    /* Fixed column beside the frame; its controls stretch to fill it so
+       Follow arm / Wide / Tele line up with the pad's width. */
+    flex: 0 0 132px;
     display: flex;
     flex-direction: column;
-    align-items: center;
+    align-items: stretch;
     justify-content: center;
     gap: 10px;
 }
@@ -944,7 +946,7 @@ input#linear-speed {
 
 .camera-side .camera-controls {
     flex-direction: column;
-    align-items: center;
+    align-items: stretch;
     gap: 4px;
 }
 
@@ -983,9 +985,13 @@ input#linear-speed {
     gap: 4px;
 }
 
+.ptz-preset-select {
+    flex: 1 1 auto;
+}
+
 /* Narrower than the shared 200px select — it lives in the pad column. */
 .ptz-preset-select {
-    width: 108px;
+    width: auto;
     min-width: 0;
     height: 26px;
     padding: 2px 6px;
@@ -1029,7 +1035,7 @@ input#linear-speed {
     flex: 0 0 auto;
     display: grid;
     gap: 4px;
-    grid-template-columns: repeat(3, 2.6rem);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     grid-template-rows: repeat(3, 2.6rem);
     grid-template-areas: "ul u ur" "l c r" "dl d dr";
 }
