@@ -265,12 +265,12 @@ header {
     padding: 0;
     box-sizing: border-box;
     border-radius: 12px;
-    font-size: 1.15rem;
+    font-size: 1.4rem;
     font-weight: 700;
 }
 
 .header-actions #stop-btn {
-    font-size: 1.5rem;
+    font-size: 1.8rem;
     font-weight: 800;
     letter-spacing: 0.06em;
 }
@@ -372,7 +372,22 @@ h3 {
 .page-right .log-container {
     width: 600px;
     max-width: 100%;
-    height: 400px;
+    height: 300px;
+}
+
+/* Camera card matches the title tile's height across the grid gap: the
+   tile is title-top + actions row + gripper/track columns; the stage
+   grows to take whatever the header row leaves. */
+#camera-card {
+    height: 392px;   /* matches the title tile opposite it */
+    display: flex;
+    flex-direction: column;
+}
+
+#camera-card .camera-stage {
+    flex: 1 1 auto;
+    aspect-ratio: auto;
+    min-height: 0;
 }
 
 .page-right .log-stream {
@@ -1078,12 +1093,12 @@ input#linear-speed {
 }
 
 .mode-tab {
-    padding: 7px 14px;
+    padding: 8px 16px;
     border: none;
     background: none;
     color: var(--ink-muted);
     font: inherit;
-    font-size: 0.85rem;
+    font-size: 1.1rem;
     font-weight: 700;
     cursor: pointer;
 }
