@@ -887,16 +887,23 @@ input#linear-speed {
 
 .camera-row {
     display: flex;
-    align-items: center;
+    align-items: stretch;   /* stage takes the row's full height */
     gap: 12px;
     flex: 1 1 auto;
     min-height: 0;
+}
+
+/* Pad stays its natural size, vertically centred beside the frame. */
+#camera-card .ptz-pad {
+    align-self: center;
 }
 
 #camera-card .camera-stage {
     flex: 1 1 auto;
     width: auto;
     min-width: 0;
+    height: 100%;
+    aspect-ratio: auto;
 }
 
 /* PTZ pad — same 3x3 geometry as the dashboard's PtzPad.tsx. */
