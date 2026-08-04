@@ -2154,7 +2154,8 @@ input#linear-speed {
     order: 1;                 /* right of the title block (DOM order first) */
     flex: 0 0 200px;
     width: 200px;
-    height: 250px;
+    /* Height follows content (label + 218px preview + link row) — a fixed
+       250px clipped the links into the action row below. */
     padding: 0;
     border: 0;
     border-radius: 0;
