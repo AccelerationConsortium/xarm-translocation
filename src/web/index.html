@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260804z">
+    <link rel="stylesheet" href="style.css?v=20260805a">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -382,7 +382,10 @@
                          passthrough as the pad (POST /camera/preset). The
                          list comes from the camera's details.presets via
                          GET /camera/config. -->
-                    <div class="ptz-presets" id="ptz-presets" hidden></div>
+                    <div class="ptz-presets" id="ptz-presets" hidden>
+                        <select id="ptz-preset-select" class="ptz-preset-select" title="Saved camera views"></select>
+                        <button type="button" id="ptz-preset-go" class="ptz-preset-btn">Go</button>
+                    </div>
                     </div><!-- /camera-side -->
                     <div class="camera-stage">
                         <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
@@ -522,6 +525,6 @@
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
     <script src="camera-player.js?v=20260804a"></script>
-    <script src="main.js?v=20260804i"></script>
+    <script src="main.js?v=20260805a"></script>
 </body>
 </html>

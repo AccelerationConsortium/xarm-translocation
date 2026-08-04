@@ -1684,6 +1684,16 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    (function wirePresetGo() {
+        const sel = document.getElementById('ptz-preset-select');
+        const btn = document.getElementById('ptz-preset-go');
+        if (!sel || !btn) return;
+        btn.addEventListener('click', () => {
+            if (!sel.value) return;
+            apiRequest('/camera/preset', 'POST', { preset_id: sel.value }, true);
+        });
+    })();
+
     // PTZ pad: press-and-hold pans continuously, release stops — the same
     // interaction as the dashboard's PtzPad.tsx. Requests go to
     // /camera/ptz, which forwards to the dashboard control passthrough.
@@ -1720,26 +1730,30 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     })();
 
-    // Preset buttons under the pad, from the camera's saved views.
+    // Preset picker under the pad, from the camera's saved views.
     function renderCameraPresets(presets) {
         const box = document.getElementById('ptz-presets');
-        if (!box) return;
+        const sel = document.getElementById('ptz-preset-select');
+        const btn = document.getElementById('ptz-preset-go');
+        if (!box || !sel || !btn) return;
         const list = Array.isArray(presets) ? presets : [];
-        if (list.length === 0) { box.hidden = true; box.innerHTML = ''; return; }
+        if (list.length === 0) { box.hidden = true; return; }
+
+        // Rebuild only on change, and never while the operator has the
+        // dropdown open (that would stomp their selection mid-pick).
         const signature = list.map(p => `${p.id}:${p.name}`).join('|');
-        if (box.dataset.sig === signature) { box.hidden = false; return; }
-        box.dataset.sig = signature;
-        box.innerHTML = '';
-        list.forEach(p => {
-            const b = document.createElement('button');
-            b.type = 'button';
-            b.className = 'ptz-preset-btn';
-            b.textContent = p.name || p.id;
-            b.title = `Recall camera preset ${p.name || p.id}`;
-            b.addEventListener('click', () =>
-                apiRequest('/camera/preset', 'POST', { preset_id: p.id }, true));
-            box.appendChild(b);
-        });
+        if (box.dataset.sig !== signature && document.activeElement !== sel) {
+            const previous = sel.value;
+            box.dataset.sig = signature;
+            sel.innerHTML = '';
+            list.forEach(p => {
+                const opt = document.createElement('option');
+                opt.value = p.id;
+                opt.textContent = p.name || p.id;
+                sel.appendChild(opt);
+            });
+            if (list.some(p => p.id === previous)) sel.value = previous;
+        }
         box.hidden = false;
     }
 
