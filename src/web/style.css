@@ -2079,11 +2079,15 @@ input#linear-speed {
        Real/Sim switch, no pose grid, no view tools): a 350x350 square
        at (900,120) inside the fixed 1300x900 viewport, shown at native
        scale. Measured on Studio v2.4.0. */
-    --sim3d-x: 900px;      /* crop origin inside the Studio viewport */
-    --sim3d-y: 90px;
-    --sim3d-w: 350px;
-    --sim3d-h: 530px;      /* 530*0.6 = 318px display fills the 400px card */
-    --sim3d-scale: 0.6;    /* fits the 350px window into the 250px card */
+    /* Window = the .arm3d model canvas ONLY. Measured on Studio v2.4.0 /
+       2.6.0 at the fixed 1300x900 viewport: the canvas region runs
+       y 85-505; STOP sits above it and the Real/Sim toggle below at
+       y~515, so both fall outside this crop. */
+    --sim3d-x: 910px;      /* crop origin inside the Studio viewport */
+    --sim3d-y: 85px;
+    --sim3d-w: 330px;
+    --sim3d-h: 420px;
+    --sim3d-scale: 0.63;   /* 330*0.63 = 208px, fits the 250px card */
     position: relative;
     overflow: hidden;
     width: calc(var(--sim3d-w) * var(--sim3d-scale));
