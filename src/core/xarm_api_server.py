@@ -2558,6 +2558,25 @@ async def camera_follow(request: CameraFollowRequest):
     return {"following": following, "configured": tracker.configured}
 
 
+@app.post("/camera/preset", dependencies=[Depends(require_login)])
+async def camera_preset(body: dict):
+    """Recall a saved camera preset (``{preset_id}``), same audited route
+    as /camera/ptz."""
+    tracker = _camera_tracker_for_read()
+    if tracker is None or not tracker.configured:
+        raise HTTPException(status_code=404, detail="camera tracking not configured")
+    preset_id = (body or {}).get("preset_id")
+    if not preset_id:
+        raise HTTPException(status_code=422, detail="preset_id is required")
+    try:
+        await asyncio.to_thread(
+            tracker.send_control, "preset/goto", {"preset_id": str(preset_id)}
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"camera preset failed: {exc}")
+    return {"ok": True}
+
+
 @app.post("/camera/ptz", dependencies=[Depends(require_login)])
 async def camera_ptz(body: dict):
     """Operator PTZ for the lab camera, forwarded to the dashboard's

@@ -893,9 +893,48 @@ input#linear-speed {
     min-height: 0;
 }
 
-/* Pad stays its natural size, vertically centred beside the frame. */
-#camera-card .ptz-pad {
-    align-self: center;
+/* Left column beside the frame: follow toggle, pad, preset buttons. */
+.camera-side {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+}
+
+.camera-side .camera-controls {
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+}
+
+.ptz-presets {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    width: 100%;
+}
+
+.ptz-preset-btn {
+    padding: 4px 8px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.ptz-preset-btn:hover {
+    background: var(--surface-soft);
+    border-color: var(--primary-active);
+    color: var(--primary);
 }
 
 #camera-card .camera-stage {

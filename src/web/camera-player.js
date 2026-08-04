@@ -285,6 +285,10 @@
                 // Follow toggle is only actionable with a connected controller
                 // (POST /camera/follow needs one). Reflect the reported state.
                 if (!toggling) applyFollowing(!!data.following);
+                // Hand the camera's saved views to whoever renders them
+                // (the arm panel's preset buttons); graph.html has no
+                // preset UI, so the hook is optional.
+                if (typeof opts.onPresets === 'function') opts.onPresets(data.presets);
                 setToggleEnabled(connected);
                 statusEl.textContent = connected ? '' : 'Connect the arm to change follow';
 

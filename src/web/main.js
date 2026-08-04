@@ -1720,6 +1720,29 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     })();
 
+    // Preset buttons under the pad, from the camera's saved views.
+    function renderCameraPresets(presets) {
+        const box = document.getElementById('ptz-presets');
+        if (!box) return;
+        const list = Array.isArray(presets) ? presets : [];
+        if (list.length === 0) { box.hidden = true; box.innerHTML = ''; return; }
+        const signature = list.map(p => `${p.id}:${p.name}`).join('|');
+        if (box.dataset.sig === signature) { box.hidden = false; return; }
+        box.dataset.sig = signature;
+        box.innerHTML = '';
+        list.forEach(p => {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'ptz-preset-btn';
+            b.textContent = p.name || p.id;
+            b.title = `Recall camera preset ${p.name || p.id}`;
+            b.addEventListener('click', () =>
+                apiRequest('/camera/preset', 'POST', { preset_id: p.id }, true));
+            box.appendChild(b);
+        });
+        box.hidden = false;
+    }
+
     // Hint bubbles: the "i" pops its explanation at the cursor.
     document.querySelectorAll('.hint-toggle').forEach(btn => {
         btn.addEventListener('click', (e) => {
@@ -2318,7 +2341,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Wire up the Lab Camera card (reads /camera/config; MSE live preview +
     // "Follow arm" toggle). Shared with graph.html via camera-player.js;
     // no-op unless camera tracking is configured.
-    if (window.setupCameraCard) window.setupCameraCard({ apiBase: API_BASE_URL });
+    if (window.setupCameraCard) window.setupCameraCard({
+        apiBase: API_BASE_URL,
+        onPresets: renderCameraPresets,
+    });
     
     // Initialize real-time joints display
     if (realtimeJointsDisplay) {

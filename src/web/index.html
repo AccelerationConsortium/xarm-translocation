@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260804y">
+    <link rel="stylesheet" href="style.css?v=20260804z">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -350,15 +350,6 @@
                 <div class="card" id="camera-card" hidden>
                     <div class="camera-head">
                         <h2><span class="camera-dot" id="camera-dot" aria-hidden="true"></span>Lab Camera</h2>
-                        <div class="camera-controls">
-                            <span id="camera-status" class="muted camera-status"></span>
-                            <label id="camera-follow-switch" class="manual-switch follow-switch is-disabled"
-                                   title="When on, the camera pans to the arm's station as it moves across the motion graph.">
-                                <input type="checkbox" id="camera-follow-checkbox" disabled>
-                                <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
-                                <span class="manual-switch-text">Follow arm</span>
-                            </label>
-                        </div>
                     </div>
                     <!-- PTZ pad, mirroring the dashboard's CameraTile
                          (ac-organic-lab web/src/components/PtzPad.tsx):
@@ -366,6 +357,16 @@
                          continuously; POSTs go to /camera/ptz, which forwards
                          to the dashboard's audited control passthrough. -->
                     <div class="camera-row">
+                    <div class="camera-side">
+                    <div class="camera-controls">
+                        <span id="camera-status" class="muted camera-status"></span>
+                        <label id="camera-follow-switch" class="manual-switch follow-switch is-disabled"
+                               title="When on, the camera pans to the arm's station as it moves across the motion graph.">
+                            <input type="checkbox" id="camera-follow-checkbox" disabled>
+                            <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
+                            <span class="manual-switch-text">Follow arm</span>
+                        </label>
+                    </div>
                     <div class="ptz-pad" id="ptz-pad">
                         <button type="button" class="ptz-btn" data-dir="up_left" style="grid-area:ul" aria-label="Pan up-left">&#8598;</button>
                         <button type="button" class="ptz-btn" data-dir="up" style="grid-area:u" aria-label="Tilt up">&#8593;</button>
@@ -377,6 +378,12 @@
                         <button type="button" class="ptz-btn" data-dir="down" style="grid-area:d" aria-label="Tilt down">&#8595;</button>
                         <button type="button" class="ptz-btn" data-dir="down_right" style="grid-area:dr" aria-label="Pan down-right">&#8600;</button>
                     </div>
+                    <!-- Saved views, recalled through the same audited
+                         passthrough as the pad (POST /camera/preset). The
+                         list comes from the camera's details.presets via
+                         GET /camera/config. -->
+                    <div class="ptz-presets" id="ptz-presets" hidden></div>
+                    </div><!-- /camera-side -->
                     <div class="camera-stage">
                         <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
                         <div id="camera-overlay" class="camera-overlay">
@@ -514,7 +521,7 @@
          reads the signed-in identity for the claim owner. Root-absolute path →
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
-    <script src="camera-player.js?v=20260724e"></script>
-    <script src="main.js?v=20260804h"></script>
+    <script src="camera-player.js?v=20260804a"></script>
+    <script src="main.js?v=20260804i"></script>
 </body>
 </html>

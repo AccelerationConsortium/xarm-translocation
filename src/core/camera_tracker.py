@@ -115,6 +115,7 @@ class CameraTracker:
         self._sync_sender = sender
         self._sender: Sender = sender or self._threaded_send
         self._fetcher: Fetcher = fetcher or self._http_get_json
+        self._presets: list[Dict[str, str]] = []
 
         # Dedupe: the last view we commanded, so hops within one station
         # (and re-planned travel through it) don't re-send.
@@ -211,18 +212,26 @@ class CameraTracker:
             return {**self._avail_cache, **base}
 
         available, reason, stream_url = self._probe()
-        self._avail_cache = {"available": available, "reason": reason, "stream_url": stream_url}
+        self._avail_cache = {"available": available, "reason": reason,
+                             "stream_url": stream_url, "presets": list(self._presets)}
         self._avail_cache_at = now
         return {**base, **self._avail_cache}
 
     def _probe(self):
-        """Return (available, reason, stream_url) from the dashboard snapshot."""
+        """Return (available, reason, stream_url) from the dashboard snapshot.
+
+        Also caches the camera's saved PTZ presets (``details.presets``) so
+        the panel can offer a preset picker beside the pad; they live on
+        ``self._presets`` because the tuple shape is load-bearing for
+        callers/tests.
+        """
         url = f"{self.dashboard_base_url}/api/equipment"
         try:
             data = self._fetcher(url, self._timeout_s)
         except Exception as exc:  # noqa: BLE001 - best-effort read
             return False, f"dashboard unreachable: {exc}", None
 
+        self._presets = []
         snap = self._find_camera_snapshot(data)
         if snap is None:
             return False, f"camera {self.camera_id!r} not found on dashboard", None
@@ -245,6 +254,13 @@ class CameraTracker:
             return False, "camera streaming disabled", None
         if details.get("go2rtc_reachable") is False:
             return False, "stream backend (go2rtc) down", None
+
+        presets = details.get("presets")
+        if isinstance(presets, list):
+            self._presets = [
+                {"id": str(pr.get("id")), "name": str(pr.get("name") or pr.get("id"))}
+                for pr in presets if isinstance(pr, dict) and pr.get("id") is not None
+            ]
 
         lens = self._pick_lens(details.get("lenses"))
         if lens is None:
