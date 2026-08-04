@@ -2152,10 +2152,10 @@ input#linear-speed {
    chrome (it sits inside the tile that already has a border). */
 #sim-3d-card {
     order: 1;                 /* right of the title block (DOM order first) */
-    flex: 0 0 200px;
-    width: 200px;
-    /* Height follows content (label + 218px preview + link row) — a fixed
-       250px clipped the links into the action row below. */
+    flex: 0 0 250px;
+    width: 250px;
+    /* Height follows content (label + 250px preview + link row); a fixed
+       height clipped the links into the action row below. */
     padding: 0;
     border: 0;
     border-radius: 0;
@@ -2191,30 +2191,16 @@ input#linear-speed {
 
 /* The frame window itself carries no border either. */
 #sim-3d-card .sim-3d-crop {
-    border: 0;
-    border-radius: 0;
-    background: none;
-    margin: 0;
-}
-
-.sim-3d-stage {
-    margin-top: 0;
-}
-
-.sim-3d-crop {
-    /* Window onto Studio's #model-container canvas only (no STOP, no
-       Real/Sim switch, no pose grid, no view tools): a 350x350 square
-       at (900,120) inside the fixed 1300x900 viewport, shown at native
-       scale. Measured on Studio v2.4.0. */
-    /* Window = the .arm3d model canvas ONLY. Measured on Studio v2.4.0 /
-       2.6.0 at the fixed 1300x900 viewport: the canvas region runs
-       y 85-505; STOP sits above it and the Real/Sim toggle below at
-       y~515, so both fall outside this crop. */
+    /* Window = a square slice of Studio's .arm3d model canvas, centred on
+       the arm. Measured on Studio v2.4.0 / 2.6.0 at the fixed 1300x900
+       viewport: the canvas region runs x 910-1240, y 85-505 — STOP sits
+       above it and the Real/Sim toggle below (y~515), so neither is in
+       frame. 330 source * 0.758 = 250px displayed. */
     --sim3d-x: 910px;      /* crop origin inside the Studio viewport */
-    --sim3d-y: 85px;
+    --sim3d-y: 130px;      /* square slice centred on the arm */
     --sim3d-w: 330px;
-    --sim3d-h: 420px;
-    --sim3d-scale: 0.52;   /* 330*0.52 = 172px wide, 218px tall */
+    --sim3d-h: 330px;
+    --sim3d-scale: 0.758;  /* 330 * 0.758 = 250px square */
     position: relative;
     overflow: hidden;
     width: calc(var(--sim3d-w) * var(--sim3d-scale));
