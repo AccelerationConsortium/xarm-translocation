@@ -1620,6 +1620,13 @@ document.addEventListener('DOMContentLoaded', () => {
         updateTakeControlBtn();
     }
 
+    // Hint bubbles: the "i" reveals its explanation on click.
+    document.querySelectorAll('.hint-toggle').forEach(btn => {
+        btn.addEventListener('click', () => {
+            btn.closest('.hint-wrap')?.classList.toggle('open');
+        });
+    });
+
     // --- Control Modes tabs (Arm Control / Graph Control) ---
     const modeTabs = [
         { tab: document.getElementById('mode-tab-arm'), pane: document.getElementById('mode-pane-arm') },

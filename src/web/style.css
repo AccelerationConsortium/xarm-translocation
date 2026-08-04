@@ -1174,6 +1174,60 @@ input#linear-speed {
     margin-bottom: 10px;
 }
 
+/* One label column across the graph pane so every control (mode
+   buttons, node readout, dropdowns, speed) starts on the same x. */
+#mode-pane-graph .inline-label {
+    flex: 0 0 112px;
+    min-width: 112px;
+}
+
+/* Click-to-expand hint bubble: a small "i" that reveals its text on
+   click, so an inactive-state explanation costs one glyph of space
+   instead of a full line. The toggle hides itself when main.js has
+   hidden the text (nothing to explain). */
+.hint-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.hint-toggle {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid var(--border-strong);
+    border-radius: 999px;
+    background: var(--surface-soft);
+    color: var(--ink-subtle);
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 700;
+    font-style: italic;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.hint-toggle:hover {
+    color: var(--ink);
+    border-color: var(--primary-active);
+}
+
+.hint-text {
+    display: none;
+    font-size: 0.8rem;
+}
+
+.hint-wrap.open .hint-text {
+    display: inline;
+}
+
+/* Nothing to explain → no bubble at all. */
+.hint-wrap:has(.hint-text[hidden]) {
+    display: none;
+}
+
 /* Move button on the left of the stacked Node / Speed lines. */
 .drive-move-row {
     display: flex;

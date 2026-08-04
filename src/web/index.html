@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260804n">
+    <link rel="stylesheet" href="style.css?v=20260804o">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -261,7 +261,7 @@
                             <span class="panel-unit">interlock layer</span>
                         </h2>
                         <div class="mg-row">
-                            <span class="inline-label">Mode</span>
+                            <span class="inline-label">Enforcement</span>
                             <div class="mg-mode-btns" role="radiogroup" aria-label="Graph mode">
                                 <button type="button" class="mg-mode-btn" data-mode="off">off</button>
                                 <button type="button" class="mg-mode-btn" data-mode="advisory">advisory</button>
@@ -270,11 +270,11 @@
                             <button id="mg-recover-btn" class="btn btn-secondary" style="margin-left:auto;">Recover…</button>
                         </div>
                         <div class="mg-row">
-                            <span class="inline-label">Current</span>
+                            <span class="inline-label">Current Node</span>
                             <strong id="mg-current-node">—</strong>
                         </div>
                         <div class="mg-row">
-                            <span class="inline-label">Reachable</span>
+                            <span class="inline-label">Reachable Node</span>
                             <div id="mg-reachable" class="mg-reachable">
                                 <span class="muted">(no graph node pinned)</span>
                             </div>
@@ -309,7 +309,7 @@
                                 <button id="drive-travel-btn" class="btn btn-primary drive-move-btn" disabled title="Plan a multi-hop path and drive it hop-by-hop">Move</button>
                                 <div class="drive-move-fields">
                                     <div class="mg-row">
-                                        <span class="inline-label">Node</span>
+                                        <span class="inline-label">Target Node</span>
                                         <select id="drive-travel-select" class="inline-input"></select>
                                     </div>
                                     <div class="mg-row">
@@ -320,8 +320,9 @@
                                     </div>
                                 </div>
                             </div>
-                            <div class="mg-row">
-                                <span class="muted" id="drive-dest-hint">(connect and pin to a graph node to enable)</span>
+                            <div class="hint-wrap">
+                                <button type="button" class="hint-toggle" aria-label="Why is this unavailable?">i</button>
+                                <span class="muted hint-text" id="drive-dest-hint">(connect and pin to a graph node to enable)</span>
                             </div>
                             <!-- Gripper leaf: state readout + whitelisted transitions at the current node -->
                             <div class="mg-row">
@@ -330,8 +331,9 @@
                                 <select id="drive-gripper-select" class="inline-input"></select>
                                 <button id="drive-gripper-btn" class="btn btn-primary" disabled>Set Gripper</button>
                             </div>
-                            <div class="mg-row">
-                                <span class="muted" id="drive-gripper-hint">(gripper changes only while parked at a node)</span>
+                            <div class="hint-wrap">
+                                <button type="button" class="hint-toggle" aria-label="Why is this unavailable?">i</button>
+                                <span class="muted hint-text" id="drive-gripper-hint">(gripper changes only while parked at a node)</span>
                             </div>
                         </div>
                     </div>
