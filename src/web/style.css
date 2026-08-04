@@ -1159,6 +1159,10 @@ input#linear-speed {
     color: #ffffff;
 }
 
+.drive-move-head {
+    margin-bottom: 10px;
+}
+
 /* Move button on the left of the stacked Node / Speed lines. */
 .drive-move-row {
     display: flex;
