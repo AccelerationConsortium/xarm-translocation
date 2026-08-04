@@ -2370,8 +2370,8 @@ input#linear-speed {
    chrome (it sits inside the tile that already has a border). */
 #sim-3d-card {
     order: 1;                 /* right of the title block (DOM order first) */
-    flex: 0 0 250px;
-    width: 250px;
+    flex: 0 0 200px;
+    width: 200px;
     /* Height follows content (label + 250px preview + link row); a fixed
        height clipped the links into the action row below. */
     padding: 0;
@@ -2420,7 +2420,7 @@ input#linear-speed {
     --sim3d-y: 130px;      /* square slice centred on the arm */
     --sim3d-w: 330px;
     --sim3d-h: 330px;
-    --sim3d-scale: 0.758;  /* 330 * 0.758 = 250px square */
+    --sim3d-scale: 0.606;  /* 330 * 0.606 = 200px square */
     position: relative;
     overflow: hidden;
     width: calc(var(--sim3d-w) * var(--sim3d-scale));
