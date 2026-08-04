@@ -26,6 +26,8 @@
        whose sizes are icon sizes rather than text. */
     --control-font-size: 0.85rem;
     --control-font-weight: 600;
+    --control-radius: 6px;      /* the PTZ pad's corner */
+    --control-height: 30px;
 }
 
 * {
@@ -150,10 +152,10 @@ body {
 .auth-login input {
     width: auto;
     max-width: 260px;
-    height: 34px;
+    height: var(--control-height);
     padding: 0 10px;
     border: 1px solid var(--border-strong);
-    border-radius: 10px;
+    border-radius: var(--control-radius);
     background: var(--surface);
     color: var(--ink);
     font-size: 0.85rem;
@@ -586,14 +588,17 @@ select,
 input[type="text"],
 input[type="number"] {
     width: 100%;
+    /* NB: the `font` shorthand must come FIRST — it resets size/weight,
+       so putting it after the token silently undid it. */
+    font: inherit;
     font-size: var(--control-font-size);
     font-weight: var(--control-font-weight);
     border: 1px solid var(--border-strong);
-    border-radius: 10px;
+    border-radius: var(--control-radius);
     background: var(--surface);
     color: var(--ink);
-    padding: 9px 10px;
-    font: inherit;
+    padding: 4px 8px;
+    height: var(--control-height);
     outline: none;
 }
 
@@ -612,9 +617,7 @@ select.inline-input,
 select.position-dropdown {
     width: 200px;
     min-width: 200px;
-    height: 30px;
     box-sizing: border-box;
-    padding: 4px 8px;
 }
 
 input:disabled,
@@ -710,9 +713,9 @@ input#linear-speed {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-height: 38px;
+    min-height: var(--control-height);
     border: 1px solid transparent;
-    border-radius: 10px;
+    border-radius: var(--control-radius);
     background: var(--primary);
     color: white;
     cursor: pointer;
@@ -720,7 +723,7 @@ input#linear-speed {
     font-size: var(--control-font-size);
     font-weight: var(--control-font-weight);
     line-height: 1;
-    padding: 9px 14px;
+    padding: 6px 14px;
     text-align: center;
     transition: background-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
 }
@@ -932,7 +935,7 @@ input#linear-speed {
     width: 100%;
     padding: 5px 10px;
     border: 1px solid var(--border-strong);
-    border-radius: 6px;
+    border-radius: var(--control-radius);
     background: var(--surface);
     color: var(--ink-muted);
     font-size: var(--control-font-size);
@@ -1063,7 +1066,7 @@ input#linear-speed {
     align-items: center;
     justify-content: center;
     border: 1px solid var(--border-strong);
-    border-radius: 6px;
+    border-radius: var(--control-radius);
     background: var(--surface);
     color: var(--ink);
     font: inherit;
