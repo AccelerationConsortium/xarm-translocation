@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260804r">
+    <link rel="stylesheet" href="style.css?v=20260804s">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -83,9 +83,13 @@
                                         data-src-hw="http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:18333/control"></iframe>
                             </div>
                         </div>
-                        <a id="sim-studio-link" class="studio-link" hidden
-                           href="http://100.64.254.6:18333/control" target="_blank" rel="noopener"
-                           title="Open the full UFACTORY Studio control interface for the connected target">Open Studio &#8599;</a>
+                        <div class="preview-links">
+                            <a href="graph.html" class="studio-link" target="_blank" rel="noopener"
+                               title="Open the motion-graph view (interlock topology, live node)">Motion Graph &#8599;</a>
+                            <a id="sim-studio-link" class="studio-link" hidden
+                               href="http://100.64.254.6:18333/control" target="_blank" rel="noopener"
+                               title="Open the full UFACTORY Studio control interface for the connected target">Open Studio &#8599;</a>
+                        </div>
                     </div>
                     <div class="title-status-main">
                         <p class="eyebrow">xArm Translocation</p>
@@ -119,17 +123,6 @@
                                 <div id="connection-details"></div>
                             </div>
                             <div id="claim-status" class="claim-status claim-free" hidden>Control: nobody (open)</div>
-                            <div class="tile-links">
-                                <a href="graph.html" class="graph-tile" target="_blank" rel="noopener" title="Open the motion-graph view (interlock topology, live node)">
-                                    <svg class="graph-tile-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                        <circle cx="5" cy="6" r="2.2"></circle>
-                                        <circle cx="19" cy="6" r="2.2"></circle>
-                                        <circle cx="12" cy="18" r="2.2"></circle>
-                                        <path d="M6.9 7.4 10.6 15.9 M17.1 7.4 13.4 15.9 M7.2 6 h9.6"></path>
-                                    </svg>
-                                    <span class="graph-tile-text">Motion Graph</span>
-                                </a>
-                            </div>
                         </div>
                         <!-- Connection controls, relocated from their own card so
                              the title tile is the single "who / what / how

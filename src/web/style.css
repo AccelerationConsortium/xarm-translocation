@@ -2168,10 +2168,16 @@ input#linear-speed {
     font-size: 0.9rem;
 }
 
-/* "Open Studio" under the preview. */
+/* Link row under the 3D preview (Motion Graph + Open Studio). */
+.preview-links {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-top: 6px;
+}
+
 .studio-link {
     display: block;
-    margin-top: 6px;
     color: var(--primary);
     font-size: 0.8rem;
     font-weight: 700;
