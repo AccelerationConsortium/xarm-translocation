@@ -1243,7 +1243,21 @@ input#linear-speed {
     display: flex;
     flex-direction: column;
     gap: 8px;
+    flex: 1 1 auto;
     min-width: 0;
+}
+
+/* Keep each field on one line: the shared 200px select is too wide for
+   this column, so shrink the controls here rather than wrap. */
+.drive-move-fields .mg-row {
+    flex-wrap: nowrap;
+}
+
+.drive-move-fields select,
+.drive-move-fields input {
+    width: auto;
+    min-width: 0;
+    flex: 1 1 auto;
 }
 
 .drive-move-fields .mg-row {
