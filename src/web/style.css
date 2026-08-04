@@ -1333,9 +1333,10 @@ input#linear-speed {
 
 .mg-mode-btn {
     width: 90px;
-    padding: 6px 0;
+    height: var(--control-height);
+    padding: 0;
     border: 1px solid var(--border-strong);
-    border-radius: 9px;
+    border-radius: var(--control-radius);
     background: var(--surface-soft);
     color: var(--ink-muted);
     font: inherit;
@@ -2062,8 +2063,9 @@ input#linear-speed {
 }
 
 .mg-reachable .btn {
-    padding: 4px 10px;
-    font-size: 0.9em;
+    height: var(--control-height);
+    min-height: var(--control-height);
+    padding: 0 12px;
 }
 
 .mg-reachable .muted {
