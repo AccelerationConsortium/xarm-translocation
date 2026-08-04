@@ -2155,6 +2155,20 @@ input#linear-speed {
     font-size: 0.9rem;
 }
 
+/* "Open Studio" under the preview. */
+.studio-link {
+    display: block;
+    margin-top: 6px;
+    color: var(--primary);
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-decoration: none;
+}
+
+.studio-link:hover {
+    text-decoration: underline;
+}
+
 /* The frame window itself carries no border either. */
 #sim-3d-card .sim-3d-crop {
     border: 0;
