@@ -210,10 +210,10 @@ header {
    is the fixed 600px stack of Control Modes + log. */
 .page-grid {
     display: grid;
-    /* Left floor = the title tile's constant 660px, so a narrowing page
+    /* Left floor = the title tile's constant 600px, so a narrowing page
        overflows (scrolls) instead of sliding the tile under the right
        column. */
-    grid-template-columns: 660px 600px;
+    grid-template-columns: 600px 600px;
     gap: 16px;
     align-items: start;
 }
@@ -233,7 +233,7 @@ header {
     gap: 14px;
     padding: 20px;
     /* Constant tile width; height flows with content. */
-    width: 660px;
+    width: 600px;
     box-sizing: border-box;
 }
 
@@ -370,7 +370,7 @@ h3 {
 /* Log window in the right column: fixed box, content scrolls inside
    (both axes — long lines scroll horizontally rather than widening it). */
 .page-right .log-container {
-    width: 600px;
+    width: 550px;
     max-width: 100%;
     height: 300px;
 }
@@ -885,8 +885,66 @@ input#linear-speed {
     margin-bottom: 0;
 }
 
+.camera-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
 #camera-card .camera-stage {
-    width: 100%;
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+}
+
+/* PTZ pad — same 3x3 geometry as the dashboard's PtzPad.tsx. */
+.ptz-pad {
+    flex: 0 0 auto;
+    display: grid;
+    gap: 4px;
+    grid-template-columns: repeat(3, 2.1rem);
+    grid-template-rows: repeat(3, 2.1rem);
+    grid-template-areas: "ul u ur" "l c r" "dl d dr";
+}
+
+.ptz-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--ink);
+    font: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.ptz-btn:hover:not(:disabled) {
+    background: var(--surface-soft);
+}
+
+.ptz-btn.active {
+    border-color: var(--primary-active);
+    background: #e0f2fe;
+    color: #0c4a6e;
+}
+
+.ptz-btn.ptz-stop {
+    background: var(--surface-soft);
+    color: var(--ink-muted);
+    font-size: 0.6rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.ptz-btn:disabled {
+    background: var(--surface-soft);
+    color: var(--ink-subtle);
+    cursor: not-allowed;
 }
 
 .camera-stage {
@@ -1308,22 +1366,23 @@ input#linear-speed {
     margin-bottom: 0;
 }
 
-/* Dashboard-consistent form typography: labels are the tiles'
-   `text-[10px] uppercase tracking-wider text-ink-subtle`, controls
-   their compact `text-xs` inputs. */
+/* Form typography: sentence-case labels ("Connect to"), compact
+   `text-xs` controls. */
 .connection-inline .form-group label {
     flex: 0 0 132px;
     margin-bottom: 0;
     white-space: nowrap;
     font-size: 12px;
     font-weight: 700;
-    text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--ink-subtle);
 }
 
 .connection-inline .form-group select {
-    flex: 0 0 auto;   /* sizing comes from the shared 200x30 select rule */
+    flex: 0 0 auto;
+    /* Narrower than the shared 200x30 select rule. */
+    width: 150px;
+    min-width: 150px;
 }
 
 .connection-inline-btns {
@@ -2169,16 +2228,18 @@ input#linear-speed {
     font-size: 0.9rem;
 }
 
-/* Link row under the 3D preview (Motion Graph + Open Studio). */
+/* Link row (Motion Graph + Open Studio), one line under the
+   Safety level control in the title tile. */
 .preview-links {
     display: flex;
-    flex-direction: column;
-    gap: 4px;
-    margin-top: 6px;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 14px;
+    margin-top: 2px;
 }
 
 .studio-link {
-    display: block;
+    display: inline-block;
     color: var(--primary);
     font-size: 0.8rem;
     font-weight: 700;

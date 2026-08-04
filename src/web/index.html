@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260804w">
+    <link rel="stylesheet" href="style.css?v=20260804x">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -83,13 +83,6 @@
                                         data-src-hw="http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:18333/control"></iframe>
                             </div>
                         </div>
-                        <div class="preview-links">
-                            <a href="graph.html" class="studio-link" target="_blank" rel="noopener"
-                               title="Open the motion-graph view (interlock topology, live node)">Motion Graph &#8599;</a>
-                            <a id="sim-studio-link" class="studio-link" hidden
-                               href="http://100.64.254.6:18333/control" target="_blank" rel="noopener"
-                               title="Open the full UFACTORY Studio control interface for the connected target">Open Studio &#8599;</a>
-                        </div>
                     </div>
                     <div class="title-status-main">
                         <p class="eyebrow">xArm Translocation</p>
@@ -133,16 +126,23 @@
                                 <button id="disconnect-btn" class="btn btn-danger" disabled>Disconnect</button>
                             </div>
                             <div class="form-group">
-                                <label for="config-select">Connect To</label>
+                                <label for="config-select">Connect to</label>
                                 <select id="config-select"></select>
                             </div>
                             <div class="form-group">
-                                <label for="safety-level-select">Safety Level</label>
+                                <label for="safety-level-select">Safety level</label>
                                 <select id="safety-level-select">
                                     <option value="LOW">Low</option>
                                     <option value="MEDIUM" selected>Medium</option>
                                     <option value="HIGH">High</option>
                                 </select>
+                            </div>
+                            <div class="preview-links">
+                                <a href="graph.html" class="studio-link" target="_blank" rel="noopener"
+                                   title="Open the motion-graph view (interlock topology, live node)">Motion Graph &#8599;</a>
+                                <a id="sim-studio-link" class="studio-link" hidden
+                                   href="http://100.64.254.6:18333/control" target="_blank" rel="noopener"
+                                   title="Open the full UFACTORY Studio control interface for the connected target">Open Studio &#8599;</a>
                             </div>
                         </div>
                     </div>
@@ -360,12 +360,30 @@
                             </label>
                         </div>
                     </div>
+                    <!-- PTZ pad, mirroring the dashboard's CameraTile
+                         (ac-organic-lab web/src/components/PtzPad.tsx):
+                         8 directions + a centre Stop. Press-and-hold moves
+                         continuously; POSTs go to /camera/ptz, which forwards
+                         to the dashboard's audited control passthrough. -->
+                    <div class="camera-row">
+                    <div class="ptz-pad" id="ptz-pad">
+                        <button type="button" class="ptz-btn" data-dir="up_left" style="grid-area:ul" aria-label="Pan up-left">&#8598;</button>
+                        <button type="button" class="ptz-btn" data-dir="up" style="grid-area:u" aria-label="Tilt up">&#8593;</button>
+                        <button type="button" class="ptz-btn" data-dir="up_right" style="grid-area:ur" aria-label="Pan up-right">&#8599;</button>
+                        <button type="button" class="ptz-btn" data-dir="left" style="grid-area:l" aria-label="Pan left">&#8592;</button>
+                        <button type="button" class="ptz-btn ptz-stop" data-dir="stop" style="grid-area:c" aria-label="Stop pan/tilt">Stop</button>
+                        <button type="button" class="ptz-btn" data-dir="right" style="grid-area:r" aria-label="Pan right">&#8594;</button>
+                        <button type="button" class="ptz-btn" data-dir="down_left" style="grid-area:dl" aria-label="Pan down-left">&#8601;</button>
+                        <button type="button" class="ptz-btn" data-dir="down" style="grid-area:d" aria-label="Tilt down">&#8595;</button>
+                        <button type="button" class="ptz-btn" data-dir="down_right" style="grid-area:dr" aria-label="Pan down-right">&#8600;</button>
+                    </div>
                     <div class="camera-stage">
                         <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
                         <div id="camera-overlay" class="camera-overlay">
                             <span id="camera-overlay-text">Connecting…</span>
                         </div>
                     </div>
+                    </div><!-- /camera-row -->
                 </div>
 
                 <!-- Gripper | Linear Track, moved out of the title tile into
@@ -497,6 +515,6 @@
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
     <script src="camera-player.js?v=20260724e"></script>
-    <script src="main.js?v=20260804g"></script>
+    <script src="main.js?v=20260804h"></script>
 </body>
 </html>

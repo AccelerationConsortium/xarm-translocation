@@ -1684,6 +1684,42 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // PTZ pad: press-and-hold pans continuously, release stops — the same
+    // interaction as the dashboard's PtzPad.tsx. Requests go to
+    // /camera/ptz, which forwards to the dashboard control passthrough.
+    (function wirePtzPad() {
+        const pad = document.getElementById('ptz-pad');
+        if (!pad) return;
+        const send = (body) => apiRequest('/camera/ptz', 'POST', body, true);
+        const stop = () => send({ pan: 0, tilt: 0, zoom: 0 });
+
+        pad.querySelectorAll('.ptz-btn').forEach(btn => {
+            const dir = btn.dataset.dir;
+            if (dir === 'stop') {
+                btn.addEventListener('click', () => {
+                    pad.querySelectorAll('.ptz-btn.active').forEach(b => b.classList.remove('active'));
+                    stop();
+                });
+                return;
+            }
+            const begin = (e) => {
+                e.preventDefault();
+                btn.classList.add('active');
+                send({ direction: dir, speed: 0.5, duration_ms: 1500 });
+            };
+            const end = (e) => {
+                if (!btn.classList.contains('active')) return;
+                e.preventDefault();
+                btn.classList.remove('active');
+                stop();
+            };
+            btn.addEventListener('pointerdown', begin);
+            btn.addEventListener('pointerup', end);
+            btn.addEventListener('pointerleave', end);
+            btn.addEventListener('pointercancel', end);
+        });
+    })();
+
     // Hint bubbles: the "i" pops its explanation at the cursor.
     document.querySelectorAll('.hint-toggle').forEach(btn => {
         btn.addEventListener('click', (e) => {

@@ -373,6 +373,25 @@ class CameraTracker:
         except Exception as exc:  # noqa: BLE001 - observability must not break motion
             print(f"[camera] notify_node failed (ignored): {exc}")
 
+    def send_control(self, action: str, payload: Dict[str, Any]) -> None:
+        """POST one camera control action through the dashboard passthrough.
+
+        Same transport as notify_node's automatic view changes — the
+        gateway binds to loopback on the dashboard host, so operator PTZ
+        from this panel takes the audited passthrough too. Raises on
+        delivery failure so the caller can surface it.
+        """
+        if not self.configured:
+            raise RuntimeError("camera tracking not configured")
+        url = f"{self.dashboard_base_url}/api/equipment/{self.camera_id}/control/{action}"
+        headers = {"Content-Type": "application/json"}
+        api_key = self._environ.get(self._api_key_env) if self._api_key_env else None
+        if api_key:
+            headers["X-Api-Key"] = api_key
+        # Synchronous on purpose: the operator wants the error, not a
+        # fire-and-forget like the automatic follow path.
+        self._http_post(url, payload, headers, self._timeout_s)
+
     def _body_for_view(
         self, view: str, body: Optional[Dict[str, Any]]
     ) -> Optional[tuple[str, Dict[str, Any]]]:

@@ -2558,6 +2558,25 @@ async def camera_follow(request: CameraFollowRequest):
     return {"following": following, "configured": tracker.configured}
 
 
+@app.post("/camera/ptz", dependencies=[Depends(require_login)])
+async def camera_ptz(body: dict):
+    """Operator PTZ for the lab camera, forwarded to the dashboard's
+    audited control passthrough (the camera gateway is loopback-bound on
+    the dashboard host, so this is the only route in).
+
+    Body is passed through verbatim: either a continuous move
+    ``{direction, speed, duration_ms}`` or a stop ``{pan, tilt, zoom}``.
+    """
+    tracker = _camera_tracker_for_read()
+    if tracker is None or not tracker.configured:
+        raise HTTPException(status_code=404, detail="camera tracking not configured")
+    try:
+        await asyncio.to_thread(tracker.send_control, "ptz", dict(body or {}))
+    except Exception as exc:  # noqa: BLE001 - surface the passthrough's failure
+        raise HTTPException(status_code=502, detail=f"camera ptz failed: {exc}")
+    return {"ok": True}
+
+
 @app.post("/assistant/plan")
 async def assistant_plan(request: AssistantPlanRequest):
     """Interpret a natural-language request into a previewable step list.
