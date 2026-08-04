@@ -402,8 +402,6 @@ h3 {
     display: grid;
     grid-template-columns: 1fr 280px;
     gap: 16px;
-    border-top: 1px solid var(--border);
-    padding-top: 14px;
 }
 
 /* Track dropdown narrower than the shared 200px select size. */
@@ -458,30 +456,6 @@ h3 {
    swallow the click). */
 .strict-gated:disabled {
     pointer-events: none;
-}
-
-/* Transient top-center popup (showToast in main.js). */
-.toast-pop {
-    position: fixed;
-    top: 18px;
-    left: 50%;
-    transform: translateX(-50%) translateY(-8px);
-    z-index: 6000;
-    max-width: min(90vw, 480px);
-    padding: 10px 16px;
-    border-radius: 10px;
-    background: #0f172a;
-    color: #f8fafc;
-    font-size: 0.9rem;
-    box-shadow: 0 8px 24px rgba(2, 6, 23, 0.35);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.18s ease, transform 0.18s ease;
-}
-
-.toast-pop.show {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
 }
 
 .column-left,
@@ -1181,28 +1155,29 @@ input#linear-speed {
     min-width: 112px;
 }
 
-/* Click-to-expand hint bubble: a small "i" that reveals its text on
-   click, so an inactive-state explanation costs one glyph of space
-   instead of a full line. The toggle hides itself when main.js has
-   hidden the text (nothing to explain). */
+/* Hint bubble: a small pill button (the dashboard's badge idiom — see
+   ac-organic-lab web/src/components/DegradedHealthBadge.tsx) whose text
+   pops at the cursor rather than expanding inline. */
 .hint-wrap {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    gap: 8px;
     margin-bottom: 10px;
 }
 
 .hint-toggle {
-    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     width: 18px;
     height: 18px;
     padding: 0;
-    border: 1px solid var(--border-strong);
+    border: 0;
     border-radius: 999px;
     background: var(--surface-soft);
+    box-shadow: inset 0 0 0 1px var(--border-strong);
     color: var(--ink-subtle);
     font: inherit;
-    font-size: 0.72rem;
+    font-size: 0.7rem;
     font-weight: 700;
     font-style: italic;
     line-height: 1;
@@ -1210,17 +1185,41 @@ input#linear-speed {
 }
 
 .hint-toggle:hover {
-    color: var(--ink);
-    border-color: var(--primary-active);
+    background: var(--surface);
+    box-shadow: inset 0 0 0 1px var(--primary-active);
+    color: var(--primary);
 }
 
+/* Text lives in the DOM for main.js to write; the popover reads it. */
 .hint-text {
     display: none;
-    font-size: 0.8rem;
 }
 
-.hint-wrap.open .hint-text {
-    display: inline;
+/* Lock hint sitting beside a sub-heading. */
+.sub-lock-hint {
+    margin: 0 0 0 8px;
+    vertical-align: middle;
+}
+
+/* Cursor-anchored popover + its dismiss backdrop. */
+.pop-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 6000;
+}
+
+.pop-panel {
+    position: fixed;
+    z-index: 6001;
+    max-width: 288px;
+    padding: 8px 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    background: var(--surface);
+    color: var(--ink);
+    font-size: 0.78rem;
+    line-height: 1.4;
+    box-shadow: 0 10px 24px rgba(2, 6, 23, 0.18);
 }
 
 /* Nothing to explain → no bubble at all. */

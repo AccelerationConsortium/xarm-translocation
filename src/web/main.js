@@ -480,6 +480,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             // Per-target connection lines (Hardware / Docker).
             updateConnLines(data);
+            updateLockHints();
 
             // Update connection text and light
             try {
@@ -848,26 +849,44 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Transient top-center popup.
-    let toastTimer = null;
-    function showToast(message) {
-        let el = document.getElementById('toast-pop');
-        if (!el) {
-            el = document.createElement('div');
-            el.id = 'toast-pop';
-            el.className = 'toast-pop';
-            document.body.appendChild(el);
-        }
-        el.textContent = message;
-        el.classList.add('show');
-        clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+    // Cursor-anchored popover, mirroring the dashboard's badge popovers
+    // (ac-organic-lab web/src/components/DegradedHealthBadge.tsx): a small
+    // panel at the click point plus a full-screen backdrop that dismisses
+    // it. Used by the hint bubbles and the strict-gate explanation.
+    let popEl = null;
+    let popBackdrop = null;
+
+    function hidePopover() {
+        popEl?.remove();
+        popBackdrop?.remove();
+        popEl = popBackdrop = null;
+    }
+
+    function showPopover(message, x, y) {
+        hidePopover();
+        popBackdrop = document.createElement('div');
+        popBackdrop.className = 'pop-backdrop';
+        popBackdrop.addEventListener('click', hidePopover);
+        document.body.appendChild(popBackdrop);
+
+        popEl = document.createElement('div');
+        popEl.className = 'pop-panel';
+        popEl.setAttribute('role', 'status');
+        popEl.textContent = message;
+        document.body.appendChild(popEl);
+
+        // Keep it on-screen: flip left/up near the right/bottom edges.
+        const w = popEl.offsetWidth, h = popEl.offsetHeight;
+        const left = Math.min(x + 10, window.innerWidth - w - 10);
+        const top = (y + 10 + h > window.innerHeight) ? y - h - 10 : y + 10;
+        popEl.style.left = Math.max(10, left) + 'px';
+        popEl.style.top = Math.max(10, top) + 'px';
     }
 
     // Rows hosting strict-gated controls: a click while gated explains why.
     document.querySelectorAll('.position-controls-row, .joint-move-row, .track-location-control')
-        .forEach(row => row.addEventListener('click', () => {
-            if (strictGateActive) showToast(STRICT_GATE_HINT);
+        .forEach(row => row.addEventListener('click', (e) => {
+            if (strictGateActive) showPopover(STRICT_GATE_HINT, e.clientX, e.clientY);
         }));
 
     // ── Drive Arm card ──────────────────────────────────────────────
@@ -1620,10 +1639,25 @@ document.addEventListener('DOMContentLoaded', () => {
         updateTakeControlBtn();
     }
 
-    // Hint bubbles: the "i" reveals its explanation on click.
+    // Gripper / Linear Track lock bubbles: visible only while those
+    // controls are actually disabled, so an unlocked panel is clean.
+    function updateLockHints() {
+        const pairs = [
+            ['gripper-lock-hint', openGripperBtn],
+            ['track-lock-hint', moveTrackLocBtn],
+        ];
+        pairs.forEach(([id, ctrl]) => {
+            const wrap = document.getElementById(id)?.closest('.hint-wrap');
+            if (wrap) wrap.hidden = !(ctrl && ctrl.disabled);
+        });
+    }
+
+    // Hint bubbles: the "i" pops its explanation at the cursor.
     document.querySelectorAll('.hint-toggle').forEach(btn => {
-        btn.addEventListener('click', () => {
-            btn.closest('.hint-wrap')?.classList.toggle('open');
+        btn.addEventListener('click', (e) => {
+            const text = btn.closest('.hint-wrap')?.querySelector('.hint-text');
+            const msg = (text?.textContent || '').trim();
+            if (msg) showPopover(msg, e.clientX, e.clientY);
         });
     });
 

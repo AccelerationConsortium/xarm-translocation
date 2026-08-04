@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260804p">
+    <link rel="stylesheet" href="style.css?v=20260804q">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -171,8 +171,8 @@
                      pane keep their own JS-managed hidden attributes. -->
                 <div class="card" id="control-modes-card">
                     <div class="mode-tabs" role="tablist">
-                        <button id="mode-tab-arm" class="mode-tab active" type="button">Direct Drive</button>
-                        <button id="mode-tab-graph" class="mode-tab" type="button">Graph Control</button>
+                        <button id="mode-tab-arm" class="mode-tab" type="button">Direct Drive</button>
+                        <button id="mode-tab-graph" class="mode-tab active" type="button">Graph Control</button>
                         <label id="manual-mode-switch" class="manual-switch is-disabled mode-tabs-switch" title="Release the joint brakes for hand-guiding. While on, XYZ and joint commands are locked out; joint angles keep updating live.">
                             <input type="checkbox" id="manual-mode-checkbox" disabled>
                             <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
@@ -180,7 +180,7 @@
                         </label>
                     </div>
 
-                    <div id="mode-pane-arm" class="mode-pane">
+                    <div id="mode-pane-arm" class="mode-pane" hidden>
                     <!-- Two-column body: xArm controls (left) + XYZ jog (right) -->
                     <div class="pane-arm-grid">
                         <div class="pane-arm-left">
@@ -249,7 +249,7 @@
                     </div>
                     </div><!-- /mode-pane-arm -->
 
-                    <div id="mode-pane-graph" class="mode-pane" hidden>
+                    <div id="mode-pane-graph" class="mode-pane">
                     <!-- Motion Graph card — Phase 4: shows current node + reachable destinations -->
                     <div class="card" id="motion-graph-card" hidden>
                         <h2>Motion Graph
@@ -372,7 +372,12 @@
                          tile width. IDs unchanged (main.js). -->
                     <div class="tile-sub-cols">
                             <div class="tile-sub">
-                                <h3>Gripper</h3>
+                                <h3>Gripper
+                                    <span class="hint-wrap sub-lock-hint">
+                                        <button type="button" class="hint-toggle" aria-label="Why are these controls locked?">i</button>
+                                        <span class="hint-text" id="gripper-lock-hint">Gripper controls unlock once the arm is connected and you hold control (Take Control). They also lock while the arm is moving or in Manual Mode.</span>
+                                    </span>
+                                </h3>
                     <div class="gripper-controls">
                         <button id="open-gripper-btn" class="btn">Open</button>
                         <button id="close-gripper-btn" class="btn">Close</button>
@@ -390,7 +395,12 @@
                     </div>
                             </div>
                             <div class="tile-sub">
-                                <h3>Linear Track</h3>
+                                <h3>Linear Track
+                                    <span class="hint-wrap sub-lock-hint">
+                                        <button type="button" class="hint-toggle" aria-label="Why are these controls locked?">i</button>
+                                        <span class="hint-text" id="track-lock-hint">Track controls unlock once the arm is connected and you hold control (Take Control). In STRICT graph mode the raw track move is disabled — use Graph Control instead.</span>
+                                    </span>
+                                </h3>
                     <div class="track-controls">
                         <div class="track-speed-group">
                             <label for="track-speed">Speed (mm/s):</label>
@@ -484,6 +494,6 @@
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
     <script src="camera-player.js?v=20260724e"></script>
-    <script src="main.js?v=20260804e"></script>
+    <script src="main.js?v=20260804f"></script>
 </body>
 </html>
