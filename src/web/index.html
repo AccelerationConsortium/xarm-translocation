@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260804v">
+    <link rel="stylesheet" href="style.css?v=20260804w">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -273,6 +273,16 @@
                                 <strong id="mg-suggested-node">—</strong>
                                 <span class="muted" id="mg-residuals"></span>
                             </div>
+                            <!-- Declared gripper leaf. Required when the live
+                                 stroke resolves to no catalog state, which
+                                 otherwise makes recovery impossible without
+                                 force. Populated from the suggested node's
+                                 allowed states (GET /graph/nearest). -->
+                            <div class="mg-row">
+                                <span class="inline-label">Gripper</span>
+                                <select id="mg-recover-gripper" class="inline-input"></select>
+                                <span class="muted" id="mg-recover-gripper-note"></span>
+                            </div>
                             <div class="mg-row">
                                 <button id="mg-recover-accept" class="btn btn-success" disabled>Snap to suggested</button>
                                 <label class="inline-label" style="margin-left:1em;">
@@ -487,6 +497,6 @@
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
     <script src="camera-player.js?v=20260724e"></script>
-    <script src="main.js?v=20260804f"></script>
+    <script src="main.js?v=20260804g"></script>
 </body>
 </html>

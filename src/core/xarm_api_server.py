@@ -2769,6 +2769,17 @@ async def get_nearest_node(joint_tolerance_deg: float = 10.0, rail_tolerance_mm:
         joint_tolerance_deg=joint_tolerance_deg,
         rail_tolerance_mm=rail_tolerance_mm,
     )
+    # The node's gripper leaves travel with the suggestion so the operator
+    # can DECLARE one when the live stroke resolves to no catalog state
+    # (e.g. a closed 71 mm against reach_72's 72 mm) — otherwise recovery
+    # is impossible without force, which also skips the position check.
+    allowed_states: list[str] = []
+    if match.node_id is not None:
+        try:
+            allowed_states = list(c.motion_graph.node(match.node_id).gripper_states)
+        except Exception:
+            allowed_states = []
+
     return {
         "suggested_node": match.node_id,
         "arm_residual_deg": match.arm_residual,
@@ -2776,6 +2787,8 @@ async def get_nearest_node(joint_tolerance_deg: float = 10.0, rail_tolerance_mm:
         "gripper_state": match.gripper_state,
         "gripper_match": match.gripper_match,
         "within_tolerance": match.within_tolerance,
+        "allowed_gripper_states": allowed_states,
+        "gripper_stroke": c.last_gripper_position,
     }
 
 

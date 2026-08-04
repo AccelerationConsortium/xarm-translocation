@@ -1114,6 +1114,35 @@ document.addEventListener('DOMContentLoaded', () => {
         acceptBtn.dataset.nodeId = nearest.suggested_node;
         acceptBtn.dataset.withinTolerance = String(nearest.within_tolerance);
         forceCheckbox.checked = !nearest.within_tolerance;
+
+        // Gripper leaf selector: pre-selected to the resolved state when
+        // there is one. When the stroke matches nothing in the catalog the
+        // API refuses recovery unless a state is declared here, so the note
+        // says so rather than leaving the operator at a dead end.
+        const gripSel = document.getElementById('mg-recover-gripper');
+        const gripNote = document.getElementById('mg-recover-gripper-note');
+        if (gripSel) {
+            const states = nearest.allowed_gripper_states || [];
+            gripSel.innerHTML = '';
+            const keep = document.createElement('option');
+            keep.value = '';
+            keep.textContent = nearest.gripper_state
+                ? `keep current (${nearest.gripper_state})` : 'declare a state…';
+            gripSel.appendChild(keep);
+            states.forEach(name => {
+                const opt = document.createElement('option');
+                opt.value = name;
+                opt.textContent = name;
+                gripSel.appendChild(opt);
+            });
+            gripSel.value = '';
+            if (gripNote) {
+                const stroke = nearest.gripper_stroke;
+                gripNote.textContent = nearest.gripper_state
+                    ? ''
+                    : `stroke ${stroke ?? '?'}mm matches no catalog state — declare one`;
+            }
+        }
     }
 
     async function acceptRecover() {
@@ -1121,9 +1150,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const forceCheckbox = document.getElementById('mg-recover-force');
         const nodeId = acceptBtn.dataset.nodeId;
         if (!nodeId) return;
+        const gripSel = document.getElementById('mg-recover-gripper');
+        const declared = gripSel && gripSel.value ? gripSel.value : null;
         const result = await apiRequest('/control/graph/recover_to', 'POST', {
             node_id: nodeId,
             force: forceCheckbox.checked,
+            ...(declared ? { gripper_state: declared } : {}),
         });
         if (result) {
             addLogEntry(`recovered to ${result.recovered_to}`, 'info');
