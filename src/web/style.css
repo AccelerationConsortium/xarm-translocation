@@ -974,7 +974,10 @@ input#linear-speed {
     color: var(--primary);
 }
 
+/* Follow-arm is an ON affordance, not an alarm: cancel the red ring and
+   pulse that .manual-switch.is-on applies for manual mode. */
 .follow-switch.is-on {
+    box-shadow: none;
     animation: none;
 }
 
@@ -2063,19 +2066,32 @@ input#linear-speed {
    then scales for display. Offsets measured on Studio v2.4.0 at
    1300x900; if a Studio update moves the panel, retune the four
    geometry vars below. */
-/* Compact preview in the title tile's right-hand slot. */
+/* Compact preview in the title tile's right-hand slot — bare, no card
+   chrome (it sits inside the tile that already has a border). */
 #sim-3d-card {
     order: 1;                 /* right of the title block (DOM order first) */
     flex: 0 0 200px;
     width: 200px;
     height: 250px;
-    padding: 12px;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+    box-shadow: none;
     box-sizing: border-box;
 }
 
 #sim-3d-card h2 {
     margin-bottom: 8px;
     font-size: 0.9rem;
+}
+
+/* The frame window itself carries no border either. */
+#sim-3d-card .sim-3d-crop {
+    border: 0;
+    border-radius: 0;
+    background: none;
+    margin: 0;
 }
 
 .sim-3d-stage {
