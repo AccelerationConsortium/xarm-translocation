@@ -266,17 +266,29 @@ class CameraTracker:
                 for pr in presets if isinstance(pr, dict) and pr.get("id") is not None
             ]
 
-        # Every lens, so the panel can offer a Wide/Tele switch and know
-        # which of them can actually pan (fixed lenses carry
-        # ptz_capable: false — e.g. wide on the C245D).
+        # Every lens, so the panel can offer a Wide/Tele switch and knows
+        # which of them can actually pan. NOTE ptz_capable lives in the
+        # dashboard REGISTRY block (snap["camera"].lenses, from
+        # equipment.yaml — wide on the C245D is a fixed lens), not in the
+        # device's own details.lenses, which only carries stream info.
+        ptz_by_lens: Dict[str, bool] = {}
+        cam_block = snap.get("camera") if isinstance(snap.get("camera"), dict) else {}
+        for cl in (cam_block.get("lenses") or []):
+            if isinstance(cl, dict) and cl.get("id") is not None:
+                ptz_by_lens[str(cl["id"])] = cl.get("ptz_capable") is not False
+
         for ln in (details.get("lenses") or []):
             if not isinstance(ln, dict) or not ln.get("mse_url"):
                 continue
+            lens_id = str(ln.get("id"))
             self._lenses.append({
-                "id": str(ln.get("id")),
-                "label": str(ln.get("label") or ln.get("id")),
+                "id": lens_id,
+                "label": str(ln.get("label") or lens_id),
                 "stream_url": self._absolute_ws(str(ln.get("mse_url"))),
-                "ptz_capable": ln.get("ptz_capable") is not False,
+                # Unknown lens (not in the registry) defaults to no PTZ:
+                # offering a move the camera will refuse is worse than
+                # greying a button that might have worked.
+                "ptz_capable": ptz_by_lens.get(lens_id, False),
             })
 
         lens = self._pick_lens(details.get("lenses"))
