@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260804t">
+    <link rel="stylesheet" href="style.css?v=20260804u">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -292,6 +292,10 @@
                         <div id="drive-arm-card" hidden>
                             <h3 class="drive-move-head">Multi-node Hop
                                 <span class="panel-unit">plans a legal path, drives it hop by hop</span>
+                                <span class="hint-wrap sub-lock-hint">
+                                    <button type="button" class="hint-toggle" aria-label="Why is this unavailable?">i</button>
+                                    <span class="hint-text" id="drive-dest-hint">(connect and pin to a graph node to enable)</span>
+                                </span>
                             </h3>
                             <div class="drive-move-row">
                                 <button id="drive-travel-btn" class="btn btn-primary drive-move-btn" disabled title="Plan a multi-hop path and drive it hop-by-hop">Move</button>
@@ -308,20 +312,16 @@
                                     </div>
                                 </div>
                             </div>
-                            <div class="hint-wrap">
-                                <button type="button" class="hint-toggle" aria-label="Why is this unavailable?">i</button>
-                                <span class="muted hint-text" id="drive-dest-hint">(connect and pin to a graph node to enable)</span>
-                            </div>
                             <!-- Gripper leaf: state readout + whitelisted transitions at the current node -->
                             <div class="mg-row">
                                 <span class="inline-label">Gripper</span>
                                 <strong id="drive-gripper-state">—</strong>
                                 <select id="drive-gripper-select" class="inline-input"></select>
                                 <button id="drive-gripper-btn" class="btn btn-primary" disabled>Set Gripper</button>
-                            </div>
-                            <div class="hint-wrap">
-                                <button type="button" class="hint-toggle" aria-label="Why is this unavailable?">i</button>
-                                <span class="muted hint-text" id="drive-gripper-hint">(gripper changes only while parked at a node)</span>
+                                <span class="hint-wrap sub-lock-hint">
+                                    <button type="button" class="hint-toggle" aria-label="Why is this unavailable?">i</button>
+                                    <span class="hint-text" id="drive-gripper-hint">(gripper changes only while parked at a node)</span>
+                                </span>
                             </div>
                         </div>
                     </div>

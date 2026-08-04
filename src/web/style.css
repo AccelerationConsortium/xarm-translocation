@@ -1161,7 +1161,7 @@ input#linear-speed {
 .hint-wrap {
     display: inline-flex;
     align-items: center;
-    margin-bottom: 10px;
+    vertical-align: middle;
 }
 
 .hint-toggle {
