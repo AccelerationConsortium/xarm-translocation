@@ -1764,6 +1764,33 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     })();
 
+    // Embedded in the dashboard: the link row points at the DASHBOARD's own
+    // pages rather than the arm's graph / Studio views, and navigates the
+    // top-level window — a dashboard route loaded inside this iframe would
+    // nest the whole dashboard inside itself. Standalone, the arm links
+    // stay as they are.
+    (function dashboardLinksWhenEmbedded() {
+        if (!window.EMBEDDED) return;
+        const row = document.querySelector('.preview-links');
+        if (!row) return;
+        const links = [
+            { href: '/platforms/hte', label: 'HTE Platform',
+              title: "The dashboard's HTE platform page (holds the xArm tile)" },
+            { href: '/', label: 'Overview',
+              title: "The dashboard's Overview page" },
+        ];
+        row.innerHTML = '';
+        links.forEach(l => {
+            const a = document.createElement('a');
+            a.className = 'studio-link';
+            a.href = l.href;
+            a.target = '_top';        // break out of the frame
+            a.title = l.title;
+            a.textContent = `${l.label} \u2197`;
+            row.appendChild(a);
+        });
+    })();
+
     // Lens switch (Wide / Tele). Selecting a lens without a PTZ motor
     // greys the pad out — the camera would refuse the move anyway.
     let cameraCard = null;
