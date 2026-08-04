@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260804h">
+    <link rel="stylesheet" href="style.css?v=20260804i">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -53,15 +53,34 @@
             <div class="page-left">
                 <div class="title-status-container">
                     <div class="title-top">
-                    <!-- Primary arm actions, moved out of the Arm Control card into a
-                         right-hand stack (CSS order) so Take Control / STOP / Clear
-                         Errors are reachable from the top of the page. The title
-                         block stays first in the DOM for reading/tab order. IDs
-                         unchanged (main.js). -->
-                    <div class="header-actions">
-                        <button id="take-control-btn" class="btn btn-claim" title="Acquire the device claim so you can drive the arm. While you hold it, workflows are locked out (HTTP 423) and see you as the claim holder.">Take Control</button>
-                        <button id="stop-btn" class="btn btn-danger">STOP</button>
-                        <button id="clear-errors-btn" class="btn btn-warning" title="Clear arm + gripper faults and re-energize the servos (replaces the old separate Enable). Works without taking control.">Clear Errors</button>
+                    <!-- 3D preview, in the action stack's old right-hand slot.
+                         The Studio arm canvas for WHICHEVER target is
+                         connected: the simulator's Studio (central server), or the
+                         REAL arm's Studio via this PC's 18333 portproxy — embedded
+                         at the operator's explicit request. The crop shows only
+                         the model canvas (Studio's buttons sit outside it; drag
+                         orbits the camera). Loads/unloads with the connection and
+                         switches URL with the target (main.js). -->
+                    <div class="card" id="sim-3d-card" hidden>
+                        <h2>3D View</h2>
+                        <!-- The crop isolates Studio's arm panel (.xarm-container:
+                             STOP, 3D canvas, Real/Sim switch, pose + joints) — the
+                             right column of /control, x 896-1300 at a 1300x900
+                             viewport (measured on Studio v2.4.0, headless-Edge
+                             screenshot 2026-08-02). The iframe is held at that
+                             fixed viewport so Studio's vw-scaled layout is
+                             deterministic; geometry + display scale live in the
+                             .sim-3d-crop CSS variables. Cross-origin, so a crop
+                             is the only isolation available — the canvas stays
+                             fully interactive (drag to orbit). -->
+                        <div id="sim-3d-stage" class="sim-3d-stage">
+                            <div class="sim-3d-crop">
+                                <iframe id="sim-3d-frame" class="sim-3d-frame"
+                                        title="UFACTORY Studio — live arm view"
+                                        data-src-sim="http://100.64.254.6:18333/control"
+                                        data-src-hw="http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:18333/control"></iframe>
+                            </div>
+                        </div>
                     </div>
                     <div class="title-status-main">
                         <p class="eyebrow">xArm Translocation</p>
@@ -138,9 +157,17 @@
                         </div>
                     </div>
                     </div><!-- /title-top -->
+                    <!-- Primary arm actions: one row spanning the tile, just
+                         above the Gripper / Linear Track columns (the 3D preview
+                         took their old right-hand slot). IDs unchanged. -->
+                    <div class="header-actions">
+                        <button id="take-control-btn" class="btn btn-claim" title="Acquire the device claim so you can drive the arm. While you hold it, workflows are locked out (HTTP 423) and see you as the claim holder.">Take Control</button>
+                        <button id="stop-btn" class="btn btn-danger">STOP</button>
+                        <button id="clear-errors-btn" class="btn btn-warning" title="Clear arm + gripper faults and re-energize the servos (replaces the old separate Enable). Works without taking control.">Clear Errors</button>
+                    </div>
+
                     <!-- Gripper + Linear Track, two columns spanning the FULL
-                         tile width (outside .title-top so the actions stack
-                         doesn't eat their room). IDs unchanged (main.js). -->
+                         tile width. IDs unchanged (main.js). -->
                     <div class="tile-sub-cols">
                             <div class="tile-sub">
                                 <h3>Gripper</h3>
@@ -191,39 +218,6 @@
                 </div>
 
             </div><!-- /column-left -->
-
-            <!-- Middle column: the simulator 3D view, between the camera
-                 and the right-hand tiles. -->
-            <div class="column-mid">
-                <!-- 3D view — the Studio arm canvas for WHICHEVER target is
-                     connected: the simulator's Studio (central server), or the
-                     REAL arm's Studio via this PC's 18333 portproxy — embedded
-                     at the operator's explicit request. The crop shows only
-                     the model canvas (Studio's buttons sit outside it; drag
-                     orbits the camera). Loads/unloads with the connection and
-                     switches URL with the target (main.js). -->
-                <div class="card" id="sim-3d-card" hidden>
-                    <h2>3D View</h2>
-                    <!-- The crop isolates Studio's arm panel (.xarm-container:
-                         STOP, 3D canvas, Real/Sim switch, pose + joints) — the
-                         right column of /control, x 896-1300 at a 1300x900
-                         viewport (measured on Studio v2.4.0, headless-Edge
-                         screenshot 2026-08-02). The iframe is held at that
-                         fixed viewport so Studio's vw-scaled layout is
-                         deterministic; geometry + display scale live in the
-                         .sim-3d-crop CSS variables. Cross-origin, so a crop
-                         is the only isolation available — the canvas stays
-                         fully interactive (drag to orbit). -->
-                    <div id="sim-3d-stage" class="sim-3d-stage">
-                        <div class="sim-3d-crop">
-                            <iframe id="sim-3d-frame" class="sim-3d-frame"
-                                    title="UFACTORY Studio — live arm view"
-                                    data-src-sim="http://100.64.254.6:18333/control"
-                                    data-src-hw="http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:18333/control"></iframe>
-                        </div>
-                    </div>
-                </div>
-            </div><!-- /column-mid -->
 
                 </div>
             </div>

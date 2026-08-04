@@ -250,18 +250,17 @@ header {
    pulled out of the Arm Control card so they sit at the top of the page.
    `order: 1` places it after the title block (which stays first in the DOM
    for reading/tab order) so it renders on the right of the tile. */
+/* Action row: Take Control / STOP / Clear Errors on one line above the
+   Gripper | Linear Track columns. */
 .header-actions {
-    order: 1;
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     gap: 8px;
-    flex: 0 0 150px;
-    width: 150px;
 }
 
 .header-actions .btn {
-    width: 150px;
-    height: 80px;
+    flex: 1 1 0;
+    height: 64px;
     min-height: 0;
     padding: 0;
     box-sizing: border-box;
@@ -368,11 +367,11 @@ h3 {
     background: rgba(190, 18, 60, 0.18);
 }
 
-/* Inside the left column: log window (fixed 400px tall) | simulator
-   3D view (250px). */
+/* Inside the left column: the log window (fixed 400px tall). The 3D
+   preview moved into the title tile. */
 .left-tiles {
     display: grid;
-    grid-template-columns: 400px 250px;
+    grid-template-columns: 1fr;
     gap: 16px;
     align-items: start;
 }
@@ -2064,14 +2063,23 @@ input#linear-speed {
    then scales for display. Offsets measured on Studio v2.4.0 at
    1300x900; if a Studio update moves the panel, retune the four
    geometry vars below. */
-/* Match the CLI window's fixed height beside it. */
+/* Compact preview in the title tile's right-hand slot. */
 #sim-3d-card {
-    height: 400px;
+    order: 1;                 /* right of the title block (DOM order first) */
+    flex: 0 0 200px;
+    width: 200px;
+    height: 250px;
+    padding: 12px;
     box-sizing: border-box;
 }
 
+#sim-3d-card h2 {
+    margin-bottom: 8px;
+    font-size: 0.9rem;
+}
+
 .sim-3d-stage {
-    margin-top: 12px;
+    margin-top: 0;
 }
 
 .sim-3d-crop {
@@ -2087,7 +2095,7 @@ input#linear-speed {
     --sim3d-y: 85px;
     --sim3d-w: 330px;
     --sim3d-h: 420px;
-    --sim3d-scale: 0.63;   /* 330*0.63 = 208px, fits the 250px card */
+    --sim3d-scale: 0.52;   /* 330*0.52 = 172px wide, 218px tall */
     position: relative;
     overflow: hidden;
     width: calc(var(--sim3d-w) * var(--sim3d-scale));
