@@ -10,15 +10,36 @@
       // preference. banner.js re-applies the same html.dark class on load and
       // on every toggle, so the panel and banner stay in lockstep.
       (function () {
-        try {
-          var t = localStorage.getItem("theme");
-          var dark = t === "dark" || (t !== "light" && window.matchMedia
-            && window.matchMedia("(prefers-color-scheme: dark)").matches);
-          document.documentElement.classList.toggle("dark", dark);
-        } catch (e) {}
+        function applyTheme() {
+          try {
+            var t = localStorage.getItem("theme");
+            var dark = t === "dark" || (t !== "light" && window.matchMedia
+              && window.matchMedia("(prefers-color-scheme: dark)").matches);
+            document.documentElement.classList.toggle("dark", dark);
+          } catch (e) {}
+        }
+        applyTheme();
+
+        // Embedded (dashboard /utils/xarm_control frames us same-origin at
+        // /xarm5/web/): the host page already shows the SDL2 auth banner, so
+        // suppress ours — one banner, not two. window.EMBEDDED gates the
+        // banner.js include at the bottom of the page.
+        var embedded = false;
+        try { embedded = window.self !== window.top; } catch (e) { embedded = true; }
+        window.EMBEDDED = embedded;
+        if (embedded) document.documentElement.classList.add("embedded");
+
+        // Theme follows the host: same origin through the edge means the
+        // same localStorage, and `storage` fires in every OTHER document of
+        // the origin — so the dashboard's toggle reaches us live. Poll as a
+        // fallback for same-document writes, which storage does not fire for.
+        window.addEventListener("storage", function (e) {
+          if (!e || e.key === null || e.key === "theme") applyTheme();
+        });
+        if (embedded) setInterval(applyTheme, 1000);
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260805j">
+    <link rel="stylesheet" href="style.css?v=20260805k">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -529,7 +550,14 @@
          window.labAuth exists when main.js attaches releaseClaimOnSignOut and
          reads the signed-in identity for the claim owner. Root-absolute path →
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
-    <script src="/auth/banner.js"></script>
+    <!-- Auth banner: skipped when embedded (the host page has its own). -->
+    <script>
+      if (!window.EMBEDDED) {
+        var _b = document.createElement("script");
+        _b.src = "/auth/banner.js";
+        document.body.appendChild(_b);
+      }
+    </script>
     <script src="camera-player.js?v=20260805b"></script>
     <script src="main.js?v=20260805c"></script>
 </body>
