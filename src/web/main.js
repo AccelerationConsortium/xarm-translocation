@@ -760,12 +760,27 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderMotionGraphCard(motionGraph) {
         const card = document.getElementById('motion-graph-card');
         if (!card) return;
+        // No graph (disconnected, or graph failed to load): keep the card
+        // VISIBLE but inert, so the operator can see what Graph Control
+        // offers before connecting instead of facing an empty pane.
+        card.hidden = false;
+        card.classList.toggle('graph-inert', !motionGraph);
         if (!motionGraph) {
-            // No graph loaded — keep the card hidden.
-            card.hidden = true;
+            const cur = document.getElementById('mg-current-node');
+            const reach = document.getElementById('mg-reachable');
+            if (cur) cur.textContent = '—';
+            if (reach) reach.innerHTML = '<span class="muted">(connect the arm)</span>';
+            document.querySelectorAll('.mg-mode-btn').forEach(b => {
+                b.disabled = true;
+                b.classList.remove('active');
+            });
+            const rec = document.getElementById('mg-recover-btn');
+            if (rec) rec.disabled = true;
             return;
         }
-        card.hidden = false;
+        document.querySelectorAll('.mg-mode-btn').forEach(b => { b.disabled = false; });
+        const recBtn = document.getElementById('mg-recover-btn');
+        if (recBtn) recBtn.disabled = false;
 
         const modeBtns = document.querySelectorAll('.mg-mode-btn');
         const currentEl = document.getElementById('mg-current-node');
@@ -915,12 +930,19 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderDriveArmCard(motionGraph, gating = {}) {
         const card = document.getElementById('drive-arm-card');
         if (!card) return;
+        // Same as the graph card: shown-but-inert while disconnected.
+        card.hidden = false;
+        card.classList.toggle('graph-inert', !motionGraph);
         if (!motionGraph) {
-            // No graph loaded — keep the card hidden.
-            card.hidden = true;
+            ['drive-travel-select', 'drive-dest-speed', 'drive-travel-btn',
+             'drive-gripper-select', 'drive-gripper-btn'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.disabled = true;
+            });
+            const gs = document.getElementById('drive-gripper-state');
+            if (gs) gs.textContent = '—';
             return;
         }
-        card.hidden = false;
 
         // Best-effort, one-time: nudge the controller into STRICT the first
         // time the card shows with a graph and we hold the claim. The robust

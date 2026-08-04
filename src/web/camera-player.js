@@ -296,7 +296,7 @@
                     opts.onLenses(lastLenses, selectedLens);
                 }
                 setToggleEnabled(connected);
-                statusEl.textContent = connected ? '' : 'Connect the arm to change follow';
+                statusEl.textContent = '';
 
                 var url = data.stream_url;
                 if (selectedLens) {

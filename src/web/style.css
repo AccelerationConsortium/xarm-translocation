@@ -903,6 +903,45 @@ input#linear-speed {
     gap: 10px;
 }
 
+/* Follow-arm as a lit button (the hidden checkbox keeps camera-player's
+   existing wiring intact; .is-on lights it). */
+.follow-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    padding: 5px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--ink-muted);
+    font-size: 0.72rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.follow-btn input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.follow-btn:hover:not(.is-disabled) {
+    background: var(--surface-soft);
+    color: var(--ink);
+}
+
+.follow-btn.is-on {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #ffffff;
+}
+
+.follow-btn.is-disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 .camera-side .camera-controls {
     flex-direction: column;
     align-items: center;
@@ -1416,14 +1455,17 @@ input#linear-speed {
     box-shadow: none;
 }
 
+/* Disconnected: the graph blocks stay visible so the operator can see
+   what Graph Control offers, but read as unavailable. Controls are
+   also disabled in JS — this is the visual half. */
+.graph-inert {
+    opacity: 0.5;
+}
+
 #drive-arm-card {
     margin-top: 12px;
     padding-top: 12px;
     border-top: 1px solid var(--border);
-}
-
-#mode-pane-graph:has(.card:not([hidden])) .mode-graph-hint {
-    display: none;
 }
 
 /* Row of header quick-links (Motion Graph + the sim-only Open Studio). */

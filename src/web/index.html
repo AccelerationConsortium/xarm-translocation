@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260805b">
+    <link rel="stylesheet" href="style.css?v=20260805c">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -335,7 +335,6 @@
                             </div>
                         </div>
                     </div>
-                        <span class="muted mode-graph-hint">(connect and enable the motion graph to populate this pane)</span>
                     </div><!-- /mode-pane-graph -->
                 </div>
             </div>
@@ -360,10 +359,13 @@
                     <div class="camera-side">
                     <div class="camera-controls">
                         <span id="camera-status" class="muted camera-status"></span>
-                        <label id="camera-follow-switch" class="manual-switch follow-switch is-disabled"
+                        <!-- Follow-arm reads as a lit button rather than a
+                             switch. The checkbox stays (hidden) because
+                             camera-player.js drives it; .is-on on the label
+                             is what lights the button. -->
+                        <label id="camera-follow-switch" class="follow-btn is-disabled"
                                title="When on, the camera pans to the arm's station as it moves across the motion graph.">
                             <input type="checkbox" id="camera-follow-checkbox" disabled>
-                            <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
                             <span class="manual-switch-text">Follow arm</span>
                         </label>
                     </div>
@@ -528,7 +530,7 @@
          reads the signed-in identity for the claim owner. Root-absolute path →
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
-    <script src="camera-player.js?v=20260805a"></script>
-    <script src="main.js?v=20260805b"></script>
+    <script src="camera-player.js?v=20260805b"></script>
+    <script src="main.js?v=20260805c"></script>
 </body>
 </html>
