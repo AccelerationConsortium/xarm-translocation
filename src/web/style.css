@@ -269,6 +269,17 @@ header {
     font-weight: 700;
 }
 
+/* Clear Errors reads as a normal action, not a warning: blue like the
+   other primary buttons (STOP keeps its own red identity). */
+.header-actions #clear-errors-btn:not(:disabled) {
+    background: var(--primary);
+}
+
+.header-actions #clear-errors-btn:not(:disabled):hover {
+    background: var(--primary-hover);
+    box-shadow: 0 8px 18px rgba(2, 132, 199, 0.18);
+}
+
 .header-actions #stop-btn {
     font-size: 1.8rem;
     font-weight: 800;
