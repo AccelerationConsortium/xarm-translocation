@@ -827,6 +827,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const gatedControls = [
             moveTrackLocBtn, trackLocationSelect,
             movePredefinedBtn, predefinedPositionSelect,
+            // Freehand (graph-bypassing) controls: the server refuses these
+            // with 409 graph_mode_strict, so gate them for the same UX.
+            // Gripper Open/Close stay enabled — in STRICT they route through
+            // the graph-sanctioned transition server-side. Only elements the
+            // normal connection/claim gating already manages go here, so
+            // leaving STRICT re-enables them on the next status cycle.
+            moveJointsBtn, moveLinearBtn,
+            moveToStrokeBtn, gripperStrokeInput,
+            setGripperForceBtn, gripperForceInput,
+            ...jogBtnIds.map(id => document.getElementById(id)),
         ];
 
         if (isStrict) {
@@ -884,7 +894,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Rows hosting strict-gated controls: a click while gated explains why.
-    document.querySelectorAll('.position-controls-row, .joint-move-row, .track-location-control')
+    document.querySelectorAll(
+        '.position-controls-row, .joint-move-row, .track-location-control, '
+        + '.stroke-control, .force-control, .jog-panel')
         .forEach(row => row.addEventListener('click', (e) => {
             if (strictGateActive) showPopover(STRICT_GATE_HINT, e.clientX, e.clientY);
         }));
@@ -1730,6 +1742,52 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     })();
 
+    // Lens switch (Wide / Tele). Selecting a lens without a PTZ motor
+    // greys the pad out — the camera would refuse the move anyway.
+    let cameraCard = null;
+
+    function setPtzEnabled(enabled) {
+        document.querySelectorAll('#ptz-pad .ptz-btn').forEach(b => {
+            b.disabled = !enabled;
+        });
+    }
+
+    function renderCameraLenses(lenses, selected) {
+        const box = document.getElementById('lens-btns');
+        if (!box) return;
+        const list = Array.isArray(lenses) ? lenses : [];
+        if (list.length < 2) { box.hidden = true; setPtzEnabled(true); return; }
+
+        const active = selected || list[0].id;
+        const signature = list.map(l => `${l.id}:${l.label}`).join('|');
+        if (box.dataset.sig !== signature) {
+            box.dataset.sig = signature;
+            box.innerHTML = '';
+            list.forEach(l => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = 'lens-btn';
+                b.dataset.lens = l.id;
+                b.textContent = l.label || l.id;
+                b.title = l.ptz_capable
+                    ? `Show the ${l.label || l.id} lens`
+                    : `Show the ${l.label || l.id} lens (fixed — no pan/tilt)`;
+                b.addEventListener('click', () => {
+                    cameraCard?.setLens(l.id);
+                    renderCameraLenses(list, l.id);
+                });
+                box.appendChild(b);
+            });
+        }
+        box.querySelectorAll('.lens-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.lens === active);
+        });
+        box.hidden = false;
+
+        const activeLens = list.find(l => l.id === active);
+        setPtzEnabled(activeLens ? activeLens.ptz_capable !== false : true);
+    }
+
     // Preset picker under the pad, from the camera's saved views.
     function renderCameraPresets(presets) {
         const box = document.getElementById('ptz-presets');
@@ -2355,9 +2413,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Wire up the Lab Camera card (reads /camera/config; MSE live preview +
     // "Follow arm" toggle). Shared with graph.html via camera-player.js;
     // no-op unless camera tracking is configured.
-    if (window.setupCameraCard) window.setupCameraCard({
+    if (window.setupCameraCard) cameraCard = window.setupCameraCard({
         apiBase: API_BASE_URL,
         onPresets: renderCameraPresets,
+        onLenses: renderCameraLenses,
     });
     
     // Initialize real-time joints display

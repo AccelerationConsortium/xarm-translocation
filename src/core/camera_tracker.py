@@ -116,6 +116,7 @@ class CameraTracker:
         self._sender: Sender = sender or self._threaded_send
         self._fetcher: Fetcher = fetcher or self._http_get_json
         self._presets: list[Dict[str, str]] = []
+        self._lenses: list[Dict[str, Any]] = []
 
         # Dedupe: the last view we commanded, so hops within one station
         # (and re-planned travel through it) don't re-send.
@@ -213,7 +214,9 @@ class CameraTracker:
 
         available, reason, stream_url = self._probe()
         self._avail_cache = {"available": available, "reason": reason,
-                             "stream_url": stream_url, "presets": list(self._presets)}
+                             "stream_url": stream_url,
+                             "presets": list(self._presets),
+                             "lenses": list(self._lenses)}
         self._avail_cache_at = now
         return {**base, **self._avail_cache}
 
@@ -232,6 +235,7 @@ class CameraTracker:
             return False, f"dashboard unreachable: {exc}", None
 
         self._presets = []
+        self._lenses = []
         snap = self._find_camera_snapshot(data)
         if snap is None:
             return False, f"camera {self.camera_id!r} not found on dashboard", None
@@ -261,6 +265,19 @@ class CameraTracker:
                 {"id": str(pr.get("id")), "name": str(pr.get("name") or pr.get("id"))}
                 for pr in presets if isinstance(pr, dict) and pr.get("id") is not None
             ]
+
+        # Every lens, so the panel can offer a Wide/Tele switch and know
+        # which of them can actually pan (fixed lenses carry
+        # ptz_capable: false — e.g. wide on the C245D).
+        for ln in (details.get("lenses") or []):
+            if not isinstance(ln, dict) or not ln.get("mse_url"):
+                continue
+            self._lenses.append({
+                "id": str(ln.get("id")),
+                "label": str(ln.get("label") or ln.get("id")),
+                "stream_url": self._absolute_ws(str(ln.get("mse_url"))),
+                "ptz_capable": ln.get("ptz_capable") is not False,
+            })
 
         lens = self._pick_lens(details.get("lenses"))
         if lens is None:

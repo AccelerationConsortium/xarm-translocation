@@ -1442,6 +1442,19 @@ class XArmController:
         print(f"{self.gripper_type} gripper does not support stroke control")
         return False
 
+    def default_close_stroke(self) -> Optional[float]:
+        """The stroke a plain close_gripper() would command, or None when
+        the installed gripper has no stroke notion (bio, robotiq).
+
+        Used by the STRICT-mode legacy-endpoint routing to resolve a
+        freehand "close" onto a catalog gripper state.
+        """
+        if self.gripper_type == 'bio_gen2':
+            return float(self._gripper_setting('close_position', 850))
+        if self.gripper_type == 'standard':
+            return 0.0
+        return None
+
     def set_gripper_force(self, force):
         """Set gripping force for force-capable grippers."""
         if not self.is_component_enabled('gripper'):

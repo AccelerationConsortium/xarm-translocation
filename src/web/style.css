@@ -379,7 +379,7 @@ h3 {
    tile is title-top + actions row + gripper/track columns; the stage
    grows to take whatever the header row leaves. */
 #camera-card {
-    height: 392px;   /* matches the title tile opposite it */
+    height: 320px;
     display: flex;
     flex-direction: column;
 }
@@ -909,6 +909,35 @@ input#linear-speed {
     gap: 4px;
 }
 
+.lens-btns {
+    display: flex;
+    gap: 4px;
+}
+
+.lens-btn {
+    flex: 1 1 0;
+    padding: 4px 10px;
+    border: 1px solid var(--border-strong);
+    border-radius: 6px;
+    background: var(--surface);
+    color: var(--ink-muted);
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.lens-btn:hover {
+    background: var(--surface-soft);
+    color: var(--ink);
+}
+
+.lens-btn.active {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #ffffff;
+}
+
 .ptz-presets {
     display: flex;
     align-items: center;
@@ -961,8 +990,8 @@ input#linear-speed {
     flex: 0 0 auto;
     display: grid;
     gap: 4px;
-    grid-template-columns: repeat(3, 2.1rem);
-    grid-template-rows: repeat(3, 2.1rem);
+    grid-template-columns: repeat(3, 2.6rem);
+    grid-template-rows: repeat(3, 2.6rem);
     grid-template-areas: "ul u ur" "l c r" "dl d dr";
 }
 
@@ -975,7 +1004,7 @@ input#linear-speed {
     background: var(--surface);
     color: var(--ink);
     font: inherit;
-    font-size: 0.85rem;
+    font-size: 1rem;
     cursor: pointer;
 }
 

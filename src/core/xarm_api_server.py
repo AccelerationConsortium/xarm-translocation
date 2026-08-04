@@ -1049,6 +1049,35 @@ def reserve_motion() -> XArmController:
     c.enter_motion()
     return c
 
+def strict_graph_guard(action: str) -> None:
+    """Refuse a freehand (graph-bypassing) legacy action in STRICT mode.
+
+    STRICT means the arm cannot leave the whitelisted envelope, but the
+    raw-coordinate and freehand-gripper endpoints command hardware without
+    consulting the graph — named moves are checked inside the controller,
+    these are not. Gate them wholesale so STRICT is a real invariant;
+    advisory/off keep the legacy behavior (that mode switch is the
+    deliberate, logged escape hatch for calibration and recovery).
+
+    409, not 412: a mode conflict is a state conflict (§6.1), not a
+    precondition the caller could wait out.
+    """
+    c = get_controller()
+    if getattr(c, "graph_mode", None) == GraphMode.STRICT:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "graph_mode_strict",
+                "action": action,
+                "message": (
+                    f"'{action}' bypasses the motion graph and is refused in "
+                    "STRICT mode. Use the graph surface (/control/graph/*, "
+                    "/move/location, /track/move/location), or lower the "
+                    "enforcement mode via POST /control/graph/mode."
+                ),
+            },
+        )
+
 
 def create_error_response(message: str, status_code: int = 500) -> JSONResponse:
     """Create standardized error response"""
@@ -1377,8 +1406,11 @@ async def get_locations():
 async def move_to_position(request: PositionRequest, background_tasks: BackgroundTasks):
     """Move the robot to a specific Cartesian position.
 
-    Returns 409 (motion_in_progress) when a motion is already in flight.
+    Returns 409 (graph_mode_strict) in STRICT mode — raw coordinates
+    bypass the motion graph. Returns 409 (motion_in_progress) when a
+    motion is already in flight.
     """
+    strict_graph_guard("move.position")
     c = reserve_motion()
 
     async def move_task():
@@ -1406,8 +1438,11 @@ async def move_to_position(request: PositionRequest, background_tasks: Backgroun
 async def move_joints(request: JointRequest, background_tasks: BackgroundTasks):
     """Move the robot to a specific joint configuration.
 
-    Returns 409 (motion_in_progress) when a motion is already in flight.
+    Returns 409 (graph_mode_strict) in STRICT mode — raw joint targets
+    bypass the motion graph. Returns 409 (motion_in_progress) when a
+    motion is already in flight.
     """
+    strict_graph_guard("move.joints")
     c = reserve_motion()
 
     async def move_task():
@@ -1433,8 +1468,11 @@ async def move_joints(request: JointRequest, background_tasks: BackgroundTasks):
 async def move_relative(request: RelativeRequest, background_tasks: BackgroundTasks):
     """Move the robot relative to its current position.
 
-    Returns 409 (motion_in_progress) when a motion is already in flight.
+    Returns 409 (graph_mode_strict) in STRICT mode — relative jogs
+    bypass the motion graph. Returns 409 (motion_in_progress) when a
+    motion is already in flight.
     """
+    strict_graph_guard("move.relative")
     c = reserve_motion()
 
     async def move_task():
@@ -1500,7 +1538,9 @@ async def move_to_location(request: LocationRequest, background_tasks: Backgroun
 async def move_home(background_tasks: BackgroundTasks):
     """Move robot to home position.
 
-    Returns 409 (motion_in_progress) when a motion is already in flight.
+    Home is the named 'robot_home' move, so STRICT mode can refuse it
+    (409 edge_not_allowed) like any other named move. Returns 409
+    (motion_in_progress) when a motion is already in flight.
     """
     ctrl = reserve_motion()
 
@@ -1508,16 +1548,19 @@ async def move_home(background_tasks: BackgroundTasks):
         # go_home() blocks until the move completes; offload to a worker
         # thread so STOP requests can interrupt the event loop.
         result = await asyncio.to_thread(ctrl.go_home)
-
-        if result:
-            background_tasks.add_task(broadcast_status_update)
-            return {
-                "message": "Successfully moved to home position",
-                "timestamp": datetime.now().isoformat()
-            }
-        else:
-            raise HTTPException(status_code=500, detail="Home movement failed")
-
+    except EdgeNotAllowedError as exc:
+        # go_home routes through move_to_named_location, so STRICT mode can
+        # refuse it like any named move — surface that as the same 409, not
+        # a generic 500.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "edge_not_allowed",
+                "current_node": exc.current,
+                "target": exc.target,
+                "reason": exc.reason,
+            },
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -1525,6 +1568,14 @@ async def move_home(background_tasks: BackgroundTasks):
         raise HTTPException(status_code=500, detail=f"Home movement failed: {str(e)}")
     finally:
         ctrl.exit_motion()
+
+    if not result:
+        raise HTTPException(status_code=500, detail="Home movement failed")
+    background_tasks.add_task(broadcast_status_update)
+    return {
+        "message": "Successfully moved to home position",
+        "timestamp": datetime.now().isoformat()
+    }
 
 @app.post("/move/stop", dependencies=[Depends(require_login)])
 async def stop_movement(request: Request, background_tasks: BackgroundTasks):
@@ -1683,7 +1734,12 @@ async def disable_component(request: ComponentRequest):
 
 @app.post("/velocity/cartesian", dependencies=[Depends(require_claim)])
 async def set_cartesian_velocity(request: VelocityRequest):
-    """Set the Cartesian velocity of the robot arm."""
+    """Set the Cartesian velocity of the robot arm.
+
+    Returns 409 (graph_mode_strict) in STRICT mode — velocity streaming
+    bypasses the motion graph.
+    """
+    strict_graph_guard("velocity.cartesian")
     c = get_controller()
     velocities = [request.vx, request.vy, request.vz, request.vroll, request.vpitch, request.vyaw]
 
@@ -1693,11 +1749,44 @@ async def set_cartesian_velocity(request: VelocityRequest):
     return {"message": "Cartesian velocity set successfully."}
 
 # Gripper endpoints
+async def _graph_routed_gripper(c: "XArmController", state_name: str, verb: str):
+    """Run a legacy gripper open/close through the graph-sanctioned
+    ``set_gripper_state`` so it inherits the parked-at-node, arm-not-moving,
+    and whitelist interlocks. STRICT-mode path only."""
+    try:
+        success = await asyncio.to_thread(c.set_gripper_state, state_name)
+    except GripperTransitionError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "gripper_transition_not_allowed",
+                "node": exc.node,
+                "from_state": exc.from_state,
+                "to_state": exc.to_state,
+                "reason": exc.reason,
+            },
+        )
+    await broadcast_status_update()
+    if not success:
+        raise HTTPException(status_code=500, detail=f"Failed to {verb} gripper.")
+    return {
+        "message": f"{verb.capitalize()} gripper command completed (graph state '{state_name}').",
+        "gripper_state": c.current_gripper_state,
+    }
+
 @app.post("/gripper/open", dependencies=[Depends(require_claim)])
 async def open_gripper(request: Optional[GripperRequest] = None):
-    """Open the attached gripper."""
+    """Open the attached gripper.
+
+    In STRICT graph mode this routes through the graph-sanctioned
+    transition to the 'empty' catalog state (409 when not whitelisted at
+    the current node); speed/force args are ignored on that path.
+    """
     c = get_controller()
     request = request or GripperRequest()
+
+    if c.graph_mode == GraphMode.STRICT and c.motion_graph is not None:
+        return await _graph_routed_gripper(c, "empty", "open")
 
     try:
         success = await asyncio.to_thread(
@@ -1715,9 +1804,33 @@ async def open_gripper(request: Optional[GripperRequest] = None):
 
 @app.post("/gripper/close", dependencies=[Depends(require_claim)])
 async def close_gripper(request: Optional[GripperRequest] = None):
-    """Close the attached gripper."""
+    """Close the attached gripper.
+
+    In STRICT graph mode the configured close stroke is resolved to a
+    catalog gripper state and routed through the graph-sanctioned
+    transition (409 when it matches no state or is not whitelisted);
+    speed/force args are ignored on that path.
+    """
     c = get_controller()
     request = request or GripperRequest()
+
+    if c.graph_mode == GraphMode.STRICT and c.motion_graph is not None:
+        close_state = c.motion_graph.resolve_gripper_state(c.default_close_stroke())
+        if close_state is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "graph_mode_strict",
+                    "action": "gripper.close",
+                    "message": (
+                        "the configured close stroke matches no catalog gripper "
+                        "state, so a freehand close is refused in STRICT mode. "
+                        "Use POST /control/graph/gripper with an explicit state, "
+                        "or lower the mode via POST /control/graph/mode."
+                    ),
+                },
+            )
+        return await _graph_routed_gripper(c, close_state, "close")
 
     try:
         success = await asyncio.to_thread(
@@ -1735,7 +1848,12 @@ async def close_gripper(request: Optional[GripperRequest] = None):
 
 @app.post("/gripper/move/stroke", dependencies=[Depends(require_claim)])
 async def move_gripper_stroke(request: GripperStrokeRequest):
-    """Move gripper to a specific stroke position."""
+    """Move gripper to a specific stroke position.
+
+    Returns 409 (graph_mode_strict) in STRICT mode — a freehand stroke
+    bypasses the catalog gripper states; use /control/graph/gripper.
+    """
+    strict_graph_guard("gripper.move_stroke")
     c = get_controller()
 
     try:
@@ -1758,7 +1876,12 @@ async def move_gripper_stroke(request: GripperStrokeRequest):
 
 @app.post("/gripper/force", dependencies=[Depends(require_claim)])
 async def set_gripper_force(request: GripperForceRequest):
-    """Set gripping force for grippers that support force control."""
+    """Set gripping force for grippers that support force control.
+
+    Returns 409 (graph_mode_strict) in STRICT mode — a freehand force
+    change can undermine a graph grasp's verification.
+    """
+    strict_graph_guard("gripper.force")
     c = get_controller()
     if not await asyncio.to_thread(c.set_gripper_force, request.force):
         raise HTTPException(status_code=500, detail="Failed to set gripper force.")
@@ -1779,8 +1902,12 @@ async def get_gripper_position():
 async def move_track(request: TrackRequest, background_tasks: BackgroundTasks):
     """Move the linear track to a specific position.
 
-    Returns 409 (motion_in_progress) when a motion is already in flight.
+    Returns 409 (graph_mode_strict) in STRICT mode — a raw rail position
+    bypasses the motion graph (rail is part of node identity); use
+    /track/move/location. Returns 409 (motion_in_progress) when a motion
+    is already in flight.
     """
+    strict_graph_guard("track.move")
     c = reserve_motion()
 
     async def track_task():
@@ -2026,8 +2153,12 @@ async def move_joint_until_torque(request: JointTorqueMovementRequest, backgroun
 async def move_plate_linear(request: PlateLinearRequest, background_tasks: BackgroundTasks):
     """Move linearly from current position to target with constant tool orientation.
 
-    Returns 409 (motion_in_progress) when a motion is already in flight.
+    Returns 409 (graph_mode_strict) in STRICT mode — this endpoint skips
+    the graph consult; STRICT linear legs run via /move/location, whose
+    edge.mode dispatch uses the same linear routine. Returns 409
+    (motion_in_progress) when a motion is already in flight.
     """
+    strict_graph_guard("move.plate_linear")
     c = reserve_motion()
 
     async def plate_linear_task():

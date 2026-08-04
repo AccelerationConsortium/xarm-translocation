@@ -18,6 +18,8 @@
     window.setupCameraCard = function (opts) {
         opts = opts || {};
         var apiBase = opts.apiBase || '';
+        var selectedLens = null;      // set by the panel's Wide/Tele buttons
+        var lastLenses = [];
 
         var card = document.getElementById('camera-card');
         var video = document.getElementById('camera-video');
@@ -289,12 +291,25 @@
                 // (the arm panel's preset buttons); graph.html has no
                 // preset UI, so the hook is optional.
                 if (typeof opts.onPresets === 'function') opts.onPresets(data.presets);
+                lastLenses = Array.isArray(data.lenses) ? data.lenses : [];
+                if (typeof opts.onLenses === 'function') {
+                    opts.onLenses(lastLenses, selectedLens);
+                }
                 setToggleEnabled(connected);
                 statusEl.textContent = connected ? '' : 'Connect the arm to change follow';
 
-                if (data.available && data.stream_url) {
+                var url = data.stream_url;
+                if (selectedLens) {
+                    for (var i = 0; i < lastLenses.length; i++) {
+                        if (lastLenses[i].id === selectedLens && lastLenses[i].stream_url) {
+                            url = lastLenses[i].stream_url;
+                            break;
+                        }
+                    }
+                }
+                if (data.available && url) {
                     card.classList.add('camera-live');   // glowing title dot
-                    startStream(data.stream_url);
+                    startStream(url);
                 } else {
                     card.classList.remove('camera-live');
                     stopStream();
@@ -306,5 +321,18 @@
 
         refresh();
         setInterval(refresh, POLL_MS);
+
+        // Handle for the host page: switching lens restreams immediately
+        // rather than waiting for the next poll.
+        return {
+            setLens: function (id) {
+                if (selectedLens === id) return;
+                selectedLens = id;
+                stopStream();
+                streamUrl = null;
+                refresh();
+            },
+            getLens: function () { return selectedLens; },
+        };
     };
 })();

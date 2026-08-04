@@ -18,7 +18,7 @@
         } catch (e) {}
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260805a">
+    <link rel="stylesheet" href="style.css?v=20260805b">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -367,6 +367,10 @@
                             <span class="manual-switch-text">Follow arm</span>
                         </label>
                     </div>
+                    <!-- Lens switch. The wide lens is fixed on the C245D
+                         (ptz_capable: false), so selecting it disables the
+                         pad — the device would refuse the move anyway. -->
+                    <div class="lens-btns" id="lens-btns" hidden></div>
                     <div class="ptz-pad" id="ptz-pad">
                         <button type="button" class="ptz-btn" data-dir="up_left" style="grid-area:ul" aria-label="Pan up-left">&#8598;</button>
                         <button type="button" class="ptz-btn" data-dir="up" style="grid-area:u" aria-label="Tilt up">&#8593;</button>
@@ -524,7 +528,7 @@
          reads the signed-in identity for the claim owner. Root-absolute path →
          resolves to the edge's /auth/* (the shared surface), not /xarm5/. -->
     <script src="/auth/banner.js"></script>
-    <script src="camera-player.js?v=20260804a"></script>
-    <script src="main.js?v=20260805a"></script>
+    <script src="camera-player.js?v=20260805a"></script>
+    <script src="main.js?v=20260805b"></script>
 </body>
 </html>
