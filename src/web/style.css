@@ -19,6 +19,13 @@
     --warning: #b45309;
     --warning-hover: #92400e;
     --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+    /* Single source for control typography — buttons, text boxes and
+       dropdowns all read the same. Deliberate exceptions (set explicitly
+       where they occur): the header action buttons, the Direct Drive /
+       Graph Control tabs, and glyph-only buttons (PTZ arrows, jog pad),
+       whose sizes are icon sizes rather than text. */
+    --control-font-size: 0.85rem;
+    --control-font-weight: 600;
 }
 
 * {
@@ -305,8 +312,8 @@ header {
 .eyebrow {
     margin: 0 0 4px;
     color: var(--ink-subtle);
-    font-size: 0.72rem;
-    font-weight: 700;
+    font-size: var(--control-font-size);
+    font-weight: var(--control-font-weight);
     letter-spacing: 0.08em;
     text-transform: uppercase;
 }
@@ -579,6 +586,8 @@ select,
 input[type="text"],
 input[type="number"] {
     width: 100%;
+    font-size: var(--control-font-size);
+    font-weight: var(--control-font-weight);
     border: 1px solid var(--border-strong);
     border-radius: 10px;
     background: var(--surface);
@@ -606,8 +615,6 @@ select.position-dropdown {
     height: 30px;
     box-sizing: border-box;
     padding: 4px 8px;
-    font-size: 0.85rem;
-    font-weight: 600;
 }
 
 input:disabled,
@@ -710,8 +717,8 @@ input#linear-speed {
     color: white;
     cursor: pointer;
     font: inherit;
-    font-size: 0.88rem;
-    font-weight: 700;
+    font-size: var(--control-font-size);
+    font-weight: var(--control-font-weight);
     line-height: 1;
     padding: 9px 14px;
     text-align: center;
@@ -928,8 +935,8 @@ input#linear-speed {
     border-radius: 6px;
     background: var(--surface);
     color: var(--ink-muted);
-    font-size: 0.72rem;
-    font-weight: 700;
+    font-size: var(--control-font-size);
+    font-weight: var(--control-font-weight);
     cursor: pointer;
 }
 
@@ -974,8 +981,8 @@ input#linear-speed {
     background: var(--surface);
     color: var(--ink-muted);
     font: inherit;
-    font-size: 0.72rem;
-    font-weight: 700;
+    font-size: var(--control-font-size);
+    font-weight: var(--control-font-weight);
     cursor: pointer;
 }
 
@@ -1006,8 +1013,8 @@ input#linear-speed {
     min-width: 0;
     height: 26px;
     padding: 2px 6px;
-    font-size: 0.72rem;
-    font-weight: 600;
+    font-size: var(--control-font-size);
+    font-weight: var(--control-font-weight);
 }
 
 .ptz-preset-btn {
@@ -1019,8 +1026,8 @@ input#linear-speed {
     background: var(--surface);
     color: var(--ink);
     font: inherit;
-    font-size: 0.72rem;
-    font-weight: 600;
+    font-size: var(--control-font-size);
+    font-weight: var(--control-font-weight);
     cursor: pointer;
     white-space: nowrap;
     overflow: hidden;
@@ -1060,6 +1067,7 @@ input#linear-speed {
     background: var(--surface);
     color: var(--ink);
     font: inherit;
+    /* Glyph size, not text size — the arrows are icons. */
     font-size: 1rem;
     cursor: pointer;
 }
@@ -1077,7 +1085,7 @@ input#linear-speed {
 .ptz-btn.ptz-stop {
     background: var(--surface-soft);
     color: var(--ink-muted);
-    font-size: 0.6rem;
+    font-size: 0.68rem;
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -1233,8 +1241,8 @@ input#linear-speed {
     border-radius: 9px;
     background: var(--surface-soft);
     color: var(--primary);
-    font-size: 0.82rem;
-    font-weight: 700;
+    font-size: var(--control-font-size);
+    font-weight: var(--control-font-weight);
     text-decoration: none;
     transition: background 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
 }
@@ -1328,8 +1336,8 @@ input#linear-speed {
     background: var(--surface-soft);
     color: var(--ink-muted);
     font: inherit;
-    font-size: 0.82rem;
-    font-weight: 700;
+    font-size: var(--control-font-size);
+    font-weight: var(--control-font-weight);
     cursor: pointer;
 }
 
@@ -1887,8 +1895,9 @@ input#linear-speed {
 
 .jog-btn {
     min-width: 64px;
-    font-size: 1rem;
+    font-size: var(--control-font-size);
     padding: 8px 14px;
+    font-weight: var(--control-font-weight);
 }
 
 .jog-xy-pad {
@@ -2386,8 +2395,8 @@ input#linear-speed {
 .studio-link {
     display: inline-block;
     color: var(--primary);
-    font-size: 0.8rem;
-    font-weight: 700;
+    font-size: var(--control-font-size);
+    font-weight: var(--control-font-weight);
     text-decoration: none;
 }
 
