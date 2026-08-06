@@ -368,7 +368,8 @@ def test_travel_to_node_multi_hop_success(travel_controller):
     with patch.object(c, "move_to_node", return_value=True) as mock_move:
         result = c.travel_to_node("n_far", speed=20)
     assert result == {"success": True, "path": ["n_pickup", "n_far"],
-                      "completed": ["n_pickup", "n_far"], "failed_hop": None}
+                      "completed": ["n_pickup", "n_far"], "failed_hop": None,
+                      "speed_clamps": []}
     assert [call.args[0] for call in mock_move.call_args_list] == \
         ["n_pickup", "n_far"]
     assert all(call.kwargs == {"speed": 20} for call in mock_move.call_args_list)
@@ -388,7 +389,8 @@ def test_travel_to_node_fail_fast_reports_progress(travel_controller):
     with patch.object(c, "move_to_node", side_effect=[True, False]):
         result = c.travel_to_node("n_far")
     assert result == {"success": False, "path": ["n_pickup", "n_far"],
-                      "completed": ["n_pickup"], "failed_hop": "n_far"}
+                      "completed": ["n_pickup"], "failed_hop": "n_far",
+                      "speed_clamps": []}
 
 
 def test_travel_to_node_off_grid_raises(travel_controller):
@@ -410,3 +412,48 @@ def test_travel_to_node_unknown_target_raises(travel_controller):
     c = travel_controller
     with pytest.raises(UnknownNodeError):
         c.travel_to_node("n_ghost")
+
+
+TRAVEL_RESULT_KEYS = {"success", "path", "completed", "failed_hop", "speed_clamps"}
+
+
+def test_travel_to_node_no_graph_returns_the_full_shape(travel_controller):
+    """The not-loaded early return must carry every key the other paths do.
+
+    It was the one branch omitting ``speed_clamps``, and nothing covered
+    it — the API consumer only survived because it reads the field with
+    ``.get(...) or []``. A caller indexing the result directly would have
+    hit a KeyError on exactly the path where the graph is unavailable.
+    """
+    c = travel_controller
+    c.motion_graph = None
+    result = c.travel_to_node("n_far")
+    assert set(result) == TRAVEL_RESULT_KEYS
+    assert result["success"] is False
+    assert result["speed_clamps"] == []
+
+
+def test_travel_to_node_result_shape_is_uniform(travel_controller):
+    """Every non-raising return path returns the same keys.
+
+    Pins the contract the two exact-equality assertions above depend on,
+    so adding a sixth field fails here — one obvious place — rather than
+    in scattered dict comparisons.
+    """
+    c = travel_controller
+
+    with patch.object(c, "move_to_node", return_value=True):
+        success = c.travel_to_node("n_far")
+    c.last_arm_pose_name = "home"
+    with patch.object(c, "move_to_node", side_effect=[True, False]):
+        failure = c.travel_to_node("n_far")
+    c.last_arm_pose_name = "home"
+    with patch.object(c, "move_to_node"):
+        already_there = c.travel_to_node("n_home")
+    c.motion_graph = None
+    no_graph = c.travel_to_node("n_far")
+
+    for name, result in [("success", success), ("failure", failure),
+                         ("already_there", already_there),
+                         ("no_graph", no_graph)]:
+        assert set(result) == TRAVEL_RESULT_KEYS, f"{name} path differs"

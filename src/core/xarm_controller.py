@@ -2283,14 +2283,20 @@ class XArmController:
         ends parked at a graph node, so a mid-journey failure leaves the
         arm at a known node (the last completed hop).
 
-        Returns ``{"success", "path", "completed", "failed_hop"}``.
+        Returns ``{"success", "path", "completed", "failed_hop",
+        "speed_clamps"}`` — the same five keys on *every* return path, so a
+        caller can index the result without guarding each one.
+        ``speed_clamps`` lists the per-edge speed-cap clamps applied during
+        this journey (see ``_apply_edge_speed_cap``); it is empty when no
+        hop was clamped, and on the paths that never move at all.
+
         Raises UnknownNodeError / NoPathError from planning, and
         EdgeNotAllowedError when off-grid or on a STRICT mid-hop refusal.
         """
         if self.motion_graph is None:
             print("[motion_graph] travel_to_node: motion_graph not loaded")
             return {"success": False, "path": [], "completed": [],
-                    "failed_hop": None}
+                    "failed_hop": None, "speed_clamps": []}
 
         self.last_speed_clamps = []   # fresh per journey
 
