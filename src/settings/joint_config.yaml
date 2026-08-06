@@ -58,9 +58,9 @@ positions:
   hood_filter_top_plate: [-28.19, 32.05, -80.86, 48.42, -27.99]     # Position to grip top plate of filteration plate
 
   # The following happens when linear rail is at Cytation location (700mm)
-  cytation_home: [230.29, 7.82, -22.77, 14.66, -40.11]   # TODO get this real position 
-  cytation_high: [234.35, 68.46, -56.1, -12.63, -36.67]   # TODO get these real positions
-  cytation_low:  [234.35, 76.44, -63.3, -13.41, -36.71]    # TODO get these real positions
+  cytation_home: [230.29, 7.82, -22.77, 14.66, -40.11]
+  cytation_high: [221.56, 60.51, -66.93, 6.14, -49.1]
+  cytation_low:  [221.57, 79.67, -83.47, 3.51, -49.19]
   plateloc_home: [255.9, -66.14, -19.45, 85.49, -13.88]  # TODO get this real position
   plateloc_high: [265.01, 9.38, -77.19, 67.78, -4.73]   # TODO get this real position
   plateloc_low:  [264.99, 11.12, -72.73, 61.58, -4.8]    # TODO get this real position

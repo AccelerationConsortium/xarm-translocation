@@ -194,9 +194,11 @@ def test_real_yaml_reachability_from_home():
 #
 # Formerly this allowlist carried the WIP cytation/plateloc/opentrons-4/6/
 # press/uplc-plate/extra-home nodes, but those were all disconnected (no
-# edges) and have since been commented out of motion_graph.yaml entirely —
-# so there is nothing left to allowlist. Re-populate this if a new orphan
-# node is intentionally added ahead of its edges.
+# edges) and had been commented out of motion_graph.yaml entirely. The
+# cytation nodes are now wired (robot_home -> cytation_home -> cytation_high
+# -> cytation_low, all reachable) so there is nothing left to allowlist for
+# them. Re-populate this if a new orphan node is intentionally added ahead
+# of its edges.
 WIP_UNREACHABLE_FROM_HOME = set()
 
 
