@@ -93,6 +93,10 @@ def mock_controller():
     # every motion endpoint refuse with 409 (motion_in_progress).
     mc._motion_in_progress = False
     mc.is_simulated = False
+    # Real box, not UFACTORY Studio's Sim mode. Must be pinned: unset
+    # MagicMock attributes are truthy, and box_sim_guard would then 412
+    # every motion and gripper call in this fixture.
+    mc.is_real_box_simulating = False
     mc.motion_graph = None  # keep simple
     mc.is_connected.return_value = True
     mc.is_alive = True

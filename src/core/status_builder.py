@@ -159,16 +159,28 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     5. otherwise -> ``degraded`` (with ``activity`` still reporting whether
        a motion is in flight).
 
-    **Simulation** (``controller.is_simulated``, i.e. the ``docker``
-    profile): the healthy states (``ready`` / ``busy``) are reported as
-    ``dry_run`` — the spec's first-class "simulation mode" state, which the
-    dashboard already projects to ``simulated: true`` — with ``activity``
-    unchanged (the §2.3 invariant table deliberately allows any activity
-    for ``dry_run``). Fault states (``error`` / ``degraded`` /
+    **Simulation** (``controller.is_simulated``): either the connection
+    targets the Docker simulator *or* the control box itself reports
+    simulation mode — UFACTORY Studio's Real/Sim toggle, which can be
+    flipped mid-session by anyone with the panel open. Both are observed,
+    not declared; see the ``is_simulated`` docstring for why the box's own
+    report bit is the authority.
+
+    The healthy states (``ready`` / ``busy``) are reported as ``dry_run`` —
+    the spec's first-class "simulation mode" state, which the dashboard
+    already projects to ``simulated: true`` — with ``activity`` unchanged
+    (the §2.3 invariant table deliberately allows any activity for
+    ``dry_run``). Fault states (``error`` / ``degraded`` /
     ``requires_init``) keep their honest value so simulated failure paths
-    stay testable. Every state gets a ``[SIMULATION]`` message prefix and
-    ``details.simulated: true`` so no reader — human or machine — can
-    mistake a sim session for the real arm.
+    stay testable. Every state gets a ``[SIMULATION]`` message prefix,
+    ``details.simulated: true``, and ``details.simulation_source`` naming
+    which of the two mechanisms is in force, so no reader — human or
+    machine — can mistake a sim session for the real arm.
+
+    Reporting ``dry_run`` here is what keeps §2.2 honest: in Studio-Sim the
+    SDK short-circuits track and gripper commands to *success* without
+    moving anything, so a device that kept reporting ``ready`` would be
+    claiming it can perform its primary operation when it cannot.
     """
     if controller is None:
         return _disconnected_envelope()
@@ -317,6 +329,17 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         # panel keys its banner on this; workflows can branch on it without
         # string-matching the message.
         details["simulated"] = True
+        # Which mechanism is in force. Worth distinguishing: the profile term
+        # is fixed for the session, while "controller" can appear or vanish
+        # mid-session as the Studio toggle is flipped — so an operator seeing
+        # a tile change to SIMULATION without a reconnect needs to know it
+        # was the box, not the connection.
+        sources = []
+        if getattr(controller, "is_docker_target", False):
+            sources.append("docker_profile")
+        if getattr(controller, "is_controller_simulating", False):
+            sources.append("controller")
+        details["simulation_source"] = "+".join(sources) or "unknown"
     # Carry connection details for the local web UI's panel. Not contracted.
     details["connection_details"] = _build_connection_details(controller)
     # Motion-graph state (Phase 1: introspection only; absent when no graph
@@ -468,6 +491,18 @@ def _build_allowed_actions(
             # A motion is in flight. Starting a second one would be a
             # collision, and the move endpoints refuse it with 409, so the
             # list must not offer it either.
+            return actions
+
+        if getattr(controller, "is_real_box_simulating", False):
+            # The real box is in Studio-Sim: every motion and gripper
+            # endpoint returns 412 (box_sim_guard), because the SDK would
+            # report success without moving. §6.2 requires this surface to
+            # agree, so no move target is offered. `stop` stays — it is the
+            # safety floor and is never gated.
+            #
+            # Note this branch is NOT reached for the Docker simulator,
+            # which reports the same underlying bit but stays fully
+            # actuable as the supported dry-run path.
             return actions
 
         graph = getattr(controller, "motion_graph", None)

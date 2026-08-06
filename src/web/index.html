@@ -51,9 +51,10 @@
     <div class="top-banners">
         <div id="ac-auth-banner-slot"></div>
         <!-- Simulation banner: shown whenever /status reports details.simulated
-             (docker profile -> dry_run state). Deliberately outside .container
-             and impossible to miss, so a sim session can never be mistaken for
-             the real arm. Toggled by updateStatusUI in main.js. -->
+             (docker profile, or the box switched to Sim in the UFACTORY Studio
+             panel -> dry_run state). Deliberately outside .container and
+             impossible to miss, so a sim session can never be mistaken for the
+             real arm. Toggled by updateStatusUI in main.js. -->
         <div id="sim-banner" class="sim-banner" hidden>
             <span aria-hidden="true">&#9888;</span> <strong>SIMULATION</strong>
             &mdash; connected to the Docker simulator, not the real arm

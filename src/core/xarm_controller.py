@@ -151,8 +151,16 @@ class XArmController:
 
         # For Docker simulator connections, we MUST disable the SDK's built-in
         # joint limit checking. The simulator doesn't provide a valid serial
-        # number, causing the check to crash. For real hardware, we want this check enabled.
-        disable_sdk_joint_check = self.is_simulated
+        # number (probed live: sn is ' ', version '5,5, ,XX0000,v2.4.0'),
+        # causing the check to crash. For real hardware, we want this check
+        # enabled.
+        #
+        # Keyed on is_docker_target, NOT is_simulated: this is a constructor
+        # argument, decided before any socket opens and therefore before the
+        # controller's own simulation bit can be read. A real control box in
+        # Studio-Sim mode has a valid serial and real joint limits, and must
+        # keep this check. See the is_simulated docstring.
+        disable_sdk_joint_check = self.is_docker_target
         if disable_sdk_joint_check:
             print("Docker profile detected, disabling SDK joint limit checks to prevent serial number bug.")
 
@@ -387,8 +395,13 @@ class XArmController:
         if self.is_simulated and self.events_exporter.enabled:
             # A simulated session must not write telemetry into the lab's
             # history DB stamped as the real device (the exporter's own
-            # contract: "Docker sims emit nothing"). Suppressed here, at the
-            # one place the exporter is constructed, rather than per-emit.
+            # contract: "sims emit nothing").
+            #
+            # This runs before connect, so it can only see the profile. The
+            # authoritative gate is per-emit in _emit_event(), which reads
+            # is_simulated live and therefore also suppresses a session that
+            # started against a real box and was flipped into Studio-Sim
+            # mid-run.
             print("[events] exporter SUPPRESSED (simulation profile "
                   f"{self.profile_name!r}; XARM_INGEST_URL is set but sim "
                   "telemetry never leaves the device)")
@@ -810,18 +823,124 @@ class XArmController:
         return True
 
     @property
-    def is_simulated(self) -> bool:
-        """True when this controller drives a simulator, not real hardware.
+    def is_docker_target(self) -> bool:
+        """True when the *connection target* is the UFACTORY Docker simulator.
 
-        Keyed on the connection profile name (the ``docker`` profile targets
-        the UFACTORY Docker simulator). Single source of truth for every
-        simulation accommodation: SDK joint-limit check disabled at
-        construction, lenient error codes in ``is_alive``, the ``dry_run``
-        envelope state in ``status_builder``, and events-exporter
-        suppression — so a simulated session can never masquerade as the
-        real arm on the dashboard or in the history DB.
+        Keyed on the connection profile name, so it is known before any
+        socket opens. This answers "am I talking to a container that reports
+        no serial number?" — a connection-scoped question, distinct from "is
+        this session synthetic?" (``is_simulated``).
+
+        Only the two accommodations that genuinely follow from the container
+        may use this: the SDK joint-limit check (a constructor argument, so
+        it *cannot* consult the controller's own bit) and the lenient error
+        codes in ``is_alive``. Reporting must not — see ``is_simulated``.
         """
         return bool(self.profile_name and 'docker' in self.profile_name.lower())
+
+    @property
+    def is_controller_simulating(self) -> bool:
+        """True when the control box itself reports simulation mode.
+
+        Read from the SDK's periodic *rich* report (``rx_data[314]`` in
+        ``xarm/x3/base.py``; rich is the SDK default and we do not override
+        it), so it is observed hardware state, refreshed every report cycle
+        — not a claim made at connect time.
+
+        This is what catches UFACTORY Studio's Real/Sim toggle, including a
+        flip made mid-session by anyone with the panel open. In that mode
+        the SDK short-circuits the non-joint hardware to *success*: every
+        ``set_linear_track_*`` call (an alias for ``set_linear_motor_*``,
+        all decorated ``@xarm_is_not_simulation_mode(ret=(0, []))``) and
+        every BIO gripper move return code 0 without moving anything, and
+        the track position readback returns its last real value unchanged.
+        A graph traversal therefore reports success end-to-end while the
+        plate never moved — which is exactly why this must reach ``/status``.
+
+        False while disconnected: the flag only exists once the report
+        stream has delivered a frame. ``getattr`` rather than ``self.arm``
+        because ``_initialize_state_management()`` consults ``is_simulated``
+        before ``__init__`` has assigned the attribute at all.
+        """
+        arm = getattr(self, 'arm', None)
+        if arm is None or not getattr(arm, 'connected', False):
+            return False
+        return bool(getattr(arm, 'is_simulation_robot', False))
+
+    def _pin_arm_pose(self, pose_name: Optional[str]) -> bool:
+        """Pin the named arm pose after a successful move; True if pinned.
+
+        Closes the one window ``box_sim_guard`` cannot: the guard refuses a
+        move *before* it starts, so a box already in Studio-Sim writes no
+        pins at all — but a box flipped into Sim while a move was in flight
+        would otherwise record an arrival that may never have happened.
+
+        In that case both pins are cleared rather than set, exactly as
+        ``stop_motion()`` does after an e-stop and for the same reason: the
+        arm is somewhere unverified, so the graph must report unknown until
+        an operator re-declares position. Clearing the rail pin too is
+        deliberate — if the box changed mode mid-move, neither coordinate
+        is trustworthy.
+        """
+        if self.is_real_box_simulating:
+            self.last_arm_pose_name = None
+            self.last_rail_location_name = None
+            print(
+                "[graph] control box entered simulation mid-move — position "
+                "pins cleared. Re-declare the arm's position before moving."
+            )
+            return False
+        self.last_arm_pose_name = pose_name
+        return True
+
+    @property
+    def is_real_box_simulating(self) -> bool:
+        """True when the *real* control box is in UFACTORY Studio's Sim mode.
+
+        Deliberately excludes the container: the Docker simulator reports
+        the same bit (probed live), so a bare ``is_controller_simulating``
+        would also catch it — and Docker is the supported dry-run path,
+        which must keep working.
+
+        This is the refusal predicate. Motion and gripper commands are
+        refused with 412 while it holds, because in Studio-Sim the SDK
+        returns success without moving anything, and we would then cache
+        that lie: ``last_gripper_position`` (the *commanded* stroke) makes
+        the device believe it is holding a plate, and the graph pins make
+        it believe the arm is at the destination. Both survive the flip
+        back to Real, with a real arm and a real plate.
+
+        The container is exempt because nothing there is real to diverge
+        from — a false pin in a Docker session misleads no one about
+        physical state.
+        """
+        return self.is_controller_simulating and not self.is_docker_target
+
+    @property
+    def is_simulated(self) -> bool:
+        """True when this session is synthetic — nothing physical will move.
+
+        The union of the two ways that happens: the connection targets the
+        Docker simulator (``is_docker_target``), or the control box is in
+        simulation mode (``is_controller_simulating``). Both are the same
+        mechanism — the container is UFACTORY's own controller software
+        permanently in sim, and it sets the same report bit (probed live
+        against the simulator: ``is_simulation_robot`` is True there) — so
+        one predicate covers both. The profile term is kept because it holds
+        before the first report arrives.
+
+        Source of truth for every *reporting* accommodation: the ``dry_run``
+        envelope state and ``[SIMULATION]`` message prefix in
+        ``status_builder``, ``details.simulated``, the panel's banner, and
+        events-exporter suppression — so a simulated session can never
+        masquerade as the real arm on the dashboard or in the history DB.
+
+        Deliberately NOT used for connection quirks (SDK joint-limit check,
+        lenient error codes): a real control box in Studio-Sim has a valid
+        serial number and real joint limits, and must keep both checks. Use
+        ``is_docker_target`` for those.
+        """
+        return self.is_docker_target or self.is_controller_simulating
 
     @property
     def _motion_in_progress(self) -> bool:
@@ -877,8 +996,10 @@ class XArmController:
     def is_alive(self):
         """Check if the robot is in a safe operating state."""
         if self.alive and self.arm and self.arm.connected:
-            # For Docker simulator, be more lenient with error codes
-            is_docker = self.is_simulated
+            # For Docker simulator, be more lenient with error codes.
+            # is_docker_target, not is_simulated: a real box in Studio-Sim
+            # still reports real diagnostics, so it keeps the strict branch.
+            is_docker = self.is_docker_target
 
             if is_docker:
                 # Docker simulator can have minor errors but still be functional
@@ -1192,7 +1313,8 @@ class XArmController:
         # Inner call cleared last_arm_pose_name; restore it on success so
         # the motion graph can pin the new node and capture the transition.
         if success:
-            self.last_arm_pose_name = location_name
+            if not self._pin_arm_pose(location_name):
+                return success
             to_node = self.current_node
             self._store_transition(from_node, to_node, mode_used, speed)
         return success
@@ -3053,7 +3175,7 @@ class XArmController:
         print(f"[OK] Successfully completed linear movement to '{target_location}'")
         # move_to_position cleared the named pose tracker; we arrived at
         # target_location, so pin it.
-        self.last_arm_pose_name = target_location
+        self._pin_arm_pose(target_location)
         return True
 
     def _position_to_cartesian(self, location_name, position_data, speed=None):

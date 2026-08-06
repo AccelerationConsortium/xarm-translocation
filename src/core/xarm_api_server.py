@@ -1035,6 +1035,12 @@ def reserve_motion() -> XArmController:
     §6.1 reserves 412 for the latter).
     """
     c = get_controller()
+    # Refuse before reserving the slot: a box in Studio-Sim would "succeed"
+    # without moving and leave the graph pinned to a node the arm never
+    # reached. Checked here so every motion endpoint inherits it from the
+    # one chokepoint they all pass through. Gripper endpoints do not call
+    # reserve_motion(), so they guard themselves.
+    box_sim_guard("move")
     if c._motion_in_progress:
         raise HTTPException(
             status_code=409,
@@ -1074,6 +1080,51 @@ def strict_graph_guard(action: str) -> None:
                     "STRICT mode. Use the graph surface (/control/graph/*, "
                     "/move/location, /track/move/location), or lower the "
                     "enforcement mode via POST /control/graph/mode."
+                ),
+            },
+        )
+
+
+def box_sim_guard(action: str) -> None:
+    """Refuse an actuating action while the real control box is in Sim mode.
+
+    In UFACTORY Studio's Sim mode the SDK short-circuits the non-joint
+    hardware to *success*: every ``set_linear_track_*`` call and every BIO
+    gripper move return code 0 without moving anything. We would cache that
+    as truth — the commanded gripper stroke becomes "holding a plate", the
+    graph pins become "parked at the destination" — and both survive the
+    flip back to Real, next to a real arm and a real plate. Refusing is the
+    only honest outcome: a translocation that reports success without
+    moving is worse than one that is declined.
+
+    This does NOT refuse the Docker simulator, which reports the same bit
+    but is the supported dry-run path (see ``is_real_box_simulating``).
+    Everything a workflow exercises — the graph, interlocks, claims, STRICT
+    gating — lives in this service and behaves identically there.
+
+    412, not 409: the request is well-formed and the device is healthy;
+    a device-state precondition simply is not met, and recovery is
+    operator-driven — flip the panel back to Real (§6.1). ``retry_after_s``
+    is null for exactly that reason: no elapsed time clears it.
+
+    §6.2: ``/status.allowed_actions`` withholds the same actions while this
+    holds, via ``build_status``. The two surfaces must never disagree.
+    """
+    c = get_controller()
+    if getattr(c, "is_real_box_simulating", False):
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "error": "controller_simulating",
+                "action": action,
+                "required": "real",
+                "retry_after_s": None,
+                "message": (
+                    f"'{action}' is refused: the control box is in "
+                    "simulation mode (UFACTORY Studio Real/Sim toggle). "
+                    "Commands would report success without moving the "
+                    "hardware. Switch the panel back to Real, or use the "
+                    "'docker' profile for a dry run."
                 ),
             },
         )
@@ -1782,6 +1833,7 @@ async def open_gripper(request: Optional[GripperRequest] = None):
     transition to the 'empty' catalog state (409 when not whitelisted at
     the current node); speed/force args are ignored on that path.
     """
+    box_sim_guard("gripper.open")
     c = get_controller()
     request = request or GripperRequest()
 
@@ -1811,6 +1863,7 @@ async def close_gripper(request: Optional[GripperRequest] = None):
     transition (409 when it matches no state or is not whitelisted);
     speed/force args are ignored on that path.
     """
+    box_sim_guard("gripper.close")
     c = get_controller()
     request = request or GripperRequest()
 
@@ -1854,6 +1907,7 @@ async def move_gripper_stroke(request: GripperStrokeRequest):
     bypasses the catalog gripper states; use /control/graph/gripper.
     """
     strict_graph_guard("gripper.move_stroke")
+    box_sim_guard("gripper.move_stroke")
     c = get_controller()
 
     try:
@@ -1882,6 +1936,7 @@ async def set_gripper_force(request: GripperForceRequest):
     change can undermine a graph grasp's verification.
     """
     strict_graph_guard("gripper.force")
+    box_sim_guard("gripper.force")
     c = get_controller()
     if not await asyncio.to_thread(c.set_gripper_force, request.force):
         raise HTTPException(status_code=500, detail="Failed to set gripper force.")
@@ -3021,6 +3076,7 @@ async def set_gripper_state(request: GraphGripperRequest, background_tasks: Back
     exactly = nothing gripped), position states must REACH it (stalling
     early = blocked). Verification failure returns 500.
     """
+    box_sim_guard("graph.gripper")
     c = get_controller()
     if c.motion_graph is None:
         raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
@@ -3098,6 +3154,29 @@ async def record_last_transition(request: GraphRecordRequest):
     c = get_controller()
     if c.motion_graph is None:
         raise HTTPException(status_code=404, detail="motion_graph.yaml not loaded")
+    # Refused for BOTH simulators — unlike box_sim_guard, which exempts
+    # Docker. This endpoint writes motion_graph.yaml, the safety model
+    # itself, and the edge it proposes is only trustworthy because the arm
+    # physically completed that transition. A simulated move validates no
+    # geometry, no clearance, and no reach; recording it would seed the
+    # production graph with an edge nothing has ever traversed, and the
+    # write persists across restarts and profiles.
+    if getattr(c, "is_simulated", False):
+        raise HTTPException(
+            status_code=412,
+            detail={
+                "error": "simulated_transition",
+                "action": "graph.record",
+                "required": "real",
+                "retry_after_s": None,
+                "message": (
+                    "Refusing to record an edge from a simulated move: the "
+                    "transition was never physically performed, so it "
+                    "validates no geometry or clearance. Re-run the move on "
+                    "real hardware, then record."
+                ),
+            },
+        )
     if c.last_transition is None:
         raise HTTPException(
             status_code=409,

@@ -50,8 +50,15 @@ def _fake_controller(**overrides):
     mc = MagicMock()
     mc.alive = True
     # Real hardware unless a test opts in — a bare MagicMock attribute is
-    # truthy, which would flip every envelope to dry_run.
+    # truthy, which would flip every envelope to dry_run. All three must be
+    # pinned: is_simulated drives the state, and the other two are read for
+    # details.simulation_source.
     mc.is_simulated = False
+    mc.is_docker_target = False
+    mc.is_controller_simulating = False
+    # Also pinned: the allowed_actions mirror withholds every move target
+    # when this is truthy, which an unset MagicMock attribute would be.
+    mc.is_real_box_simulating = False
     mc._motion_in_progress = False
     mc.last_error_code = 0
     mc.last_error = None
@@ -386,18 +393,19 @@ def test_exit_motion_is_clamped_at_zero():
 
 
 # ---------------------------------------------------------------------------
-# Simulation self-identification (docker profile -> dry_run)
+# Simulation self-identification (docker profile / Studio-Sim -> dry_run)
 # ---------------------------------------------------------------------------
 
 
 def test_sim_healthy_idle_reports_dry_run():
     """A simulator session must never read as the real arm being ready."""
-    controller = _fake_controller(is_simulated=True)
+    controller = _fake_controller(is_simulated=True, is_docker_target=True)
     envelope = build_status(controller)
     assert envelope.equipment_status == 'dry_run'
     assert envelope.activity == 'idle'
     assert envelope.message.startswith('[SIMULATION]')
     assert envelope.details['simulated'] is True
+    assert envelope.details['simulation_source'] == 'docker_profile'
     # The sim honors the same actions the real arm would.
     assert 'stop' in envelope.allowed_actions
 
@@ -436,7 +444,36 @@ def test_sim_fault_stays_error():
 def test_real_hardware_envelope_carries_no_simulated_flag():
     envelope = build_status(_fake_controller())
     assert 'simulated' not in envelope.details
+    assert 'simulation_source' not in envelope.details
     assert not envelope.message.startswith('[SIMULATION]')
+
+
+def test_studio_sim_reports_dry_run_and_names_the_controller():
+    """UFACTORY Studio's Real/Sim toggle must reach /status.
+
+    The regression this pins: in Studio-Sim the SDK short-circuits every
+    track and BIO-gripper command to code 0 without moving anything, so a
+    device that kept reporting `ready` would claim it can perform its
+    primary operation when it cannot (§2.2).
+    """
+    controller = _fake_controller(
+        is_simulated=True, is_controller_simulating=True
+    )
+    envelope = build_status(controller)
+    assert envelope.equipment_status == 'dry_run'
+    assert envelope.message.startswith('[SIMULATION]')
+    assert envelope.details['simulation_source'] == 'controller'
+
+
+def test_both_mechanisms_are_reported_together():
+    """A docker session is *also* controller-simulating (probed live: the
+    container sets the same report bit), so the source names both rather
+    than silently picking one."""
+    controller = _fake_controller(
+        is_simulated=True, is_docker_target=True, is_controller_simulating=True
+    )
+    envelope = build_status(controller)
+    assert envelope.details['simulation_source'] == 'docker_profile+controller'
 
 
 def test_sim_telemetry_reports_alive():
@@ -468,6 +505,86 @@ def test_events_exporter_suppressed_when_simulated():
     controller.profile_name = 'robot'
     controller._emit_event('startup')
     controller.events_exporter.emit.assert_called_once()
+
+
+def test_events_exporter_suppressed_when_box_flipped_mid_session():
+    """A session that started against the real box and was then flipped into
+    Studio-Sim must stop emitting. The construction-time check cannot see
+    this (it runs before connect), so the per-emit gate is the real one."""
+    from src.core.xarm_controller import XArmController
+
+    controller = XArmController.__new__(XArmController)
+    controller.profile_name = 'robot'          # NOT the docker profile
+    controller.last_error_code = 0
+    controller.last_warn_code = 0
+    controller._current_graph_node = lambda: None
+    controller.events_exporter = MagicMock(enabled=True)
+
+    controller.arm = MagicMock(connected=True, is_simulation_robot=False)
+    controller._emit_event('startup')
+    controller.events_exporter.emit.assert_called_once()
+
+    # Operator flips Real -> Sim in the Studio panel mid-session.
+    controller.arm.is_simulation_robot = True
+    controller._emit_event('startup')
+    controller.events_exporter.emit.assert_called_once()  # still 1: suppressed
+
+
+# ---------------------------------------------------------------------------
+# The is_simulated / is_docker_target split
+# ---------------------------------------------------------------------------
+
+
+def _bare_controller(profile_name, arm=None):
+    from src.core.xarm_controller import XArmController
+
+    controller = XArmController.__new__(XArmController)
+    controller.profile_name = profile_name
+    controller.arm = arm
+    return controller
+
+
+def test_studio_sim_does_not_make_it_a_docker_target():
+    """The load-bearing separation: a real box in Studio-Sim reports as
+    simulated, but must NOT inherit the container's accommodations — it has
+    a valid serial number and real joint limits, so the SDK joint-limit
+    check and the strict error-code branch both stay on."""
+    controller = _bare_controller(
+        'robot', MagicMock(connected=True, is_simulation_robot=True)
+    )
+    assert controller.is_simulated is True
+    assert controller.is_controller_simulating is True
+    assert controller.is_docker_target is False
+
+
+def test_docker_profile_is_simulated_before_the_report_arrives():
+    """is_docker_target holds pre-connect, which is why is_simulated keeps
+    the profile term: check_joint_limit is a constructor argument decided
+    before any report exists."""
+    controller = _bare_controller('docker', None)
+    assert controller.is_docker_target is True
+    assert controller.is_controller_simulating is False
+    assert controller.is_simulated is True
+
+
+def test_controller_simulating_is_false_while_disconnected():
+    """The report bit only exists once a frame has arrived; a disconnected
+    or absent arm must read False rather than raising."""
+    assert _bare_controller('robot', None).is_controller_simulating is False
+    assert _bare_controller(
+        'robot', MagicMock(connected=False, is_simulation_robot=True)
+    ).is_controller_simulating is False
+
+
+def test_is_simulated_survives_missing_arm_attribute():
+    """_initialize_state_management() consults is_simulated before __init__
+    has assigned self.arm at all — this must not raise AttributeError."""
+    from src.core.xarm_controller import XArmController
+
+    controller = XArmController.__new__(XArmController)
+    controller.profile_name = 'robot'
+    assert not hasattr(controller, 'arm')
+    assert controller.is_simulated is False
 
 
 # ---------------------------------------------------------------------------

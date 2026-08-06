@@ -2460,7 +2460,8 @@ input#linear-speed {
 }
 
 /* ── Simulation banner ─────────────────────────────────────────────────
-   Shown while /status reports details.simulated (docker profile).
+   Shown while /status reports details.simulated (docker profile, or the
+   box switched to Sim in the UFACTORY Studio panel).
    Unmistakable but readable: a thin hazard-stripe strip along the top
    edge carries the "live mode" cue, the text sits on a solid soft amber
    field with bold reserved for the one load-bearing word. */

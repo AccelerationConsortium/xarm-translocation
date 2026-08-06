@@ -24,6 +24,11 @@ def mock_xarm_api():
     mock_arm.mode = 0
     mock_arm.error_code = 0
     mock_arm.warn_code = 0
+    # Real hardware, not simulation. Must be pinned: an unset attribute on a
+    # bare Mock is truthy, which would make XArmController.is_simulated read
+    # True and silently suppress the events exporter in every test using this
+    # fixture. Set False explicitly; tests exercising Studio-Sim override it.
+    mock_arm.is_simulation_robot = False
     
     # Mock position and joint methods
     mock_arm.get_position.return_value = (0, [300, 0, 300, 180, 0, 0])
