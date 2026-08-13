@@ -2250,19 +2250,31 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Lab Assistant (corner chat widget) ---
     // Natural-language motion control. The widget only ever calls two
     // endpoints: /assistant/plan (read-only preview) and, after the operator
-    // clicks Confirm, /assistant/execute (claim-gated, reuses the existing
+    // clicks Authorize, /assistant/execute (claim-gated, reuses the existing
     // claim token via apiRequest). Progress streams back through the normal
     // /ws log channel into the header log; here we show a compact summary.
+    //
+    // Style + behavior mirror the dashboard's AssistantBubble in Control
+    // mode (ac-organic-lab web/src/components/AssistantBubble.tsx): purple
+    // panel-wide accent, draggable header, minimize (not close) so the
+    // conversation persists, a Clear chip, Enter-to-send textarea, model
+    // line under the input, and per-tab sessionStorage persistence of both
+    // the transcript and the panel position. The launcher stays hidden
+    // until /assistant/status reports enabled (fail closed, like the
+    // dashboard's health check).
     function setupAssistant() {
         const fab = document.getElementById('assistant-fab');
         const panel = document.getElementById('assistant-panel');
+        const headerEl = document.getElementById('assistant-header');
         const closeBtn = document.getElementById('assistant-close');
+        const clearBtn = document.getElementById('assistant-clear');
         const messagesEl = document.getElementById('assistant-messages');
+        const emptyEl = document.getElementById('assistant-empty');
         const form = document.getElementById('assistant-form');
         const input = document.getElementById('assistant-input');
         const sendBtn = document.getElementById('assistant-send');
         const hintEl = document.getElementById('assistant-hint');
-        const dot = document.getElementById('assistant-dot');
+        const modelEl = document.getElementById('assistant-model');
         const preview = document.getElementById('assistant-preview');
         const previewTitle = document.getElementById('assistant-preview-title');
         const previewSteps = document.getElementById('assistant-preview-steps');
@@ -2270,35 +2282,135 @@ document.addEventListener('DOMContentLoaded', () => {
         const cancelBtn = document.getElementById('assistant-cancel');
         if (!fab || !panel) return;   // markup missing -> no-op
 
+        const HISTORY_KEY = 'xarm-assistant-history-v1';
+        const POSITION_KEY = 'xarm-assistant-position-v1';
+        const MAX_STORED_TURNS = 20;   // matches the dashboard bubble
+        const PANEL_W = 460;           // keep in sync with .assistant-panel width
+        const MIN_VISIBLE = 80;        // header must stay grabbable on screen
+        const PLACEHOLDER = 'Tell the robot what to do…';
+
         let enabled = false;
         let busy = false;
-        let pendingPlan = null;       // {steps, interpretation}
-        const history = [];           // light {role, content} context
+        let pendingPlan = null;        // {steps, interpretation}
+        let turns = [];                // durable transcript [{role, text}]
 
         const scrollDown = () => { messagesEl.scrollTop = messagesEl.scrollHeight; };
 
-        function addMsg(text, kind) {
+        // --- Transcript persistence (per tab, like the dashboard) ---
+        function persistTurns() {
+            try {
+                sessionStorage.setItem(
+                    HISTORY_KEY, JSON.stringify(turns.slice(-MAX_STORED_TURNS)));
+            } catch { /* quota / private mode */ }
+        }
+
+        function updateEmpty() {
+            emptyEl.hidden = turns.length > 0;
+            clearBtn.disabled = turns.length === 0;
+        }
+
+        function renderBubble(text, kind) {
             const div = document.createElement('div');
             div.className = 'assistant-msg assistant-msg-' + kind;
             div.textContent = text;
             messagesEl.appendChild(div);
+            return div;
+        }
+
+        function addMsg(text, kind, opts = {}) {
+            const div = renderBubble(text, kind);
+            if (!opts.ephemeral) {
+                turns.push({ role: kind, text });
+                persistTurns();
+                updateEmpty();
+            }
             scrollDown();
             return div;
         }
 
-        function pushHistory(role, content) {
-            if (!content) return;
-            history.push({ role, content });
-            // Keep the tail short — enough for pronouns like "now go home".
-            while (history.length > 6) history.shift();
+        // Recent-context tail for the model — enough for pronouns like
+        // "now go home". Derived from the durable transcript (user turns
+        // stay `user`; everything the widget said maps to `assistant`).
+        function contextHistory() {
+            return turns.slice(-6).map(t => ({
+                role: t.role === 'user' ? 'user' : 'assistant',
+                content: t.text,
+            }));
+        }
+
+        // Restore a prior conversation (survives minimize + reload in-tab).
+        try {
+            const raw = sessionStorage.getItem(HISTORY_KEY);
+            if (raw) {
+                const parsed = JSON.parse(raw);
+                if (Array.isArray(parsed)) {
+                    turns = parsed.filter(t =>
+                        t && typeof t.text === 'string' && typeof t.role === 'string');
+                    turns.forEach(t => renderBubble(t.text, t.role));
+                }
+            }
+        } catch { /* ignore corrupt cache */ }
+        updateEmpty();
+
+        // --- Drag-to-move (position persisted per tab) ---
+        function applyPosition(pos) {
+            const maxX = Math.max(0, window.innerWidth - MIN_VISIBLE);
+            const maxY = Math.max(0, window.innerHeight - 40);
+            const minX = -(PANEL_W - MIN_VISIBLE);
+            const x = Math.max(minX, Math.min(maxX, pos.x));
+            const y = Math.max(0, Math.min(maxY, pos.y));
+            panel.style.left = x + 'px';
+            panel.style.top = y + 'px';
+            panel.style.right = 'auto';
+            panel.style.bottom = 'auto';
+            return { x, y };
+        }
+        try {
+            const raw = sessionStorage.getItem(POSITION_KEY);
+            if (raw) {
+                const pos = JSON.parse(raw);
+                if (typeof pos?.x === 'number' && typeof pos?.y === 'number') {
+                    applyPosition(pos);
+                }
+            }
+        } catch { /* ignore */ }
+        headerEl.addEventListener('pointerdown', (e) => {
+            // Let the Clear / minimize chips handle their own clicks.
+            if (e.target.closest('button')) return;
+            e.preventDefault();
+            const rect = panel.getBoundingClientRect();
+            const start = { px: e.clientX, py: e.clientY, bx: rect.left, by: rect.top };
+            let last = { x: rect.left, y: rect.top };
+            headerEl.classList.add('is-dragging');
+            const onMove = (ev) => {
+                last = applyPosition({
+                    x: start.bx + ev.clientX - start.px,
+                    y: start.by + ev.clientY - start.py,
+                });
+            };
+            const onUp = () => {
+                headerEl.classList.remove('is-dragging');
+                window.removeEventListener('pointermove', onMove);
+                window.removeEventListener('pointerup', onUp);
+                try { sessionStorage.setItem(POSITION_KEY, JSON.stringify(last)); }
+                catch { /* quota */ }
+            };
+            window.addEventListener('pointermove', onMove);
+            window.addEventListener('pointerup', onUp);
+        });
+
+        // --- Controls ---
+        function updateControls() {
+            input.disabled = busy || !enabled;
+            input.placeholder = busy ? 'Working…' : PLACEHOLDER;
+            sendBtn.disabled = busy || !enabled || !input.value.trim();
+            if (confirmBtn) confirmBtn.disabled = busy;
+            if (cancelBtn) cancelBtn.disabled = busy;
         }
 
         function setBusy(state) {
             busy = state;
-            input.disabled = state || !enabled;
-            sendBtn.disabled = state || !enabled;
-            if (confirmBtn) confirmBtn.disabled = state;
-            if (cancelBtn) cancelBtn.disabled = state;
+            updateControls();
         }
 
         function clearPreview() {
@@ -2323,39 +2435,44 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (step.kind === 'gripper') li.className = 'assistant-step-gripper';
                 previewSteps.appendChild(li);
             });
+            // The card lives in the transcript flow like the dashboard's
+            // ProposalCard; re-appending moves it below the latest turn.
+            messagesEl.appendChild(preview);
             preview.hidden = false;
             scrollDown();
         }
 
         async function refreshStatus() {
             const data = await apiRequest('/assistant/status', 'GET', null, true);
-            if (!data) {
-                enabled = false;
-                dot.className = 'assistant-dot is-offline';
-                hintEl.textContent = 'Assistant unavailable.';
-            } else {
-                enabled = !!data.enabled;
-                dot.className = 'assistant-dot ' + (enabled ? 'is-online' : 'is-offline');
-                hintEl.textContent = enabled
-                    ? `Model: ${data.model}`
-                    : (data.reason || 'Assistant disabled.');
+            enabled = !!(data && data.enabled);
+            if (!enabled) {
+                // Fail closed like the dashboard bubble: no backend, no
+                // launcher. The disabled reason stays readable on
+                // GET /assistant/status for whoever is configuring the key.
+                fab.hidden = true;
+                panel.hidden = true;
+                return;
             }
-            input.disabled = !enabled || busy;
-            sendBtn.disabled = !enabled || busy;
-            if (!enabled) input.placeholder = 'Assistant unavailable';
+            fab.hidden = false;
+            if (data.model) {
+                modelEl.textContent = `model: ${data.model} · openrouter`;
+                modelEl.hidden = false;
+            }
+            updateControls();
         }
 
         async function sendMessage(text) {
+            const context = contextHistory();   // tail BEFORE this turn
             addMsg(text, 'user');
-            pushHistory('user', text);
             clearPreview();
+            hintEl.textContent = '';
             setBusy(true);
-            const thinking = addMsg('Thinking…', 'bot');
+            const thinking = addMsg('…', 'bot', { ephemeral: true });
             thinking.classList.add('assistant-thinking');
 
             const data = await apiRequest('/assistant/plan', 'POST', {
                 message: text,
-                history: history.slice(0, -1),   // exclude the just-added turn
+                history: context,
             }, true);
 
             thinking.remove();
@@ -2367,27 +2484,19 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             // Clarification / refusal: the model replied in plain text.
             if (!data.action) {
-                const reply = data.reply || "I couldn't interpret that as a motion command.";
-                addMsg(reply, 'bot');
-                pushHistory('assistant', reply);
+                addMsg(data.reply || "I couldn't interpret that as a motion command.", 'bot');
                 return;
             }
             if (!data.feasible) {
                 const why = data.reason ? ` — ${data.reason}` : '';
-                const msg = `I can't do "${data.interpretation}"${why}.`;
-                addMsg(msg, 'error');
-                pushHistory('assistant', msg);
+                addMsg(`I can't do "${data.interpretation}"${why}.`, 'error');
                 return;
             }
             if (!data.steps || data.steps.length === 0) {
-                const msg = `Already there: ${data.interpretation}.`;
-                addMsg(msg, 'bot');
-                pushHistory('assistant', msg);
+                addMsg(`Already there: ${data.interpretation}.`, 'bot');
                 return;
             }
-            const summary = `${data.interpretation} — ${data.steps.length} step(s). Review and confirm below.`;
-            addMsg(summary, 'bot');
-            pushHistory('assistant', data.interpretation);
+            addMsg(`${data.interpretation} — ${data.steps.length} step(s). Review and authorize below.`, 'bot');
             showPreview(data.interpretation, data.steps);
         }
 
@@ -2409,39 +2518,64 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (!data) {
                 addMsg('The command failed or was refused. See the log; the arm is parked at the last completed step.', 'error');
-                return;   // keep the preview so the operator can retry after fixing
+                return;   // keep the card so the operator can retry after fixing
             }
             clearPreview();
             const where = data.current_node ? ` (now at ${data.current_node})` : '';
-            addMsg(`Done: ${interpretation}${where}.`, 'bot');
+            addMsg(`Done: ${interpretation}${where}.`, 'success');
         }
 
         // --- Wiring ---
+        // The launcher toggles; minimize keeps the conversation (the panel
+        // is hidden, never destroyed — same contract as the dashboard's
+        // minus button).
         function openPanel() {
             panel.hidden = false;
-            fab.hidden = true;
+            fab.classList.add('is-open');
+            fab.title = 'Close the lab assistant';
+            scrollDown();
             if (enabled) input.focus();
         }
         function closePanel() {
             panel.hidden = true;
-            fab.hidden = false;
+            fab.classList.remove('is-open');
+            fab.title = 'Open the lab assistant';
         }
-        fab.addEventListener('click', openPanel);
+        fab.addEventListener('click', () => (panel.hidden ? openPanel() : closePanel()));
         closeBtn.addEventListener('click', closePanel);
         panel.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePanel(); });
 
-        form.addEventListener('submit', (e) => {
-            e.preventDefault();
+        clearBtn.addEventListener('click', () => {
+            if (busy) return;
+            turns = [];
+            persistTurns();
+            messagesEl.querySelectorAll('.assistant-msg').forEach(n => n.remove());
+            clearPreview();
+            hintEl.textContent = '';
+            updateEmpty();
+        });
+
+        function trySend() {
             const text = input.value.trim();
             if (!text || busy || !enabled) return;
             input.value = '';
+            updateControls();
             sendMessage(text);
+        }
+        form.addEventListener('submit', (e) => { e.preventDefault(); trySend(); });
+        // Enter sends, Shift+Enter inserts a newline (dashboard behavior).
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                trySend();
+            }
         });
+        input.addEventListener('input', updateControls);
+
         confirmBtn.addEventListener('click', () => { if (!busy) runPending(); });
         cancelBtn.addEventListener('click', () => {
             if (busy) return;
             clearPreview();
-            addMsg('Cancelled.', 'bot');
         });
 
         refreshStatus();

@@ -347,6 +347,13 @@ code {
     font-weight: 600;
 }
 
+.field-hint {
+    margin: 2px 0 0;
+    font-size: 0.75rem;
+    color: var(--ink-muted);
+    line-height: 1.35;
+}
+
 .form-group select,
 .form-group input {
     padding: 8px 10px;

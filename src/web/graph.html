@@ -88,7 +88,6 @@
                     <p class="muted legend-note">Each station has a <strong>home node</strong> (heavier border, e.g. <code>deck_home</code>) shown with <code>▸ N</code> hidden siblings. Click it to fan the station's nodes out from the home node; click again to collapse back to it. Drag nodes to arrange them; positions, open stations and the view are remembered across reopen. The robot's station auto-expands; manual toggling is locked while a workflow holds control.</p>
                     <div class="legend-actions">
                         <button id="fit-btn" class="btn btn-secondary">Fit view</button>
-                        <button id="reset-layout-btn" class="btn btn-secondary">Reset layout</button>
                     </div>
                 </div>
 
@@ -119,6 +118,7 @@
                     <div class="form-group">
                         <label for="node-tags">Tags (comma-separated, optional)</label>
                         <input type="text" id="node-tags" placeholder="deck, solid">
+                        <p class="field-hint">The first tag is the station this node groups under (e.g. "opentrons"). Leave blank and the node renders as a standalone node instead of joining that station's cluster — the view centers on it after adding either way.</p>
                     </div>
                     <div class="edge-panel-actions">
                         <button id="node-add-btn" class="btn btn-primary">Add node</button>

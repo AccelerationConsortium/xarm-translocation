@@ -447,7 +447,9 @@
     }
 
     // Forget the saved arrangement and lay everything out fresh (re-seed tiles,
-    // re-fan open stations) — the "undo my dragging" escape hatch.
+    // re-fan open stations) — the "undo my dragging" escape hatch. Deliberately
+    // has no button: it is destructive and sat one click away from "Fit view".
+    // Reach it from devtools with __graphViewer.resetLayout().
     function resetLayout() {
         try { window.localStorage.removeItem(LAYOUT_KEY); } catch (e) {}
         savedLayout = {};
@@ -1047,8 +1049,12 @@
             if (home.nonempty()) home.data('count', (home.data('count') || 1) + 1);
             expanded[station] = true;
         }
-        cy.add({ group: 'nodes', data: nd });
+        var added = cy.add({ group: 'nodes', data: nd });
         applyGroupVisibility();
+        // A brand-new node can land far from the viewport (untagged nodes seed
+        // into an anchor grid; tagged ones may fan out off-screen) — center on
+        // it so it's immediately visible and clickable for drawing edges.
+        cy.center(added);
     }
 
     if (nodeAddBtn) nodeAddBtn.addEventListener('click', addNode);
@@ -1353,9 +1359,7 @@
     document.addEventListener('DOMContentLoaded', function () {
         initCollapsibleCards();
         var fitBtn = document.getElementById('fit-btn');
-        var resetBtn = document.getElementById('reset-layout-btn');
         if (fitBtn) fitBtn.addEventListener('click', function () { if (cy) cy.fit(undefined, 30); });
-        if (resetBtn) resetBtn.addEventListener('click', resetLayout);
         initialLoad();
         connectWebSocket();
         setInterval(pollLiveState, 1500);
@@ -1371,6 +1375,7 @@
         getCy: function () { return cy; },
         fetchGraph: fetchGraph,
         applyLiveState: applyLiveState,
+        resetLayout: resetLayout,
         apiBase: API_BASE,
     };
 })();

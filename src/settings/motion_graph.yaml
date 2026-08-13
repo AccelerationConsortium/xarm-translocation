@@ -63,40 +63,44 @@ gripper_states:
 nodes:
   # ── Generic safe poses (rail Home). Pass-through in any gripper state. ──
 - {id: robot_home, arm: robot_home, rail: Home, gripper_states: [empty, grip_120, 
-      reach_90, grip_80, reach_72], tags: [safe, global_home]}
+      reach_90, grip_80], tags: [safe, global_home]}
 # Disconnected (no edges) — commented out during graph cleanup.
 # - {id: robot_home_back, arm: robot_home_back, rail: Home, gripper_states: [empty,
-#     grip_120, reach_90, grip_80, reach_72], tags: [safe]}
+#     grip_120, reach_90, grip_80], tags: [safe]}
 # - {id: robot_home_left, arm: robot_home_left, rail: Home, gripper_states: [empty,
-#     grip_120, reach_90, grip_80, reach_72], tags: [safe]}
+#     grip_120, reach_90, grip_80], tags: [safe]}
 # - {id: robot_home_right, arm: robot_home_right, rail: Home, gripper_states: [
-#       empty, grip_120, reach_90, grip_80, reach_72], tags: [safe]}
+#       empty, grip_120, reach_90, grip_80], tags: [safe]}
 
   # ── Opentrons OT-2 (rail Home). Per-slot pick/place: the low pose is
   #    where grip/release happens; press poses are grip-only. ──
 - {id: opentrons_home, arm: opentrons_home, rail: Home, gripper_states: [empty, 
-      grip_120, reach_90, grip_80, reach_72], tags: [opentrons, transit_home]}
+      grip_120, reach_90, grip_80], tags: [opentrons, transit_home]}
 
 - {id: opentrons_2_high, arm: opentrons_2_high, rail: Home, gripper_states: [
-      empty, grip_120, reach_90, grip_80, reach_72], tags: [opentrons, slot2]}
+      empty, grip_120, reach_90, grip_80], tags: [opentrons, slot2]}
 - {id: opentrons_2_low, arm: opentrons_2_low, rail: Home, gripper_states: [empty,
-    grip_120, reach_90, grip_80, reach_72], gripper_transitions: [[empty, 
-        grip_120], [grip_120, empty]], tags: [opentrons, slot2]}
+    grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120], [
+        grip_120, empty]], tags: [opentrons, slot2]}
 # Disconnected (no edges) — commented out during graph cleanup.
 # - {id: opentrons_2_low_press, arm: opentrons_2_low_press, rail: Home, 
 #     gripper_states: [grip_120], tags: [opentrons, slot2]}
 
-# - {id: opentrons_4_high, arm: opentrons_4_high, rail: Home, gripper_states: [
-#       empty, grip_120, reach_90, grip_80, reach_72], tags: [opentrons, slot4]}
-# - {id: opentrons_4_low, arm: opentrons_4_low, rail: Home, gripper_states: [empty,
-#     grip_120, reach_90, grip_80, reach_72], tags: [opentrons, slot4]}
-# - {id: opentrons_4_low_press, arm: opentrons_4_low_press, rail: Home, 
+- {id: opentrons_4_high, arm: opentrons_4_high, rail: Home, gripper_states: [
+      empty, grip_120, reach_90, grip_80], tags: [opentrons, slot4]}
+- {id: opentrons_4_low, arm: opentrons_4_low, rail: Home, gripper_states: [empty,
+    grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120], [
+        grip_120, empty]], tags: [opentrons, slot4]}
+# Disconnected (no edges) — commented out during graph cleanup.
+# - {id: opentrons_4_low_press, arm: opentrons_4_low_press, rail: Home,
 #     gripper_states: [grip_120], tags: [opentrons, slot4]}
 
-# - {id: opentrons_6_high, arm: opentrons_6_high, rail: Home, gripper_states: [
-#       empty, grip_120, reach_90, grip_80, reach_72], tags: [opentrons, slot6]}
-# - {id: opentrons_6_low, arm: opentrons_6_low, rail: Home, gripper_states: [empty,
-#     grip_120, reach_90, grip_80, reach_72], tags: [opentrons, slot6]}
+- {id: opentrons_6_high, arm: opentrons_6_high, rail: Home, gripper_states: [
+      empty, grip_120, reach_90, grip_80], tags: [opentrons, slot6]}
+- {id: opentrons_6_low, arm: opentrons_6_low, rail: Home, gripper_states: [empty,
+    grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120], [
+        grip_120, empty]], tags: [opentrons, slot6]}
+# Disconnected (no edges) — commented out during graph cleanup.
 # - {id: opentrons_6_low_press, arm: opentrons_6_low_press, rail: Home, 
 #     gripper_states: [grip_120], tags: [opentrons, slot6]}
 
@@ -127,80 +131,79 @@ nodes:
   # ── Deck (rail Deck=550). Transit + pick/place. Pass-through in any
   #    gripper state; grip/release only at the _low pick nodes. ──
 - {id: deck_home, arm: deck_home, rail: Deck, gripper_states: [empty, grip_120, 
-      reach_90, grip_80, reach_72], tags: [deck, transit_home]}
+      reach_90, grip_80], tags: [deck, transit_home]}
 - {id: deck_high, arm: deck_high, rail: Deck, gripper_states: [empty, grip_120, 
-      reach_90, grip_80, reach_72], tags: [deck, transit_home]}
+      reach_90, grip_80], tags: [deck, transit_home]}
 
 - {id: deck_slot1_high, arm: deck_slot1_high, rail: Deck, gripper_states: [empty,
-    grip_120, reach_90, grip_80, reach_72], tags: [deck, slot1]}
+    grip_120, reach_90, grip_80], tags: [deck, slot1]}
 - {id: deck_slot1_low, arm: deck_slot1_low, rail: Deck, gripper_states: [empty, 
-      grip_120, reach_90, grip_80, reach_72], gripper_transitions: [[empty, 
-        grip_120], [grip_120, empty]], tags: [deck, slot1]}
+      grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120], [
+        grip_120, empty]], tags: [deck, slot1]}
 # Disconnected (no edges) — commented out during graph cleanup.
 # - {id: deck_slot1_low_press, arm: deck_slot1_low_press, rail: Deck, 
 #     gripper_states: [grip_120], tags: [deck, slot1]}
 
 - {id: deck_slot2_high, arm: deck_slot2_high, rail: Deck, gripper_states: [empty,
-    grip_120, reach_90, grip_80, reach_72], tags: [deck, slot2]}
+    grip_120, reach_90, grip_80], tags: [deck, slot2]}
 - {id: deck_slot2_low, arm: deck_slot2_low, rail: Deck, gripper_states: [empty, 
-      grip_120, reach_90, grip_80, reach_72], gripper_transitions: [[empty, 
-        grip_120], [grip_120, empty]], tags: [deck, slot2]}
+      grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120], [
+        grip_120, empty]], tags: [deck, slot2]}
 
 - {id: deck_solid_high, arm: deck_solid_high, rail: Deck, gripper_states: [empty,
-    grip_120, reach_90, grip_80, reach_72], tags: [deck, solid]}
+    grip_120, reach_90, grip_80], tags: [deck, solid]}
 - {id: deck_solid_low, arm: deck_solid_low, rail: Deck, gripper_states: [empty, 
-      grip_120, reach_90, grip_80, reach_72], gripper_transitions: [[empty, 
-        grip_120], [grip_120, empty]], tags: [deck, solid]}
+      grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120], [
+        grip_120, empty]], tags: [deck, solid]}
 # Disconnected (no edges) — commented out during graph cleanup.
 # - {id: deck_solid_low_press, arm: deck_solid_low_press, rail: Deck, 
 #     gripper_states: [grip_120], tags: [deck, solid]}
 
   # ── Hood (rail Hood=550). shaker + filtration sub-stations. ──
 - {id: hood_home, arm: hood_home, rail: Hood, gripper_states: [empty, grip_120, 
-      reach_90, grip_80, reach_72], tags: [hood, transit_home]}
+      reach_90, grip_80], tags: [hood, transit_home]}
 
 - {id: hood_shaker_high, arm: hood_shaker_high, rail: Hood, gripper_states: [
-      empty, grip_120, reach_90, grip_80, reach_72], tags: [hood, shaker]}
+      empty, grip_120, reach_90, grip_80], tags: [hood, shaker]}
 - {id: hood_shaker_low, arm: hood_shaker_low, rail: Hood, gripper_states: [empty,
-    grip_120, reach_90, grip_80, reach_72], gripper_transitions: [[empty, 
-        grip_120], [grip_120, empty]], tags: [hood, shaker]}
+    grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120], [
+        grip_120, empty]], tags: [hood, shaker]}
 # Disconnected (no edges) — commented out during graph cleanup.
 # - {id: hood_shaker_low_press, arm: hood_shaker_low_press, rail: Hood, 
 #     gripper_states: [grip_120], tags: [hood, shaker]}
 
 - {id: hood_filter_home, arm: hood_filter_home, rail: Hood, gripper_states: [
-      empty, grip_120, reach_90, grip_80, reach_72], tags: [hood, filter]}
+      empty, grip_120, reach_90, grip_80], tags: [hood, filter]}
 - {id: hood_filter_high, arm: hood_filter_high, rail: Hood, gripper_states: [
-      empty, grip_120, reach_90, grip_80, reach_72], tags: [hood, filter]}
+      empty, grip_120, reach_90, grip_80], tags: [hood, filter]}
 - {id: hood_filter_low, arm: hood_filter_low, rail: Hood, gripper_states: [empty,
-    grip_120, reach_90, grip_80, reach_72], gripper_transitions: [[empty, 
-        grip_120], [grip_120, empty]], tags: [hood, filter]}
+    grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120], [
+        grip_120, empty]], tags: [hood, filter]}
 - {id: hood_filter_top_plate, arm: hood_filter_top_plate, rail: Hood, 
-    gripper_states: [empty, grip_120, reach_90, grip_80, reach_72], 
-    gripper_transitions: [[empty, grip_120], [grip_120, empty]], tags: [hood, 
-      filter]}
+    gripper_states: [empty, grip_120, reach_90, grip_80], gripper_transitions: [[
+      empty, grip_120], [grip_120, empty]], tags: [hood, filter]}
 
   # ── Cytation 5 reader (rail Cytation=700). cytation_high/cytation_low are
   #    manually-taught, hardware-verified joint angles (edges below use
   #    mode: joint, not linear, between them). cytation_home is still an
   #    untuned placeholder — see the TODO on it in joint_config.yaml.
 - {id: cytation_home, arm: cytation_home, rail: Cytation, gripper_states: [empty,
-    grip_120, reach_90, grip_80, reach_72], tags: [cytation, transit_home]}
+    grip_120, reach_90, grip_80], tags: [cytation, transit_home]}
 - {id: cytation_high, arm: cytation_high, rail: Cytation, gripper_states: [empty,
-    grip_120, reach_90, grip_80, reach_72], tags: [cytation, plate]}
+    grip_120, reach_90, grip_80], tags: [cytation, plate]}
 - {id: cytation_low, arm: cytation_low, rail: Cytation, gripper_states: [empty, 
-      grip_120, reach_90, grip_80, reach_72], gripper_transitions: [[empty, grip_80], [
+      grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_80], [
         grip_80, empty]], tags: [cytation, plate]}
 
   # ── PlateLoc sealer (rail Plateloc=700). Poses still being tuned on
   #    hardware (see position_config TODOs). Disconnected (no edges) —
   #    commented out during graph cleanup.
 # - {id: plateloc_home, arm: plateloc_home, rail: Plateloc, gripper_states: [empty,
-#     grip_120, reach_90, grip_80, reach_72], tags: [plateloc, transit_home]}
+#     grip_120, reach_90, grip_80], tags: [plateloc, transit_home]}
 # - {id: plateloc_high, arm: plateloc_high, rail: Plateloc, gripper_states: [empty,
-#     grip_120, reach_90, grip_80, reach_72], tags: [plateloc, plate]}
+#     grip_120, reach_90, grip_80], tags: [plateloc, plate]}
 # - {id: plateloc_low, arm: plateloc_low, rail: Plateloc, gripper_states: [empty, 
-#       grip_120, reach_90, grip_80, reach_72], tags: [plateloc, plate]}
+#       grip_120, reach_90, grip_80], tags: [plateloc, plate]}
 
 # ── Edges: directional arm motions. The gripper never changes on an edge —
 #    grip/release lives on the nodes' gripper_transitions above. Where the
@@ -413,3 +416,27 @@ edges:
 - from: cytation_low
   to: cytation_high
   mode: joint
+- from: opentrons_home
+  to: opentrons_4_high
+  mode: joint
+- from: opentrons_4_high
+  to: opentrons_home
+  mode: joint
+- from: opentrons_4_high
+  to: opentrons_4_low
+  mode: linear
+- from: opentrons_4_low
+  to: opentrons_4_high
+  mode: linear
+- from: opentrons_home
+  to: opentrons_6_high
+  mode: joint
+- from: opentrons_6_high
+  to: opentrons_home
+  mode: joint
+- from: opentrons_6_high
+  to: opentrons_6_low
+  mode: linear
+- from: opentrons_6_low
+  to: opentrons_6_high
+  mode: linear

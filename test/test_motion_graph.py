@@ -165,14 +165,22 @@ def test_real_yaml_pick_nodes_have_transitions():
 
 
 def test_real_yaml_transit_nodes_allow_all_states():
-    """Non-press nodes may be occupied in any catalog state (held pass-through)
-    and still expose no grip/release transitions at transit poses."""
+    """Non-press nodes may be occupied in any (applicable) catalog state
+    (held pass-through) and still expose no grip/release transitions at
+    transit poses. ``reach_72`` is UPLC-only — it clears the UPLC drawer —
+    so only ``uplc``-tagged nodes carry it; every other transit node
+    exposes the remaining four states."""
     graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
-    all_states = {"empty", "grip_120", "reach_90", "grip_80", "reach_72"}
-    for node_id in ("deck_high", "hood_home", "robot_home", "uplc_home"):
+    non_uplc_states = {"empty", "grip_120", "reach_90", "grip_80"}
+    for node_id in ("deck_high", "hood_home", "robot_home"):
         n = graph.node(node_id)
-        assert set(n.gripper_states) == all_states
+        assert set(n.gripper_states) == non_uplc_states
         assert n.gripper_transitions == ()
+
+    uplc_states = {"empty", "grip_120", "reach_90", "grip_80", "reach_72"}
+    uplc_home = graph.node("uplc_home")
+    assert set(uplc_home.gripper_states) == uplc_states
+    assert uplc_home.gripper_transitions == ()
 
 
 def test_real_yaml_reachability_from_home():
@@ -199,6 +207,13 @@ def test_real_yaml_reachability_from_home():
 # -> cytation_low, all reachable) so there is nothing left to allowlist for
 # them. Re-populate this if a new orphan node is intentionally added ahead
 # of its edges.
+#
+# Slot 4 and slot 6 are now wired (opentrons_home <-> opentrons_{4,6}_high <->
+# opentrons_{4,6}_low, both directions) so nothing is left to allowlist.
+# opentrons_4_low_press / opentrons_6_low_press are back to commented-out in
+# motion_graph.yaml — they had no edges, and an id that names no node would
+# fail test_wip_allowlist_entries_are_real_nodes. Re-populate this if a new
+# orphan node is intentionally added ahead of its edges.
 WIP_UNREACHABLE_FROM_HOME = set()
 
 

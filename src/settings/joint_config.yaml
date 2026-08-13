@@ -11,7 +11,7 @@ positions:
   opentrons_2_low: [-2.21, 33.11, -31.79, -1.83, -2.93]              # Gripper close to 120mm to grip from long side
   opentrons_2_low_press: [-2.20, 33.82, -32.07, -2.26, -2.94]        # Press plate down
   opentrons_4_high: [15.02, 22.82, -48.26, 25.01, 14.78]
-  opentrons_4_low: [15.05, 35.6, -51.31, 15.28, 14.63]
+  opentrons_4_low: [15.06, 41.24, -53.53, 11.86, 14.57]
   opentrons_4_low_press: [15.05, 36.03, -51.59, 14.96, 14.49]        # todo get this real position  
   opentrons_6_high: [-18.22, 33.43, -52.03, 17.92, -18.60]
   opentrons_6_low: [-18.20, 41.26, -54.90, 12.96, -18.69]
