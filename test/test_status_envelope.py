@@ -329,6 +329,89 @@ def test_move_targets_listed_while_idle(client_with_controller):
     assert 'move.deck_home' in parsed.allowed_actions
 
 
+def test_gripper_states_listed_while_idle(client_with_controller):
+    """The gripper is actuable through /control/graph/gripper, so §6.2 requires
+    the reachable catalog states to appear in allowed_actions. Without this a
+    claim-holding client (the dashboard assistant included) can see
+    ``details.motion_graph.allowed_gripper_targets`` but has no advertised
+    action to invoke."""
+    controller = _fake_controller(_motion_in_progress=False)
+    controller.reachable_node_ids.return_value = ['deck_home']
+    controller.allowed_gripper_targets.return_value = ['grip_120']
+    controller.graph_mode = MagicMock(value='strict')
+    test_client = client_with_controller(controller)
+
+    parsed = EquipmentStatus(**test_client.get('/status').json())
+    assert parsed.equipment_status == 'ready'
+    assert 'gripper.grip_120' in parsed.allowed_actions
+
+
+def test_advertised_gripper_states_are_exactly_the_whitelist(client_with_controller):
+    """§6.2's real requirement: the two surfaces cannot disagree. Both read the
+    controller's ``allowed_gripper_targets()``, so the advertised set is the
+    endpoint's whitelist with nothing added or dropped."""
+    controller = _fake_controller(_motion_in_progress=False)
+    controller.reachable_node_ids.return_value = []
+    controller.allowed_gripper_targets.return_value = ['empty', 'grip_120']
+    controller.graph_mode = MagicMock(value='strict')
+
+    envelope = build_status(controller)
+    advertised = {a[len('gripper.'):] for a in envelope.allowed_actions
+                  if a.startswith('gripper.')}
+    assert advertised == {'empty', 'grip_120'}
+
+
+def test_gripper_states_withheld_while_a_motion_is_in_flight(client_with_controller):
+    """The stroke is invariant during arm motion — the endpoint requires a
+    parked arm, so the list must not offer a gripper change either."""
+    controller = _fake_controller(_motion_in_progress=True)
+    controller.reachable_node_ids.return_value = ['deck_home']
+    controller.allowed_gripper_targets.return_value = ['grip_120']
+    controller.graph_mode = MagicMock(value='strict')
+
+    envelope = build_status(controller)
+    assert envelope.activity == 'running'
+    assert envelope.allowed_actions == ['stop']
+
+
+def test_gripper_states_withheld_in_advisory_mode(client_with_controller):
+    """ADVISORY/OFF don't constrain gripper transitions, so an advertised
+    whitelist would understate what the endpoint honors — the same reason move
+    targets are STRICT-only."""
+    controller = _fake_controller(_motion_in_progress=False)
+    controller.reachable_node_ids.return_value = ['deck_home']
+    controller.allowed_gripper_targets.return_value = ['grip_120']
+    controller.graph_mode = MagicMock(value='advisory')
+
+    envelope = build_status(controller)
+    assert not [a for a in envelope.allowed_actions if a.startswith('gripper.')]
+
+
+def test_gripper_states_withheld_without_a_gripper(client_with_controller):
+    """A graph can whitelist gripper states on a profile with no gripper
+    attached; don't advertise an action the hardware cannot perform."""
+    controller = _fake_controller(_motion_in_progress=False, gripper_type='none')
+    controller.has_gripper.return_value = False
+    controller.reachable_node_ids.return_value = ['deck_home']
+    controller.allowed_gripper_targets.return_value = ['grip_120']
+    controller.graph_mode = MagicMock(value='strict')
+
+    envelope = build_status(controller)
+    assert not [a for a in envelope.allowed_actions if a.startswith('gripper.')]
+    assert 'move.deck_home' in envelope.allowed_actions
+
+
+def test_gripper_states_withheld_under_real_box_simulation(client_with_controller):
+    """box_sim_guard 412s graph.gripper on a Studio-Sim box, so §6.2 requires
+    it withheld there exactly as move targets are."""
+    controller = _fake_controller(_motion_in_progress=False, is_real_box_simulating=True)
+    controller.allowed_gripper_targets.return_value = ['grip_120']
+    controller.graph_mode = MagicMock(value='strict')
+
+    envelope = build_status(controller)
+    assert envelope.allowed_actions == ['stop']
+
+
 def test_no_controller_envelope_advertises_connect():
     """Both requires_init paths agree: /connect is honored, so list it."""
     envelope = build_status(None)

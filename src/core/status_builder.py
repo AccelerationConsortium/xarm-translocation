@@ -453,12 +453,13 @@ def _build_allowed_actions(
     1. State-driven defaults (connect / clear_errors / stop) based on
        ``equipment_status`` — always present so workflow clients have
        *something* to act on even when the graph isn't enforcing.
-    2. Graph-driven move targets — only when ``graph_mode == STRICT``,
-       since ADVISORY/OFF modes don't actually constrain moves and
-       claiming a list of allowed actions there would be misleading.
-    3. ``activity``: while a motion is in flight, every move target is
-       withheld (spec §2.3 — no second concurrent run). ``stop`` stays, so
-       an abort is always reachable.
+    2. Graph-driven move targets **and** gripper states — only when
+       ``graph_mode == STRICT``, since ADVISORY/OFF modes don't actually
+       constrain either one and claiming a list of allowed actions there
+       would be misleading.
+    3. ``activity``: while a motion is in flight, every move target and
+       gripper state is withheld (spec §2.3 — no second concurrent run).
+       ``stop`` stays, so an abort is always reachable.
     4. (Future) per-skill names once the xArm's skill catalog lands.
 
     Sources 3 and the move endpoints' HTTP 409 are the same rule on two
@@ -466,8 +467,9 @@ def _build_allowed_actions(
     controller's motion state, so a client that sees ``move.<node>`` listed
     and immediately POSTs it cannot be refused for being busy.
 
-    The format ``"move.<node_id>"`` mirrors the dotted convention from
-    other v1.1 devices (e.g. ``"seal.start"``, ``"stage.in"``).
+    The formats ``"move.<node_id>"`` and ``"gripper.<state>"`` mirror the
+    dotted convention from other v1.1 devices (e.g. ``"seal.start"``,
+    ``"stage.in"``).
     """
     actions: list[str] = []
 
@@ -516,6 +518,24 @@ def _build_allowed_actions(
         if graph is not None and graph_mode_value == "strict":
             for node_id in controller.reachable_node_ids():
                 actions.append(f"move.{node_id}")
+
+            # Gripper transitions are whitelisted per (node, current state)
+            # exactly as move targets are, so enumerate them the same way:
+            # one action per reachable catalog state. The list is then
+            # precisely what POST /control/graph/gripper would honor —
+            # §6.2's requirement — because both surfaces read the same
+            # ``allowed_gripper_targets()``, so they cannot drift. A single
+            # ``gripper.set`` action could not express *which* states are
+            # legal here, so a caller reading the list would still have to
+            # guess and eat a 409.
+            #
+            # Every gate above applies unchanged. In particular the
+            # motion-in-flight early return covers the gripper too, and must:
+            # the stroke is invariant during arm motion, which is why the
+            # endpoint itself requires a stationary arm.
+            if controller.has_gripper():
+                for state in controller.allowed_gripper_targets():
+                    actions.append(f"gripper.{state}")
 
     return actions
 

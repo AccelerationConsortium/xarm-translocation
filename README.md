@@ -38,7 +38,7 @@ Only one motion may be in flight. A move arriving while another is running is re
             "message": "A motion is already in flight. Wait for it to finish, or POST /move/stop to abort it."}}
 ```
 
-This is 409 rather than 412 because it is a device-state conflict, not a precondition the caller could have satisfied in advance (spec §6.1). `allowed_actions` mirrors it: while `activity` is `running`, every `move.<node_id>` target is withheld and only `stop` remains, so a client that reads `/status` and immediately POSTs a listed move is never refused for being busy (§6.2).
+This is 409 rather than 412 because it is a device-state conflict, not a precondition the caller could have satisfied in advance (spec §6.1). `allowed_actions` mirrors it: while `activity` is `running`, every `move.<node_id>` target *and* every `gripper.<state>` target is withheld and only `stop` remains, so a client that reads `/status` and immediately POSTs a listed action is never refused for being busy (§6.2). (The gripper is withheld for a different reason than the motion slot below — the stroke is invariant during arm motion, so `set_gripper_state` requires a parked arm.)
 
 Covered: `/move/{position,joints,relative,location,home,plate_linear}`, `/track/move`, `/track/move/location`, `/control/graph/{move_to,travel_to}`, `/assistant/execute`, and both `/force-torque/move-*` endpoints. A composite move holds the slot for its whole duration — a cross-rail graph edge is two sub-moves, a travel is N hops, and an assistant run is a whole step list, none of which release between parts.
 

@@ -7,6 +7,28 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — gripper states in `allowed_actions` (`gripper.<state>`)
+
+- **`/status.allowed_actions` now advertises the gripper.** Each catalog state
+  reachable from the current node and current stroke is listed as
+  `gripper.<state>` (e.g. `gripper.grip_120`), alongside the existing
+  `move.<node_id>` targets. `POST /control/graph/gripper` has always honored
+  these, so the previous list *understated* capability — the direction §6.2
+  forbids, and it left the gripper unreachable for any client that treats
+  `allowed_actions` as the authority (the dashboard's lab assistant does, so it
+  could see `details.motion_graph.allowed_gripper_targets` but had no action to
+  invoke).
+- **Both surfaces read the same `allowed_gripper_targets()`**, so the advertised
+  set is the endpoint's whitelist exactly — nothing added or dropped. Enumerating
+  one action per legal state (rather than a single `gripper.set`) is what makes
+  that mirror possible: the whitelist is per (node, current state), which one
+  action name could not express.
+- **Withheld under every gate the endpoint enforces**: while a motion is in
+  flight (the stroke is invariant during arm motion, so the endpoint requires a
+  parked arm), outside `graph_mode == STRICT` (ADVISORY/OFF don't constrain
+  transitions, so a list would understate what is honored), on a Studio-Sim box
+  (`box_sim_guard` 412s it), and when no gripper is attached.
+
 ### Changed — STATUS_SPEC v1.2 conformance (`activity`)
 
 - **Wire-contract types come from `sdl-lab-contract` v1.2.0** instead of a
