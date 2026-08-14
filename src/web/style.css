@@ -2141,6 +2141,11 @@ input#linear-speed {
     transition: background 0.12s ease;
 }
 .assistant-fab:hover { background: #7e22ce; }   /* purple-700 */
+/* Dashboard parity: focus-visible:ring-2 ring-purple-400 ring-offset-2. */
+.assistant-fab:focus { outline: none; }
+.assistant-fab:focus-visible {
+    box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px #c084fc;
+}
 .assistant-fab-icon {
     width: 20px;                       /* h-5 w-5 */
     height: 20px;
