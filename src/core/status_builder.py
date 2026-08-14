@@ -460,7 +460,13 @@ def _build_allowed_actions(
     3. ``activity``: while a motion is in flight, every move target and
        gripper state is withheld (spec §2.3 — no second concurrent run).
        ``stop`` stays, so an abort is always reachable.
-    4. (Future) per-skill names once the xArm's skill catalog lands.
+    4. Catalog family names (``graph.move_to``, ``graph.gripper``,
+       ``graph.recover_to``, ``graph.mode``, ``graph.record``) — the
+       ``Skill.name`` strings the lab-skills ``robot_arm`` catalog
+       registers, advertised whenever the corresponding endpoint would
+       honor a POST. These are what STATUS_SPEC's ``allowed_actions``
+       contract actually asks for; the per-target names from source 2
+       are this device's finer-grained enumeration on top.
 
     Sources 3 and the move endpoints' HTTP 409 are the same rule on two
     surfaces, and §6.2 requires them never to disagree: both read the
@@ -509,32 +515,72 @@ def _build_allowed_actions(
 
         graph = getattr(controller, "motion_graph", None)
         graph_mode = getattr(controller, "graph_mode", None)
-        # Only advertise graph-derived moves when STRICT is in effect.
-        # ADVISORY/OFF would still allow off-whitelist moves, so the
-        # list would understate capability and mislead SDK callers.
         # Compare on .value to avoid having to import GraphMode here
         # (which would risk a second module load under test conditions).
         graph_mode_value = getattr(graph_mode, "value", graph_mode)
-        if graph is not None and graph_mode_value == "strict":
-            for node_id in controller.reachable_node_ids():
-                actions.append(f"move.{node_id}")
+        if graph is not None:
+            strict = graph_mode_value == "strict"
+            has_gripper = bool(controller.has_gripper())
+            move_targets = list(controller.reachable_node_ids()) if strict else []
+            gripper_targets = (
+                list(controller.allowed_gripper_targets())
+                if strict and has_gripper
+                else []
+            )
 
-            # Gripper transitions are whitelisted per (node, current state)
-            # exactly as move targets are, so enumerate them the same way:
-            # one action per reachable catalog state. The list is then
-            # precisely what POST /control/graph/gripper would honor —
-            # §6.2's requirement — because both surfaces read the same
-            # ``allowed_gripper_targets()``, so they cannot drift. A single
-            # ``gripper.set`` action could not express *which* states are
-            # legal here, so a caller reading the list would still have to
-            # guess and eat a 409.
+            # Source 4: catalog family names. Advertised iff a POST to the
+            # endpoint would not be *state*-refused (§6.2); refusals that
+            # depend on the request's arguments (unknown node, off-whitelist
+            # transition, recovery mismatch) are 409/422s that a flat action
+            # list cannot and need not predict.
             #
-            # Every gate above applies unchanged. In particular the
-            # motion-in-flight early return covers the gripper too, and must:
-            # the stroke is invariant during arm motion, which is why the
-            # endpoint itself requires a stationary arm.
-            if controller.has_gripper():
-                for state in controller.allowed_gripper_targets():
+            # * ``graph.move_to`` / ``graph.gripper`` — in STRICT, only
+            #   while at least one whitelisted target exists (with none,
+            #   every request 409s). In ADVISORY/OFF the endpoints honor
+            #   any target (warn + proceed), so the family name is
+            #   advertised there even though no per-target enumeration is
+            #   possible — closing the understatement that previously left
+            #   these modes advertising nothing at all.
+            # * ``graph.recover_to`` / ``graph.mode`` — honored whenever a
+            #   graph is loaded.
+            # * ``graph.record`` — mirrors the endpoint's own gates: 412
+            #   for any simulator (a simulated move validates no geometry,
+            #   so the edge must not be recorded) and 409 when there is no
+            #   last transition to record.
+            if not strict or move_targets:
+                actions.append("graph.move_to")
+            if has_gripper and (not strict or gripper_targets):
+                actions.append("graph.gripper")
+            actions.append("graph.recover_to")
+            actions.append("graph.mode")
+            if (
+                not getattr(controller, "is_simulated", False)
+                and getattr(controller, "last_transition", None) is not None
+            ):
+                actions.append("graph.record")
+
+            # Source 2: per-target enumeration, STRICT only. ADVISORY/OFF
+            # would still allow off-whitelist moves, so a per-target list
+            # there would understate capability and mislead SDK callers.
+            if strict:
+                for node_id in move_targets:
+                    actions.append(f"move.{node_id}")
+
+                # Gripper transitions are whitelisted per (node, current state)
+                # exactly as move targets are, so enumerate them the same way:
+                # one action per reachable catalog state. The list is then
+                # precisely what POST /control/graph/gripper would honor —
+                # §6.2's requirement — because both surfaces read the same
+                # ``allowed_gripper_targets()``, so they cannot drift. A single
+                # ``gripper.set`` action could not express *which* states are
+                # legal here, so a caller reading the list would still have to
+                # guess and eat a 409.
+                #
+                # Every gate above applies unchanged. In particular the
+                # motion-in-flight early return covers the gripper too, and must:
+                # the stroke is invariant during arm motion, which is why the
+                # endpoint itself requires a stationary arm.
+                for state in gripper_targets:
                     actions.append(f"gripper.{state}")
 
     return actions

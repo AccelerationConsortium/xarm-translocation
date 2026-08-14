@@ -7,6 +7,32 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — catalog skill names in `allowed_actions` (`graph.*`) + `/control/{stop,clear_errors}` aliases
+
+Closes the ROADMAP "skill-name reconciliation" item on the device side.
+
+- **`/status.allowed_actions` now advertises the lab-skills catalog names**
+  (`graph.move_to`, `graph.gripper`, `graph.recover_to`, `graph.mode`,
+  `graph.record`) alongside the existing per-target `move.<node_id>` /
+  `gripper.<state>` enumeration. STATUS_SPEC defines `allowed_actions` as
+  "skill names matching `Skill.name` from the SDK catalog"; because the device
+  advertised only its own per-target spellings, `lab.skills()` computed every
+  `robot_arm` skill unavailable, and the dashboard assistant had to carry a
+  name-bridging resolver. Availability mirrors each endpoint's state gates
+  (§6.2): `graph.move_to`/`graph.gripper` require ≥1 whitelisted target in
+  STRICT (and are advertised unconditionally in ADVISORY/OFF, which honor any
+  target — those modes previously advertised nothing but `stop`);
+  `graph.recover_to`/`graph.mode` require a loaded graph; `graph.record`
+  requires a real (non-simulated) last transition. The motion-in-flight,
+  Studio-Sim-box, error, and requires_init withholdings apply unchanged.
+- **`POST /control/stop` and `POST /control/clear_errors`** now exist as
+  aliases of `/move/stop` and `/clear/errors` (same handlers, same
+  login-only/no-claim safety-floor gating), so the URL a generic STATUS_SPEC
+  client composes from the advertised action names resolves instead of 404ing.
+  The advertised `connect` is deliberately not aliased: the dashboard
+  registry's `do_not_call_connect` forbids generic clients from composing it,
+  and operator paths use the root `/connect`.
+
 ### Added — gripper states in `allowed_actions` (`gripper.<state>`)
 
 - **`/status.allowed_actions` now advertises the gripper.** Each catalog state

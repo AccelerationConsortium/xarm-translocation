@@ -1628,6 +1628,12 @@ async def move_home(background_tasks: BackgroundTasks):
         "timestamp": datetime.now().isoformat()
     }
 
+# /control/stop is the alias STATUS_SPEC clients compose from the advertised
+# "stop" action name (allowed_actions lists it in every reachable state, and a
+# generic client resolves `<action>` to POST /control/<action>). Same handler,
+# same gate — login only, never a claim. /move/stop stays for the /web/ panel
+# and the dashboard's /device/* proxy, which predate the alias.
+@app.post("/control/stop", dependencies=[Depends(require_login)])
 @app.post("/move/stop", dependencies=[Depends(require_login)])
 async def stop_movement(request: Request, background_tasks: BackgroundTasks):
     """Stop all robot motion immediately.
@@ -1661,6 +1667,13 @@ async def stop_movement(request: Request, background_tasks: BackgroundTasks):
     background_tasks.add_task(status_update_task)
     return {"message": "Stop command executed immediately."}
 
+# /control/clear_errors: same aliasing story as /control/stop above — the
+# error-state envelope advertises "clear_errors", so the composed control URL
+# must resolve. (The advertised "connect" is deliberately NOT aliased: the
+# registry's do_not_call_connect forbids generic clients from composing it,
+# and the operator paths — /web/ panel, dashboard /device/* proxy — use the
+# root /connect route.)
+@app.post("/control/clear_errors", dependencies=[Depends(require_login)])
 @app.post("/clear/errors", dependencies=[Depends(require_login)])
 async def clear_errors(background_tasks: BackgroundTasks):
     """Clear all robot errors and warnings"""

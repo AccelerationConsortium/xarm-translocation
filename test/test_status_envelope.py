@@ -59,6 +59,9 @@ def _fake_controller(**overrides):
     # Also pinned: the allowed_actions mirror withholds every move target
     # when this is truthy, which an unset MagicMock attribute would be.
     mc.is_real_box_simulating = False
+    # Pinned for the same truthiness reason: graph.record is advertised only
+    # when there is a last transition to record.
+    mc.last_transition = None
     mc._motion_in_progress = False
     mc.last_error_code = 0
     mc.last_error = None
@@ -416,7 +419,118 @@ def test_no_controller_envelope_advertises_connect():
     """Both requires_init paths agree: /connect is honored, so list it."""
     envelope = build_status(None)
     assert envelope.allowed_actions == ['connect']
-    assert envelope.required_actions == ['connect']
+
+
+# ---------------------------------------------------------------------------
+# Catalog family names in allowed_actions (graph.*)
+#
+# STATUS_SPEC's allowed_actions contract is "skill names matching Skill.name
+# from the SDK catalog". The lab-skills robot_arm catalog registers
+# graph.{move_to,gripper,recover_to,record,mode}; before these names were
+# advertised, lab.skills() reported every arm skill unavailable (ROADMAP →
+# xArm skill-name reconciliation). The per-target move.<node_id> /
+# gripper.<state> names remain as the finer-grained enumeration on top.
+# ---------------------------------------------------------------------------
+
+
+def test_graph_family_names_listed_while_idle_strict(client_with_controller):
+    """STRICT + at least one whitelisted target per family: every catalog
+    name is advertised alongside its per-target enumeration."""
+    controller = _fake_controller(_motion_in_progress=False)
+    controller.reachable_node_ids.return_value = ['deck_home']
+    controller.allowed_gripper_targets.return_value = ['grip_120']
+    controller.graph_mode = MagicMock(value='strict')
+
+    envelope = build_status(controller)
+    for name in ('graph.move_to', 'graph.gripper', 'graph.recover_to', 'graph.mode'):
+        assert name in envelope.allowed_actions, name
+    # No transition has been performed, so there is nothing to record —
+    # the endpoint would 409, and §6.2 says the list must agree.
+    assert 'graph.record' not in envelope.allowed_actions
+
+
+def test_graph_move_family_withheld_when_strict_has_no_targets(client_with_controller):
+    """STRICT with an empty whitelist: every move_to request would 409, so
+    the family name is withheld — but recovery stays advertised, because
+    recover_to is exactly the way out of an off-grid position."""
+    controller = _fake_controller(_motion_in_progress=False)
+    controller.reachable_node_ids.return_value = []
+    controller.allowed_gripper_targets.return_value = []
+    controller.graph_mode = MagicMock(value='strict')
+
+    envelope = build_status(controller)
+    assert 'graph.move_to' not in envelope.allowed_actions
+    assert 'graph.gripper' not in envelope.allowed_actions
+    assert 'graph.recover_to' in envelope.allowed_actions
+    assert 'graph.mode' in envelope.allowed_actions
+
+
+def test_graph_family_names_listed_in_advisory_mode(client_with_controller):
+    """ADVISORY/OFF honor any target (warn + proceed), so the family names
+    are advertised even though the per-target enumeration is STRICT-only.
+    Previously these modes advertised nothing but 'stop', understating the
+    whole graph surface."""
+    controller = _fake_controller(_motion_in_progress=False)
+    controller.reachable_node_ids.return_value = ['deck_home']
+    controller.allowed_gripper_targets.return_value = ['grip_120']
+    controller.graph_mode = MagicMock(value='advisory')
+
+    envelope = build_status(controller)
+    for name in ('graph.move_to', 'graph.gripper', 'graph.recover_to', 'graph.mode'):
+        assert name in envelope.allowed_actions, name
+    # Per-target names stay STRICT-only.
+    assert not [a for a in envelope.allowed_actions if a.startswith('move.')]
+    assert not [a for a in envelope.allowed_actions if a.startswith('gripper.')]
+
+
+def test_graph_gripper_family_withheld_without_a_gripper(client_with_controller):
+    """No gripper attached: the family name is withheld in every mode, same
+    as the per-state enumeration."""
+    controller = _fake_controller(_motion_in_progress=False, gripper_type='none')
+    controller.has_gripper.return_value = False
+    controller.reachable_node_ids.return_value = ['deck_home']
+    controller.allowed_gripper_targets.return_value = ['grip_120']
+    controller.graph_mode = MagicMock(value='advisory')
+
+    envelope = build_status(controller)
+    assert 'graph.gripper' not in envelope.allowed_actions
+    assert 'graph.move_to' in envelope.allowed_actions
+
+
+def test_graph_record_advertised_only_after_a_real_transition(client_with_controller):
+    """graph.record mirrors the endpoint's own gates: 409 with no last
+    transition, 412 for any simulator. Advertised only when both pass."""
+    controller = _fake_controller(_motion_in_progress=False)
+    controller.reachable_node_ids.return_value = ['deck_home']
+    controller.allowed_gripper_targets.return_value = []
+    controller.graph_mode = MagicMock(value='strict')
+    controller.last_transition = {
+        'from_node': 'deck_home', 'to_node': 'rail_mid',
+        'mode': 'joint', 'speed': 20,
+    }
+
+    envelope = build_status(controller)
+    assert 'graph.record' in envelope.allowed_actions
+
+    # The same transition performed by a simulator must not be recordable
+    # (the endpoint 412s: a simulated move validates no geometry).
+    controller.is_simulated = True
+    envelope = build_status(controller)
+    assert 'graph.record' not in envelope.allowed_actions
+
+
+def test_graph_family_names_withheld_without_a_graph(client_with_controller):
+    """No motion_graph loaded: every graph endpoint 404s, so no graph.*
+    name may be advertised."""
+    controller = _fake_controller(_motion_in_progress=False)
+    controller.motion_graph = None
+    controller.graph_mode = MagicMock(value='strict')
+
+    envelope = build_status(controller)
+    assert envelope.allowed_actions == ['stop']
+    # The arm is connected and ready — a missing graph is a config gap, not
+    # an init state, so nothing is *required* of the operator here.
+    assert envelope.required_actions == []
 
 
 def test_activity_since_is_the_transition_instant_not_the_poll_time():

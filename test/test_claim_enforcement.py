@@ -218,6 +218,17 @@ def test_stop_works_with_enforcement_on_and_no_claim(client, mock_controller):
     assert client.post("/clear/errors").status_code == 200
 
 
+def test_control_aliases_route_to_the_same_safety_floor(client, mock_controller):
+    """/control/stop and /control/clear_errors are the URLs a STATUS_SPEC
+    client composes from the advertised action names ("stop",
+    "clear_errors"). They are the same handlers as /move/stop and
+    /clear/errors — same behavior, same claim exemption."""
+    mock_controller.claim_manager.enable_enforcement()
+    mock_controller.claim_manager.acquire(owner="alice", session_id="s1")
+    assert client.post("/control/stop").status_code == 200
+    assert client.post("/control/clear_errors").status_code == 200
+
+
 def test_claim_endpoint_never_blocked_by_enforcement(client, mock_controller):
     """Acquiring a fresh claim must not require a token. (How would
     you get one in the first place otherwise?)"""
