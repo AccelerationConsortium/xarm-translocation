@@ -12,22 +12,23 @@ positions:
   opentrons_2_low_press: [-2.20, 33.82, -32.07, -2.26, -2.94]        # Press plate down
   opentrons_4_high: [15.02, 22.82, -48.26, 25.01, 14.78]
   opentrons_4_low: [15.06, 41.24, -53.53, 11.86, 14.57]
+  opentrons_4_low_top: [15.05, 35.06, -51.13, 15.64, 14.63]
   opentrons_4_low_press: [15.05, 36.03, -51.59, 14.96, 14.49]        # todo get this real position  
   opentrons_6_high: [-18.22, 33.43, -52.03, 17.92, -18.60]
   opentrons_6_low: [-18.20, 41.26, -54.90, 12.96, -18.69]
   opentrons_6_low_press: [-18.20, 41.63, -55.06, 12.75, -18.69]
   
   # The following happens when linear rail is at Home (0 mm)
-  uplc_home: [90.0, -45.0, 0.0, 45.0, 90.0]
+  uplc_home: [200.37, -37.85, -26.7, 64.85, 113.86]
   # The following are for opening/closing the uplc draw, no payload allowed
   uplc_draw_home: [176.5, 8.1, -70.1, 62.1, 90.0]
   uplc_draw_open_max: [174.5, 8.3, -70.4, 62.2, 88]                 # slight further from fully open to avoid collision with the arm
-  uplc_draw_open_min: [144.3, 30.8, -103, 72, 57.8]                 # slight short from fully close to avoid collision with the arm
-  uplc_draw_open_close: [143.4, 32.7, -106.0, 73.1, 56.9]           # You hear a "click" when the door is closed/opened
+  uplc_draw_open_min: [143.32, 29.4, -100.85, 71.28, 56.85]                 # slight short from fully close to avoid collision with the arm
+  uplc_draw_open_close: [142.73, 30.54, -102.61, 71.89, 56.26]           # You hear a "click" when the door is closed/opened
   # The following are for putting in/taking out the uplc plate, no payload allowed
   uplc_plate_home: [90.05, -54.66, -40.29, 94.98, -89.63]
-  uplc_plate_high: [137.34, -3.34, -77.49, 80.08, -40.48]
-  uplc_plate_in: [137.3, -2.11, -63.97, 65.32, -40.59]              # Gripper close to 120mm open to only 125mm
+  uplc_plate_high: [137.57, -5.67, -73.46, 78.39, -40.27]
+  uplc_plate_in: [137.54, -4.33, -61.66, 65.25, -40.36]              # Gripper close to 120mm open to only 125mm
 
   # The following happens when linear rail is at Deck location (550mm)
   deck_home: [90.0, -45.0, 0.0, 45, -90.0]
@@ -58,9 +59,9 @@ positions:
   hood_filter_top_plate: [-28.19, 32.05, -80.86, 48.42, -27.99]     # Position to grip top plate of filteration plate
 
   # The following happens when linear rail is at Cytation location (700mm)
-  cytation_home: [230.29, 7.82, -22.77, 14.66, -40.11]
+  cytation_home: [223.54, -43.36, -12.12, 55.2, -46.34]
   cytation_high: [221.56, 60.51, -66.93, 6.14, -49.1]
   cytation_low:  [221.57, 79.67, -83.47, 3.51, -49.19]
-  plateloc_home: [255.9, -66.14, -19.45, 85.49, -13.88]  # TODO get this real position
-  plateloc_high: [265.01, 9.38, -77.19, 67.78, -4.73]   # TODO get this real position
-  plateloc_low:  [264.99, 11.12, -72.73, 61.58, -4.8]    # TODO get this real position
+  plateloc_home: [223.68, -49.44, -29.29, 78.45, -46.07]
+  plateloc_high: [246.57, 3.28, -68.8, 65.63, -23.18]
+  plateloc_low:  [246.55, 4.9, -65.18, 60.38, -23.25]

@@ -88,6 +88,9 @@ nodes:
 
 - {id: opentrons_4_high, arm: opentrons_4_high, rail: Home, gripper_states: [
       empty, grip_120, reach_90, grip_80], tags: [opentrons, slot4]}
+- {id: opentrons_4_low_top, arm: opentrons_4_low_top, rail: Home, gripper_states: [
+      empty, grip_120, reach_90, grip_80], gripper_transitions: [[empty, 
+        grip_120], [grip_120, empty]], tags: [opentrons, slot4]}
 - {id: opentrons_4_low, arm: opentrons_4_low, rail: Home, gripper_states: [empty,
     grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120], [
         grip_120, empty]], tags: [opentrons, slot4]}
@@ -122,11 +125,11 @@ nodes:
   # plate in/out poses
 - {id: uplc_plate_home, arm: uplc_plate_home, rail: Home, gripper_states: [empty,
     grip_120, reach_90, grip_80, reach_72], tags: [uplc, plate]}
-# Disconnected (no edges) — commented out during graph cleanup.
-# - {id: uplc_plate_high, arm: uplc_plate_high, rail: Home, gripper_states: [empty,
-#     grip_120, reach_90, grip_80, reach_72], tags: [uplc, plate]}
-# - {id: uplc_plate_in, arm: uplc_plate_in, rail: Home, gripper_states: [empty, 
-#       grip_120, reach_90, grip_80, reach_72], tags: [uplc, plate]}
+- {id: uplc_plate_high, arm: uplc_plate_high, rail: Home, gripper_states: [empty,
+    grip_120, reach_90, grip_80, reach_72], tags: [uplc, plate]}
+- {id: uplc_plate_in, arm: uplc_plate_in, rail: Home, gripper_states: [empty, 
+      grip_120, reach_90, grip_80, reach_72], gripper_transitions: [[empty, 
+        grip_120], [grip_120, empty]], tags: [uplc, plate]}
 
   # ── Deck (rail Deck=550). Transit + pick/place. Pass-through in any
   #    gripper state; grip/release only at the _low pick nodes. ──
@@ -195,15 +198,15 @@ nodes:
       grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_80], [
         grip_80, empty]], tags: [cytation, plate]}
 
-  # ── PlateLoc sealer (rail Plateloc=700). Poses still being tuned on
-  #    hardware (see position_config TODOs). Disconnected (no edges) —
-  #    commented out during graph cleanup.
-# - {id: plateloc_home, arm: plateloc_home, rail: Plateloc, gripper_states: [empty,
-#     grip_120, reach_90, grip_80], tags: [plateloc, transit_home]}
-# - {id: plateloc_high, arm: plateloc_high, rail: Plateloc, gripper_states: [empty,
-#     grip_120, reach_90, grip_80], tags: [plateloc, plate]}
-# - {id: plateloc_low, arm: plateloc_low, rail: Plateloc, gripper_states: [empty, 
-#       grip_120, reach_90, grip_80], tags: [plateloc, plate]}
+  # ── PlateLoc sealer (rail Plateloc=700). plateloc_low is where grip/release
+  #    happens, same pattern as the other pick/place stations.
+- {id: plateloc_home, arm: plateloc_home, rail: Plateloc, gripper_states: [empty,
+    grip_120, reach_90, grip_80], tags: [plateloc, transit_home]}
+- {id: plateloc_high, arm: plateloc_high, rail: Plateloc, gripper_states: [empty,
+    grip_120, reach_90, grip_80], tags: [plateloc, plate]}
+- {id: plateloc_low, arm: plateloc_low, rail: Plateloc, gripper_states: [empty, 
+      grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120], [
+        grip_120, empty]], tags: [plateloc, plate]}
 
 # ── Edges: directional arm motions. The gripper never changes on an edge —
 #    grip/release lives on the nodes' gripper_transitions above. Where the
@@ -364,6 +367,18 @@ edges:
 - from: uplc_plate_home
   to: uplc_home
   mode: joint
+- from: uplc_plate_home
+  to: uplc_plate_high
+  mode: joint
+- from: uplc_plate_high
+  to: uplc_plate_home
+  mode: joint
+- from: uplc_plate_high
+  to: uplc_plate_in
+  mode: linear
+- from: uplc_plate_in
+  to: uplc_plate_high
+  mode: linear
 - from: hood_filter_top_plate
   to: hood_filter_high
   mode: linear
@@ -416,12 +431,36 @@ edges:
 - from: cytation_low
   to: cytation_high
   mode: joint
+- from: robot_home
+  to: plateloc_home
+  mode: joint
+- from: plateloc_home
+  to: robot_home
+  mode: joint
+- from: plateloc_home
+  to: plateloc_high
+  mode: joint
+- from: plateloc_high
+  to: plateloc_home
+  mode: joint
+- from: plateloc_high
+  to: plateloc_low
+  mode: linear
+- from: plateloc_low
+  to: plateloc_high
+  mode: linear
 - from: opentrons_home
   to: opentrons_4_high
   mode: joint
 - from: opentrons_4_high
   to: opentrons_home
   mode: joint
+- from: opentrons_4_high
+  to: opentrons_4_low_top
+  mode: linear
+- from: opentrons_4_low_top
+  to: opentrons_4_high
+  mode: linear
 - from: opentrons_4_high
   to: opentrons_4_low
   mode: linear
