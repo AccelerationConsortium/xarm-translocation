@@ -252,6 +252,19 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
             equipment_status = "dry_run"
         message = f"[SIMULATION] {message}"
 
+    # Sash interlock visibility. Deliberately a message prefix rather than a
+    # push to `degraded`: STATUS_SPEC §2.2 scopes degraded to an unhealthy
+    # subsystem *of this device*, and a neighbouring fume hood Pi being
+    # unreachable is not this arm's ill health — under fail-open its
+    # capability is not even reduced, only its supervision. But the dashboard
+    # renders `message` on the tile, so this is the highest-visibility place
+    # to say "the guard is not currently guarding" without misreporting the
+    # envelope. The machine-readable twin is details.interlocks (as
+    # [SIMULATION] pairs with details.simulated).
+    sash_prefix = _sash_status_prefix(controller)
+    if sash_prefix:
+        message = f"{sash_prefix} {message}"
+
     # Components.
     components: dict[str, ComponentStatus] = {
         "arm": ComponentStatus(connected=arm_connected, state=arm_state),
@@ -348,6 +361,14 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     if motion_graph_block is not None:
         details["motion_graph"] = motion_graph_block
 
+    # Cross-device interlock state. Carries the counters that make a fail-open
+    # bypass auditable (moves_allowed_while_blind, watchdog_stops) — without
+    # them the policy is invisible, since the log line does not survive a
+    # restart and the envelope would look identical either way.
+    interlocks_block = _build_sash_interlock_details(controller)
+    if interlocks_block is not None:
+        details["interlocks"] = interlocks_block
+
     # BIO gripper slip/detect register snapshot (plate-transfer
     # verification aid). Absent for non-BIO grippers and before the first
     # gripper move of the session. Populated from cached values only.
@@ -428,6 +449,61 @@ def build_telemetry(controller: XArmController | None) -> dict[str, Any]:
     }
 
 
+def _filter_sash_gated(controller: XArmController, targets) -> list[str]:
+    """Drop node targets the sash interlock would refuse. Never fetches.
+
+    Tolerant of a controller without the attribute (test doubles, an older
+    controller) so status building can never fail on its absence.
+    """
+    helper = getattr(controller, "filter_sash_gated_targets", None)
+    if helper is None:
+        return list(targets)
+    try:
+        filtered = helper(targets)
+    except Exception:  # noqa: BLE001 - /status must never fail on an interlock
+        return list(targets)
+    # Only trust a real sequence of strings. Anything else (a test double, a
+    # half-built interlock) falls back to the unfiltered list rather than
+    # putting a foreign object into the envelope.
+    if isinstance(filtered, (list, tuple)) and all(isinstance(t, str) for t in filtered):
+        return list(filtered)
+    return list(targets)
+
+
+def _build_sash_interlock_details(controller: XArmController) -> dict[str, Any] | None:
+    """The ``details.interlocks`` block, or None when nothing is configured.
+
+    Absent rather than empty for an unconfigured interlock, so /status is
+    unchanged for anyone who has not set one up.
+    """
+    interlock = getattr(controller, "sash_interlock", None)
+    if interlock is None or not getattr(interlock, "configured", False):
+        return None
+    try:
+        snapshot = interlock.snapshot()
+    except Exception:  # noqa: BLE001 - observability must not break /status
+        return None
+    return {"fume_hood_sash": snapshot} if isinstance(snapshot, dict) else None
+
+
+def _sash_status_prefix(controller: XArmController) -> str | None:
+    """A ``[SASH-*]`` message prefix, or None when the sash is parked.
+
+    Validates the type before it reaches ``message``: that field is part of
+    the contract, and a subsystem returning something unexpected must not be
+    able to splice an arbitrary object into it. Same discipline as
+    ``_observe_activity`` type-checking ``activity_since``.
+    """
+    interlock = getattr(controller, "sash_interlock", None)
+    if interlock is None:
+        return None
+    try:
+        prefix = interlock.status_prefix()
+    except Exception:  # noqa: BLE001
+        return None
+    return prefix if isinstance(prefix, str) and prefix.startswith("[") else None
+
+
 def _build_claimed_by(controller: XArmController) -> dict[str, Any] | None:
     """Read the active claim (if any) from the controller's ClaimManager.
 
@@ -472,6 +548,29 @@ def _build_allowed_actions(
     surfaces, and §6.2 requires them never to disagree: both read the
     controller's motion state, so a client that sees ``move.<node>`` listed
     and immediately POSTs it cannot be refused for being busy.
+
+    The same contract governs the fume hood sash interlock, which withholds
+    gated ``move.<node>`` targets via ``reachable_node_ids()`` — one method
+    feeding this list, ``details.motion_graph``, and ``GET /graph`` so they
+    cannot drift. Two properties of that arrangement are worth stating because
+    they look like violations and are not:
+
+    * **It reads a cached sash observation, never a live one.** ``build_status``
+      is contractually side-effect-free and polled every 2-3s, so it must not
+      make an outbound HTTP call. The cache can therefore be a couple of
+      seconds stale, and a client could in principle read this list, have the
+      sash close, and eat a 412. That is not a §6.2 disagreement: §6.2
+      constrains the two surfaces' *rules*, not the world between two HTTP
+      calls, and both surfaces run the identical decision function over the
+      identical reading. It is structurally the same race this file already
+      accepts for ``motion_in_progress`` — another client can take the motion
+      slot between a poll and a POST — and when it does bite, the 412 is the
+      correct answer.
+    * **When the interlock is blind it advertises the gated targets.** That
+      mirrors what the endpoint would do (the configured policy is fail-open),
+      which is the point. Withholding instead would produce "endpoint allows,
+      /status withholds", stalling exactly the well-behaved workflows that
+      consult this list while a client POSTing blindly sailed through.
 
     The formats ``"move.<node_id>"`` and ``"gripper.<state>"`` mirror the
     dotted convention from other v1.1 devices (e.g. ``"seal.start"``,
@@ -660,9 +759,16 @@ def _build_motion_graph_details(controller: XArmController) -> dict[str, Any] | 
         return None
     return {
         "current_node": controller.current_node,
+        # Both target lists are filtered by the sash interlock (a no-op when
+        # it is unconfigured or satisfied). travel_targets needs the same
+        # treatment as reachable_nodes or the panel's Travel dropdown would
+        # still offer hood nodes the endpoint refuses. Neither call fetches.
         "reachable_nodes": controller.reachable_node_ids(),
-        "travel_targets": graph.reachable_set(
-            controller.current_node, controller.current_gripper_state,
+        "travel_targets": _filter_sash_gated(
+            controller,
+            graph.reachable_set(
+                controller.current_node, controller.current_gripper_state,
+            ),
         ),
         "graph_mode": getattr(controller, "graph_mode").value,
         "gripper_stroke": getattr(controller, "last_gripper_position", None),

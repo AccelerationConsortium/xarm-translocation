@@ -29,6 +29,7 @@ try:
     from .claims import ClaimManager
     from .events_exporter import EventsExporter
     from .camera_tracker import CameraTracker
+    from .sash_interlock import SashInterlock, SashInterlockError
 except ImportError:
     from core.motion_graph import (
         DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
@@ -38,6 +39,7 @@ except ImportError:
     from core.claims import ClaimManager
     from core.events_exporter import EventsExporter
     from core.camera_tracker import CameraTracker
+    from core.sash_interlock import SashInterlock, SashInterlockError
 
 
 # Coarse xArm SDK controller-state -> STATUS_SPEC-ish label, used only to
@@ -433,6 +435,37 @@ class XArmController:
         else:
             print("[camera] tracking OFF (see src/settings/camera_tracking.yaml)")
 
+        # Fume hood sash interlock: refuse moves into the hood/Opentrons
+        # region unless the (separate) fume hood device reports its sash
+        # parked, and stop the arm if the sash leaves that position while the
+        # arm is inside. No-op unless src/settings/interlocks.yaml is enabled
+        # with a base_url. Same package-anchored path reasoning as above.
+        interlocks_cfg_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), 'settings', 'interlocks.yaml'
+        )
+        try:
+            self.sash_interlock = SashInterlock.from_config_file(interlocks_cfg_path)
+        except Exception as exc:  # noqa: BLE001 - never break controller boot
+            print(f"[interlock] sash interlock init failed (ignored): {exc}")
+            self.sash_interlock = SashInterlock(None)
+        if self.sash_interlock.configured:
+            # Log the full gated set at startup: the whole guard rests on this
+            # membership being what someone intended, and it is derived from
+            # tags/rails that a graph edit can silently change.
+            print(
+                f"[interlock] sash interlock ON -> {self.sash_interlock.status_url} "
+                f"(required_position={self.sash_interlock.required_position}, "
+                f"fail_open={self.sash_interlock.fail_open})"
+            )
+            zone = self.sash_interlock.zone(self.motion_graph)
+            if zone is not None:
+                print(
+                    f"[interlock] gated nodes ({len(zone.node_ids)}): "
+                    f"{', '.join(sorted(zone.node_ids))}"
+                )
+        else:
+            print("[interlock] sash interlock OFF (see src/settings/interlocks.yaml)")
+
         # State tracking
         self.alive = True
         self._ignore_exit_state = False
@@ -531,6 +564,14 @@ class XArmController:
                     # Reset alive state to True after successful initialization
                     # This ensures minor errors during init don't permanently disable the controller
                     self.alive = True
+
+                    # Start the sash watchdog only once there is a live arm to
+                    # stop. It doubles as the cache warmer, so from here on the
+                    # control path is almost always a cache hit rather than a
+                    # blocking probe. Self-suppresses in simulation.
+                    interlock = getattr(self, "sash_interlock", None)
+                    if interlock is not None:
+                        interlock.start(self)
 
                     # Auto-enable components if requested
                     if self.auto_enable:
@@ -1990,11 +2031,34 @@ class XArmController:
 
     def reachable_node_ids(self) -> list[str]:
         """Outgoing target node ids traversable with the current gripper
-        state (empty if off-grid or the gripper state is off-catalog)."""
+        state (empty if off-grid or the gripper state is off-catalog).
+
+        Also drops anything the sash interlock would currently refuse.
+        STATUS_SPEC §6.2 requires /status.allowed_actions to withhold exactly
+        what the endpoints would refuse, and this one method feeds all three
+        advertising surfaces (allowed_actions, details.motion_graph.
+        reachable_nodes, GET /graph) plus the panel's Drive Arm buttons, which
+        are built from reachable_nodes. The filter never fetches — /status is
+        polled every 2-3s and is contractually side-effect-free — so it reads
+        the cache the interlock's watchdog keeps warm.
+        """
         if self.motion_graph is None:
             return []
-        return self.motion_graph.allowed_targets_for_state(
+        targets = self.motion_graph.allowed_targets_for_state(
             self.current_node, self.current_gripper_state,
+        )
+        return self.filter_sash_gated_targets(targets)
+
+    def filter_sash_gated_targets(self, targets) -> list[str]:
+        """Drop targets the sash interlock would refuse. Never fetches."""
+        interlock = getattr(self, "sash_interlock", None)
+        if interlock is None:
+            return list(targets)
+        return interlock.filter_targets(
+            targets,
+            zone=interlock.zone(self.motion_graph),
+            current_node=self.current_node,
+            current_rail=self.last_rail_location_name,
         )
 
     def allowed_gripper_targets(self) -> list[str]:
@@ -2248,6 +2312,18 @@ class XArmController:
                     f"failed"
                 )
                 return False
+            # Re-check the sash before the rail translation. This is the
+            # highest-value extra check in the interlock: the arm sub-move
+            # above took seconds, and it is the *rail* move that actually
+            # carries the arm into the hood, so the reading taken before the
+            # edge began can be badly stale by now. Aborting here leaves the
+            # intermediate (arm, rail) state — a non-node by design — so
+            # recovery needs POST /control/graph/recover_to with force=true;
+            # a recoverable off-grid pin beats a collision with the glass.
+            if getattr(self, "sash_interlock", None) is not None and (
+                self.sash_interlock.recheck_before_rail
+            ):
+                self._gate_sash(node_id, node.arm, action="graph.move_to.rail")
             # Rail second: no speed passed so the track uses its configured
             # default (edge.speed is an arm speed, not a rail speed).
             if not self.move_track_to_named_location(node.rail):
@@ -2310,6 +2386,21 @@ class XArmController:
         path = self.motion_graph.plan_path(
             current, node_id, self.current_gripper_state,
         )  # raises UnknownNodeError / NoPathError
+
+        # Sash pre-flight: if any hop enters the gated region, refuse the whole
+        # journey now rather than discovering it three hops in and leaving the
+        # arm parked somewhere mid-route. Each hop is still re-checked as it
+        # executes (that is the backstop for a sash that closes mid-journey);
+        # this only makes a doomed journey fail before it moves at all.
+        interlock = getattr(self, "sash_interlock", None)
+        if interlock is not None and interlock.configured:
+            zone = interlock.zone(self.motion_graph)
+            gated_hop = next(
+                (hop for hop in path if zone is not None and zone.contains_node(hop)),
+                None,
+            )
+            if gated_hop is not None:
+                self._gate_sash(gated_hop, gated_hop, action="graph.travel_to")
 
         completed: list[str] = []
         for hop in path:
@@ -2450,6 +2541,41 @@ class XArmController:
         )
         return node.id if node else None
 
+    def _node_id_for_pose(self, pose_name: Optional[str]) -> Optional[str]:
+        """The node at (pose_name, current rail), or None if there isn't one."""
+        if self.motion_graph is None or not pose_name:
+            return None
+        node = self.motion_graph.find_node(pose_name, self.last_rail_location_name)
+        return node.id if node is not None else None
+
+    def _gate_sash(
+        self,
+        target_node_id: Optional[str],
+        target_label: Optional[str],
+        *,
+        action: str,
+        allow_fetch: bool = True,
+    ) -> None:
+        """Raise SashInterlockError if the sash forbids this motion.
+
+        ``target_label`` carries the arm-pose name, which matters in
+        OFF/ADVISORY: a named move issued while the rail is elsewhere resolves
+        ``target_node_id`` to None, and without the pose fallback there would be
+        nothing to gate on. Inert when the interlock is unconfigured.
+        """
+        interlock = getattr(self, "sash_interlock", None)
+        if interlock is None or not interlock.configured:
+            return
+        interlock.gate_move(
+            action=action,
+            target_node=target_node_id,
+            target_pose=target_label,
+            current_node=self.current_node,
+            current_rail=self.last_rail_location_name,
+            zone=interlock.zone(self.motion_graph),
+            allow_fetch=allow_fetch,
+        )
+
     def _consult_graph_for_move(
         self, target_node_id: Optional[str], target_label: str,
     ) -> Optional[Edge]:
@@ -2459,14 +2585,29 @@ class XArmController:
         raises EdgeNotAllowedError on any failure (target unknown,
         current off-grid, or no whitelisted edge). In ADVISORY mode logs
         a warning and returns None. In OFF mode returns None silently.
+
+        Independently of graph mode, this also raises SashInterlockError
+        when the fume hood sash interlock refuses the move — see the
+        ordering note below.
         """
-        if self.motion_graph is None or self.graph_mode == GraphMode.OFF:
+        if self.motion_graph is None:
             return None
 
         # Cross-rail sub-moves: the edge was already validated once at the
         # move_to_node level. The intermediate (arm, rail) state is a
         # non-node by design, so skip the per-axis check here.
         if self._suppress_graph_consult:
+            return None
+
+        # Sash interlock, checked BEFORE the graph-mode gate below and
+        # therefore in OFF/ADVISORY too. graph_mode is a *policy* switch —
+        # the documented escape hatch for calibration and recovery — whereas
+        # this is physics: the sash either can hit the arm or it cannot. If
+        # POST /control/graph/mode {off} could disable it, the guard would
+        # only be as strong as the least careful operator holding a claim.
+        self._gate_sash(target_node_id, target_node_id, action="graph.move_to")
+
+        if self.graph_mode == GraphMode.OFF:
             return None
 
         current_id = self.current_node
@@ -2596,6 +2737,11 @@ class XArmController:
         print("Disconnecting Robot Arm...")
         self._emit_event("shutdown", message="Controller disconnecting")
         self._emit_state_transition("requires_init", message="Controller disconnected")
+        # Stop the sash watchdog before the arm goes away: with no arm there is
+        # nothing to stop, and it would keep polling the fume hood Pi forever.
+        interlock = getattr(self, "sash_interlock", None)
+        if interlock is not None:
+            interlock.close()
         self.alive = False
         self.states['connection'] = ComponentState.DISABLED
         self.states['arm'] = ComponentState.DISABLED
@@ -3149,7 +3295,21 @@ class XArmController:
         if target_location not in positions:
             print(f"Error: Target location '{target_location}' not found")
             return False
-            
+
+        # Sash interlock. This method deliberately never consults the motion
+        # graph — it resolves a joint_config pose name straight to cartesian
+        # and pins the pose afterwards — so the chokepoint in
+        # _consult_graph_for_move cannot see it. That matters here more than
+        # anywhere: this is the motion used to descend into the hood
+        # (hood_shaker_low, hood_filter_low; see examples/demo_workflow.py),
+        # and the panel POSTs it directly. Gate on the pose name, which is all
+        # we have.
+        self._gate_sash(
+            self._node_id_for_pose(target_location),
+            target_location,
+            action="move.plate_linear",
+        )
+
         # Get current position as starting point
         start_cartesian = self.get_current_position()
         if not start_cartesian:

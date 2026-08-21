@@ -44,6 +44,39 @@ Covered: `/move/{position,joints,relative,location,home,plate_linear}`, `/track/
 
 Not covered, deliberately: `/move/stop` and `/clear/errors` (the safety floor must always be reachable), `/control/graph/recover_to` (a bookkeeping re-pin, not a motion), and the gripper endpoints (`set_gripper_state` already refuses while the arm is moving, and gripper actuation is not primary operation).
 
+### Fume hood sash interlock (cross-device precondition)
+
+The arm reaches into the fume hood (7 `hood`-tagged graph nodes) and over the Opentrons deck (8 `opentrons`-tagged nodes). The sash that closes over that space belongs to a **different device** — `fume_hood_actuator` — so this service reads that device's `/status` and refuses motion the sash could collide with. Configuration and the full rationale live in `src/settings/interlocks.yaml`; the implementation is `src/core/sash_interlock.py`.
+
+Two behaviours, and the second is why this is more than a precondition check:
+
+1. **Entry is refused** unless the sash reports its required preset. A move whose target is a gated node returns **HTTP 412** (spec §6.1 — the request is well-formed and this arm is healthy; an *external* precondition is unmet):
+
+```json
+{"detail": {"error": "interlock_not_satisfied", "interlock": "fume_hood_sash",
+            "action": "graph.move_to", "required": "sash_position=5", "observed": 3,
+            "state": "blocked", "retry_after_s": null,
+            "hint": "Move the sash to preset 5 (POST /control/sash/move on fume_hood_actuator), then retry. Or POST /control/interlocks/sash/override.",
+            "message": "'graph.move_to' to 'hood_shaker_low' is refused: fume hood sash is at position 3, required 5"}}
+```
+
+2. **The arm is stopped** if the sash leaves that preset while the arm is already inside the region — a watchdog thread calls the same `stop_motion()` that backs `/control/stop`. After that, **all** motion is refused, egress included: there is deliberately no automatic retreat, because a blind retreat could drag the arm through a descending sash, and the interlock cannot see where the sash is along that path.
+
+`retry_after_s` is `null` because recovery is operator-driven. `allowed_actions` mirrors the refusal (§6.2): gated `move.<node_id>` targets are withheld while the sash is not parked, and *every* target is withheld while the arm is stuck inside. A claim conflict still surfaces first — 423 ahead of the 412.
+
+**The override is the only way out**, so it is a first-class control rather than a debug flag: `POST /control/interlocks/sash/override {reason, ttl_seconds}` (claim- and login-gated, capped, re-issuable, audited), surfaced as a button in the `/web/` banner. `GET /interlocks/sash` (+`?refresh=true`) reads the current state without commanding a move, and answers before `/connect`.
+
+**It fails open.** If the fume hood device cannot be reached, moves are *allowed* with a loud warning — a deliberate choice not to halt arm work on another device's uptime. Because that means the guard protects nothing during an outage, every bypass is logged at WARNING, counted in `details.interlocks.fume_hood_sash.moves_allowed_while_blind`, emitted as an `interlock_bypass` event, and shown as an amber `SASH INTERLOCK BLIND` banner with a `[SASH-BLIND]` prefix on `message`. Two carve-outs keep faith with that choice while closing what it did *not* cover: a device never reached since startup is **misconfiguration, not an outage**, and fails closed; so does one that answers with an unparseable body.
+
+`equipment_status` deliberately does **not** go `degraded` when the interlock is blind: §2.2 scopes `degraded` to an unhealthy subsystem *of this device*, and a neighbouring Pi being unreachable is not this arm's ill health — under fail-open its capability is not reduced, only its supervision. `details.interlocks` plus the message prefix carry that instead.
+
+Two limits worth knowing:
+
+- **Freehand moves cannot be gated on entry.** `/move/{position,joints,relative}`, `/velocity/cartesian` and raw `/track/move` carry no node id, so there is no way to know where they end. They *are* refused while the arm is inside the region, and in STRICT mode `strict_graph_guard` already refuses them outright. Velocity streaming continues after its request returns, so a pre-flight check there is only a snapshot — the watchdog is the backstop.
+- **Gripper actions are not gated**, on purpose. The hazard is the arm envelope against the sash glass; a jaw stroke does not extend that envelope. Gating them would add a way to trap a plate for no safety gain, and setting a plate down is the one useful thing left to an arm that cannot move.
+
+> **Unverified assumption, and the reason the check is composite.** It is not yet confirmed whether the fume hood device's `metrics.sash_position` is a true readback or the last *commanded* preset. If it is the latter, `position == 5` alone would mean "someone last asked for 5" — satisfied even with the sash pulled down by hand. So "satisfied" additionally requires `components.sash.state`, `components.sash.connected`, `components.actuator.state == "idle"` (a last-commanded metric reports the *target* for the whole trip, so an idle actuator is what rules out a sash in motion) and the device's own `equipment_status == "ready"`. Settle it at the bench — command the sash to 5, move it by hand, re-read `/status` — before treating this as a hard collision guard.
+
 ### Simulation self-identification
 
 When the service is connected via the `docker` profile (the UFACTORY Docker simulator), it says so on every surface: healthy states report `equipment_status: "dry_run"` instead of `ready`/`busy` (with `activity` still observed — `dry_run` permits any activity per spec §2.3), every message carries a `[SIMULATION]` prefix, `details.simulated: true` is set, and the web panel shows a persistent amber banner. Fault states keep their honest values so recovery paths can be exercised against the sim. The events exporter is suppressed while simulated, so sim sessions never write into the lab's history DB as the real device. Deliberate consequence: anything gating on `equipment_status == "ready"` will not run against a simulator by accident.

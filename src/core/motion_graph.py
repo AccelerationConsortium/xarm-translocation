@@ -148,6 +148,22 @@ class ControllerView:
 
 
 # Precondition guards — registered by name; YAML references them by name.
+#
+# NOTE: this registry is validated at load time (an edge naming an
+# unregistered precondition fails _validate_topology) but is **never
+# invoked** — no call site anywhere evaluates a PreconditionFn, and no edge
+# in motion_graph.yaml declares one. Do not assume a `preconditions:` entry
+# does anything today.
+#
+# The fume hood sash gate deliberately does NOT use this hook, for three
+# reasons worth recording before someone wires the next interlock here:
+# a bare `bool` return cannot carry the observed value, the
+# blind/blocked/malformed distinction, or a hint, so an HTTP 412 body built
+# from it degrades to "precondition not met"; ControllerView has no slot for
+# another device's state, and giving it one inverts its network-free-for-
+# testing intent; and preconditions are *edge*-scoped, so covering a region
+# means hand-annotating every edge into it in both directions and redoing
+# that judgment whenever a node is added. See core/sash_interlock.py.
 PreconditionFn = Callable[["MotionGraph", Edge, ControllerView], bool]
 
 
@@ -504,6 +520,26 @@ class MotionGraph:
 
     def has_node(self, node_id: str) -> bool:
         return node_id in self._nodes
+
+    def has_tag(self, node_id: str | None, tag: str) -> bool:
+        """True when node_id exists and carries tag. False for None/unknown.
+
+        Tolerant of a missing node on purpose: callers asking "is this target
+        in the hood?" about an unresolved target want False, not an exception.
+        """
+        if not node_id:
+            return False
+        node = self._nodes.get(node_id)
+        return node is not None and tag in node.tags
+
+    def nodes_with_tag(self, *tags: str) -> list[str]:
+        """Node ids carrying any of tags, in declaration order.
+
+        Tag values are not validated at load (any string is accepted), so an
+        unknown tag simply yields an empty list.
+        """
+        wanted = set(tags)
+        return [n.id for n in self._nodes.values() if wanted & set(n.tags)]
 
     def find_node(self, arm: str | None, rail: str | None) -> Node | None:
         """Resolve (arm pose name, rail location name) to a node, or None.

@@ -2643,3 +2643,104 @@ input#linear-speed {
         #451a03;                             /* amber-950 field */
     border-bottom-color: #92400e;            /* amber-700 */
 }
+
+/* Fume hood sash interlock banner.
+   Same shape as .sim-banner (full-bleed strip above .container, hazard stripe
+   + solid field) so the two read as one family of "the session is not normal"
+   notices. Three tones, because the operator responses differ:
+     blocked  - red: the arm is being held back; go open the sash (or override)
+     blind    - amber: the guard cannot see the sash, so hood moves are running
+                UNGUARDED. This is the fail-open policy's only visible symptom,
+                which is why it gets a banner and not just a details field.
+     override - blue: enforcement is deliberately suspended, and time-boxed. */
+.sash-banner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: calc(0.5rem + 4px) 1rem 0.5rem;
+    text-align: center;
+    font-size: 0.95rem;
+}
+
+.sash-banner strong {
+    font-weight: 800;
+    letter-spacing: 0.05em;
+}
+
+.sash-banner__btn {
+    padding: 0.2rem 0.7rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: inherit;
+    background: rgba(255, 255, 255, 0.65);
+    border: 1px solid currentColor;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.sash-banner__btn:hover {
+    background: rgba(255, 255, 255, 0.9);
+}
+
+.sash-banner--blocked {
+    color: #7f1d1d;                          /* red-900 */
+    background:
+        repeating-linear-gradient(-45deg, #f87171 0 10px, #7f1d1d 10px 20px)
+            top / 100% 4px no-repeat,
+        #fee2e2;                             /* red-100 field */
+    border-bottom: 1px solid #ef4444;        /* red-500 */
+}
+
+.sash-banner--blind {
+    color: #78350f;                          /* amber-900 */
+    background:
+        repeating-linear-gradient(-45deg, #fbbf24 0 10px, #78350f 10px 20px)
+            top / 100% 4px no-repeat,
+        #fef3c7;                             /* amber-100 field */
+    border-bottom: 1px solid #f59e0b;        /* amber-500 */
+}
+
+.sash-banner--override {
+    color: #1e3a8a;                          /* blue-900 */
+    background:
+        repeating-linear-gradient(-45deg, #60a5fa 0 10px, #1e3a8a 10px 20px)
+            top / 100% 4px no-repeat,
+        #dbeafe;                             /* blue-100 field */
+    border-bottom: 1px solid #3b82f6;        /* blue-500 */
+}
+
+:root.dark .sash-banner__btn {
+    background: rgba(0, 0, 0, 0.35);
+}
+
+:root.dark .sash-banner__btn:hover {
+    background: rgba(0, 0, 0, 0.55);
+}
+
+:root.dark .sash-banner--blocked {
+    color: #fecaca;                          /* red-200 */
+    background:
+        repeating-linear-gradient(-45deg, #ef4444 0 10px, #450a0a 10px 20px)
+            top / 100% 4px no-repeat,
+        #450a0a;                             /* red-950 field */
+    border-bottom-color: #991b1b;            /* red-800 */
+}
+
+:root.dark .sash-banner--blind {
+    color: #fde68a;                          /* amber-200 */
+    background:
+        repeating-linear-gradient(-45deg, #f59e0b 0 10px, #451a03 10px 20px)
+            top / 100% 4px no-repeat,
+        #451a03;                             /* amber-950 field */
+    border-bottom-color: #92400e;            /* amber-700 */
+}
+
+:root.dark .sash-banner--override {
+    color: #bfdbfe;                          /* blue-200 */
+    background:
+        repeating-linear-gradient(-45deg, #3b82f6 0 10px, #172554 10px 20px)
+            top / 100% 4px no-repeat,
+        #172554;                             /* blue-950 field */
+    border-bottom-color: #1d4ed8;            /* blue-700 */
+}

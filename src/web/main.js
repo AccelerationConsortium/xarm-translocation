@@ -162,6 +162,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 let errorMessage = detailMessage || errorData.error
                     || `HTTP error! status: ${response.status}`;
+                if (response.status === 412
+                        && rawDetail?.error === 'interlock_not_satisfied') {
+                    // Compose message + hint: the message says what is wrong
+                    // ("sash is at position 3, required 5") and the hint says
+                    // what to do about it, including the override. The generic
+                    // picker above would surface only one of the two.
+                    errorMessage = [rawDetail.message, rawDetail.hint]
+                        .filter(Boolean).join(' ');
+                }
                 if (response.status === 423) {
                     const heldBy = errorData?.detail?.claimed_by?.owner;
                     errorMessage = heldBy
@@ -390,7 +399,92 @@ document.addEventListener('DOMContentLoaded', () => {
             motion_graph: details.motion_graph || null,
             manual_mode: details.manual_mode === true,
             claimed_by: details.claimed_by || null,
+            sash_interlock: (details.interlocks || {}).fume_hood_sash || null,
         };
+    }
+
+    // Fume hood sash interlock banner + override control.
+    //
+    // The override button is not a convenience: because the interlock refuses
+    // ALL motion while the arm is inside the hood/Opentrons region (there is
+    // no automatic retreat, by design), this is the only way to walk a stuck
+    // arm out. If it were API-only, an operator staring at a stopped arm and
+    // greyed-out buttons would reach for the graph-mode switch instead, which
+    // disables the guard entirely and silently.
+    function renderSashBanner(interlock) {
+        const banner = document.getElementById('sash-banner');
+        if (!banner) return;
+
+        const state = interlock && interlock.configured ? interlock.state : null;
+        if (!state || state === 'satisfied' || state === 'disabled') {
+            banner.hidden = true;
+            return;
+        }
+
+        const required = interlock.required_position;
+        const observed = interlock.observed_position;
+        let text;
+        let tone;
+        if (state === 'blocked') {
+            tone = 'sash-banner--blocked';
+            text = observed === null || observed === undefined
+                ? `FUME HOOD SASH not at position ${required} — hood/Opentrons moves blocked`
+                : `FUME HOOD SASH AT ${observed} (needs ${required}) — hood/Opentrons moves blocked`;
+        } else if (state === 'overridden') {
+            tone = 'sash-banner--override';
+            const left = interlock.override && interlock.override.expires_in_s;
+            text = `SASH INTERLOCK OVERRIDDEN${left ? ` — ${Math.round(left)}s left` : ''}`
+                + ` — ${(interlock.override && interlock.override.reason) || ''}`;
+        } else {
+            // blind / malformed: the guard cannot see the sash.
+            tone = 'sash-banner--blind';
+            text = 'SASH INTERLOCK BLIND — hood/Opentrons moves are running UNGUARDED'
+                + ` (${interlock.message || 'fume hood device unreachable'})`;
+        }
+
+        banner.className = `sash-banner ${tone}`;
+        banner.hidden = false;
+        const label = document.getElementById('sash-banner-text');
+        if (label) label.textContent = text;
+
+        // Offer the way out exactly when the interlock is holding the arm.
+        const overrideBtn = document.getElementById('sash-override-btn');
+        if (overrideBtn) overrideBtn.hidden = state !== 'blocked';
+        const clearBtn = document.getElementById('sash-override-clear-btn');
+        if (clearBtn) clearBtn.hidden = state !== 'overridden';
+    }
+
+    async function requestSashOverride() {
+        const reason = window.prompt(
+            'Why is the sash interlock being overridden?\n\n'
+            + 'This is recorded in the lab history with your identity. Typical '
+            + 'reason: walking the arm out of the hood after the sash closed.'
+        );
+        if (!reason || !reason.trim()) return;      // cancelled: leave the gate on
+        try {
+            const result = await apiRequest(
+                '/control/interlocks/sash/override', 'POST',
+                { reason: reason.trim() },
+            );
+            addLogEntry(
+                `Sash interlock overridden for ${Math.round(result.granted_seconds)}s: `
+                + `${reason.trim()}`,
+                'warning',
+            );
+        } catch (error) {
+            addLogEntry(`Override failed: ${error.message}`, 'error');
+        }
+        fetchAndUpdateStatus();
+    }
+
+    async function clearSashOverride() {
+        try {
+            await apiRequest('/control/interlocks/sash/override/clear', 'POST');
+            addLogEntry('Sash interlock override cleared', 'info');
+        } catch (error) {
+            addLogEntry(`Clearing override failed: ${error.message}`, 'error');
+        }
+        fetchAndUpdateStatus();
     }
 
     async function fetchAndUpdateStatus() {
@@ -449,6 +543,14 @@ document.addEventListener('DOMContentLoaded', () => {
             // which). Off otherwise, including when disconnected.
             const simBanner = document.getElementById('sim-banner');
             if (simBanner) simBanner.hidden = data.simulated !== true;
+
+            // Fume hood sash interlock. Two distinct banners, because the two
+            // states call for opposite operator responses: BLOCKED means the
+            // arm is being held back (go open the sash), while BLIND means the
+            // guard is NOT guarding and hood moves are running unchecked --
+            // the fail-open policy's one visible symptom, and the reason this
+            // banner exists at all.
+            renderSashBanner(data.sash_interlock);
 
             // 3D-view card shows for BOTH connection targets: the iframe
             // points at the simulator's Studio or the real arm's Studio
@@ -2069,6 +2171,17 @@ document.addEventListener('DOMContentLoaded', () => {
     clearErrorsBtn.addEventListener('click', () => {
         apiRequest('/clear/errors', 'POST');
     });
+
+    // Sash interlock banner controls. Wired unconditionally (the buttons live
+    // in a hidden banner and renderSashBanner decides when each is shown).
+    const sashOverrideBtn = document.getElementById('sash-override-btn');
+    if (sashOverrideBtn) {
+        sashOverrideBtn.addEventListener('click', requestSashOverride);
+    }
+    const sashOverrideClearBtn = document.getElementById('sash-override-clear-btn');
+    if (sashOverrideClearBtn) {
+        sashOverrideClearBtn.addEventListener('click', clearSashOverride);
+    }
 
     if (manualModeCheckbox) {
         manualModeCheckbox.addEventListener('change', () => {

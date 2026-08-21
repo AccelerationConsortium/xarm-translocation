@@ -1,0 +1,136 @@
+# Cross-device interlocks — refuse arm motion that another device says is unsafe.
+#
+# Today there is exactly one: the fume hood sash. The arm reaches into the fume
+# hood (`hood`-tagged motion-graph nodes) and over the Opentrons deck
+# (`opentrons`-tagged nodes), and the sash that closes over that space belongs to
+# a different device — `fume_hood_actuator`, a Pi serving STATUS_SPEC v1.1. This
+# file is where that device's address and the policy for reading it live.
+#
+# The interlock does two things (see src/core/sash_interlock.py):
+#   1. refuses a move into the gated region unless the sash reports
+#      `required_position`;
+#   2. stops the arm if the sash leaves that position while the arm is already
+#      inside — after which ALL motion is refused until an operator overrides
+#      (there is deliberately no automatic retreat).
+#
+# NOTE the file name is plural. A second interlock gets its own block here
+# rather than its own file.
+
+# Master switch. When false (or this file is missing) every interlock below is
+# an inert no-op and the arm behaves exactly as it did before they existed.
+enabled: true
+
+fume_hood_sash:
+  # The fume hood device, per ac-organic-lab/equipment.yaml (`fume_hood_actuator`).
+  # Override at runtime with XARM_SASH_STATUS_URL (handy for pointing a dev box
+  # at a stub). We read /status only, and deliberately do NOT claim the device:
+  # reads need no claim, and holding one would lock the operator out of moving
+  # the sash — the exact action needed to clear a refusal.
+  base_url: "http://100.64.254.100:5000"
+  status_path: "/status"
+
+  # The sash preset the arm requires. ASSUMPTION: preset 5 is the fully-open,
+  # parked position. If the presets are ever retuned this number must be
+  # revisited — nothing will error, the guard will just be checking the wrong
+  # thing. It is logged at startup and echoed in every refusal for that reason.
+  #
+  # OPEN QUESTION, worth settling at the bench: we do not yet know whether the
+  # device's `metrics.sash_position` is a true readback or the last *commanded*
+  # preset. If it is the latter this interlock is closer to a command audit than
+  # a collision guard. Command the sash to 5, move it by hand, and re-read
+  # /status: if the number changes, it is a real readback. The composite
+  # predicate in sash_interlock.py (which also requires the actuator to be
+  # `idle`) is what keeps the check honest until that is answered.
+  required_position: 5
+
+  # --- Timing -------------------------------------------------------------
+  # This is the only blocking outbound HTTP call on a motion path in this repo,
+  # so these numbers decide how much latency a move can inherit from another
+  # device's health.
+
+  # ~100x the expected response over a sub-10ms tailnet link, so it only fires
+  # on a genuine outage, and <10% of the shortest real arm move.
+  request_timeout_seconds: 1.0
+
+  # Asymmetric on purpose — the long TTL lives on the failure side.
+  #   satisfied: bounded by physics (a preset step takes seconds, so a shorter
+  #              TTL buys nothing actionable) and <= the dashboard's 2-3s poll.
+  #   blocked:   short so "open the sash, click again" works. Not 0, or a
+  #              retrying script would hammer the Pi.
+  #   unreachable: long, then longer. Under fail_open, re-probing a dead device
+  #              cannot change the decision — only how fast recovery is noticed —
+  #              and re-probing per hop would add a timeout to every hop of a
+  #              multi-hop journey.
+  cache_ttl_satisfied_seconds: 2.0
+  cache_ttl_blocked_seconds: 1.0
+  cache_ttl_unreachable_seconds: 10.0
+  unreachable_backoff_after: 3
+  unreachable_backoff_seconds: 30.0
+
+  # The watchdog thread doubles as a cache warmer, so the control path is
+  # almost always a cache hit (zero added latency). It polls faster while the
+  # arm is inside the gated region, because that is when the sash moving is an
+  # emergency rather than an inconvenience. Detection latency is one interval —
+  # worth timing the sash's actual travel between presets and tuning against it.
+  poll_interval_seconds: 2.0
+  poll_interval_inside_seconds: 0.5
+
+  # --- Failure policy ----------------------------------------------------
+  # If the sash device cannot be reached, allow the move (warn loudly) rather
+  # than blocking arm work on another device's uptime. Decided deliberately;
+  # the cost is that the guard protects nothing during an outage, which is why
+  # every bypass is logged at WARNING, counted in
+  # details.interlocks.fume_hood_sash.moves_allowed_while_blind, and emitted as
+  # an `interlock_bypass` event.
+  fail_open: true
+
+  # ...but a device we have NEVER reached since startup is misconfiguration
+  # (wrong base_url, re-imaged Pi, changed tailnet ACL), not the outage
+  # fail_open was chosen for. Failing closed here removes the entire
+  # silently-never-deployed class at zero operational cost: one successful read
+  # at startup arms fail_open for the rest of the session.
+  require_initial_contact: true
+
+  # A device that answers 200 with a shape we cannot parse is NOT an outage —
+  # it is present and saying something we do not understand (a firmware field
+  # rename, say). Failing closed keeps that from silently disabling the guard
+  # forever, indistinguishably from the Pi being down.
+  malformed_fails_closed: true
+
+  # --- What is gated ------------------------------------------------------
+  # Membership is (gated_tags OR gated_rails OR gated_nodes) minus exempt_nodes.
+  #
+  # `deck` is deliberately NOT gated, though note the `Hood` and `Deck` rail
+  # locations are the same 550mm and joint_config.yaml observes that the arm at
+  # Deck "can reach ... the fumehood positions". If a bench check shows the arm
+  # intrudes into the sash envelope at deck nodes, add `deck` here — that is the
+  # whole change.
+  gated_tags: [hood, opentrons]
+
+  # The rail clause is not redundant with the tags. POST /control/graph/node
+  # accepts `tags` as optional, so an operator can create a node at rail Hood
+  # with no `hood` tag; without this it would be silently ungated.
+  gated_rails: [Hood]
+
+  # Escape hatches for anything the two clauses above miss / over-reach.
+  gated_nodes: []
+  exempt_nodes: []
+
+  # A cross-rail move drives the arm first, then the rail — and it is the rail
+  # translation that actually carries the arm into the hood, 5-10s after the
+  # interlock was evaluated. Re-checking in between is the single highest-value
+  # extra check here. Cost: an abort leaves an intermediate (arm, rail) state
+  # that is a non-node by design, so it needs
+  # POST /control/graph/recover_to with force=true afterwards.
+  recheck_before_rail: true
+
+  # --- Override -----------------------------------------------------------
+  # Because there is no automatic retreat, this is the ONLY way to move an arm
+  # stuck inside the region — it is load-bearing, not a convenience. Hard cap on
+  # a single grant; re-issuable (a second call extends) so an expiry cannot
+  # re-lock the arm part-way through a multi-hop retreat.
+  #
+  # If this is ever awkward to reach, people will reach for
+  # `POST /control/graph/mode {off}` or `enabled: false` instead — both of which
+  # disable the guard entirely and silently. Keep it easy.
+  override_max_seconds: 120

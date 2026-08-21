@@ -48,6 +48,7 @@ try:
     )
     from .claims import ClaimConflict, InvalidClaimToken
     from .camera_tracker import CameraTracker
+    from .sash_interlock import SashInterlock, SashInterlockError
     from . import assistant_actions
     from . import assistant_llm
 except ImportError:
@@ -74,6 +75,7 @@ except ImportError:
     )
     from core.claims import ClaimConflict, InvalidClaimToken
     from core.camera_tracker import CameraTracker
+    from core.sash_interlock import SashInterlock, SashInterlockError
     from core import assistant_actions
     from core import assistant_llm
 
@@ -285,6 +287,25 @@ class PlateLinearRequest(BaseModel):
 class GraphModeRequest(BaseModel):
     """Request model for switching motion-graph enforcement mode."""
     mode: str = Field(description="One of: 'off', 'advisory', 'strict'")
+
+
+class SashOverrideRequest(BaseModel):
+    """Request model for suspending the fume hood sash interlock.
+
+    ``reason`` is required and must be non-empty: this override is the only way
+    to move an arm stuck inside the hood/Opentrons region, so every use is
+    something a later reader will want explained. It is logged at WARNING and
+    written to the history DB.
+    """
+    reason: str = Field(min_length=1, description="Why the interlock is being suspended")
+    ttl_seconds: Optional[float] = Field(
+        default=None,
+        ge=1.0,
+        description=(
+            "Seconds to suspend for; clamped to override_max_seconds "
+            "(src/settings/interlocks.yaml). Defaults to that cap."
+        ),
+    )
 
 
 class GraphRecordRequest(BaseModel):
@@ -613,6 +634,12 @@ app.add_middleware(
 # Set up WebSocket logging
 ws_handler = WebSocketLogHandler()
 logger.addHandler(ws_handler)
+# The sash interlock logs on its own logger (it must stay importable without
+# this module). Attach the same handler so its WARNINGs -- a fail-open bypass,
+# a watchdog stop -- reach the operator panel's log stream rather than only
+# stdout. Logger records propagate to ancestors, never to siblings, so without
+# this the operator would never see them.
+logging.getLogger("xarm.interlock").addHandler(ws_handler)
 
 # Mount static files. The browser UI lives at /web/ -- the bare HTML page is
 # no longer served from /, since GET / is the STATUS_SPEC v1.0 probe endpoint.
@@ -1085,6 +1112,87 @@ def strict_graph_guard(action: str) -> None:
         )
 
 
+@app.exception_handler(SashInterlockError)
+async def sash_interlock_handler(request: Request, exc: SashInterlockError):
+    """Map a sash-interlock refusal to HTTP 412 wherever it is raised.
+
+    An app-level handler rather than only per-route ``except`` clauses,
+    because the interlock's guarantee is "every motion path is covered" and
+    per-route handling only covers the routes someone remembered to edit. With
+    this, a motion endpoint added later inherits the correct 412 instead of
+    leaking a 500. Routes that catch ``GraphError`` still need their own clause
+    ahead of it (``SashInterlockError`` is a ``GraphError`` subclass so that a
+    broad catch degrades to a refusal, not to a silent allow) — today that is
+    ``/assistant/execute``.
+
+    412, not 409, for the reason ``box_sim_guard`` documents: the request is
+    well-formed and this arm is healthy; an external precondition is simply
+    unmet (§6.1).
+    """
+    detail = exc.to_detail()
+    headers = None
+    if exc.retry_after_s:
+        headers = {"Retry-After": str(int(exc.retry_after_s))}
+    return JSONResponse(status_code=412, content={"detail": detail}, headers=headers)
+
+
+def interlock_target_guard(action: str, pose_name: Optional[str]) -> None:
+    """Refuse a named move into the gated region, synchronously.
+
+    The controller gates every motion path itself, which is what covers direct
+    SDK and script callers. But an endpoint that dispatches its move as a
+    *background task* has already returned 200 by the time the controller
+    raises, so the refusal would reach only the log — the operator would see
+    "command accepted" for a move that never happened. Calling this before
+    ``reserve_motion()`` gives such an endpoint its 412 up front. The
+    controller's own check stays as the backstop for non-HTTP callers.
+    """
+    c = get_controller()
+    interlock = getattr(c, "sash_interlock", None)
+    if interlock is None or not interlock.configured:
+        return
+    resolver = getattr(c, "_node_id_for_pose", None)
+    interlock.gate_move(
+        action=action,
+        target_node=resolver(pose_name) if resolver else None,
+        target_pose=pose_name,
+        current_node=getattr(c, "current_node", None),
+        current_rail=getattr(c, "last_rail_location_name", None),
+        zone=interlock.zone(getattr(c, "motion_graph", None)),
+    )
+
+
+def interlock_freehand_guard(action: str) -> None:
+    """Refuse freehand motion while the arm is inside the gated region.
+
+    Freehand endpoints (raw cartesian/joint/jog, velocity streaming, raw rail
+    moves) carry no node id, so the node-keyed gate in the controller cannot
+    see them. In STRICT they are already refused by ``strict_graph_guard``;
+    this covers ADVISORY/OFF, where they are the one way to drive the arm into
+    the hood with no interlock evaluation at all.
+
+    The check is deliberately asymmetric: we cannot tell where a freehand move
+    *ends*, so we cannot gate entry — but we can refuse to move an arm that is
+    already inside the region while the sash is not parked, which is the case
+    that matters (the arm is in the glass's path right now).
+    """
+    c = get_controller()
+    interlock = getattr(c, "sash_interlock", None)
+    if interlock is None or not interlock.configured:
+        return
+    zone = interlock.zone(getattr(c, "motion_graph", None))
+    # gate_move with no target: the "current position is inside" clause is the
+    # only one that can fire, which is exactly the semantics described above.
+    interlock.gate_move(
+        action=action,
+        target_node=None,
+        target_pose=None,
+        current_node=getattr(c, "current_node", None),
+        current_rail=getattr(c, "last_rail_location_name", None),
+        zone=zone,
+    )
+
+
 def box_sim_guard(action: str) -> None:
     """Refuse an actuating action while the real control box is in Sim mode.
 
@@ -1462,6 +1570,7 @@ async def move_to_position(request: PositionRequest, background_tasks: Backgroun
     motion is already in flight.
     """
     strict_graph_guard("move.position")
+    interlock_freehand_guard("move.position")
     c = reserve_motion()
 
     async def move_task():
@@ -1494,6 +1603,7 @@ async def move_joints(request: JointRequest, background_tasks: BackgroundTasks):
     motion is already in flight.
     """
     strict_graph_guard("move.joints")
+    interlock_freehand_guard("move.joints")
     c = reserve_motion()
 
     async def move_task():
@@ -1524,6 +1634,7 @@ async def move_relative(request: RelativeRequest, background_tasks: BackgroundTa
     motion is already in flight.
     """
     strict_graph_guard("move.relative")
+    interlock_freehand_guard("move.relative")
     c = reserve_motion()
 
     async def move_task():
@@ -1804,6 +1915,7 @@ async def set_cartesian_velocity(request: VelocityRequest):
     bypasses the motion graph.
     """
     strict_graph_guard("velocity.cartesian")
+    interlock_freehand_guard("velocity.cartesian")
     c = get_controller()
     velocities = [request.vx, request.vy, request.vz, request.vroll, request.vpitch, request.vyaw]
 
@@ -1976,6 +2088,7 @@ async def move_track(request: TrackRequest, background_tasks: BackgroundTasks):
     is already in flight.
     """
     strict_graph_guard("track.move")
+    interlock_freehand_guard("track.move")
     c = reserve_motion()
 
     async def track_task():
@@ -2227,6 +2340,8 @@ async def move_plate_linear(request: PlateLinearRequest, background_tasks: Backg
     (motion_in_progress) when a motion is already in flight.
     """
     strict_graph_guard("move.plate_linear")
+    # Synchronous, because this endpoint answers before the move runs (below).
+    interlock_target_guard("move.plate_linear", request.target_location)
     c = reserve_motion()
 
     async def plate_linear_task():
@@ -2699,6 +2814,98 @@ class CameraFollowRequest(BaseModel):
 _standalone_camera_tracker: Optional[CameraTracker] = None
 
 
+_standalone_sash_interlock: Optional[SashInterlock] = None
+
+
+def _sash_interlock_for_read() -> SashInterlock:
+    """The controller's interlock when connected, else a standalone read view.
+
+    Mirrors ``_camera_tracker_for_read``: an operator needs to be able to test
+    the link to the fume hood device *before* connecting the arm, and while
+    diagnosing a refusal. The standalone instance shares no state with the
+    controller's, so its counters read zero — that is fine, it exists to answer
+    "can this service see the sash at all".
+    """
+    global _standalone_sash_interlock
+    if controller is not None and getattr(controller, "sash_interlock", None) is not None:
+        return controller.sash_interlock
+    if _standalone_sash_interlock is None:
+        cfg_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "settings", "interlocks.yaml"
+        )
+        _standalone_sash_interlock = SashInterlock.from_config_file(cfg_path)
+    return _standalone_sash_interlock
+
+
+@app.get("/interlocks/sash")
+async def sash_interlock_state(refresh: bool = False):
+    """Current sash-interlock state. Read-only, un-gated, cache-served.
+
+    ``?refresh=true`` forces a live probe of the fume hood device, so an
+    operator can verify the link without commanding a move — which matters
+    because the alternative diagnostic is "try to move the arm and read the
+    412".
+    """
+    interlock = _sash_interlock_for_read()
+    if refresh and interlock.configured:
+        await asyncio.to_thread(interlock.refresh)
+    snapshot = await asyncio.to_thread(interlock.snapshot)
+    snapshot["connected"] = controller is not None
+    return snapshot
+
+
+@app.post(
+    "/control/interlocks/sash/override",
+    dependencies=[Depends(require_login), Depends(require_claim)],
+)
+async def sash_interlock_override(request: SashOverrideRequest, http_request: Request):
+    """Suspend the sash interlock for a bounded, audited window.
+
+    This is load-bearing rather than a convenience: because the interlock
+    refuses *all* motion while the arm is inside the gated region (there is no
+    automatic retreat, by design — a blind retreat could drag the arm through
+    a descending sash), an override is the only way to walk a stuck arm out.
+
+    Claim- and login-gated, capped by ``override_max_seconds``, and
+    re-issuable: a second call extends rather than erroring, so an expiry
+    cannot re-lock the arm part-way through a multi-hop retreat.
+    """
+    interlock = _sash_interlock_for_read()
+    if not interlock.configured:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "interlock_not_configured",
+                "message": "the sash interlock is not configured; nothing to override",
+            },
+        )
+    actor = getattr(http_request.state, "identity_email", None) or "unauthenticated"
+    try:
+        granted = interlock.grant_override(
+            reason=request.reason, ttl_seconds=request.ttl_seconds, actor=actor
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"error": "bad_reason", "message": str(exc)})
+    return {
+        "message": f"sash interlock overridden for {granted:.0f}s",
+        "granted_seconds": granted,
+        "reason": request.reason,
+        "actor": actor,
+        "interlock": interlock.snapshot(),
+    }
+
+
+@app.post(
+    "/control/interlocks/sash/override/clear",
+    dependencies=[Depends(require_login), Depends(require_claim)],
+)
+async def sash_interlock_override_clear():
+    """Drop an active override early, restoring the interlock immediately."""
+    interlock = _sash_interlock_for_read()
+    interlock.clear_override()
+    return {"message": "sash interlock override cleared", "interlock": interlock.snapshot()}
+
+
 def _camera_tracker_for_read() -> CameraTracker:
     """The controller's tracker when connected, else a standalone read view."""
     global _standalone_camera_tracker
@@ -2953,6 +3160,15 @@ async def assistant_execute(request: AssistantExecuteRequest, background_tasks: 
                         "failed_step": idx,
                     },
                 )
+            except SashInterlockError as exc:
+                # Must precede the GraphError clause below: SashInterlockError
+                # is a GraphError subclass, so without this the rich 412 would
+                # be flattened into a generic 409 "step_invalid" and the
+                # operator would lose the observed sash position and the hint.
+                logger.error(f"[assistant] step {idx}/{total} refused: {exc.reason}")
+                detail = exc.to_detail()
+                detail.update({"completed": completed, "failed_step": idx})
+                raise HTTPException(status_code=412, detail=detail)
             except (UnknownNodeError, NoPathError, GraphError, ValueError) as exc:
                 logger.error(f"[assistant] step {idx}/{total} failed: {exc}")
                 raise HTTPException(

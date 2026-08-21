@@ -7,6 +7,91 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — fume hood sash interlock
+
+Refuses arm motion into the fume hood / Opentrons region unless the **separate**
+`fume_hood_actuator` device reports its sash parked at the required preset, and
+stops the arm if the sash leaves that preset while the arm is already inside.
+New module `src/core/sash_interlock.py`, new config
+`src/settings/interlocks.yaml`, 113 new tests.
+
+- **Two behaviours.** (1) A move whose target is a `hood`- or
+  `opentrons`-tagged graph node is refused with **HTTP 412**
+  (`error: "interlock_not_satisfied"`, carrying the observed position and a
+  hint). (2) A watchdog thread polling at 0.5 s while the arm is inside the
+  region calls `stop_motion()` if the sash leaves position — after which *all*
+  motion is refused, egress included.
+- **No automatic retreat, deliberately.** A blind retreat could drag the arm
+  through a descending sash, and the interlock cannot see where the sash is
+  along that path. So an arm caught inside stays put until an operator
+  overrides. Consequently the override is load-bearing, not a debug flag:
+  `POST /control/interlocks/sash/override {reason, ttl_seconds}` (claim- and
+  login-gated, capped at 120 s, re-issuable, reason required and audited),
+  surfaced as a button in the `/web/` banner. `POST .../override/clear`
+  restores enforcement; `GET /interlocks/sash` (+`?refresh=true`) reads state
+  without commanding a move and answers before `/connect`.
+- **Gated where graph mode cannot switch it off.** The check sits in
+  `_consult_graph_for_move` *above* the `GraphMode.OFF` early return: graph
+  mode is a policy switch (the calibration escape hatch), while this is
+  physics. It also covers `move_plate_linear`, which never consults the graph
+  at all — and is exactly the motion used to descend into the hood — plus a
+  re-check between the arm and rail halves of a cross-rail move, since the rail
+  translation is what actually carries the arm in, seconds after the first
+  check. `interlock_freehand_guard` refuses raw cartesian/joint/velocity/rail
+  moves while the arm is inside the region.
+- **Fails open on an unreachable fume hood device**, by decision — an outage
+  must not halt arm work. Because that means the guard protects nothing during
+  one, every bypass is logged at WARNING (on the `xarm.interlock` logger, which
+  the panel's log stream now carries), counted in
+  `details.interlocks.fume_hood_sash.moves_allowed_while_blind`, emitted as an
+  `interlock_bypass` event, and shown as an amber `SASH INTERLOCK BLIND` banner
+  with a `[SASH-BLIND]` prefix on `message`. Two carve-outs close what
+  fail-open did *not* cover: a device **never reached since startup** is
+  misconfiguration rather than an outage and fails closed
+  (`require_initial_contact`), as does one answering with an unparseable body
+  (`malformed_fails_closed`).
+- **`equipment_status` is unchanged when the interlock is blind.** §2.2 scopes
+  `degraded` to an unhealthy subsystem *of this device*; a neighbouring Pi
+  being unreachable is not this arm's ill health, and under fail-open its
+  capability is not reduced — only its supervision. `details.interlocks` plus
+  the message prefix carry it instead.
+- **§6.2 mirroring** via a single filter in `reachable_node_ids()`, which feeds
+  `allowed_actions`, `details.motion_graph.reachable_nodes`, `GET /graph`, and
+  the panel's Drive Arm buttons at once. It reads only the cached sash
+  observation — `build_status` is side-effect-free and polled every 2-3 s, so
+  it must never fetch.
+- **Not gated, on purpose:** gripper actions (the hazard is the arm envelope
+  against the glass; a jaw stroke does not extend it, and gating would trap
+  plates for no safety gain), and freehand *entry* (no node id, so there is no
+  way to know where such a move ends).
+- `MotionGraph.has_tag()` / `nodes_with_tag()` added — no tag-query helper
+  existed, every consumer did raw set arithmetic on `node.tags`.
+
+**Operational notes.**
+
+- *After a watchdog stop* the arm is off-grid mid-motion: re-pin it with
+  `POST /control/graph/recover_to` (`force=true`). Same for a move aborted by
+  the pre-rail re-check, which leaves the intermediate `(arm, rail)` state that
+  is a non-node by design.
+- *If the fume hood Pi is down*, hood/Opentrons moves keep working and the
+  amber blind banner appears. If they are instead **refused** with
+  `state: "blind"`, the service has never reached the device since startup —
+  check `base_url` in `src/settings/interlocks.yaml` (or
+  `XARM_SASH_STATUS_URL`) and that the fume hood service is up, then
+  `GET /interlocks/sash?refresh=true`.
+- *Unverified assumption:* whether the fume hood device's
+  `metrics.sash_position` is a true readback or the last *commanded* preset is
+  not yet known. Because of that the predicate is composite — it also requires
+  `components.sash.{state,connected}`, `components.actuator.state == "idle"`
+  and the device's `equipment_status == "ready"` — since a last-commanded
+  metric reports the *target* for a whole trip. Settle it at the bench
+  (command 5, move the sash by hand, re-read `/status`) before treating this
+  as a hard collision guard.
+- *`deck` is not gated*, though the `Hood` and `Deck` rail locations are the
+  same 550 mm and `joint_config.yaml` notes the arm at Deck can reach the
+  fumehood positions. If a bench check shows the arm intrudes into the sash
+  envelope there, add `deck` to `gated_tags` — that is the whole change.
+
 ### Added — catalog skill names in `allowed_actions` (`graph.*`) + `/control/{stop,clear_errors}` aliases
 
 Closes the ROADMAP "skill-name reconciliation" item on the device side.

@@ -59,6 +59,22 @@
             <span aria-hidden="true">&#9888;</span> <strong>SIMULATION</strong>
             &mdash; connected to the Docker simulator, not the real arm
         </div>
+        <!-- Fume hood sash interlock. Red when the sash is holding the arm
+             back, amber when the interlock cannot see the sash at all (moves
+             into the hood then run unguarded -- the fail-open policy's only
+             visible symptom). The override button appears only while blocked,
+             and is the sole way to move an arm stuck inside the hood.
+             Rendered by renderSashBanner in main.js. -->
+        <div id="sash-banner" class="sash-banner" hidden>
+            <span aria-hidden="true">&#9888;</span>
+            <strong id="sash-banner-text"></strong>
+            <button type="button" id="sash-override-btn" class="sash-banner__btn" hidden>
+                Override&hellip;
+            </button>
+            <button type="button" id="sash-override-clear-btn" class="sash-banner__btn" hidden>
+                Restore interlock
+            </button>
+        </div>
     </div>
     <div class="container">
         <!-- Shared SDL2 auth banner: injected by /auth/banner.js (served by

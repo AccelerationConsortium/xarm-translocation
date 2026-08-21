@@ -282,6 +282,20 @@
             },
         },
         {
+            // Node the fume hood sash interlock is currently withholding: a
+            // move here would be refused with 412. Hatched-looking dim red so
+            // the gated region is legible at a glance on the map, and distinct
+            // from `.current` (where the arm is) and the station colours.
+            selector: 'node.sash-gated',
+            style: {
+                'background-color': '#b91c1c',
+                'border-width': 3,
+                'border-style': 'dashed',
+                'border-color': '#7f1d1d',
+                'opacity': 0.55,
+            },
+        },
+        {
             selector: 'node.current',
             style: {
                 'background-color': '#047857',
@@ -457,6 +471,39 @@
         if (cy) applyGroupVisibility({ fit: true });
     }
 
+    // Tint the nodes the fume hood sash interlock is currently withholding.
+    //
+    // Read from /interlocks/sash rather than recomputing the gated set here:
+    // membership is (gated_tags OR gated_rails OR gated_nodes) minus
+    // exemptions, all config-driven, and a second implementation in JS would
+    // be a second thing to keep in sync with the guard that actually refuses.
+    // Best-effort — this is a legibility aid, so a failed read leaves the map
+    // untinted rather than breaking the editor.
+    function markSashGatedNodes() {
+        if (!cy) return;
+        fetch(API_BASE + '/interlocks/sash')
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (info) {
+                if (!cy) return;
+                cy.nodes().removeClass('sash-gated');
+                if (!info || !info.configured) return;
+                // Only tint when the interlock is actually withholding. While
+                // it is satisfied (or blind and failing open) these nodes are
+                // reachable, and colouring them then would misreport the map.
+                if (info.state !== 'blocked') return;
+                var tags = info.gated_tags || [];
+                var rails = info.gated_rails || [];
+                cy.nodes().forEach(function (n) {
+                    var station = n.data('station');
+                    var rail = n.data('rail');
+                    if (tags.indexOf(station) !== -1 || rails.indexOf(rail) !== -1) {
+                        n.addClass('sash-gated');
+                    }
+                });
+            })
+            .catch(function () { /* legibility aid only; ignore */ });
+    }
+
     function renderGraph(data) {
         var elements = buildElements(data);
         if (!elements.length) {
@@ -476,6 +523,7 @@
             boxSelectionEnabled: false,
         });
         onGraphRendered(cy);
+        markSashGatedNodes();
         // Restore the saved arrangement; only auto-fit when nothing is saved.
         var fresh = !(savedLayout.positions && Object.keys(savedLayout.positions).length);
         applyGroupVisibility({ fit: fresh });
