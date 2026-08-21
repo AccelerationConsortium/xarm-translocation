@@ -454,6 +454,80 @@ document.addEventListener('DOMContentLoaded', () => {
         if (clearBtn) clearBtn.hidden = state !== 'overridden';
     }
 
+    // Persistent sash readout in the Motion Graph card ("interlock layer").
+    //
+    // Separate from renderSashBanner on purpose: the banner is an *alarm* and
+    // is absent while the sash is parked, which leaves the normal case with no
+    // readout at all. An operator about to drive into the hood wants the
+    // position before being refused, and "no banner" is a weak way to say
+    // "position 5, confirmed 0.4s ago".
+    //
+    // Reads details.interlocks.fume_hood_sash from the /status poll already in
+    // flight -- no extra request, and it inherits the cached-reading staleness
+    // that /status is contractually limited to (hence the age suffix).
+    function renderSashRow(interlock) {
+        const row = document.getElementById('mg-sash-row');
+        if (!row) return;
+        // Unconfigured interlock: no row, so a deployment without one is
+        // visually identical to before this existed.
+        if (!interlock || !interlock.configured) {
+            row.hidden = true;
+            return;
+        }
+        row.hidden = false;
+
+        const posEl = document.getElementById('mg-sash-position');
+        const noteEl = document.getElementById('mg-sash-note');
+        const required = interlock.required_position;
+        // sash_position is the reading-scoped value, present even when the
+        // decision short-circuits (override); observed_position is the
+        // decision's own and is the fallback for older payloads.
+        const position = interlock.sash_position !== undefined
+            && interlock.sash_position !== null
+            ? interlock.sash_position
+            : interlock.observed_position;
+        const known = position !== null && position !== undefined;
+
+        let tone;
+        let note;
+        switch (interlock.state) {
+            case 'satisfied':
+                tone = 'mg-sash--ok';
+                note = `parked at ${required} — hood/Opentrons moves allowed`;
+                break;
+            case 'blocked':
+                tone = 'mg-sash--bad';
+                note = `needs ${required} — hood/Opentrons moves blocked`;
+                break;
+            case 'overridden': {
+                tone = 'mg-sash--override';
+                const left = interlock.override && interlock.override.expires_in_s;
+                note = `interlock OVERRIDDEN${left ? ` — ${Math.round(left)}s left` : ''}`;
+                break;
+            }
+            default:
+                // blind / malformed: we genuinely do not know the position, so
+                // say so rather than showing the last good number as current.
+                tone = 'mg-sash--warn';
+                note = interlock.message || 'fume hood device unreachable';
+                break;
+        }
+
+        if (posEl) {
+            posEl.textContent = known ? `position ${position}` : 'unknown';
+            posEl.className = tone;
+        }
+        if (noteEl) {
+            // Age qualifies the number: /status serves a cached reading, so a
+            // stale one must not read as live.
+            const age = interlock.age_seconds;
+            const suffix = known && typeof age === 'number'
+                ? ` (read ${age < 1 ? '<1' : Math.round(age)}s ago)`
+                : '';
+            noteEl.textContent = `${note}${suffix}`;
+        }
+    }
+
     async function requestSashOverride() {
         const reason = window.prompt(
             'Why is the sash interlock being overridden?\n\n'
@@ -551,6 +625,9 @@ document.addEventListener('DOMContentLoaded', () => {
             // the fail-open policy's one visible symptom, and the reason this
             // banner exists at all.
             renderSashBanner(data.sash_interlock);
+            // ...and the persistent position readout, which shows in every
+            // state (including the normal one, where the banner is absent).
+            renderSashRow(data.sash_interlock);
 
             // 3D-view card shows for BOTH connection targets: the iframe
             // points at the simulator's Studio or the real arm's Studio

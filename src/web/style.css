@@ -2744,3 +2744,18 @@ input#linear-speed {
         #172554;                             /* blue-950 field */
     border-bottom-color: #1d4ed8;            /* blue-700 */
 }
+
+/* Fume hood sash readout in the Motion Graph card. Colour only -- the row's
+   text already says what each state means, so colour is a second channel and
+   never the only one (the note text carries the same information for anyone
+   who cannot separate these hues). Tones match .sash-banner's so the alarm
+   strip and the readout read as the same subsystem. */
+.mg-sash--ok       { color: #15803d; }        /* green-700  - parked */
+.mg-sash--bad      { color: #b91c1c; }        /* red-700    - blocked */
+.mg-sash--warn     { color: #b45309; }        /* amber-700  - blind */
+.mg-sash--override { color: #1d4ed8; }        /* blue-700   - overridden */
+
+:root.dark .mg-sash--ok       { color: #4ade80; }   /* green-400 */
+:root.dark .mg-sash--bad      { color: #f87171; }   /* red-400 */
+:root.dark .mg-sash--warn     { color: #fbbf24; }   /* amber-400 */
+:root.dark .mg-sash--override { color: #60a5fa; }   /* blue-400 */

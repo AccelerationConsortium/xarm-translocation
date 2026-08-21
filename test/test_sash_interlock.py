@@ -494,6 +494,43 @@ def test_snapshot_counts_refusals():
     assert interlock.snapshot()["moves_blocked"] == 2
 
 
+def test_snapshot_reports_the_position_under_override():
+    """``sash_position`` exists so the UI has a readout in every state.
+
+    ``observed_position`` is decision-scoped, and ``evaluate`` short-circuits
+    on an active override before it looks at any reading — so that field goes
+    None exactly when an operator is walking the arm out and most wants to see
+    where the sash is. This is the reading-scoped twin that does not.
+    """
+    interlock, _ = make(payload_with(position=3, sash_state="position_3"))
+    interlock.evaluate()                       # prime the cache
+    interlock.grant_override(reason="walking the arm out", ttl_seconds=60)
+
+    snap = interlock.snapshot()
+    assert snap["state"] == OVERRIDDEN
+    assert snap["observed_position"] is None   # decision-scoped, as designed
+    assert snap["sash_position"] == 3          # reading-scoped: still there
+
+
+def test_snapshot_position_is_none_when_blind():
+    """No reading means no position. The last good number must not be shown
+    as current — 'unknown' is the honest readout during an outage."""
+    interlock, _ = make(OSError("down"), require_initial_contact=False)
+    interlock.evaluate()
+    snap = interlock.snapshot()
+    assert snap["state"] == BLIND
+    assert snap["sash_position"] is None
+
+
+def test_snapshot_position_when_satisfied():
+    interlock, _ = make()
+    interlock.evaluate()
+    snap = interlock.snapshot()
+    assert snap["state"] == SATISFIED
+    assert snap["sash_position"] == 5
+    assert snap["observed_position"] == 5
+
+
 def test_snapshot_never_fetches():
     interlock, fetcher = make(LIVE_PAYLOAD)
     interlock.snapshot()

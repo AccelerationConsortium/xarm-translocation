@@ -60,6 +60,19 @@ New module `src/core/sash_interlock.py`, new config
   the panel's Drive Arm buttons at once. It reads only the cached sash
   observation — `build_status` is side-effect-free and polled every 2-3 s, so
   it must never fetch.
+- **Sash position is visible in the panel at all times**, not only when the
+  interlock is unhappy. The `#sash-banner` above is an alarm and is absent
+  while the sash is parked, which left the normal case with no readout — so an
+  operator planning a hood move learned the position by being refused. The
+  Motion Graph card ("interlock layer") now carries a persistent
+  `Fume Hood Sash` row: position, what state it implies, and how stale the
+  reading is (`/status` serves the watchdog-warmed cache, never a live probe).
+  Hidden entirely when no interlock is configured. Its data comes from the
+  `/status` poll already in flight — no extra request per second — via a new
+  reading-scoped `details.interlocks.fume_hood_sash.sash_position`, which
+  exists because `observed_position` is *decision*-scoped and therefore None
+  exactly while an override is active, i.e. when an operator walking a stuck
+  arm out most needs the number. Same field on `GET /interlocks/sash`.
 - **Not gated, on purpose:** gripper actions (the hazard is the arm envelope
   against the glass; a jaw stroke does not extend it, and gating would trap
   plates for no safety gain), and freehand *entry* (no node id, so there is no

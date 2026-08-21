@@ -1062,6 +1062,13 @@ class SashInterlock:
             "state": decision.state,
             "required_position": self.required_position,
             "observed_position": decision.observed_position,
+            # The last position we actually read, independent of the decision
+            # path. `observed_position` is decision-scoped and is therefore
+            # None whenever the verdict short-circuits before consulting a
+            # reading (override) or had no reading to consult (blind), which
+            # makes it unusable as a persistent UI readout. This is the
+            # reading-scoped twin, named like its `sash_*` siblings below.
+            "sash_position": reading.position if reading else None,
             "sash_component_state": reading.component_state if reading else None,
             "sash_actuator_state": reading.actuator_state if reading else None,
             "sash_equipment_status": reading.equipment_status if reading else None,

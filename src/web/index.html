@@ -299,6 +299,20 @@
                             <span class="inline-label">Current Node</span>
                             <strong id="mg-current-node">—</strong>
                         </div>
+                        <!-- Fume hood sash readout. Persistent, unlike the
+                             #sash-banner above, which only appears when the
+                             interlock is abnormal: an operator planning a hood
+                             move wants to know where the sash IS before being
+                             refused, and "satisfied" is not self-evident from
+                             the absence of a banner. Hidden entirely when the
+                             interlock is unconfigured, so a setup without one
+                             looks exactly as it did before.
+                             Rendered by renderSashRow in main.js. -->
+                        <div class="mg-row" id="mg-sash-row" hidden>
+                            <span class="inline-label">Fume Hood Sash</span>
+                            <strong id="mg-sash-position">&mdash;</strong>
+                            <span class="muted" id="mg-sash-note"></span>
+                        </div>
                         <div class="mg-row">
                             <span class="inline-label">Reachable Node</span>
                             <div id="mg-reachable" class="mg-reachable">
