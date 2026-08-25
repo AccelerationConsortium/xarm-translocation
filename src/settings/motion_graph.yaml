@@ -89,8 +89,8 @@ nodes:
 - {id: opentrons_4_high, arm: opentrons_4_high, rail: Home, gripper_states: [
       empty, grip_120, reach_90, grip_80], tags: [opentrons, slot4]}
 - {id: opentrons_4_low_top, arm: opentrons_4_low_top, rail: Home, gripper_states: [
-      empty, grip_120, reach_90, grip_80], gripper_transitions: [[empty, 
-        grip_120], [grip_120, empty]], tags: [opentrons, slot4]}
+    empty, grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120],
+    [grip_120, empty]], tags: [opentrons, slot4]}
 - {id: opentrons_4_low, arm: opentrons_4_low, rail: Home, gripper_states: [empty,
     grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120], [
         grip_120, empty]], tags: [opentrons, slot4]}
@@ -194,6 +194,8 @@ nodes:
     grip_120, reach_90, grip_80], tags: [cytation, transit_home]}
 - {id: cytation_high, arm: cytation_high, rail: Cytation, gripper_states: [empty,
     grip_120, reach_90, grip_80], tags: [cytation, plate]}
+- {id: cytation_high_pull, arm: cytation_high_pull, rail: Cytation, 
+    gripper_states: [empty, grip_120, reach_90, grip_80], tags: [cytation, plate]}
 - {id: cytation_low, arm: cytation_low, rail: Cytation, gripper_states: [empty, 
       grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_80], [
         grip_80, empty]], tags: [cytation, plate]}
@@ -419,17 +421,17 @@ edges:
 - from: cytation_home
   to: robot_home
   mode: joint
-- from: cytation_home
-  to: cytation_high
-  mode: joint
 - from: cytation_high
+  to: cytation_high_pull
+  mode: linear
+- from: cytation_high_pull
+  to: cytation_high
+  mode: linear
+- from: cytation_high_pull
   to: cytation_home
   mode: joint
-- from: cytation_high
-  to: cytation_low
-  mode: joint
-- from: cytation_low
-  to: cytation_high
+- from: cytation_home
+  to: cytation_high_pull
   mode: joint
 - from: robot_home
   to: plateloc_home
@@ -478,4 +480,10 @@ edges:
   mode: linear
 - from: opentrons_6_low
   to: opentrons_6_high
+  mode: linear
+- from: cytation_high
+  to: cytation_low
+  mode: linear
+- from: cytation_low
+  to: cytation_high
   mode: linear

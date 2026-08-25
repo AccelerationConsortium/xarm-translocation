@@ -449,10 +449,13 @@ class SashInterlock:
         ``actuator.state == "idle"`` is what keeps the check honest. Every
         conjunct catches a different failure and costs nothing.
 
-        A value we cannot parse is ``malformed``, not ``blocked``: the device is
-        answering in a shape we do not recognise (a firmware rename, say), which
-        must be distinguishable from an outage rather than silently disabling
-        the guard forever.
+        A shape we cannot parse at all -- no ``components`` blocks -- is
+        ``malformed``, not ``blocked``: the device is answering in a form we do
+        not recognise (a firmware rename, say), which must be distinguishable
+        from an outage rather than silently disabling the guard forever. A
+        *missing position number* alone is not that: the device omits
+        ``metrics.sash_position`` while the sash is between hall sensors, and
+        that is a state we understand perfectly well -- it is ``blocked``.
         """
         now = self._clock()
         observed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -500,17 +503,29 @@ class SashInterlock:
                 device_message=str(device_message) if device_message is not None else None,
             )
 
-        if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
-            return malformed(
-                "sash /status has no numeric metrics.sash_position.value "
-                f"(got {raw_value!r})"
-            )
         if sash is None:
             return malformed("sash /status has no components.sash block")
         if actuator is None:
             return malformed("sash /status has no components.actuator block")
 
-        position = int(round(float(raw_value)))
+        # A missing number is NOT, on its own, a shape we failed to understand.
+        # The deployed device publishes `metrics: {}` (and
+        # `components.sash.state == "between_sensors"`, `equipment_status ==
+        # "requires_init"`) whenever the sash sits between hall sensors -- a
+        # well-formed answer whose meaning is precisely "demonstrably not
+        # parked", i.e. the single most dangerous state there is. Calling that
+        # `malformed` inverted the guard's own vocabulary: it read as "the
+        # device changed its contract" and, under malformed_fails_open, would
+        # have waved the arm into a half-closed sash.
+        #
+        # So the component block decides, and the number is only *required*
+        # once every other signal claims the sash is parked -- a payload that
+        # says `position_5` + idle + ready with no readback really is a
+        # contract we no longer understand (see the malformed() at the end).
+        has_position = not isinstance(raw_value, bool) and isinstance(
+            raw_value, (int, float)
+        )
+        position = int(round(float(raw_value))) if has_position else None
         expected_component = f"position_{self.required_position}"
 
         def reading(state: str, reason: str) -> SashReading:
@@ -528,7 +543,7 @@ class SashInterlock:
                 device_message=str(device_message) if device_message is not None else None,
             )
 
-        if position != self.required_position:
+        if position is not None and position != self.required_position:
             return reading(
                 BLOCKED,
                 f"fume hood sash is at position {position}, "
@@ -553,6 +568,15 @@ class SashInterlock:
                 BLOCKED,
                 f"fume hood device reports equipment_status {equipment_status!r}, "
                 "not 'ready'",
+            )
+        if position is None:
+            # Every other conjunct says "parked at the required preset", yet
+            # there is no readback to confirm it. That disagreement is a real
+            # contract change, not an in-between sash, so it stays malformed.
+            return malformed(
+                "fume hood device reports the sash parked at "
+                f"{expected_component} but publishes no numeric "
+                f"metrics.sash_position.value (got {raw_value!r})"
             )
         return reading(
             SATISFIED, f"fume hood sash parked at position {self.required_position}"
@@ -1060,6 +1084,12 @@ class SashInterlock:
         return {
             "configured": True,
             "state": decision.state,
+            # Whether a gated move would be allowed *right now*. `state` alone
+            # does not answer that -- `malformed` refuses or permits depending
+            # on malformed_fails_closed, and `blind` on fail_open -- and the
+            # banner was guessing, telling operators moves ran "UNGUARDED"
+            # while they were in fact being refused.
+            "moves_allowed": decision.allowed,
             "required_position": self.required_position,
             "observed_position": decision.observed_position,
             # The last position we actually read, independent of the decision

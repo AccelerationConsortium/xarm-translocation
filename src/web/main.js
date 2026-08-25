@@ -425,18 +425,38 @@ document.addEventListener('DOMContentLoaded', () => {
         const observed = interlock.observed_position;
         let text;
         let tone;
+        // Whether motion is actually being refused. `state` does not answer
+        // it: `malformed` refuses or permits per malformed_fails_closed, and
+        // `blind` per fail_open. Older payloads omit the field, in which case
+        // fall back to the old assumption (blocked refuses, the rest do not).
+        const refusing = typeof interlock.moves_allowed === 'boolean'
+            ? interlock.moves_allowed === false
+            : state === 'blocked';
         if (state === 'blocked') {
             tone = 'sash-banner--blocked';
+            // The device's own message is the actionable half when there is no
+            // number to show -- "Sash between hall sensors - move to a preset
+            // to recover" says what to do; "not at position 5" does not.
+            const why = interlock.sash_message ? ` — ${interlock.sash_message}` : '';
             text = observed === null || observed === undefined
-                ? `FUME HOOD SASH not at position ${required} — hood/Opentrons moves blocked`
+                ? `FUME HOOD SASH not at position ${required} — hood/Opentrons moves blocked${why}`
                 : `FUME HOOD SASH AT ${observed} (needs ${required}) — hood/Opentrons moves blocked`;
         } else if (state === 'overridden') {
             tone = 'sash-banner--override';
             const left = interlock.override && interlock.override.expires_in_s;
             text = `SASH INTERLOCK OVERRIDDEN${left ? ` — ${Math.round(left)}s left` : ''}`
                 + ` — ${(interlock.override && interlock.override.reason) || ''}`;
+        } else if (refusing) {
+            // blind / malformed, failing CLOSED: the guard cannot see the sash
+            // and is holding the arm. Saying "UNGUARDED" here was backwards and
+            // sent operators looking for a danger that was not happening, while
+            // hiding the override -- the only way out.
+            tone = 'sash-banner--blocked';
+            text = 'SASH INTERLOCK CANNOT SEE THE SASH — hood/Opentrons moves blocked'
+                + ` (${interlock.message || 'fume hood device unreachable'})`;
         } else {
-            // blind / malformed: the guard cannot see the sash.
+            // blind / malformed, failing OPEN: hood moves really are running
+            // unchecked. The fail-open policy's one visible symptom.
             tone = 'sash-banner--blind';
             text = 'SASH INTERLOCK BLIND — hood/Opentrons moves are running UNGUARDED'
                 + ` (${interlock.message || 'fume hood device unreachable'})`;
@@ -447,9 +467,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const label = document.getElementById('sash-banner-text');
         if (label) label.textContent = text;
 
-        // Offer the way out exactly when the interlock is holding the arm.
+        // Offer the way out exactly when the interlock is holding the arm --
+        // which is any refusing state, not just `blocked`. An arm stuck inside
+        // the region while the guard fails closed has no other egress.
         const overrideBtn = document.getElementById('sash-override-btn');
-        if (overrideBtn) overrideBtn.hidden = state !== 'blocked';
+        if (overrideBtn) overrideBtn.hidden = !refusing;
         const clearBtn = document.getElementById('sash-override-clear-btn');
         if (clearBtn) clearBtn.hidden = state !== 'overridden';
     }
@@ -505,12 +527,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 note = `interlock OVERRIDDEN${left ? ` — ${Math.round(left)}s left` : ''}`;
                 break;
             }
-            default:
+            default: {
                 // blind / malformed: we genuinely do not know the position, so
                 // say so rather than showing the last good number as current.
-                tone = 'mg-sash--warn';
-                note = interlock.message || 'fume hood device unreachable';
+                // Which way the guard fails decides whether that is an alarm
+                // (moves running unchecked) or a refusal.
+                const refusing = interlock.moves_allowed === false;
+                tone = refusing ? 'mg-sash--bad' : 'mg-sash--warn';
+                const why = interlock.message || 'fume hood device unreachable';
+                note = refusing
+                    ? `unknown — hood/Opentrons moves blocked (${why})`
+                    : `unknown — hood/Opentrons moves UNGUARDED (${why})`;
                 break;
+            }
         }
 
         if (posEl) {
