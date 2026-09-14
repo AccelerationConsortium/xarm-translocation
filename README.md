@@ -1,4 +1,22 @@
-# xArm Translocation
+# Robot Motion — development branch
+
+Installs as robot-motion with the UI/API included by default. Optional extras
+are [xarm], [ur], and [mg400] (reserved; MG400 is not implemented yet).
+Run robot-motion serve for the observation/graph-preview prototype, or
+robot-motion drivers for an offline capability inventory. UR model profiles
+are ur3e, ur5e and ur5_cb3. Physical UR control is not implemented in this
+release. Machine configuration and calibrated graphs belong in *.local.json.
+
+The existing xArm5 application remains available through pyxarm and the explicit
+robot-motion legacy-xarm command after installing [xarm]. Its controller,
+API, hard claims, UI, graph interlocks and settings are unchanged. Existing
+xArm services must stay on their pinned release until a separate reviewed migration.
+
+See [the packaged operator guide](src/robot_motion/docs/AGENT_GUIDE.md).
+This prototype implements the STATUS_SPEC v1.2 read-only profile; the legacy
+xArm application's conformance and behavior are described below.
+
+## Existing xArm application (compatibility)
 
 UFACTORY xArm control for the AC Organic Self-Driving Lab — arm, gripper, linear track, and force-torque sensor, driven through one Python controller, a web UI, and a STATUS_SPEC v1.2 REST API. The Docker simulator is the supported path for off-hardware testing. Installs as the `pyxarm` package.
 

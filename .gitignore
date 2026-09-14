@@ -55,6 +55,8 @@ cover/
 
 # Environments
 .env
+*.local.json
+.state/
 .venv
 env/
 venv/

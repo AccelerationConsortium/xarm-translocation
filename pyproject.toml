@@ -3,12 +3,12 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pyxarm"
-version = "0.3.0"
+name = "robot-motion"
+version = "0.4.0a1"
 authors = [
   { name="Yang Cao", email="cyrilcaoyang@gmail.com" },
 ]
-description = "Comprehensive Python package for controlling UFACTORY xArm robots with integrated gripper, linear track, and force torque sensor support — STATUS_SPEC v1.2"
+description = "Graph-based laboratory robot application with a bundled UI and optional xArm, UR, and planned MG400 drivers"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
@@ -30,16 +30,16 @@ classifiers = [
 ]
 
 dependencies = [
-    "xarm-python-sdk>=1.13.0",
     "PyYAML>=6.0",
     "ruamel.yaml>=0.18",
-    "fastapi>=0.104.1",
-    "uvicorn[standard]>=0.24.0",
-    "websockets>=12.0",
+    "fastapi>=0.136.1,<0.137",
+    "starlette>=1.0,<1.1",
+    "uvicorn[standard]>=0.46,<0.47",
+    "websockets>=16,<17",
     # Lab-assistant chatbox (natural-language motion control) via OpenRouter's
     # OpenAI-compatible API. The feature degrades gracefully when the key is
     # unset, but the SDK ships by default.
-    "openai>=1.0.0",
+    "openai>=2.46,<3",
     # Loads OPENROUTER_API_KEY from a local .env file (git-ignored).
     "python-dotenv>=1.0.0",
     "sdl-lab-contract",
@@ -49,6 +49,10 @@ dependencies = [
 sdl-lab-contract = { git = "https://github.com/AccelerationConsortium/sdl-lab-contract", tag = "v1.2.0" }
 
 [project.optional-dependencies]
+xarm = ["xarm-python-sdk>=1.13.0"]
+ur = ["ur-rtde>=1.6,<2", "scipy>=1.11"]
+# Reserved for future MG400 support. Installing it does not add a driver yet.
+mg400 = []
 dev = [
     "pytest>=7.0",
     "httpx>=0.24",
@@ -62,12 +66,13 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/cyrilcao/pyxarm"
-Documentation = "https://github.com/cyrilcao/pyxarm#readme"
-Repository = "https://github.com/cyrilcao/pyxarm.git"
-Issues = "https://github.com/cyrilcao/pyxarm/issues"
+Homepage = "https://github.com/AccelerationConsortium/xarm-translocation"
+Documentation = "https://github.com/AccelerationConsortium/xarm-translocation#readme"
+Repository = "https://github.com/AccelerationConsortium/xarm-translocation.git"
+Issues = "https://github.com/AccelerationConsortium/xarm-translocation/issues"
 
 [project.scripts]
+robot-motion = "robot_motion.cli:main"
 pyxarm = "cli.main:main"
 
 [tool.setuptools.packages.find]
@@ -117,4 +122,3 @@ markers = [
 # For full setup, see README_DOCKER.md
 
 [tool.coverage.run]
-
