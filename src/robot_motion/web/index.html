@@ -1,101 +1,165 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Robot Motion · Control Workspace</title>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>UR5e Control Interface</title>
+  <script>
+    (function () {
+      try {
+        var theme = localStorage.getItem("theme");
+        var dark = theme === "dark" || (theme !== "light" && window.matchMedia &&
+          window.matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.classList.toggle("dark", dark);
+      } catch (error) {}
+    })();
+  </script>
   <link rel="stylesheet" href="pyxarm/style.css">
   <link rel="stylesheet" href="style.css">
   <script defer src="pyxarm/cytoscape.min.js"></script>
   <script defer src="main.js"></script>
 </head>
 <body class="robot-app">
-  <div class="rm-banner"><strong>No physical control in this prototype.</strong>
-    Live observation + offline graph editing. Buttons marked unavailable cannot operate or stop a robot.</div>
+  <div class="rm-banner" role="note">
+    <span aria-hidden="true">&#9888;</span>
+    <strong>UR5e observation only</strong>
+    <span>No physical control in this prototype. Unavailable buttons cannot operate or stop the robot.</span>
+  </div>
+
   <div class="container">
     <main class="page-grid">
       <div class="page-left">
-        <!-- Shared pyxarm title, action-row, card, form and mode-tab styles. -->
         <section class="title-status-container" aria-labelledby="workspace-title">
-          <div class="rm-heading"><div><p class="eyebrow">Robot Motion</p>
-            <h1 id="workspace-title">Control Workspace</h1></div>
-            <button id="theme-toggle" class="btn btn-secondary" type="button" aria-pressed="false">Dark theme</button></div>
-          <div class="rm-heading"><strong id="robot-name">Robot status</strong><span id="state" class="rm-badge">Unknown</span></div>
-          <p id="status-message" role="status">Waiting for service response…</p>
-          <dl class="rm-facts">
-            <div><dt>Configured model</dt><dd id="model">Not configured</dd></div>
-            <div><dt>Controller mode</dt><dd id="controller">Unknown</dd></div>
-            <div><dt>Safety</dt><dd id="safety">Unknown</dd></div>
-            <div><dt>Program</dt><dd id="program">Unknown</dd></div>
-          </dl>
-          <p class="muted">A playing program is not proof of arm movement. Claims and hardware control are not implemented here.</p>
+          <div class="title-top">
+            <div class="title-status-main">
+              <div class="rm-title-row">
+                <div>
+                  <p class="eyebrow">UR Translocation</p>
+                  <h1 id="workspace-title">UR5e Control Interface</h1>
+                </div>
+                <button id="theme-toggle" class="btn btn-secondary rm-theme" type="button" aria-pressed="false">Dark theme</button>
+              </div>
+
+              <div id="status-container">
+                <div class="conn-lines" aria-label="Robot observation status">
+                  <div class="conn-line">
+                    <span class="conn-name">Robot</span>
+                    <span class="conn-state conn-off" aria-hidden="true"></span>
+                    <strong id="robot-name" class="conn-owner">UR5e</strong>
+                    <span id="state" class="rm-badge">Unknown</span>
+                  </div>
+                  <div class="conn-line">
+                    <span class="conn-name">Observer</span>
+                    <span class="conn-state conn-watch" aria-hidden="true"></span>
+                    <span class="conn-owner">Dashboard Server · read only</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="connection-inline">
+                <div class="form-group">
+                  <label for="observer-source">Connection</label>
+                  <select id="observer-source" disabled><option>UR Dashboard observer</option></select>
+                </div>
+                <div class="form-group">
+                  <label for="model">Robot model</label>
+                  <output id="model" class="rm-output">Not configured</output>
+                </div>
+                <div class="connection-inline-btns">
+                  <button class="btn" disabled data-hardware title="Control connections are not implemented">Connect for control</button>
+                  <span class="rm-readonly-chip">Monitoring connection only</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div class="header-actions" aria-describedby="control-boundary">
-            <button class="btn" disabled data-hardware title="Claim support is not implemented">Take Control</button>
-            <button class="btn btn-danger" disabled data-hardware title="This prototype cannot stop the robot">STOP · unavailable</button>
+            <button class="btn btn-claim" disabled data-hardware title="Claim support is not implemented">Take Control</button>
+            <button class="btn btn-danger" disabled data-hardware title="This page cannot stop the robot">STOP · unavailable</button>
             <button class="btn btn-warning" disabled data-hardware title="Fault recovery is not implemented">Clear Errors</button>
           </div>
-          <p id="control-boundary" class="muted">For stopping or recovery, use the robot's established operator controls. This page is not a safety control.</p>
+          <p id="control-boundary" class="rm-safety-note">Use the robot's established operator controls for stopping or recovery. This page is not a safety control.</p>
         </section>
 
-        <section class="card" aria-label="Workspace modes">
-          <div class="mode-tabs" role="tablist" aria-label="Workspace modes">
-            <button id="tab-graph" class="mode-tab active" role="tab" aria-selected="true" aria-controls="pane-graph">Graph Workspace</button>
+        <section class="card" id="control-modes-card" aria-label="Control modes">
+          <div class="mode-tabs" role="tablist" aria-label="Control modes">
             <button id="tab-direct" class="mode-tab" role="tab" aria-selected="false" aria-controls="pane-direct" tabindex="-1">Direct Drive</button>
+            <button id="tab-graph" class="mode-tab active" role="tab" aria-selected="true" aria-controls="pane-graph">Graph Control</button>
+            <span class="rm-tab-status">offline planning</span>
           </div>
-          <div id="pane-graph" role="tabpanel" aria-labelledby="tab-graph">
-            <div class="rm-heading"><h2>Motion graph</h2><span class="rm-badge">Local draft only</span></div>
-            <p class="muted">Named positions and directed transitions, using the xArm path planner. Nothing is uploaded to the robot or saved on the server.</p>
-            <div class="form-group"><label for="graph-model">Draft robot model</label><select id="graph-model" disabled></select></div>
+
+          <div id="pane-direct" class="mode-pane" role="tabpanel" aria-labelledby="tab-direct" hidden>
+            <div class="rm-heading">
+              <h2>Direct Drive <span class="panel-unit">not implemented</span></h2>
+              <span class="rm-badge">Unavailable</span>
+            </div>
+            <p class="muted">The xArm control layout is retained for familiarity. This UR service does not open a control connection or collect joint/TCP telemetry.</p>
+            <div class="rm-actions">
+              <button class="btn" disabled data-hardware>Connect for control</button>
+              <button class="btn btn-secondary" disabled data-hardware>Freedrive</button>
+            </div>
+            <h3 class="joints-subhead">Joint Angles <span class="panel-unit">not observed · degrees</span></h3>
+            <div id="live-joints" class="joint-inputs-h"></div>
+            <div class="rm-direct-actions">
+              <button class="btn" disabled data-hardware>Move Joints</button>
+              <button class="btn" disabled data-hardware>Move TCP</button>
+              <button class="btn btn-secondary" disabled data-hardware>Capture Pose</button>
+            </div>
+            <p class="rm-warning">No enable, brake release, reset, jog, gripper, I/O, program, or motion commands are sent.</p>
+          </div>
+
+          <div id="pane-graph" class="mode-pane" role="tabpanel" aria-labelledby="tab-graph">
+            <div class="rm-heading">
+              <h2>Motion Graph <span class="panel-unit">topology workspace</span></h2>
+              <span class="rm-badge">Local draft only</span>
+            </div>
+            <p class="muted">Author named UR5e positions and directed transitions. Drafts stay in this browser unless you export them; nothing is uploaded or executed.</p>
+            <div class="form-group">
+              <label for="graph-model">Draft robot model</label>
+              <select id="graph-model" disabled></select>
+            </div>
             <p id="model-note" class="muted"></p>
             <div class="rm-actions">
-              <button id="new-graph" class="btn btn-secondary" type="button">New graph</button>
+              <button id="new-graph" class="btn btn-secondary" type="button">New Graph</button>
               <button id="open-graph" class="btn btn-secondary" type="button">Open JSON</button>
               <input id="graph-file" type="file" accept=".json,application/json" hidden>
               <button id="export-graph" class="btn btn-secondary" type="button" disabled>Export JSON</button>
-              <button id="undo" class="btn btn-secondary" type="button" disabled>Undo graph edit</button>
+              <button id="undo" class="btn btn-secondary" type="button" disabled>Undo</button>
             </div>
-            <details class="rm-json"><summary>Graph JSON</summary>
-              <label for="graph-input" class="inline-label">Edit draft JSON, then validate</label>
+            <details class="rm-json">
+              <summary>Graph JSON</summary>
+              <label for="graph-input" class="inline-label">Edit the local draft, then validate</label>
               <textarea id="graph-input" spellcheck="false" aria-label="Graph JSON"></textarea>
-              <button id="validate" class="btn" type="button">Validate topology</button>
+              <button id="validate" class="btn" type="button">Validate Topology</button>
             </details>
             <div class="rm-route">
               <div class="form-group"><label for="source">From node</label><select id="source" disabled></select></div>
-              <span aria-hidden="true">→</span>
+              <span aria-hidden="true">&#8594;</span>
               <div class="form-group"><label for="target">To node</label><select id="target" disabled></select></div>
             </div>
             <div class="rm-actions">
-              <button id="preview" class="btn" type="button" disabled>Preview route — no movement</button>
+              <button id="preview" class="btn" type="button" disabled>Preview Route · no movement</button>
               <button class="btn btn-secondary" disabled data-hardware>Execute · unavailable</button>
             </div>
-            <p class="rm-warning">Topology validation is not collision, reachability, joint-limit, payload, TCP or clearance validation. It never authorizes execution.</p>
-          </div>
-          <div id="pane-direct" role="tabpanel" aria-labelledby="tab-direct" hidden>
-            <h2>Direct Drive <span class="panel-unit">not implemented</span></h2>
-            <p class="muted">This is the shared control-panel layout, not an active motion connection. Joint and TCP telemetry are not collected by the Dashboard-only observer.</p>
-            <div class="rm-actions"><button class="btn" disabled data-hardware>Connect for control</button>
-              <button class="btn btn-secondary" disabled data-hardware>Freedrive</button></div>
-            <h3 class="joints-subhead">Observed joint angles <span class="panel-unit">degrees</span></h3>
-            <div id="live-joints" class="joint-inputs-h"></div>
-            <h3>Observed TCP pose</h3><p class="muted">Not observed. Draft coordinates below are not live robot measurements.</p>
-            <div class="rm-actions"><button class="btn" disabled data-hardware>Move joints</button>
-              <button class="btn" disabled data-hardware>Move TCP</button>
-              <button class="btn btn-secondary" disabled data-hardware>Capture current pose</button></div>
-            <p class="rm-warning">No automatic connection, enable, brake release, fault reset, jog, gripper or program commands are sent.</p>
+            <p class="rm-warning">Topology validation is not collision, reachability, joint-limit, payload, TCP, or clearance validation.</p>
           </div>
         </section>
 
         <section class="card" aria-labelledby="editor-title">
-          <div class="rm-heading"><h2 id="editor-title">Node editor</h2><span class="panel-unit">authored coordinates, not live</span></div>
-          <div class="form-group"><label for="node-select">Select a draft node</label><select id="node-select" disabled></select></div>
+          <div class="rm-heading"><h2 id="editor-title">Node Editor</h2><span class="panel-unit">authored coordinates · not live</span></div>
+          <div class="form-group"><label for="node-select">Draft node</label><select id="node-select" disabled></select></div>
           <form id="node-form">
             <fieldset id="node-fields" disabled>
               <div class="form-group"><label for="node-id">Node ID</label><input id="node-id" type="text" required maxlength="64" pattern="[a-zA-Z][a-zA-Z0-9_-]{0,63}" placeholder="e.g. station_home"></div>
-              <p class="inline-label">Draft joint angles · degrees</p><div id="draft-joints" class="joint-inputs-h"></div>
+              <p class="inline-label">Draft joint angles · degrees</p>
+              <div id="draft-joints" class="joint-inputs-h"></div>
               <label class="rm-check"><input id="include-tcp" type="checkbox"> Include an explicit TCP pose for linear arrival</label>
               <div id="draft-tcp" class="joint-inputs-h" hidden></div>
-              <div class="rm-actions"><button id="save-node" class="btn" type="submit">Add node to draft</button>
+              <div class="rm-actions">
+                <button id="save-node" class="btn" type="submit">Add node to draft</button>
                 <button id="reset-node" class="btn btn-secondary" type="button">New node</button>
-                <button id="delete-node" class="btn btn-danger" type="button" disabled>Delete selected node</button></div>
+                <button id="delete-node" class="btn btn-danger" type="button" disabled>Delete node</button>
+              </div>
             </fieldset>
           </form>
           <p class="muted">Deleting a node also removes its incident edges. Undo restores the prior draft.</p>
@@ -103,40 +167,65 @@
       </div>
 
       <div class="page-right">
+        <section class="log-container rm-observer" aria-labelledby="observer-title">
+          <div class="rm-observer-head">
+            <h2 id="observer-title">UR5e Observer</h2>
+            <span class="rm-live-dot" aria-hidden="true"></span>
+            <span>15 s refresh</span>
+          </div>
+          <div class="log-stream">
+            <div class="log-entry"><span class="log-time">CONTROLLER</span> <strong id="controller">Unknown</strong></div>
+            <div class="log-entry"><span class="log-time">SAFETY</span> <strong id="safety">Unknown</strong></div>
+            <div class="log-entry"><span class="log-time">PROGRAM</span> <strong id="program">Unknown</strong></div>
+            <div class="log-entry log-warning"><span class="log-time">NOTICE</span> <span id="status-message" role="status">Waiting for service response…</span></div>
+            <div class="log-entry"><span class="log-time">CONTROL</span> disabled · no command endpoints</div>
+          </div>
+        </section>
+
         <section class="card" aria-labelledby="canvas-title">
-          <div class="rm-heading"><h2 id="canvas-title">Graph view</h2><button id="fit-graph" class="btn btn-secondary" type="button">Fit view</button></div>
+          <div class="rm-heading"><h2 id="canvas-title">Motion Graph</h2><button id="fit-graph" class="btn btn-secondary" type="button">Fit View</button></div>
           <p id="graph-summary" class="muted">No graph loaded.</p>
-          <div class="rm-canvas-wrap"><div id="cy" role="img" aria-label="Draft motion graph topology; use the node and edge selectors for keyboard editing"></div>
-            <p id="canvas-empty">Add a node or open a graph to begin.</p></div>
-          <p class="muted">Drag to arrange · scroll to zoom · select a node to edit. Blue = preview route; amber = selection. Neither represents live robot position.</p>
-          <p class="rm-warning">The diagram is topology, not a physical trajectory or simulation.</p>
+          <div class="rm-canvas-wrap">
+            <div id="cy" role="img" aria-label="Draft motion graph topology; use the node and edge selectors for keyboard editing"></div>
+            <p id="canvas-empty">Add a node or open a graph to begin.</p>
+          </div>
+          <p class="muted">Drag to arrange · scroll to zoom · blue is the preview route · amber is selection. Neither represents live robot position.</p>
+          <p class="rm-warning">This diagram is topology, not a physical trajectory or simulation.</p>
         </section>
 
         <section class="card" aria-labelledby="edge-title">
-          <h2 id="edge-title">Directed transitions</h2>
+          <h2 id="edge-title">Directed Transitions</h2>
           <form id="edge-form"><fieldset id="edge-fields" disabled>
             <div class="rm-route">
               <div class="form-group"><label for="edge-source">Source node</label><select id="edge-source" required></select></div>
-              <span aria-hidden="true">→</span>
+              <span aria-hidden="true">&#8594;</span>
               <div class="form-group"><label for="edge-target">Target node</label><select id="edge-target" required></select></div>
             </div>
             <div class="form-group"><label for="edge-mode">Motion mode</label><select id="edge-mode"><option value="joint">Joint</option><option value="linear">Linear</option></select></div>
-            <button id="save-edge" class="btn" type="submit">Add directed edge</button>
+            <button id="save-edge" class="btn" type="submit">Add Directed Edge</button>
           </fieldset></form>
           <p class="muted">The reverse direction must be added explicitly. Linear targets require an explicit TCP pose.</p>
-          <div class="form-group"><label for="edge-select">Select a draft edge</label><select id="edge-select" disabled></select></div>
-          <button id="delete-edge" class="btn btn-danger" type="button" disabled>Delete selected edge</button>
+          <div class="form-group"><label for="edge-select">Draft edge</label><select id="edge-select" disabled></select></div>
+          <button id="delete-edge" class="btn btn-danger" type="button" disabled>Delete Edge</button>
         </section>
 
-        <section class="card" aria-labelledby="result-title"><h2 id="result-title">Validation &amp; preview</h2>
+        <section class="card" aria-labelledby="result-title">
+          <h2 id="result-title">Validation &amp; Preview</h2>
           <pre id="result" role="status" aria-live="polite">Loading workspace…</pre>
         </section>
-        <section class="card"><h2>Drivers &amp; capabilities</h2><div id="drivers" class="rm-drivers"></div>
-          <p class="muted">Installing a vendor SDK does not implement or enable this prototype's controls. The working xArm application remains separate.</p></section>
+
+        <section class="card" aria-labelledby="drivers-title">
+          <h2 id="drivers-title">Drivers &amp; Capabilities</h2>
+          <div id="drivers" class="rm-drivers"></div>
+          <p class="muted">Installing a vendor SDK does not enable controls. The restored xArm application remains separate.</p>
+        </section>
       </div>
     </main>
-    <footer class="rm-footer"><span>Robot Motion · shared pyxarm UI assets</span>
-      <nav><a href="../docs">API docs</a><a href="../agent-docs">Operator guide</a><a href="../status">Status JSON</a></nav></footer>
+
+    <footer class="rm-footer">
+      <span>UR5e Control Interface · shared xArm visual system</span>
+      <nav><a href="../docs">API docs</a><a href="../agent-docs">Operator guide</a><a href="../status">Status JSON</a></nav>
+    </footer>
   </div>
 </body>
 </html>

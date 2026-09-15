@@ -143,6 +143,10 @@ def test_shared_assets_are_exact_and_do_not_expose_legacy_controls():
         assert "<iframe" not in html and "<video" not in html
         assert "Direct Drive" in html and "Local draft only" in html
         assert "STOP · unavailable" in html
+        assert "UR5e Control Interface" in html
+        assert 'id="control-modes-card"' in html
+        assert 'class="log-container rm-observer"' in html
+        assert "xArm Control" not in html
 
 
 def test_offline_edits_never_replace_configured_graph_or_status(tmp_path):
