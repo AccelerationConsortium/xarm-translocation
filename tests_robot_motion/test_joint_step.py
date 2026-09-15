@@ -352,6 +352,26 @@ def test_stop_before_dispatch_does_not_stop_another_robot_operation(rig):
     assert not rig[1].moves and not rig[1].stops
 
 
+@pytest.mark.parametrize("failure", ["claim", "stop", "advisory"])
+def test_authorization_cannot_race_claim_loss_or_stop_before_dispatch(rig, failure):
+    executor, control, claims, token, _, _ = rig
+
+    def authorize(_request, target, _commissioning):
+        if target is not None:
+            if failure == "claim":
+                claims.release(token)
+            elif failure == "stop":
+                executor.request_stop()
+            else:
+                claims.disable_enforcement()
+        return True
+
+    executor.authorize = authorize
+    with pytest.raises(JointStepRefused):
+        execute(rig)
+    assert not control.moves and not control.stops
+
+
 def test_concurrent_request_is_refused_not_queued(rig):
     executor, control, _, _, _, _ = rig
     entered, release = threading.Event(), threading.Event()

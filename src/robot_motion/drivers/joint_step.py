@@ -131,7 +131,7 @@ class JointStepExecutor:
         # never issue a concurrent SDK call. This is NOT a safety-rated stop.
         self._cancelled.set()
 
-    def _gate(self, token, request, target):
+    def _require_claim_and_unlatched(self, token):
         if self._cancelled.is_set() or self._fault is not None:
             raise JointStepRefused(
                 "Stop/fault is latched; operator reconciliation required"
@@ -142,12 +142,18 @@ class JointStepExecutor:
             self.claims.verify_token(token)
         except Exception as exc:
             raise JointStepRefused("Control claim missing or expired") from exc
+
+    def _gate(self, token, request, target):
+        self._require_claim_and_unlatched(token)
         if self.authorize(request, target, self.limits.commissioning_id) is not True:
             raise JointStepRefused(
                 "Authorized SDK session and commissioned plan required"
             )
         if not self.control.isConnected():
             raise JointStepRefused("Owned control interface disconnected")
+        # Authorization/connection checks may yield or block. A lease loss or
+        # stop arriving during them must be observed before dispatch/success.
+        self._require_claim_and_unlatched(token)
 
     def _sample(self, previous_timestamp=None):
         feedback = JointFeedback.model_validate(self.read_feedback())

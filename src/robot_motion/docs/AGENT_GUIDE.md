@@ -12,7 +12,7 @@ and listing drivers never connect to equipment.
 - UR3e, UR5e, UR5-CB3: read-only Dashboard status plus opt-in RTDE joint/TCP
   observation using the adapted automated-lle URArm wrapper (see LLE_RTDE.md).
   No RTDE control interface, program uploads, motion, recovery, power, brakes,
-gripper or IO commands are instantiated or exposed by the prototype.
+  gripper or IO commands are instantiated or exposed by the prototype.
 - MG400: reserved optional extra and model metadata only; no hardware driver yet.
 
 An isolated small joint-step executor is available for offline development;
