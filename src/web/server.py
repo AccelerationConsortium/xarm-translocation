@@ -29,7 +29,8 @@ class XArmWebHandler(http.server.SimpleHTTPRequestHandler):
             '/connect', '/disconnect', '/move', '/clear', '/gripper', '/ws',
             '/graph', '/control', '/auth', '/camera', '/interlocks',
         ]
-        if any(parsed_path.path.startswith(path) for path in api_paths):
+        if any(parsed_path.path == path or parsed_path.path.startswith(path + '/')
+               for path in api_paths):
             self.proxy_to_api_server()
         # Serve index.html for root path
         elif parsed_path.path == '/':
@@ -141,4 +142,4 @@ if __name__ == "__main__":
         except ValueError:
             print("Invalid port number. Using default port 6001.")
     
-    start_web_server(port) 
+    start_web_server(port)

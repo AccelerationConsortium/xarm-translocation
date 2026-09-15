@@ -5,7 +5,8 @@
  *
  * Reads GET {apiBase}/camera/config to decide whether to show the card
  * (configured) and whether the live preview is usable right now (available +
- * stream_url). The preview is a go2rtc MSE stream over WebSocket; "Follow arm"
+ * stream_url). The preview uses an authenticated dashboard viewing session
+ * carrying go2rtc MSE over WebSocket; "Follow arm"
  * toggles POST {apiBase}/camera/follow. Everything here is best-effort — a
  * camera outage or missing config just hides/greys the card and never touches
  * arm control. See core/camera_tracker.py.
@@ -41,6 +42,10 @@
         var sourceBuffer = null;
         var pendingBuffers = [];     // segments waiting on the SourceBuffer
         var reconnectTimer = null;
+        var generation = 0;          // invalidates in-flight session requests
+        var connecting = false;
+        var releaseSession = null;
+        var pageHidden = false;
         var toggling = false;        // suppress poll-driven state churn mid-toggle
 
         function showOverlay(text) {
@@ -97,7 +102,10 @@
 
         // --- MSE player (go2rtc) ---
         function stopStream() {
+            generation++;
+            connecting = false;
             if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+            if (releaseSession) { releaseSession(); releaseSession = null; }
             if (ws) {
                 try { ws.onclose = null; ws.onerror = null; ws.onmessage = null; ws.close(); } catch (e) {}
                 ws = null;
@@ -113,14 +121,83 @@
         }
 
         function scheduleReconnect() {
-            if (ws) { try { ws.onclose = null; ws.close(); } catch (e) {} ws = null; }
-            sourceBuffer = null;
-            pendingBuffers = [];
-            if (!configured || !streamUrl || reconnectTimer) return;
+            stopStream();
+            if (!configured || !streamUrl || document.hidden || pageHidden) return;
             reconnectTimer = setTimeout(function () {
                 reconnectTimer = null;
-                if (configured && streamUrl) connectMse(streamUrl);
+                if (configured && streamUrl) startStream(streamUrl);
             }, RECONNECT_MS);
+        }
+
+        // The dashboard closed /streams/* (410). Its replacement is on the
+        // shared origin, outside the device's /xarm5 prefix. stream_url only
+        // supplies the registered source name; never connect to the raw relay.
+        function sessionRequest(path, options) {
+            return fetch('/api/camera-streams' + path, Object.assign({
+                credentials: 'same-origin', cache: 'no-store',
+            }, options)).then(function (response) {
+                return response.json().catch(function () { return {}; }).then(function (body) {
+                    if (!response.ok) {
+                        var message = typeof body.detail === 'string' ? body.detail : 'Camera access unavailable';
+                        if (response.status === 401) message = 'Sign in to view this camera';
+                        if (response.status === 404) message = 'Open the control interface through the lab dashboard to view this camera';
+                        throw new Error(message);
+                    }
+                    return body;
+                });
+            });
+        }
+
+        function openSession(url) {
+            var attempt = generation;
+            var source;
+            try { source = new URL(url, window.location.href).searchParams.get('src'); }
+            catch (e) {}
+            if (!source) { showOverlay('Unknown camera feed'); return; }
+            connecting = true;
+            sessionRequest('/sessions', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ stream: source }),
+            }).then(function (session) {
+                var endpoint = '/sessions/' + encodeURIComponent(session.id);
+                var heartbeatTimer = null;
+                var ended = false;
+                function release() {
+                    if (ended) return;
+                    ended = true;
+                    clearTimeout(heartbeatTimer);
+                    // Collect and release even if a lens change or navigation
+                    // happened while the POST was in flight.
+                    fetch('/api/camera-streams' + endpoint, {
+                        method: 'DELETE', credentials: 'same-origin', keepalive: true,
+                    }).catch(function () {});
+                }
+                if (attempt !== generation || document.hidden || pageHidden) { release(); return; }
+                releaseSession = release;
+                function fail(message) {
+                    if (ended || attempt !== generation) return;
+                    showOverlay(message);
+                    scheduleReconnect();
+                }
+                function heartbeat() {
+                    if (ended) return;
+                    sessionRequest(endpoint + '/heartbeat', { method: 'POST' }).then(function () {
+                        if (!ended) heartbeatTimer = setTimeout(heartbeat, session.heartbeat_seconds * 1000);
+                    }).catch(function (error) { fail(error.message); });
+                }
+                var socketUrl = new URL('/api/camera-streams/ws', window.location.href);
+                socketUrl.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                connectMse(socketUrl.href, function (socket) {
+                    socket.send(JSON.stringify({ type: 'session', value: session.ticket }));
+                    session.ticket = '';
+                    heartbeatTimer = setTimeout(heartbeat, session.heartbeat_seconds * 1000);
+                }, fail);
+            }).catch(function (error) {
+                if (attempt !== generation) return;
+                connecting = false;
+                // Config polling retries after sign-in or a capacity change.
+                showOverlay(error.message || 'Camera viewing service unreachable');
+            });
         }
 
         // Append a segment, trimming the buffer if the browser is out of room
@@ -141,15 +218,18 @@
             }
         }
 
-        function connectMse(url) {
+        function connectMse(url, authenticate, fail) {
             var socket;
             try { socket = new WebSocket(url); }
             catch (e) { scheduleReconnect(); return; }
             socket.binaryType = 'arraybuffer';
             ws = socket;
-            var gotData = false;   // has a real video segment arrived yet?
+            connecting = false;
 
             socket.onopen = function () {
+                if (ws !== socket) return;
+                // The single-use ticket must precede the MSE codec request.
+                try { authenticate(socket); } catch (e) { fail('Camera session failed'); return; }
                 // Ask go2rtc for MSE using only the codecs this browser can play.
                 // Codec preference mirrors the dashboard's go2rtc.ts — note the
                 // H.264 main/baseline entries most Tapo C-series cameras emit.
@@ -173,7 +253,6 @@
             function flush() {
                 if (!sourceBuffer || sourceBuffer.updating || !pendingBuffers.length) return;
                 appendSegment(pendingBuffers.shift());
-                if (!gotData) { gotData = true; hideOverlay(); }   // first frame shown
             }
 
             socket.onmessage = function (ev) {
@@ -181,6 +260,10 @@
                 if (typeof ev.data === 'string') {
                     var msg;
                     try { msg = JSON.parse(ev.data); } catch (e) { return; }
+                    if (msg.type === 'session/error' || msg.type === 'error') {
+                        fail(msg.value || 'Camera stream unavailable');
+                        return;
+                    }
                     if (msg.type === 'mse' || msg.type === 'mp4') startMediaSource(socket, msg.value, flush);
                     return;
                 }
@@ -191,8 +274,8 @@
             socket.onerror = function () { try { socket.close(); } catch (e) {} };
             socket.onclose = function () {
                 if (ws !== socket) return;
-                // Closed before any video arrived -> tell the operator, then retry.
-                if (!gotData) showOverlay('Stream unreachable — retrying…');
+                // A frozen last frame must also show the outage.
+                showOverlay('Stream unreachable — retrying…');
                 scheduleReconnect();
             };
         }
@@ -209,40 +292,48 @@
                 } catch (e) { scheduleReconnect(); return; }
                 sb.mode = 'segments';
                 sb.addEventListener('updateend', flush);
+                sb.addEventListener('error', function () {
+                    if (ws !== socket) return;
+                    showOverlay('Video playback failed — retrying…');
+                    scheduleReconnect();
+                });
                 sourceBuffer = sb;
                 video.play().catch(function () {});   // autoplay needs muted (it is)
                 flush();   // drain segments (incl. the init) queued before now
-                // Overlay stays until the first segment actually arrives
-                // (see onmessage) so a black frame never reads as "connected".
+                // The playing event hides the overlay after decoding starts.
             }, { once: true });
         }
 
         function startStream(url) {
-            if (url === streamUrl && ws) return;   // already streaming this url
+            if (url === streamUrl && (ws || connecting || reconnectTimer)) return;
             stopStream();
             streamUrl = url;
+            if (document.hidden || pageHidden) {
+                showOverlay('Video paused while this tab is hidden');
+                return;
+            }
             if (!mseSupported) {
                 showOverlay('Live preview not supported in this browser');
                 return;   // camera still pans server-side; only the preview is gone
             }
-            // Mixed content: a ws:// stream on an https page is silently blocked
-            // by the browser. Behind the single Caddy edge every service shares
-            // one origin, so re-anchor the stream path on the page origin as
-            // wss:// (same-origin, valid cert). If that host doesn't serve
-            // /streams the onclose handler surfaces "unreachable" and retries.
-            if (/^ws:\/\//i.test(url) && window.location.protocol === 'https:') {
-                try {
-                    var u = new URL(url);
-                    url = 'wss://' + window.location.host + u.pathname + u.search;
-                } catch (e) {
-                    showOverlay('Live preview blocked (mixed content: https page, '
-                        + 'ws:// stream). Set stream_base_url to a wss:// origin.');
-                    return;
-                }
-            }
             showOverlay('Connecting…');
-            connectMse(url);
+            openSession(url);
         }
+
+        video.addEventListener('playing', function () { if (ws) hideOverlay(); });
+        video.addEventListener('error', function () {
+            if (!ws) return;
+            showOverlay('Video playback failed — retrying…');
+            scheduleReconnect();
+        });
+        document.addEventListener('visibilitychange', function () {
+            if (document.hidden) {
+                stopStream();
+                showOverlay('Video paused while this tab is hidden');
+            } else refresh();
+        });
+        window.addEventListener('pagehide', function () { pageHidden = true; stopStream(); });
+        window.addEventListener('pageshow', function () { pageHidden = false; refresh(); });
 
         // --- Follow toggle ---
         function applyFollowing(on) {
