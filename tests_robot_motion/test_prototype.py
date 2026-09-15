@@ -526,6 +526,27 @@ const base = process.argv[1], output = process.argv[2];
     assert.equal(await page.locator('[data-hardware]:not(:disabled)').count(), 0);
     await page.screenshot({path: output + '/workspace-mobile.png', fullPage:true});
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    // Receive-only RTDE snapshots populate measured fields, never the draft or
+    // hardware controls. A subsequent missing/invalid sample clears them.
+    const draftBeforeTelemetry = await page.locator('#graph-input').inputValue();
+    await page.route('**/status', route => route.fulfill({
+      status:200, contentType:'application/json', body:JSON.stringify({
+        equipment_name:'Offline RTDE fixture', equipment_status:'ready', allowed_actions:[],
+        details:{model:'ur5e', control_enabled:false, observation_enabled:true,
+          robotmode:'RUNNING', safetystatus:'NORMAL', program_state:'STOPPED',
+          observed_time:'2026-01-01T12:00:00Z',
+          telemetry:{valid:true, source:'rtde_receive', joints_deg:[0,1,2,3,4,5],
+            tcp_mm_rpy_deg:[100,200,300,10,20,30]}},
+      }),
+    }));
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await page.waitForFunction(() => document.querySelector('#live-joints-0').value === '0.000');
+    assert.equal(await page.locator('#live-tcp-0').inputValue(), '100.000');
+    assert.equal(await page.locator('#live-tcp-5').inputValue(), '30.000');
+    assert.equal(await page.locator('#graph-input').inputValue(), draftBeforeTelemetry);
+    assert.equal(await page.locator('[data-hardware]:not(:disabled)').count(), 0);
+    assert.match(await page.locator('#telemetry-note').innerText(), /RTDE receive-only snapshot/);
+    await page.unroute('**/status');
     // Even a misleading capability payload cannot activate this UI scaffold.
     await page.route('**/status', route => route.fulfill({
       status:200, contentType:'application/json', body:JSON.stringify({
@@ -537,6 +558,8 @@ const base = process.argv[1], output = process.argv[2];
     }));
     await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
     await page.waitForFunction(() => document.querySelector('#controller').textContent === 'RUNNING');
+    await page.waitForFunction(() => document.querySelector('#live-joints-0').value === 'Not observed');
+    assert.equal(await page.locator('#live-tcp-0').inputValue(), 'Not observed');
     assert.equal(await page.locator('[data-hardware]:not(:disabled)').count(), 0);
     await page.unroute('**/status');
     await page.route('**/status', route => route.fulfill({status:503, body:'Offline fixture unavailable'}));
@@ -544,6 +567,7 @@ const base = process.argv[1], output = process.argv[2];
     await page.waitForFunction(() => document.querySelector('#controller').textContent === 'Unknown');
     assert.equal(await page.locator('#safety').innerText(), 'Unknown');
     assert.equal(await page.locator('#program').innerText(), 'Unknown');
+    assert.equal(await page.locator('#live-tcp-0').inputValue(), 'Not observed');
     assert.equal(await page.locator('[data-hardware]:not(:disabled)').count(), 0);
     assert.deepEqual(errors, []);
     assert.deepEqual(await page.evaluate(() => window.cspViolations), []);

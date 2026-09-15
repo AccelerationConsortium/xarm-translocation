@@ -19,6 +19,8 @@ def inventory():
                 "extra": "ur",
                 "sdk_installed": find_spec("rtde_receive") is not None,
                 "implementation": "observe",
+                "observation_transports": ["dashboard", "rtde_receive"],
+                "rtde_wrapper": "automated-lle URArm adaptation",
                 "control": "not yet implemented",
             },
             "mg400": {

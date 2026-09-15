@@ -9,7 +9,8 @@ and listing drivers never connect to equipment.
 - xArm5: existing xArm application preserved through pyxarm and the explicit
   robot-motion legacy-xarm command. Its API, claims and graph interlocks remain
   unchanged. No migration of an existing service is implied.
-- UR3e, UR5e, UR5-CB3: explicit model profiles and read-only Dashboard observation.
+- UR3e, UR5e, UR5-CB3: read-only Dashboard status plus opt-in RTDE joint/TCP
+  observation using the adapted automated-lle URArm wrapper (see LLE_RTDE.md).
   No RTDE control interface, program uploads, motion, recovery, power, brakes,
   gripper or IO commands are instantiated or exposed by the prototype.
 - MG400: reserved optional extra and model metadata only; no hardware driver yet.
@@ -32,6 +33,8 @@ Use a gitignored *.local.json config, passed with --config. Robot addresses,
 deployment paths and calibration stay local. Observation requires observe=true,
 driver=ur, an explicit model, and robot_host. control_enabled accepts only false.
 Do not point a second controller at a robot owned by another workflow.
+ur_transport defaults to dashboard; rtde adds receive-only telemetry and
+requires the existing [ur] extra. It does not enable physical control.
 
 The process polls only fixed read commands in the background. /status reads its
 cache and never reconnects, enables hardware, resets a fault, or runs a program.
@@ -82,9 +85,10 @@ JSON disables preview/export and hides the old diagram until validation succeeds
 Responses from older validation/preview requests cannot replace newer edits.
 Import and offline requests are bounded to 256 KiB.
 
-The Direct Drive pane is a non-operational layout preview. Joint/TCP telemetry
-is explicitly "Not observed" because the Dashboard observer does not collect
-it. Take Control, STOP, recovery, connection, freedrive, pose capture and motion
+The Direct Drive pane has read-only joint/TCP snapshots when RTDE is enabled;
+missing, malformed, failed or stale telemetry is explicitly "Not observed".
+Measurements do not authorize a move or establish a current graph node.
+Take Control, STOP, recovery, connection, freedrive, pose capture and motion
 buttons are disabled and have no command handlers. In particular, the displayed
 STOP button cannot stop the robot: use the established operator controls.
 Neither an installed SDK nor a status response can enable these buttons.

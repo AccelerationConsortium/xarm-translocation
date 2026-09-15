@@ -80,10 +80,12 @@
                 </div>
               </div>
             </div>
-            <h3 class="joints-subhead">Joint Angles <span class="panel-unit">not observed · degrees</span></h3>
+            <h3 class="joints-subhead">Joint Angles <span class="panel-unit">degrees · read only</span></h3>
             <div id="live-joints" class="joint-inputs-h"></div>
             <div class="joint-action-row"><label class="inline-label" for="direct-joint-speed">Speed</label><input id="direct-joint-speed" class="inline-input" type="number" placeholder="—" disabled><span class="inline-unit">°/s</span><button class="btn" disabled data-hardware>Copy Joints</button><button class="btn" disabled data-hardware>Move Joints</button></div>
-            <p class="muted">Joint and TCP measurements are unavailable from the Dashboard observer.</p>
+            <h3 class="joints-subhead">TCP Pose <span class="panel-unit">mm / Euler xyz degrees · robot base frame</span></h3>
+            <div id="live-tcp" class="joint-inputs-h"></div>
+            <p id="telemetry-note" class="muted">Joint and TCP measurements are not observed.</p>
           </div>
           <div id="pane-graph" class="mode-pane" role="tabpanel" aria-labelledby="tab-graph">
             <div class="card" id="motion-graph-card">

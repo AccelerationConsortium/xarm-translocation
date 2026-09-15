@@ -81,7 +81,7 @@
       input.step = "any";
       input.required = !readonly;
       input.disabled = readonly;
-      input.value = readonly ? "Not observed" : (values[i] ?? "");
+      input.value = readonly ? (Number.isFinite(values[i]) ? values[i].toFixed(3) : "Not observed") : (values[i] ?? "");
       input.placeholder = readonly ? "" : "Required";
       column.append(caption, input);
       root.append(column);
@@ -145,7 +145,7 @@
   }
 
   // Node/edge presentation follows the pyxarm graph viewer. Deliberately omit
-  // its live-current/gripper leaves: this observer does not measure pose.
+  // its live-current/gripper leaves: measured pose is not a verified graph node.
   function graphStyles() {
     const dark = document.documentElement.classList.contains("dark");
     return [
@@ -302,6 +302,7 @@
   async function refreshStatus() {
     if (document.hidden || polling) return;
     polling = true;
+    let telemetry = null, observationTime = null;
     $("refresh-status").disabled = true;
     try {
       const status = await request("status");
@@ -309,6 +310,8 @@
       $("state").textContent = status.equipment_status || "unknown";
       $("status-message").textContent = status.message || "";
       observedModel = status.details?.model || null;
+      telemetry = status.details?.telemetry;
+      observationTime = status.details?.observed_time;
       $("model").textContent = observedModel || "Not configured";
       $("controller").textContent = status.details?.robotmode || "Unknown";
       $("safety").textContent = status.details?.safetystatus || "Unknown";
@@ -334,8 +337,16 @@
       polling = false;
       $("refresh-status").disabled = false;
       const count = models[observedModel]?.joints || 0;
-      if (count) inputs("live-joints", Array.from({ length: count }, (_, i) => "J" + (i + 1)), [], true);
+      const vector = value => Array.isArray(value) && value.length === 6 && value.every(Number.isFinite);
+      const measured = count === 6 && telemetry?.valid === true && telemetry?.source === "rtde_receive" &&
+        vector(telemetry.joints_deg) && vector(telemetry.tcp_mm_rpy_deg);
+      if (count) inputs("live-joints", Array.from({ length: count }, (_, i) => "J" + (i + 1)), measured ? telemetry.joints_deg : [], true);
       else $("live-joints").textContent = "Not observed; robot model unavailable.";
+      inputs("live-tcp", ["X (mm)", "Y (mm)", "Z (mm)", "Roll (°)", "Pitch (°)", "Yaw (°)"], measured ? telemetry.tcp_mm_rpy_deg : [], true);
+      const sampleTime = observationTime ? new Date(observationTime).toLocaleTimeString() : "time unavailable";
+      $("telemetry-note").textContent = measured
+        ? "RTDE receive-only snapshot · sampled " + sampleTime + ". Display updates on status refresh; not a motion-control feedback loop."
+        : "Joint and TCP measurements are not observed; RTDE telemetry is disabled, stale, or unavailable.";
       updateModelNote();
       updateControls();
     }

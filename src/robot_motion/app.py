@@ -39,6 +39,7 @@ def create_app(settings: Settings | None = None, *, observer=None):
     settings = settings or Settings()
     observation = None
     observed_at = None
+    observed_time = None
     activity_since = None
     previous_activity = "unknown"
     started = time.monotonic()
@@ -51,13 +52,25 @@ def create_app(settings: Settings | None = None, *, observer=None):
             raise ValueError("Configured graph belongs to a different robot model")
 
     if observer is None and settings.observe:
-        observer = URObserver(settings)
+        if settings.ur_transport == "rtde":
+            from .drivers.ur_rtde import URRTDEObserver
+
+            observer = URRTDEObserver(settings)
+        else:
+            observer = URObserver(settings)
 
     async def poll():
-        nonlocal observation, observed_at, activity_since, previous_activity
+        nonlocal observation, observed_at, observed_time, activity_since, previous_activity
         while True:
             try:
-                result = await asyncio.to_thread(observer.read)
+                read_task = asyncio.create_task(asyncio.to_thread(observer.read))
+                try:
+                    result = await asyncio.shield(read_task)
+                except asyncio.CancelledError:
+                    # Cancelling to_thread does not stop the native SDK call.
+                    # Drain it before disconnecting the receiver at shutdown.
+                    await asyncio.gather(read_task, return_exceptions=True)
+                    raise
             except Exception:
                 log.exception("Read-only robot observation failed")
                 result = {
@@ -72,6 +85,7 @@ def create_app(settings: Settings | None = None, *, observer=None):
             if activity != previous_activity:
                 previous_activity, activity_since = activity, now
             observation, observed_at = result, time.monotonic()
+            observed_time = now
             await asyncio.sleep(settings.poll_interval_s)
 
     @asynccontextmanager
@@ -86,6 +100,8 @@ def create_app(settings: Settings | None = None, *, observer=None):
                     await task
                 except asyncio.CancelledError:
                     pass
+            if observer is not None and callable(getattr(observer, "close", None)):
+                await asyncio.to_thread(observer.close)
 
     app = FastAPI(
         title="Robot Motion", version=__version__, lifespan=lifespan, description=NOTICE
@@ -152,6 +168,14 @@ def create_app(settings: Settings | None = None, *, observer=None):
                 "notice": NOTICE,
                 "graph_loaded": graph is not None,
                 "observation_enabled": settings.observe,
+                "observed_time": (
+                    observed_time.isoformat()
+                    if observed_time is not None and not stale
+                    else None
+                ),
+                "observation_transport": (
+                    settings.ur_transport if settings.driver == "ur" else None
+                ),
             },
         )
 

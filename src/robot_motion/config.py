@@ -52,6 +52,8 @@ class Settings(BaseModel):
     model: Literal["ur3e", "ur5e", "ur5_cb3", "mg400"] | None = None
     robot_host: str | None = Field(default=None, min_length=1, max_length=253)
     observe: bool = False
+    # Opt in explicitly; existing deployments keep their Dashboard-only reads.
+    ur_transport: Literal["dashboard", "rtde"] = "dashboard"
     poll_interval_s: float = Field(default=10, ge=5, le=300, allow_inf_nan=False)
     timeout_s: float = Field(default=2, ge=0.1, le=5, allow_inf_nan=False)
     graph_file: str | None = None
@@ -61,6 +63,8 @@ class Settings(BaseModel):
 
     @model_validator(mode="after")
     def coherent(self):
+        if self.ur_transport == "rtde" and self.driver != "ur":
+            raise ValueError("RTDE transport requires a UR driver")
         if self.driver == "none":
             if self.model is not None or self.observe or self.robot_host is not None:
                 raise ValueError("Unconfigured mode cannot select or observe a robot")
