@@ -54,10 +54,17 @@ UR hardware control still requires implementation and commissioning.
 
 ## Control workspace UI
 
-The workspace reuses the packaged pyxarm stylesheet and Cytoscape library
-byte-for-byte. Its header, action row, mode tabs, cards and joint fields follow
-the xArm web layout. It does not load the legacy xArm command handlers, camera
-player, controller settings or API server. The legacy application is unchanged.
+The control page reuses the packaged pyxarm stylesheet byte-for-byte and its
+two-column layout: connection tile and Direct Drive / Graph Control on the left,
+camera placeholder, Gripper / Tool I/O, and status log on the right. The camera
+and tool panels explicitly show unavailable state; no camera source is loaded.
+Refresh Status only reads the service's cached /status response. It does not
+connect or send commands to the robot. The page does not load the legacy xArm
+command handlers, camera player, controller settings or API server.
+
+Motion Graph opens the offline editor in a separate view on the same page.
+Control Interface returns to the control view without discarding the draft.
+The editor reuses the packaged Cytoscape library byte-for-byte.
 
 Graph Workspace provides local node editing, directed joint/linear edges,
 selection on the canvas or keyboard-accessible selectors, topology validation,

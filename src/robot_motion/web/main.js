@@ -14,6 +14,26 @@
   let selectedNode = null, unsaved = false, polling = false;
   const undo = [];
   let cy = null;
+  let workspaceOpener = null;
+
+  function showWorkspace(open, opener = null) {
+    if (opener) workspaceOpener = opener;
+    $("control-workspace").hidden = open;
+    $("graph-workspace").hidden = !open;
+    if (open) {
+      requestAnimationFrame(() => {
+        cy?.resize();
+        if (cy?.nodes().length) cy.fit(undefined, 50);
+      });
+      $("close-workspace").focus();
+    } else {
+      (workspaceOpener || $("open-workspace")).focus();
+    }
+  }
+  for (const id of ["open-workspace", "edit-workspace"]) {
+    $(id).addEventListener("click", () => showWorkspace(true, $(id)));
+  }
+  $("close-workspace").addEventListener("click", () => showWorkspace(false));
 
   function result(message, error = false) {
     $("result").textContent = message;
@@ -282,6 +302,7 @@
   async function refreshStatus() {
     if (document.hidden || polling) return;
     polling = true;
+    $("refresh-status").disabled = true;
     try {
       const status = await request("status");
       $("robot-name").textContent = status.equipment_name || "Robot status";
@@ -292,14 +313,26 @@
       $("controller").textContent = status.details?.robotmode || "Unknown";
       $("safety").textContent = status.details?.safetystatus || "Unknown";
       $("program").textContent = status.details?.program_state || "Unknown";
+      const observed = status.details?.observation_enabled === true && !!status.details?.robotmode;
+      $("observer-state").textContent = observed ? "Status observed · read only" : "No fresh observation";
+      $("observer-light").classList.toggle("conn-on", observed);
+      $("observer-light").classList.toggle("conn-off", !observed);
+      $("observer-light").title = $("observer-state").textContent;
+      $("observation-time").textContent = "Status refreshed " + new Date().toLocaleTimeString();
     } catch (error) {
       $("state").textContent = "Unknown";
       $("status-message").textContent = "Service unavailable: " + error.message;
       observedModel = null;
       $("model").textContent = "Unknown";
       for (const id of ["controller", "safety", "program"]) $(id).textContent = "Unknown";
+      $("observer-state").textContent = "Service unavailable";
+      $("observer-light").classList.remove("conn-on");
+      $("observer-light").classList.add("conn-off");
+      $("observer-light").title = "Service unavailable";
+      $("observation-time").textContent = "Last refresh failed";
     } finally {
       polling = false;
+      $("refresh-status").disabled = false;
       const count = models[observedModel]?.joints || 0;
       if (count) inputs("live-joints", Array.from({ length: count }, (_, i) => "J" + (i + 1)), [], true);
       else $("live-joints").textContent = "Not observed; robot model unavailable.";
@@ -307,10 +340,12 @@
       updateControls();
     }
   }
+  $("refresh-status").addEventListener("click", refreshStatus);
 
   function setTheme(dark) {
     document.documentElement.classList.toggle("dark", dark);
     $("theme-toggle").setAttribute("aria-pressed", String(dark));
+    $("theme-toggle").textContent = dark ? "Light theme" : "Dark theme";
     if (cy) cy.style(graphStyles());
   }
   $("theme-toggle").addEventListener("click", () => {
@@ -333,7 +368,7 @@
     $("tab-" + name).addEventListener("keydown", event => {
       if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
         event.preventDefault();
-        const next = event.key === "Home" ? "graph" : event.key === "End" ? "direct" : name === "graph" ? "direct" : "graph";
+        const next = event.key === "Home" ? "direct" : event.key === "End" ? "graph" : name === "graph" ? "direct" : "graph";
         activateTab(next);
         $("tab-" + next).focus();
       }

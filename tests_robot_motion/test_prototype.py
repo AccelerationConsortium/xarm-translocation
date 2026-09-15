@@ -340,6 +340,18 @@ const base = process.argv[1], output = process.argv[2];
     });
     await page.goto(base + '/web/', {waitUntil: 'networkidle'});
     await page.waitForFunction(() => document.querySelector('#result').textContent.includes('Topology valid'));
+    assert.equal(await page.locator('#graph-workspace').isVisible(), false);
+    assert.equal(await page.locator('#control-workspace').isVisible(), true);
+    const refreshed = page.waitForResponse(r => r.url().endsWith('/status') && r.request().method() === 'GET');
+    await page.locator('#refresh-status').click();
+    await refreshed;
+    await page.screenshot({path: output + '/control-desktop.png', fullPage: true});
+    await page.locator('#tab-direct').click();
+    assert.equal(await page.locator('.jog-xy-pad').isVisible(), true);
+    assert.equal(await page.locator('#live-joints input').count(), 6);
+    await page.screenshot({path: output + '/control-direct.png', fullPage: true});
+    await page.locator('#tab-graph').click();
+    await page.locator('#open-workspace').click();
     assert.equal(await page.locator('[data-hardware]:not(:disabled)').count(), 0);
     assert.equal(await page.locator('#graph-model').inputValue(), 'ur5e');
     assert.equal(await page.locator('#draft-joints input').count(), 6);
@@ -453,11 +465,17 @@ const base = process.argv[1], output = process.argv[2];
       return box.x1 >= 0 && box.y1 >= 0 && box.x2 <= element.clientWidth && box.y2 <= element.clientHeight;
     });
     assert.equal(fits, true, 'graph refits inside the mobile canvas');
+    await page.locator('#close-workspace').click();
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.locator('#open-workspace').click();
+    assert.equal(JSON.parse(await page.locator('#graph-input').inputValue()).nodes.length, 2);
+    await page.locator('#close-workspace').click();
     await page.locator('#tab-graph').focus();
     await page.keyboard.press('ArrowRight');
     assert.equal(await page.locator('#tab-direct').getAttribute('aria-selected'), 'true');
     assert.equal(await page.locator('[data-hardware]:not(:disabled)').count(), 0);
     await page.screenshot({path: output + '/workspace-mobile.png', fullPage:true});
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     // Even a misleading capability payload cannot activate this UI scaffold.
     await page.route('**/status', route => route.fulfill({
       status:200, contentType:'application/json', body:JSON.stringify({
