@@ -95,6 +95,13 @@ not exposed there. The browser requests only status, driver inventory, configure
 graph and the two offline graph-calculation routes. There are no camera streams
 or robot WebSocket connections in this workspace.
 
+The dashboard proxy permits only fixed asset paths without query strings and
+enforces script-src 'self'. Keep asset URLs relative and query-free, and all
+JavaScript (including theme initialization) in external bundled scripts. The
+proxy already sends Cache-Control: no-store; do not add cache-busting queries
+or weaken its CSP. Browser regressions cover both direct and dashboard-prefixed
+URLs with the dashboard's CSP and fixed-path restrictions, using an offline app.
+
 ## API discovery
 
 - /: STATUS_SPEC probe

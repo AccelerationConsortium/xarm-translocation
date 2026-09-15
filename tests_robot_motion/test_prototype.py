@@ -149,6 +149,21 @@ def test_shared_assets_are_exact_and_do_not_expose_legacy_controls():
         assert "xArm Control" not in html
 
 
+def test_html_matches_dashboard_asset_and_script_policy():
+    from html.parser import HTMLParser
+
+    class Assets(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            attributes = dict(attrs)
+            assert not any(name.startswith("on") for name in attributes)
+            if tag == "script":
+                assert attributes.get("src") in {"main.js", "pyxarm/cytoscape.min.js"}
+            if tag == "link" and attributes.get("rel") == "stylesheet":
+                assert attributes.get("href") in {"style.css", "pyxarm/style.css"}
+
+    Assets().feed(files("robot_motion").joinpath("web/index.html").read_text())
+
+
 def test_offline_edits_never_replace_configured_graph_or_status(tmp_path):
     import json
 
@@ -273,7 +288,8 @@ def test_status_contract(mode, safety, program, state, activity):
     assert value["activity"] == activity
 
 
-def test_browser_workspace_offline(tmp_path):
+@pytest.mark.parametrize("prefix", ["", "/api/robot-motion/ligand_ur5e"])
+def test_browser_workspace_offline(tmp_path, prefix):
     """Optional real-browser regression; set ROBOT_MOTION_BROWSER_MODULE.
 
     The module is a locally installed Playwright package. No dependency download,
@@ -286,6 +302,7 @@ def test_browser_workspace_offline(tmp_path):
     import time
 
     import uvicorn
+    from fastapi import FastAPI, Request, Response
 
     if not os.environ.get("ROBOT_MOTION_BROWSER_MODULE"):
         pytest.skip("Set ROBOT_MOTION_BROWSER_MODULE to a local Playwright module")
@@ -294,6 +311,31 @@ def test_browser_workspace_offline(tmp_path):
     listener.listen()
     base = "http://127.0.0.1:" + str(listener.getsockname()[1])
     app = create_app(Settings(driver="ur", model="ur5e", observe=False))
+    if prefix:
+        # Mirror the dashboard's transport contract without authentication or
+        # live upstreams. Its actual session gate is tested in the dashboard repo.
+        dashboard = FastAPI()
+        reads = {"web/index.html", "web/main.js", "web/style.css",
+                 "web/pyxarm/style.css", "web/pyxarm/cytoscape.min.js",
+                 "status", "drivers", "graph"}
+
+        @dashboard.middleware("http")
+        async def proxy_contract(request: Request, call_next):
+            path = request.url.path.removeprefix(prefix + "/")
+            allowed = reads if request.method == "GET" else {"graph/validate", "graph/preview"}
+            if request.url.query or path not in allowed:
+                return Response(status_code=404)
+            response = await call_next(request)
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+                "connect-src 'self'; img-src 'self' data: blob:; font-src 'self'; "
+                "frame-ancestors 'self'; base-uri 'none'; form-action 'none'"
+            )
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        dashboard.mount(prefix, app)
+        app = dashboard
     server = uvicorn.Server(uvicorn.Config(app, log_level="error", loop="asyncio", ws="none"))
     worker = threading.Thread(target=server.run, kwargs={"sockets": [listener]}, daemon=True)
     worker.start()
@@ -304,7 +346,7 @@ def test_browser_workspace_offline(tmp_path):
         assert server.started
         completed = subprocess.run(
             [os.getenv("ROBOT_MOTION_NODE", "node"), "-e", _BROWSER_WORKSPACE_TEST,
-             base, str(tmp_path)], capture_output=True, text=True, timeout=90,
+             base + prefix, str(tmp_path)], capture_output=True, text=True, timeout=90,
         )
         assert completed.returncode == 0, completed.stdout + completed.stderr
         assert "workspace checks passed" in completed.stdout
@@ -327,18 +369,26 @@ const base = process.argv[1], output = process.argv[2];
     const page = await context.newPage();
     const errors = [], forbidden = [], sockets = [];
     page.on('pageerror', e => errors.push(e.message));
+    await context.addInitScript(() => {
+      window.cspViolations = [];
+      document.addEventListener('securitypolicyviolation', event => {
+        window.cspViolations.push(event.violatedDirective + ': ' + event.blockedURI);
+      });
+    });
     page.on('websocket', ws => sockets.push(ws.url()));
     await context.route('**/*', route => {
       const request = route.request(), url = new URL(request.url());
-      const reads = ['/web/', '/web/main.js', '/web/style.css', '/web/pyxarm/style.css',
+      const reads = ['/web/index.html', '/web/main.js', '/web/style.css', '/web/pyxarm/style.css',
         '/web/pyxarm/cytoscape.min.js', '/status', '/drivers', '/graph', '/favicon.ico'];
-      const allowed = url.origin === base &&
-        (request.method() === 'GET' ? reads.includes(url.pathname) :
-         request.method() === 'POST' && ['/graph/validate', '/graph/preview'].includes(url.pathname));
+      const root = new URL(base), prefix = root.pathname.replace(/\/$/, '');
+      const path = url.pathname.startsWith(prefix + '/') ? url.pathname.slice(prefix.length) : '';
+      const allowed = url.origin === root.origin && !url.search &&
+        (request.method() === 'GET' ? reads.includes(path) :
+         request.method() === 'POST' && ['/graph/validate', '/graph/preview'].includes(path));
       if (!allowed) { forbidden.push(request.method() + ' ' + url.pathname); return route.abort(); }
       return route.continue();
     });
-    await page.goto(base + '/web/', {waitUntil: 'networkidle'});
+    await page.goto(base + '/web/index.html', {waitUntil: 'networkidle'});
     await page.waitForFunction(() => document.querySelector('#result').textContent.includes('Topology valid'));
     assert.equal(await page.locator('#graph-workspace').isVisible(), false);
     assert.equal(await page.locator('#control-workspace').isVisible(), true);
@@ -496,6 +546,7 @@ const base = process.argv[1], output = process.argv[2];
     assert.equal(await page.locator('#program').innerText(), 'Unknown');
     assert.equal(await page.locator('[data-hardware]:not(:disabled)').count(), 0);
     assert.deepEqual(errors, []);
+    assert.deepEqual(await page.evaluate(() => window.cspViolations), []);
     assert.deepEqual(forbidden, []);
     assert.deepEqual(sockets, []);
     console.log('workspace checks passed');
