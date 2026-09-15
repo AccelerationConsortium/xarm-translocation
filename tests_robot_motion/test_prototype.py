@@ -161,7 +161,7 @@ def test_html_matches_dashboard_asset_and_script_policy():
             if tag == "link" and attributes.get("rel") == "stylesheet":
                 assert attributes.get("href") in {"style.css", "pyxarm/style.css"}
 
-    Assets().feed(files("robot_motion").joinpath("web/index.html").read_text())
+    Assets().feed(files("robot_motion").joinpath("web/index.html").read_text(encoding="utf-8"))
 
 
 def test_offline_edits_never_replace_configured_graph_or_status(tmp_path):
