@@ -454,6 +454,37 @@
                     </div><!-- /camera-row -->
                 </div>
 
+                <!-- Depth Camera — the Intel RealSense plugged into THIS PC
+                     (src/settings/realsense.yaml). Hidden unless enabled
+                     (GET /realsense/status decides). The preview is an MJPEG
+                     <img> from /realsense/stream.mjpg; clicking it reads the
+                     metric distance under the cursor from /realsense/depth.
+                     Wiring in realsense-card.js; see core/realsense_camera.py. -->
+                <div class="card" id="realsense-card" hidden>
+                    <div class="camera-head">
+                        <h2>Depth Camera</h2>
+                        <span id="realsense-status" class="muted camera-status"></span>
+                    </div>
+                    <div class="camera-row">
+                    <div class="camera-side realsense-side">
+                        <button type="button" id="realsense-toggle" class="btn btn-secondary realsense-btn" disabled>Start</button>
+                        <div class="lens-btns realsense-kinds">
+                            <button type="button" class="lens-btn is-on" data-rs-kind="color">Color</button>
+                            <button type="button" class="lens-btn" data-rs-kind="depth">Depth</button>
+                        </div>
+                        <span class="muted realsense-hint">Click the image to measure distance.</span>
+                    </div>
+                    <div class="camera-stage realsense-stage">
+                        <img id="realsense-img" class="camera-video realsense-img" alt="RealSense live preview" hidden>
+                        <div id="realsense-marker" class="realsense-marker" hidden aria-hidden="true"></div>
+                        <div id="realsense-overlay" class="camera-overlay">
+                            <span id="realsense-overlay-text">Connecting…</span>
+                        </div>
+                        <span id="realsense-readout" class="realsense-readout"></span>
+                    </div>
+                    </div><!-- /camera-row -->
+                </div>
+
                 <!-- Gripper | Linear Track, moved out of the title tile into
                      the right column beside the log. IDs unchanged. -->
                 <div class="card">
@@ -617,6 +648,7 @@
       }
     </script>
     <script src="camera-player.js?v=20260915a"></script>
+    <script src="realsense-card.js?v=20260918a"></script>
     <script src="main.js?v=20260813a"></script>
 </body>
 </html>

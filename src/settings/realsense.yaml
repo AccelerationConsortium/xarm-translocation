@@ -1,0 +1,65 @@
+# Intel RealSense depth camera (D435i and friends) plugged into THIS device
+# PC over USB 3. Unlike the lab PTZ camera (camera_tracking.yaml), which is a
+# network camera driven through the dashboard, this one is local hardware:
+# the xArm service talks to it directly through librealsense (pyrealsense2)
+# and exposes it under /realsense/* plus components.realsense_camera and
+# details.realsense on /status.
+#
+# Install the driver extra once per venv:   uv sync --extra realsense
+# Without it the service still boots; /realsense/status reports
+# installed: false and the panel card explains why.
+
+# Master switch. When false (or this file is missing) the camera layer is an
+# inert no-op: no /status block, no panel card, no USB access at all.
+enabled: true
+
+# Serial number of the camera to open, from `details.realsense.devices` on
+# /status (or `GET /realsense/status`). Leave blank to open the first
+# RealSense found -- fine with one camera, ambiguous with two.
+serial: ""
+
+# Free-form label surfaced on the panel card and in components.realsense_camera.
+label: "xArm depth camera"
+
+# Streaming lifecycle.
+#   autostart        - open the pipeline when the service boots (a missing
+#                      camera is logged, never fatal). Off by default so a
+#                      camera left unplugged does not spam the log at boot.
+#   start_on_demand  - let the first snapshot / stream request start the
+#                      pipeline. The panel relies on this.
+#   idle_timeout_seconds - stop the pipeline after this long with no consumer
+#                      (no snapshot, no open stream). 0 keeps it running until
+#                      POST /realsense/stop. Streaming costs USB bandwidth and
+#                      ~5% CPU; there is no wear concern either way.
+autostart: false
+start_on_demand: true
+idle_timeout_seconds: 120
+
+# Stream profiles. 640x480@30 for both is the safe default on USB 3 and the
+# native depth resolution of the D435i's best-accuracy mode is 848x480. On a
+# USB 2 link librealsense may refuse this combination -- drop to 15 fps or
+# 480x270 if `GET /realsense/status` shows usb_type "2.x".
+color:
+  enabled: true
+  width: 640
+  height: 480
+  fps: 30
+depth:
+  enabled: true
+  width: 640
+  height: 480
+  fps: 30
+
+# Re-project depth onto the colour image so a pixel in the colour snapshot
+# maps to the same pixel in the depth map (and to /realsense/depth?x=&y=).
+# Costs a little CPU per frame. Turn off only if you consume raw depth.
+align_depth_to_color: true
+
+# JPEG quality for snapshots and the MJPEG preview (1-95).
+jpeg_quality: 80
+
+# How long one wait_for_frames() may block before it counts as a dropped
+# frame. Several consecutive drops mark the camera as lost (unplugged) and
+# stop the pipeline; POST /realsense/start brings it back.
+frame_timeout_ms: 5000
+max_consecutive_frame_failures: 5

@@ -1,0 +1,804 @@
+"""Intel RealSense depth camera attached to this device PC.
+
+The D435i (and any other librealsense-supported camera) is *local* USB
+hardware, unlike the lab PTZ camera in ``camera_tracker.py`` which is a
+network camera driven through the dashboard. This module owns the
+librealsense pipeline and hands the API server ready-to-serve artefacts:
+
+* :meth:`RealSenseCamera.describe` -- device enumeration + stream state for
+  ``GET /realsense/status`` and the ``details.realsense`` block on
+  ``/status``.
+* :meth:`RealSenseCamera.jpeg` / :meth:`mjpeg_frames` -- colour or colourised
+  depth as JPEG (snapshot) or a multipart MJPEG generator (live preview).
+* :meth:`RealSenseCamera.depth_png` -- the raw 16-bit depth map, lossless,
+  for downstream CV.
+* :meth:`RealSenseCamera.depth_at` -- metric distance (and a camera-frame 3-D
+  point) for one pixel, the primitive a "did the arm really get there"
+  vision check or a plate-locator builds on.
+
+Design constraints, shared with the other optional subsystems:
+
+1. **Optional at every layer.** ``pyrealsense2`` is an extra
+   (``uv sync --extra realsense``); when it is missing, or the YAML says
+   ``enabled: false``, or no camera is plugged in, construction still
+   succeeds and every accessor answers with a *reason* instead of raising
+   into the arm's control path. ``/status`` omits the block entirely when
+   the feature is unconfigured, so unmigrated deployments see no change.
+2. **Never on the asyncio loop.** ``wait_for_frames`` blocks; a daemon
+   capture thread owns the pipeline and publishes the latest
+   :class:`FrameBundle` under a lock. Request handlers only read it.
+3. **Injectable backend.** ``rs_module`` (the ``pyrealsense2`` namespace)
+   and ``np_module`` are constructor parameters so the unit tests drive the
+   whole lifecycle with a fake -- no hardware, no DLL.
+4. **Camera health never changes ``equipment_status``.** Arm motion does
+   not depend on the camera (yet), so an unplugged camera is reported on
+   ``components.realsense_camera`` + ``details.realsense`` and leaves the
+   top-level state alone -- the same reasoning STATUS_SPEC §2.2 applies to
+   the sash interlock being blind.
+
+Configuration lives in ``src/settings/realsense.yaml``; see that file for
+the field documentation.
+"""
+
+from __future__ import annotations
+
+import io
+import logging
+import os
+import threading
+import time
+from dataclasses import dataclass
+from typing import Any, Dict, Iterator, List, Optional, Tuple
+
+logger = logging.getLogger("xarm.realsense")
+
+_DEVICE_LIST_TTL_S = 5.0     # enumeration is a USB round-trip; cache it
+_STREAM_KINDS = ("color", "depth")
+_MJPEG_BOUNDARY = "xarm-realsense-frame"
+
+
+class RealSenseError(RuntimeError):
+    """Base class for camera failures the API surfaces to the caller."""
+
+
+class RealSenseUnavailable(RealSenseError):
+    """Not installed / disabled / no camera plugged in. HTTP 503 material."""
+
+
+class RealSenseNotStreaming(RealSenseError):
+    """A frame was asked for while the pipeline is stopped. HTTP 409 material."""
+
+
+@dataclass
+class FrameBundle:
+    """The most recent set of frames, already converted to numpy arrays."""
+
+    color: Any                  # HxWx3 uint8 BGR, or None if colour is disabled
+    depth: Any                  # HxW uint16 (units of depth_scale metres), or None
+    depth_color: Any            # HxWx3 uint8 RGB colourised depth, or None
+    depth_scale: float          # metres per depth unit
+    intrinsics: Dict[str, Any]  # of the stream the depth map is expressed in
+    frame_number: int
+    timestamp_ms: float         # device timestamp
+    captured_at: float          # time.monotonic() on this host
+
+
+class RealSenseCamera:
+    """Own one RealSense pipeline; publish frames and health.
+
+    ``config`` is the parsed ``realsense.yaml`` (or ``None`` for a disabled
+    no-op). ``rs_module`` / ``np_module`` default to importing
+    ``pyrealsense2`` / ``numpy`` lazily; tests pass fakes.
+    """
+
+    def __init__(
+        self,
+        config: Optional[Dict[str, Any]],
+        *,
+        rs_module: Any = None,
+        np_module: Any = None,
+    ):
+        config = config or {}
+        self.enabled = bool(config.get("enabled", False))
+        self.serial = str(config.get("serial", "") or "").strip() or None
+        self.label = str(config.get("label", "") or "").strip() or "RealSense camera"
+        self.autostart = bool(config.get("autostart", False))
+        self.start_on_demand = bool(config.get("start_on_demand", True))
+        self.idle_timeout_s = _as_float(config.get("idle_timeout_seconds"), 0.0)
+        self.align_depth_to_color = bool(config.get("align_depth_to_color", True))
+        self.jpeg_quality = int(min(95, max(1, _as_float(config.get("jpeg_quality"), 80))))
+        self.frame_timeout_ms = int(_as_float(config.get("frame_timeout_ms"), 5000))
+        self.max_frame_failures = int(_as_float(config.get("max_consecutive_frame_failures"), 5))
+        self.color_profile = _stream_profile(config.get("color"), 640, 480, 30)
+        self.depth_profile = _stream_profile(config.get("depth"), 640, 480, 30)
+
+        # Backend. Import lazily so the module (and the whole API server)
+        # stays importable on a machine without the extra installed.
+        self._rs = rs_module
+        self._np = np_module
+        self.installed = False
+        self.library_version: Optional[str] = None
+        self.install_error: Optional[str] = None
+        if self.enabled:
+            self._import_backend()
+
+        # Pipeline state. Everything below is guarded by _lock.
+        self._lock = threading.RLock()
+        self._frame_ready = threading.Condition(self._lock)
+        self._pipeline = None
+        self._align = None
+        self._colorizer = None
+        self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._state = "off"                     # off | starting | streaming | error
+        self._latest: Optional[FrameBundle] = None
+        self._device_info: Optional[Dict[str, Any]] = None
+        self._depth_scale: Optional[float] = None
+        self._intrinsics: Dict[str, Dict[str, Any]] = {}
+        self._frames_captured = 0
+        self._fps_ema: Optional[float] = None
+        self._last_consumer_at = time.monotonic()
+        self._last_error: Optional[str] = None
+        self._started_at: Optional[float] = None
+
+        # Enumeration cache (see _DEVICE_LIST_TTL_S).
+        self._devices_cache: Optional[List[Dict[str, Any]]] = None
+        self._devices_cache_at = 0.0
+
+    # ------------------------------------------------------------------
+    # Construction helpers
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def from_config_file(cls, path: str, **kwargs: Any) -> "RealSenseCamera":
+        """Build from YAML. Missing/invalid file -> disabled no-op, never raises."""
+        config: Dict[str, Any] = {}
+        try:
+            import yaml  # local import: keeps the module importable without PyYAML
+
+            with open(path, "r") as handle:
+                loaded = yaml.safe_load(handle)
+            if isinstance(loaded, dict):
+                config = loaded
+        except FileNotFoundError:
+            logger.info("no config at %s; RealSense camera disabled", path)
+        except Exception as exc:  # noqa: BLE001 - never break service boot
+            logger.warning("failed to load %s: %s; RealSense camera disabled", path, exc)
+        return cls(config, **kwargs)
+
+    def _import_backend(self) -> None:
+        try:
+            if self._rs is None:
+                import pyrealsense2 as rs  # type: ignore[import-not-found]
+
+                self._rs = rs
+            if self._np is None:
+                import numpy as np
+
+                self._np = np
+            self.installed = True
+            self.library_version = str(getattr(self._rs, "__version__", None) or "") or None
+        except Exception as exc:  # noqa: BLE001 - missing extra is an expected state
+            self.installed = False
+            self.install_error = f"{type(exc).__name__}: {exc}"
+
+    @property
+    def configured(self) -> bool:
+        """``enabled: true`` in the YAML. Decides whether /status carries a block."""
+        return self.enabled
+
+    @property
+    def streaming(self) -> bool:
+        with self._lock:
+            return self._state == "streaming"
+
+    @property
+    def state(self) -> str:
+        with self._lock:
+            return self._state
+
+    # ------------------------------------------------------------------
+    # Enumeration
+    # ------------------------------------------------------------------
+
+    def list_devices(self, *, force: bool = False) -> List[Dict[str, Any]]:
+        """Every RealSense on the USB bus, streaming or not. Cached briefly.
+
+        Returns ``[]`` (never raises) when the backend is missing or the
+        query fails -- the caller reads ``describe()['reason']`` for why.
+        """
+        if not (self.enabled and self.installed):
+            return []
+        now = time.monotonic()
+        if (not force and self._devices_cache is not None
+                and (now - self._devices_cache_at) < _DEVICE_LIST_TTL_S):
+            return list(self._devices_cache)
+        devices: List[Dict[str, Any]] = []
+        try:
+            for dev in self._rs.context().query_devices():
+                devices.append(self._device_dict(dev))
+        except Exception as exc:  # noqa: BLE001 - enumeration is best-effort
+            logger.warning("RealSense enumeration failed: %s", exc)
+        self._devices_cache = devices
+        self._devices_cache_at = now
+        return list(devices)
+
+    def _device_dict(self, dev: Any) -> Dict[str, Any]:
+        rs = self._rs
+        info: Dict[str, Any] = {}
+        for key in ("name", "serial_number", "firmware_version",
+                    "usb_type_descriptor", "product_line", "product_id"):
+            member = getattr(rs.camera_info, key, None)
+            try:
+                info[key] = dev.get_info(member) if member is not None and dev.supports(member) else None
+            except Exception:  # noqa: BLE001
+                info[key] = None
+        return {
+            "name": info["name"],
+            "serial": info["serial_number"],
+            "firmware": info["firmware_version"],
+            "usb_type": info["usb_type_descriptor"],
+            "product_line": info["product_line"],
+            "product_id": info["product_id"],
+        }
+
+    def _pick_device(self) -> Dict[str, Any]:
+        devices = self.list_devices(force=True)
+        if not devices:
+            raise RealSenseUnavailable(
+                "no RealSense device connected (check the USB 3 cable and port; "
+                "the camera should appear in Device Manager even without this service)"
+            )
+        if self.serial:
+            for dev in devices:
+                if dev.get("serial") == self.serial:
+                    return dev
+            raise RealSenseUnavailable(
+                f"RealSense serial {self.serial!r} not found; connected: "
+                + ", ".join(str(d.get("serial")) for d in devices)
+            )
+        return devices[0]
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def start(self) -> Dict[str, Any]:
+        """Open the pipeline and begin capturing. Idempotent while streaming.
+
+        Raises :class:`RealSenseUnavailable` when the feature is disabled, the
+        extra is missing, or no camera matches; :class:`RealSenseError` when
+        librealsense refuses the stream profiles (typical on a USB 2 link).
+        """
+        if not self.enabled:
+            raise RealSenseUnavailable("RealSense camera disabled (enabled: false in realsense.yaml)")
+        if not self.installed:
+            raise RealSenseUnavailable(
+                f"pyrealsense2 not installed ({self.install_error}); run `uv sync --extra realsense`"
+            )
+        with self._lock:
+            if self._state in ("streaming", "starting"):
+                return self.describe()
+            self._state = "starting"
+            self._last_error = None
+        try:
+            device = self._pick_device()
+            rs = self._rs
+            cfg = rs.config()
+            if device.get("serial"):
+                cfg.enable_device(str(device["serial"]))
+            if self.depth_profile["enabled"]:
+                cfg.enable_stream(rs.stream.depth, self.depth_profile["width"],
+                                  self.depth_profile["height"], rs.format.z16,
+                                  self.depth_profile["fps"])
+            if self.color_profile["enabled"]:
+                cfg.enable_stream(rs.stream.color, self.color_profile["width"],
+                                  self.color_profile["height"], rs.format.bgr8,
+                                  self.color_profile["fps"])
+            pipeline = rs.pipeline()
+            profile = pipeline.start(cfg)
+
+            dev = profile.get_device()
+            depth_scale = None
+            if self.depth_profile["enabled"]:
+                try:
+                    depth_scale = float(dev.first_depth_sensor().get_depth_scale())
+                except Exception:  # noqa: BLE001 - fall back to the D4xx default
+                    depth_scale = 0.001
+            intrinsics: Dict[str, Dict[str, Any]] = {}
+            for kind in _STREAM_KINDS:
+                if not getattr(self, f"{kind}_profile")["enabled"]:
+                    continue
+                try:
+                    vsp = profile.get_stream(getattr(rs.stream, kind)).as_video_stream_profile()
+                    intrinsics[kind] = _intrinsics_dict(vsp.get_intrinsics(), kind)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("could not read %s intrinsics: %s", kind, exc)
+
+            align = None
+            if (self.align_depth_to_color and self.depth_profile["enabled"]
+                    and self.color_profile["enabled"]):
+                align = rs.align(rs.stream.color)
+            colorizer = rs.colorizer() if self.depth_profile["enabled"] else None
+
+            with self._lock:
+                self._pipeline = pipeline
+                self._align = align
+                self._colorizer = colorizer
+                self._device_info = self._device_dict(dev)
+                self._depth_scale = depth_scale
+                self._intrinsics = intrinsics
+                self._latest = None
+                self._frames_captured = 0
+                self._fps_ema = None
+                self._started_at = time.monotonic()
+                self._last_consumer_at = time.monotonic()
+                self._stop_event = threading.Event()
+                self._thread = threading.Thread(
+                    target=self._capture_loop, name="xarm-realsense-capture", daemon=True
+                )
+                self._state = "streaming"
+                self._thread.start()
+            usb = (self._device_info or {}).get("usb_type") or ""
+            logger.info("RealSense streaming: %s serial=%s usb=%s",
+                        self._device_info.get("name"), self._device_info.get("serial"), usb)
+            if str(usb).startswith("2"):
+                logger.warning("RealSense is on a USB %s link; depth+colour will be limited", usb)
+            return self.describe()
+        except RealSenseError:
+            with self._lock:
+                self._state = "off"
+            raise
+        except Exception as exc:  # noqa: BLE001 - librealsense raises plain RuntimeError
+            with self._lock:
+                self._state = "error"
+                self._last_error = f"{type(exc).__name__}: {exc}"
+            raise RealSenseError(f"RealSense pipeline failed to start: {exc}") from exc
+
+    def stop(self) -> None:
+        """Stop capturing and release the device. Safe to call when stopped."""
+        with self._lock:
+            thread = self._thread
+            pipeline = self._pipeline
+            self._stop_event.set()
+            self._thread = None
+            self._pipeline = None
+            self._align = None
+            self._colorizer = None
+            if self._state != "error":
+                self._state = "off"
+            self._frame_ready.notify_all()
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=max(2.0, self.frame_timeout_ms / 1000.0 + 1.0))
+        if pipeline is not None:
+            try:
+                pipeline.stop()
+            except Exception as exc:  # noqa: BLE001 - already gone is fine
+                logger.debug("pipeline.stop raised (ignored): %s", exc)
+            logger.info("RealSense stopped")
+
+    def ensure_started(self) -> None:
+        """Start on demand if the config allows; else demand an explicit start."""
+        if self.streaming:
+            return
+        if not self.start_on_demand:
+            raise RealSenseNotStreaming(
+                "RealSense pipeline is stopped; POST /realsense/start (start_on_demand is off)"
+            )
+        self.start()
+
+    # ------------------------------------------------------------------
+    # Capture thread
+    # ------------------------------------------------------------------
+
+    def _capture_loop(self) -> None:
+        np = self._np
+        failures = 0
+        last_t: Optional[float] = None
+        while not self._stop_event.is_set():
+            with self._lock:
+                pipeline, align, colorizer = self._pipeline, self._align, self._colorizer
+            if pipeline is None:
+                break
+            try:
+                frames = pipeline.wait_for_frames(self.frame_timeout_ms)
+                if align is not None:
+                    frames = align.process(frames)
+                depth_frame = frames.get_depth_frame() if self.depth_profile["enabled"] else None
+                color_frame = frames.get_color_frame() if self.color_profile["enabled"] else None
+                if ((self.depth_profile["enabled"] and not depth_frame)
+                        or (self.color_profile["enabled"] and not color_frame)):
+                    continue  # partial frameset; librealsense delivers the next one shortly
+
+                color = np.asanyarray(color_frame.get_data()).copy() if color_frame else None
+                depth = np.asanyarray(depth_frame.get_data()).copy() if depth_frame else None
+                depth_color = None
+                if depth_frame and colorizer is not None:
+                    depth_color = np.asanyarray(colorizer.colorize(depth_frame).get_data()).copy()
+
+                ref = color_frame or depth_frame
+                intr_kind = "color" if (align is not None or not depth_frame) else "depth"
+                bundle = FrameBundle(
+                    color=color,
+                    depth=depth,
+                    depth_color=depth_color,
+                    depth_scale=self._depth_scale or 0.001,
+                    intrinsics=self._intrinsics.get(intr_kind, {}),
+                    frame_number=int(_call_or(ref, "get_frame_number", 0)),
+                    timestamp_ms=float(_call_or(ref, "get_timestamp", 0.0)),
+                    captured_at=time.monotonic(),
+                )
+                failures = 0
+                now = bundle.captured_at
+                with self._lock:
+                    self._latest = bundle
+                    self._frames_captured += 1
+                    if last_t is not None and now > last_t:
+                        inst = 1.0 / (now - last_t)
+                        self._fps_ema = inst if self._fps_ema is None else (0.9 * self._fps_ema + 0.1 * inst)
+                    self._frame_ready.notify_all()
+                    idle_for = now - self._last_consumer_at
+                last_t = now
+
+                if self.idle_timeout_s > 0 and idle_for > self.idle_timeout_s:
+                    logger.info("RealSense idle for %.0fs; stopping pipeline", self.idle_timeout_s)
+                    self.stop()
+                    return
+            except Exception as exc:  # noqa: BLE001 - a dropped frame is not fatal
+                if self._stop_event.is_set():
+                    break
+                failures += 1
+                logger.warning("RealSense frame failure %d/%d: %s",
+                               failures, self.max_frame_failures, exc)
+                if failures >= self.max_frame_failures:
+                    with self._lock:
+                        self._state = "error"
+                        self._last_error = (
+                            f"camera lost after {failures} consecutive frame failures: {exc}"
+                        )
+                    self.stop()
+                    return
+
+    # ------------------------------------------------------------------
+    # Frame access
+    # ------------------------------------------------------------------
+
+    def latest(self, *, mark_consumer: bool = True) -> FrameBundle:
+        """The most recent frame bundle. Raises if not streaming / no frame yet."""
+        with self._lock:
+            if self._state != "streaming":
+                raise RealSenseNotStreaming(self._last_error or "RealSense pipeline is stopped")
+            if mark_consumer:
+                self._last_consumer_at = time.monotonic()
+            if self._latest is None:
+                # First frame after start: give the capture thread a moment.
+                self._frame_ready.wait(timeout=self.frame_timeout_ms / 1000.0)
+            if self._latest is None:
+                raise RealSenseNotStreaming("no frame received yet")
+            return self._latest
+
+    def wait_for_new_frame(self, after: int, timeout_s: float) -> Optional[FrameBundle]:
+        """Block until a frame newer than ``after`` (a frames_captured count) lands."""
+        deadline = time.monotonic() + timeout_s
+        with self._lock:
+            while self._state == "streaming" and self._frames_captured <= after:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._frame_ready.wait(timeout=remaining)
+            if self._state != "streaming":
+                return None
+            self._last_consumer_at = time.monotonic()
+            return self._latest
+
+    @property
+    def frames_captured(self) -> int:
+        with self._lock:
+            return self._frames_captured
+
+    def jpeg(self, kind: str = "color") -> Tuple[bytes, FrameBundle]:
+        """Encode the latest colour (BGR) or colourised depth frame as JPEG."""
+        kind = _check_kind(kind)
+        bundle = self.latest()
+        array = bundle.color if kind == "color" else bundle.depth_color
+        if array is None:
+            raise RealSenseError(f"{kind} stream is disabled in realsense.yaml")
+        if kind == "color":
+            array = array[..., ::-1]  # BGR -> RGB for the encoder
+        return _encode_image(array, "JPEG", quality=self.jpeg_quality), bundle
+
+    def depth_png(self) -> Tuple[bytes, FrameBundle]:
+        """The raw 16-bit depth map as a lossless PNG (units: depth_scale metres)."""
+        bundle = self.latest()
+        if bundle.depth is None:
+            raise RealSenseError("depth stream is disabled in realsense.yaml")
+        return _encode_image(bundle.depth, "PNG", sixteen_bit=True), bundle
+
+    def mjpeg_frames(self, kind: str = "color", max_fps: float = 10.0) -> Iterator[bytes]:
+        """Yield ``multipart/x-mixed-replace`` parts until the pipeline stops.
+
+        Each part carries one JPEG. Paced to ``max_fps`` so a panel preview
+        does not re-encode all 30 device frames a second.
+        """
+        kind = _check_kind(kind)
+        min_interval = 1.0 / max(0.5, float(max_fps))
+        seen = -1
+        last_sent = 0.0
+        while True:
+            bundle = self.wait_for_new_frame(seen, timeout_s=max(1.0, self.frame_timeout_ms / 1000.0))
+            if bundle is None:
+                if not self.streaming:
+                    return
+                continue
+            seen = self.frames_captured
+            now = time.monotonic()
+            if now - last_sent < min_interval:
+                continue
+            last_sent = now
+            data, _ = self.jpeg(kind)
+            yield (
+                f"--{_MJPEG_BOUNDARY}\r\n"
+                f"Content-Type: image/jpeg\r\n"
+                f"Content-Length: {len(data)}\r\n"
+                f"X-Frame-Number: {bundle.frame_number}\r\n\r\n"
+            ).encode("ascii") + data + b"\r\n"
+
+    @staticmethod
+    def mjpeg_content_type() -> str:
+        return f"multipart/x-mixed-replace; boundary={_MJPEG_BOUNDARY}"
+
+    def depth_at(self, x: int, y: int, *, window: int = 1) -> Dict[str, Any]:
+        """Metric distance at pixel (x, y) of the depth map, plus a 3-D point.
+
+        ``window`` (odd, >= 1) takes the median of the non-zero depth values
+        in a window x window patch -- RealSense depth is noisy per-pixel and
+        has zero-valued holes, so a 5x5 median is what a robot should use.
+        The 3-D point is a pinhole deprojection in the camera frame of the
+        stream the depth map is expressed in (colour when aligned): +X
+        right, +Y down, +Z out of the lens, metres. Distortion is ignored,
+        which is exact for the rectified depth stream and within a pixel for
+        the D4xx colour stream.
+        """
+        bundle = self.latest()
+        if bundle.depth is None:
+            raise RealSenseError("depth stream is disabled in realsense.yaml")
+        depth = bundle.depth
+        h, w = depth.shape[:2]
+        x, y = int(x), int(y)
+        if not (0 <= x < w and 0 <= y < h):
+            raise ValueError(f"pixel ({x}, {y}) outside the {w}x{h} depth map")
+        window = max(1, int(window)) | 1  # force odd
+        half = window // 2
+        patch = depth[max(0, y - half):y + half + 1, max(0, x - half):x + half + 1]
+        np = self._np
+        valid = patch[patch > 0]
+        raw = float(np.median(valid)) if valid.size else 0.0
+        distance = raw * bundle.depth_scale
+        point = None
+        intr = bundle.intrinsics or {}
+        if distance > 0 and intr.get("fx") and intr.get("fy"):
+            point = [
+                (x - float(intr["ppx"])) / float(intr["fx"]) * distance,
+                (y - float(intr["ppy"])) / float(intr["fy"]) * distance,
+                distance,
+            ]
+        return {
+            "pixel": [x, y],
+            "window": window,
+            "valid_samples": int(valid.size),
+            "distance_m": distance if distance > 0 else None,
+            "point_m": point,
+            "frame_number": bundle.frame_number,
+            "frame": intr.get("stream") or ("color" if self._align is not None else "depth"),
+        }
+
+    # ------------------------------------------------------------------
+    # Reporting
+    # ------------------------------------------------------------------
+
+    def intrinsics(self) -> Dict[str, Any]:
+        """Per-stream pinhole intrinsics + depth scale (populated while streaming)."""
+        with self._lock:
+            return {
+                "streaming": self._state == "streaming",
+                "depth_scale_m": self._depth_scale,
+                "aligned_to": "color" if self._align is not None else None,
+                "streams": dict(self._intrinsics),
+            }
+
+    def describe(self) -> Dict[str, Any]:
+        """Everything the panel / ``GET /realsense/status`` needs. Never raises."""
+        devices = self.list_devices()
+        with self._lock:
+            state = self._state
+            latest = self._latest
+            info: Dict[str, Any] = {
+                "configured": self.configured,
+                "installed": self.installed,
+                "library_version": self.library_version,
+                "label": self.label,
+                "state": state,
+                "streaming": state == "streaming",
+                "start_on_demand": self.start_on_demand,
+                "device": dict(self._device_info) if self._device_info else None,
+                "devices": devices,
+                "streams": {
+                    "color": dict(self.color_profile),
+                    "depth": dict(self.depth_profile),
+                    "align_depth_to_color": self.align_depth_to_color,
+                },
+                "depth_scale_m": self._depth_scale,
+                "frames_captured": self._frames_captured,
+                "fps_measured": round(self._fps_ema, 1) if self._fps_ema else None,
+                "last_frame_age_s": (round(time.monotonic() - latest.captured_at, 2)
+                                     if latest else None),
+                "uptime_s": (round(time.monotonic() - self._started_at, 1)
+                             if self._started_at and state == "streaming" else None),
+                "last_error": self._last_error,
+                "warnings": [],
+                "reason": None,
+            }
+        usb = ((info["device"] or {}).get("usb_type") or "")
+        if str(usb).startswith("2"):
+            info["warnings"].append(
+                f"USB {usb} link: use a USB 3 port/cable for full depth+colour rate"
+            )
+        if not self.configured:
+            info["reason"] = "RealSense camera disabled (enabled: false in realsense.yaml)"
+        elif not self.installed:
+            info["reason"] = (
+                f"pyrealsense2 not installed ({self.install_error}); run `uv sync --extra realsense`"
+            )
+        elif state == "error":
+            info["reason"] = info["last_error"] or "camera error"
+        elif state != "streaming" and not devices:
+            info["reason"] = "no RealSense device connected"
+        elif state != "streaming":
+            info["reason"] = "pipeline stopped" + (
+                " (starts on first request)" if self.start_on_demand else ""
+            )
+        return info
+
+    def component_status(self) -> Optional[Dict[str, Any]]:
+        """``components.realsense_camera`` fields, or None when unconfigured."""
+        if not self.configured:
+            return None
+        d = self.describe()
+        present = bool(d["devices"]) or d["streaming"]
+        if d["streaming"]:
+            state = "streaming"
+        elif d["state"] == "error":
+            state = "error"
+        elif not d["installed"]:
+            state = "driver_missing"
+        elif present:
+            state = "idle"
+        else:
+            state = "disconnected"
+        dev = d["device"] or (d["devices"][0] if d["devices"] else {})
+        bits = [self.label]
+        if dev.get("name"):
+            bits.append(str(dev["name"]))
+        if dev.get("serial"):
+            bits.append(f"sn {dev['serial']}")
+        if d["fps_measured"]:
+            bits.append(f"{d['fps_measured']} fps")
+        if d["reason"] and not d["streaming"]:
+            bits.append(d["reason"])
+        return {"connected": present, "state": state, "message": " · ".join(bits)}
+
+    def status_block(self) -> Optional[Dict[str, Any]]:
+        """Compact ``details.realsense`` block, or None when unconfigured."""
+        if not self.configured:
+            return None
+        d = self.describe()
+        return {
+            "state": d["state"],
+            "installed": d["installed"],
+            "device": d["device"],
+            "devices": d["devices"],
+            "streams": d["streams"],
+            "fps_measured": d["fps_measured"],
+            "frames_captured": d["frames_captured"],
+            "last_frame_age_s": d["last_frame_age_s"],
+            "warnings": d["warnings"],
+            "reason": d["reason"],
+        }
+
+
+# ----------------------------------------------------------------------
+# Process-wide instance
+# ----------------------------------------------------------------------
+#
+# The camera outlives any one arm connection: an operator wants to see the
+# bench before /connect and after /disconnect. The API server configures it
+# once at import; status_builder reads it through shared_camera() so the
+# /status envelope and /realsense/* never disagree.
+
+_shared: Optional[RealSenseCamera] = None
+
+
+def configure_shared(config_path: str, **kwargs: Any) -> RealSenseCamera:
+    global _shared
+    _shared = RealSenseCamera.from_config_file(config_path, **kwargs)
+    return _shared
+
+
+def set_shared(camera: Optional[RealSenseCamera]) -> None:
+    """Install (or clear, with None) the process-wide camera. Tests use this."""
+    global _shared
+    _shared = camera
+
+
+def shared_camera() -> Optional[RealSenseCamera]:
+    return _shared
+
+
+def default_config_path() -> str:
+    return os.path.join(os.path.dirname(os.path.dirname(__file__)), "settings", "realsense.yaml")
+
+
+# ----------------------------------------------------------------------
+# Helpers
+# ----------------------------------------------------------------------
+
+
+def _as_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _stream_profile(block: Any, width: int, height: int, fps: int) -> Dict[str, Any]:
+    block = block if isinstance(block, dict) else {}
+    return {
+        "enabled": bool(block.get("enabled", True)),
+        "width": int(_as_float(block.get("width"), width)),
+        "height": int(_as_float(block.get("height"), height)),
+        "fps": int(_as_float(block.get("fps"), fps)),
+    }
+
+
+def _check_kind(kind: str) -> str:
+    kind = str(kind or "color").lower()
+    if kind not in _STREAM_KINDS:
+        raise ValueError(f"stream must be one of {_STREAM_KINDS}, got {kind!r}")
+    return kind
+
+
+def _call_or(obj: Any, method: str, default: Any) -> Any:
+    try:
+        return getattr(obj, method)()
+    except Exception:  # noqa: BLE001
+        return default
+
+
+def _intrinsics_dict(intr: Any, stream: str) -> Dict[str, Any]:
+    model = getattr(intr, "model", None)
+    return {
+        "stream": stream,
+        "width": int(getattr(intr, "width", 0)),
+        "height": int(getattr(intr, "height", 0)),
+        "fx": float(getattr(intr, "fx", 0.0)),
+        "fy": float(getattr(intr, "fy", 0.0)),
+        "ppx": float(getattr(intr, "ppx", 0.0)),
+        "ppy": float(getattr(intr, "ppy", 0.0)),
+        "model": str(model).split(".")[-1] if model is not None else None,
+        "coeffs": [float(c) for c in (getattr(intr, "coeffs", None) or [])],
+    }
+
+
+def _encode_image(array: Any, fmt: str, *, quality: int = 80, sixteen_bit: bool = False) -> bytes:
+    from PIL import Image  # local import: Pillow is part of the optional extra
+
+    if sixteen_bit:
+        image = Image.fromarray(array.astype("uint16"))  # mode I;16 -> 16-bit PNG
+    else:
+        image = Image.fromarray(array)
+    buf = io.BytesIO()
+    if fmt == "JPEG":
+        image.save(buf, format="JPEG", quality=int(quality))
+    else:
+        image.save(buf, format=fmt)
+    return buf.getvalue()

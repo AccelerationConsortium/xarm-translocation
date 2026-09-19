@@ -24,6 +24,8 @@ from .models import (
     MetricValue,
 )
 
+from . import realsense_camera
+
 if TYPE_CHECKING:  # pragma: no cover - import-time only for type hints
     from .xarm_controller import XArmController
 
@@ -109,7 +111,24 @@ def _disconnected_envelope() -> EquipmentStatus:
     instantiated, so the only honest answer is ``requires_init`` with
     ``required_actions: ["connect"]`` (matching the SDK's pre-migration
     ``LegacyXArmAdapter`` mapping).
+
+    The RealSense camera is process-wide and does not wait for the arm, so
+    its component/details blocks appear here too when it is configured --
+    an operator can see the bench camera's health before /connect.
     """
+    components: dict[str, ComponentStatus] = {
+        "arm": ComponentStatus(connected=False, state="disabled"),
+        "gripper": ComponentStatus(connected=False, state="disabled"),
+        "track": ComponentStatus(connected=False, state="disabled"),
+        "force_torque": ComponentStatus(connected=False, state="disabled"),
+    }
+    details: dict[str, Any] = {}
+    realsense_component = _build_realsense_component()
+    if realsense_component is not None:
+        components["realsense_camera"] = realsense_component
+    realsense_block = _build_realsense_details()
+    if realsense_block is not None:
+        details["realsense"] = realsense_block
     return EquipmentStatus(
         protocol_version=PROTOCOL_VERSION,
         equipment_id=EQUIPMENT_ID,
@@ -132,12 +151,8 @@ def _disconnected_envelope() -> EquipmentStatus:
         allowed_actions=["connect"],
         device_time=datetime.now(timezone.utc),
         uptime_seconds=time.time() - _PROCESS_START_TIME,
-        components={
-            "arm": ComponentStatus(connected=False, state="disabled"),
-            "gripper": ComponentStatus(connected=False, state="disabled"),
-            "track": ComponentStatus(connected=False, state="disabled"),
-            "force_torque": ComponentStatus(connected=False, state="disabled"),
-        },
+        components=components,
+        details=details,
     )
 
 
@@ -299,6 +314,15 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
             ),
         )
 
+    # RealSense depth camera, when src/settings/realsense.yaml enables it.
+    # A component, not a state input: arm motion does not depend on the
+    # camera, so an unplugged camera never pushes equipment_status (§2.2
+    # scopes degraded to subsystems a normal run needs). Absent when
+    # unconfigured so unmigrated deployments see an unchanged envelope.
+    realsense_component = _build_realsense_component()
+    if realsense_component is not None:
+        components["realsense_camera"] = realsense_component
+
     # Metrics (numeric values with units).
     metrics: dict[str, MetricValue] = {}
     if controller.has_track():
@@ -368,6 +392,12 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     interlocks_block = _build_sash_interlock_details(controller)
     if interlocks_block is not None:
         details["interlocks"] = interlocks_block
+
+    # Machine-readable twin of components.realsense_camera: device list,
+    # stream config, measured fps, and the reason when it is not streaming.
+    realsense_block = _build_realsense_details()
+    if realsense_block is not None:
+        details["realsense"] = realsense_block
 
     # BIO gripper slip/detect register snapshot (plate-transfer
     # verification aid). Absent for non-BIO grippers and before the first
@@ -484,6 +514,42 @@ def _build_sash_interlock_details(controller: XArmController) -> dict[str, Any] 
     except Exception:  # noqa: BLE001 - observability must not break /status
         return None
     return {"fume_hood_sash": snapshot} if isinstance(snapshot, dict) else None
+
+
+def _build_realsense_component() -> ComponentStatus | None:
+    """``components.realsense_camera``, or None when no camera is configured.
+
+    Reads the process-wide camera (``realsense_camera.shared_camera()``) --
+    the camera outlives arm connections, so it is not a controller attribute.
+    ``describe()`` only touches cached state plus a TTL-cached USB
+    enumeration, keeping ``build_status`` cheap and side-effect-free.
+    """
+    camera = realsense_camera.shared_camera()
+    if camera is None or not getattr(camera, "configured", False):
+        return None
+    try:
+        block = camera.component_status()
+    except Exception:  # noqa: BLE001 - observability must not break /status
+        return None
+    if not isinstance(block, dict):
+        return None
+    return ComponentStatus(
+        connected=bool(block.get("connected")),
+        state=str(block.get("state") or "unknown"),
+        message=block.get("message"),
+    )
+
+
+def _build_realsense_details() -> dict[str, Any] | None:
+    """The ``details.realsense`` block, or None when nothing is configured."""
+    camera = realsense_camera.shared_camera()
+    if camera is None or not getattr(camera, "configured", False):
+        return None
+    try:
+        block = camera.status_block()
+    except Exception:  # noqa: BLE001 - observability must not break /status
+        return None
+    return block if isinstance(block, dict) else None
 
 
 def _sash_status_prefix(controller: XArmController) -> str | None:

@@ -91,6 +91,7 @@ The contract is defined in `ac-organic-lab/docs/STATUS_SPEC.md`.
 - **REST API**: FastAPI server for web-based control and monitoring
 - **Flexible Configuration**: Model-specific configs with component auto-enable
 - **6-Axis Force Torque Sensor**: Safety monitoring, force-controlled movement, and torque-controlled joint operations
+- **Intel RealSense depth camera** (optional): colour + metric depth from a USB camera on the device PC — snapshots, live MJPEG preview, pixel → metres, and health on `/status`. See [Depth camera](#depth-camera-intel-realsense).
 
 ## 🚀 Quick Start
 
@@ -152,6 +153,25 @@ python -m src.cli.main web
 - 📖 **API Docs**: http://localhost:8000/docs
 - 📡 **API Server**: http://localhost:8000
 
+## 📷 Depth camera (Intel RealSense)
+
+The service can own an Intel RealSense (D435i etc.) plugged into this PC over USB 3 — a
+**local depth camera**, distinct from the network PTZ "Lab Camera" the panel pans across
+the motion graph. It is the primitive later vision work (arrival verification, plate
+location) builds on; this release ships capture, health, images and pixel → metres.
+
+```powershell
+C:\SDL_Tools\uv.exe sync --extra realsense      # pyrealsense2 + numpy + Pillow, once per venv
+```
+
+Then set `enabled: true` in `src/settings/realsense.yaml` and restart. The panel grows a
+**Depth Camera** card (Color / Depth preview, Start / Stop, click-to-measure). Endpoints
+live under `/realsense/*` — `status`, `start`, `stop`, `snapshot.jpg`, `depth.png`,
+`stream.mjpg`, `depth?x=&y=`, `intrinsics` — and `/status` carries
+`components.realsense_camera` + `details.realsense` while configured. The camera never
+changes `equipment_status`: arm motion does not depend on it. Full reference, gating
+policy and troubleshooting: [src/docs/REALSENSE_CAMERA.md](./src/docs/REALSENSE_CAMERA.md).
+
 ## 💻 Command Line Interface
 
 PyxArm includes a convenient command-line interface:
@@ -182,6 +202,7 @@ For detailed guides on specific topics, please see the project root:
 -   **[Features Overview](./src/docs/PYXARM_FEATURES.md)**: A high-level overview of the controller's features.
 -   **[API Reference](./src/docs/PYXARM_API.md)**: Detailed documentation of the `XArmController` methods and parameters.
 -   **[Simulation & Testing Guide](./src/docs/PYXARM_TESTING.md)**: A comprehensive guide to simulation modes and the project's testing strategy.
+-   **[Depth Camera](./src/docs/REALSENSE_CAMERA.md)**: Intel RealSense integration — setup, `/realsense/*` API, `/status` blocks, troubleshooting.
 -   **[Network Access](./src/docs/NETWORK_ACCESS.md)**: Tailscale port-forwarding setup for remote access to both the PyxArm API and the official UFactory Studio UI.
 
 ## 🔧 Advanced Features

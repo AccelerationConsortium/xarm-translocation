@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, HTTPException, BackgroundTasks, Header, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response as RawResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 import uvicorn
@@ -48,6 +48,8 @@ try:
     )
     from .claims import ClaimConflict, InvalidClaimToken
     from .camera_tracker import CameraTracker
+    from . import realsense_camera
+    from .realsense_camera import RealSenseError, RealSenseNotStreaming, RealSenseUnavailable
     from .sash_interlock import SashInterlock, SashInterlockError
     from . import assistant_actions
     from . import assistant_llm
@@ -75,6 +77,8 @@ except ImportError:
     )
     from core.claims import ClaimConflict, InvalidClaimToken
     from core.camera_tracker import CameraTracker
+    from core import realsense_camera
+    from core.realsense_camera import RealSenseError, RealSenseNotStreaming, RealSenseUnavailable
     from core.sash_interlock import SashInterlock, SashInterlockError
     from core import assistant_actions
     from core import assistant_llm
@@ -593,6 +597,16 @@ async def lifespan(app: FastAPI):
     log_task = asyncio.create_task(broadcast_logs())
     telemetry_task = asyncio.create_task(telemetry_loop())
 
+    # RealSense depth camera: open the pipeline at boot only when the YAML
+    # asks for it. A missing camera is logged, never fatal -- the arm must
+    # come up regardless.
+    rs_cam = realsense_camera.shared_camera()
+    if rs_cam is not None and rs_cam.configured and rs_cam.autostart:
+        try:
+            await asyncio.to_thread(rs_cam.start)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"RealSense autostart skipped: {exc}")
+
     yield
 
     # Shutdown
@@ -602,6 +616,11 @@ async def lifespan(app: FastAPI):
     if controller:
         logger.info("Disconnecting from robot...")
         controller.disconnect()
+    if rs_cam is not None:
+        try:
+            rs_cam.stop()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"RealSense stop failed (ignored): {exc}")
     logger.info("xArm API Server shutdown complete")
 
 # Create FastAPI app.
@@ -3000,6 +3019,167 @@ async def camera_ptz(body: dict):
     except Exception as exc:  # noqa: BLE001 - surface the passthrough's failure
         raise HTTPException(status_code=502, detail=f"camera ptz failed: {exc}")
     return {"ok": True}
+
+
+# =============================================================================
+# REALSENSE DEPTH CAMERA (local USB camera on this device PC)
+#
+# Distinct from /camera/* above, which drives the *network* PTZ camera through
+# the dashboard. This one is librealsense hardware owned by this process --
+# see core/realsense_camera.py. The camera outlives arm connections (it is a
+# process-wide instance, not a controller attribute), so every endpoint here
+# answers before /connect. Reads (/status, /depth, /intrinsics) are open like
+# GET /status; anything that turns the camera on or ships video is
+# login-gated, matching the authenticated viewing sessions the PTZ preview
+# moved to. Nothing here is claim-gated: looking is not arm actuation.
+# =============================================================================
+
+# Built once at import from src/settings/realsense.yaml. Construction never
+# raises: a missing file / extra / camera yields a camera whose describe()
+# explains why. Anchored to the package layout, not the CWD (NSSM launch).
+realsense_camera.configure_shared(realsense_camera.default_config_path())
+
+
+def _realsense():
+    cam = realsense_camera.shared_camera()
+    if cam is None or not cam.configured:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "realsense_not_configured",
+                    "hint": "set enabled: true in src/settings/realsense.yaml"},
+        )
+    return cam
+
+
+def _realsense_http_error(exc: Exception) -> HTTPException:
+    """Map camera exceptions to the status codes the panel keys on."""
+    if isinstance(exc, RealSenseUnavailable):
+        return HTTPException(status_code=503, detail={"error": "realsense_unavailable", "reason": str(exc)})
+    if isinstance(exc, RealSenseNotStreaming):
+        return HTTPException(status_code=409, detail={"error": "realsense_not_streaming", "reason": str(exc)})
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=400, detail={"error": "bad_request", "reason": str(exc)})
+    return HTTPException(status_code=502, detail={"error": "realsense_error", "reason": str(exc)})
+
+
+def _realsense_stream_kind(stream: Optional[str]) -> str:
+    kind = (stream or "color").lower()
+    if kind not in ("color", "depth"):
+        raise HTTPException(status_code=400, detail={"error": "bad_request",
+                                                     "reason": "stream must be 'color' or 'depth'"})
+    return kind
+
+
+@app.get("/realsense/status")
+async def realsense_status():
+    """Device enumeration + pipeline state. Same data as details.realsense on
+    /status, plus library version and the full stream config. Open read;
+    works before /connect and reports installed:false when the extra is
+    missing rather than 404ing, so the panel can explain itself."""
+    cam = realsense_camera.shared_camera()
+    if cam is None:
+        return {"configured": False, "installed": False, "reason": "realsense module not initialised"}
+    return await asyncio.to_thread(cam.describe)
+
+
+@app.post("/realsense/start", dependencies=[Depends(require_login)])
+async def realsense_start():
+    """Open the pipeline. 503 when disabled / driver missing / no camera on
+    the bus (body carries the reason), 502 when librealsense refuses the
+    configured stream profiles -- typically a USB 2 link."""
+    cam = _realsense()
+    try:
+        return await asyncio.to_thread(cam.start)
+    except Exception as exc:  # noqa: BLE001
+        raise _realsense_http_error(exc)
+
+
+@app.post("/realsense/stop", dependencies=[Depends(require_login)])
+async def realsense_stop():
+    cam = _realsense()
+    await asyncio.to_thread(cam.stop)
+    return await asyncio.to_thread(cam.describe)
+
+
+@app.get("/realsense/snapshot.jpg", dependencies=[Depends(require_login)])
+async def realsense_snapshot(stream: Optional[str] = None):
+    """One JPEG of the colour image (default) or the colourised depth map
+    (``?stream=depth``). Starts the pipeline when start_on_demand allows."""
+    cam = _realsense()
+    kind = _realsense_stream_kind(stream)
+    try:
+        await asyncio.to_thread(cam.ensure_started)
+        data, bundle = await asyncio.to_thread(cam.jpeg, kind)
+    except Exception as exc:  # noqa: BLE001
+        raise _realsense_http_error(exc)
+    return RawResponse(content=data, media_type="image/jpeg", headers={
+        "Cache-Control": "no-store",
+        "X-Frame-Number": str(bundle.frame_number),
+        "X-Frame-Timestamp-Ms": str(bundle.timestamp_ms),
+    })
+
+
+@app.get("/realsense/depth.png", dependencies=[Depends(require_login)])
+async def realsense_depth_png():
+    """The raw 16-bit depth map, lossless. Pixel value x depth_scale_m
+    (from /realsense/intrinsics) is metres; 0 means no reading."""
+    cam = _realsense()
+    try:
+        await asyncio.to_thread(cam.ensure_started)
+        data, bundle = await asyncio.to_thread(cam.depth_png)
+    except Exception as exc:  # noqa: BLE001
+        raise _realsense_http_error(exc)
+    return RawResponse(content=data, media_type="image/png", headers={
+        "Cache-Control": "no-store",
+        "X-Frame-Number": str(bundle.frame_number),
+        "X-Depth-Scale-M": str(bundle.depth_scale),
+    })
+
+
+@app.get("/realsense/stream.mjpg", dependencies=[Depends(require_login)])
+async def realsense_stream(stream: Optional[str] = None, fps: float = 10.0):
+    """Live MJPEG preview (multipart/x-mixed-replace) for an <img> tag.
+    Paced to ``fps`` (default 10, max 30). Ends when the pipeline stops."""
+    cam = _realsense()
+    kind = _realsense_stream_kind(stream)
+    try:
+        await asyncio.to_thread(cam.ensure_started)
+    except Exception as exc:  # noqa: BLE001
+        raise _realsense_http_error(exc)
+    fps = max(0.5, min(30.0, float(fps)))
+
+    async def body():
+        # The generator blocks on the capture thread's condition variable;
+        # pull each part on a worker so the event loop stays free.
+        it = cam.mjpeg_frames(kind, max_fps=fps)
+        while True:
+            chunk = await asyncio.to_thread(next, it, None)
+            if chunk is None:
+                return
+            yield chunk
+
+    return StreamingResponse(body(), media_type=cam.mjpeg_content_type(),
+                             headers={"Cache-Control": "no-store"})
+
+
+@app.get("/realsense/depth")
+async def realsense_depth_at(x: int, y: int, window: int = 5):
+    """Metric distance at pixel (x, y) plus a camera-frame 3-D point.
+    ``window`` (odd) is the median patch size; 5 is a sensible default for
+    a robot, 1 is the raw pixel. Does NOT start the pipeline: 409 when it
+    is stopped, so an open read cannot switch the camera on."""
+    cam = _realsense()
+    try:
+        return await asyncio.to_thread(cam.depth_at, x, y, window=window)
+    except Exception as exc:  # noqa: BLE001
+        raise _realsense_http_error(exc)
+
+
+@app.get("/realsense/intrinsics")
+async def realsense_intrinsics():
+    """Pinhole intrinsics per stream + depth scale. Populated while streaming."""
+    cam = _realsense()
+    return await asyncio.to_thread(cam.intrinsics)
 
 
 @app.post("/assistant/plan")

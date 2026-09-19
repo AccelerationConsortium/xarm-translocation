@@ -28,6 +28,10 @@ class XArmWebHandler(http.server.SimpleHTTPRequestHandler):
             '/api', '/status', '/locations', '/track',
             '/connect', '/disconnect', '/move', '/clear', '/gripper', '/ws',
             '/graph', '/control', '/auth', '/camera', '/interlocks',
+            # NOTE: /realsense/stream.mjpg is an endless multipart response;
+            # this proxy buffers the whole body, so open the panel on the API
+            # port (:8000/web/) for the live preview. Snapshots proxy fine.
+            '/realsense',
         ]
         if any(parsed_path.path == path or parsed_path.path.startswith(path + '/')
                for path in api_paths):

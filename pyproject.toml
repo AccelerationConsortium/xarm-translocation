@@ -49,6 +49,16 @@ dependencies = [
 sdl-lab-contract = { git = "https://github.com/AccelerationConsortium/sdl-lab-contract", tag = "v1.2.0" }
 
 [project.optional-dependencies]
+# Intel RealSense depth camera (D435i etc.) attached to this device PC over
+# USB 3. Optional: the service boots without it and /realsense/* reports
+# "pyrealsense2 not installed". Install with `uv sync --extra realsense`.
+# Pillow does the JPEG encoding for snapshots/MJPEG (no OpenCV needed --
+# pyrealsense2's own colorizer renders the depth map).
+realsense = [
+    "pyrealsense2>=2.55",
+    "numpy>=1.24",
+    "Pillow>=10.0",
+]
 dev = [
     "pytest>=7.0",
     "httpx>=0.24",

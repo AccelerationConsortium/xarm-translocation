@@ -7,6 +7,89 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — Intel RealSense depth camera (`/realsense/*`)
+
+The service can now own an Intel RealSense depth camera (D435i and any other
+librealsense model) plugged into the device PC over USB 3. New module
+`src/core/realsense_camera.py`, new config `src/settings/realsense.yaml`,
+new optional extra `realsense` (`uv sync --extra realsense` →
+`pyrealsense2`, `numpy`, `Pillow`), a **Depth Camera** panel card
+(`src/web/realsense-card.js`), 93 new tests, and a reference doc at
+`src/docs/REALSENSE_CAMERA.md`.
+
+- **A second, unrelated camera.** The existing "Lab Camera" is a network
+  PTZ camera driven through the dashboard; this one is local USB hardware
+  the service talks to directly. It supplies what the PTZ cannot: **metric
+  depth per pixel** in a known camera frame — the primitive an arrival
+  check, a plate locator, or a hood obstacle check will build on. This
+  release deliberately ships only the foundation: capture, health, images,
+  and pixel → metres. No motion decision consults it yet.
+- **Endpoints.** `GET /realsense/status` (enumeration + pipeline state, open,
+  answers before `/connect` and reports `installed: false` instead of
+  404ing when the extra is missing); `POST /realsense/{start,stop}`;
+  `GET /realsense/snapshot.jpg?stream=color|depth`; `GET /realsense/depth.png`
+  (raw 16-bit, `X-Depth-Scale-M` header); `GET /realsense/stream.mjpg` (MJPEG
+  for an `<img>`, paced server-side); `GET /realsense/depth?x=&y=&window=5`
+  (median-filtered distance + pinhole-deprojected `[X, Y, Z]`);
+  `GET /realsense/intrinsics`. Failure bodies are
+  `{"detail": {"error", "reason"}}` with `realsense_not_configured` 404,
+  `realsense_unavailable` 503, `realsense_not_streaming` 409,
+  `realsense_error` 502.
+- **Gating.** Reads that cannot switch the camera on are open like
+  `GET /status`; anything that starts the pipeline or ships video is
+  login-gated, matching the authenticated viewing sessions the PTZ preview
+  moved to. Nothing is claim-gated — looking is not arm actuation. The
+  numeric `/realsense/depth` read is *not* allowed to start the pipeline
+  (409 when stopped) precisely so an open read cannot turn the camera on.
+- **`/status`.** `components.realsense_camera` (`connected`, `state` ∈
+  `streaming | idle | disconnected | driver_missing | error`, one-line
+  `message`) and its machine-readable twin `details.realsense`. Both are
+  **absent** when `enabled: false`, so unmigrated deployments see an
+  unchanged envelope, and both are present on the pre-`/connect`
+  `requires_init` envelope too — the camera does not wait for the arm. **The camera never changes `equipment_status`**: arm
+  motion does not depend on it, so an unplugged camera is a component fact,
+  not a `degraded` arm — the same §2.2 reasoning as the sash interlock
+  being blind. A feature that later makes a move depend on a reading owns
+  that gate (412 + `allowed_actions` mirroring), not this layer.
+- **Optional at every layer, by construction.** Missing extra,
+  `enabled: false`, and no camera on the bus each yield a camera object
+  whose `describe()` carries a `reason`; nothing raises into the control
+  path and the service always boots. `pyrealsense2` is imported lazily and
+  the backend is injectable (`rs_module` / `np_module`), so the whole
+  lifecycle — enumeration, start/stop, the capture thread, encoding, depth
+  lookup, camera-lost recovery, idle timeout — is unit-tested against a
+  fake `pyrealsense2` with no hardware.
+- **Process-wide, not per-connection.** The camera outlives `/connect` /
+  `/disconnect` (operators want the bench view before the arm is up), so
+  it is a shared instance the API server configures at import and
+  `status_builder` reads through `realsense_camera.shared_camera()` — the
+  two surfaces cannot disagree. Lifespan handles `autostart` and shutdown.
+- **A daemon capture thread owns the pipeline.** `wait_for_frames` blocks,
+  so handlers only read the latest frame bundle under a lock; the MJPEG
+  generator waits on a condition variable rather than polling. Five
+  consecutive frame failures (`max_consecutive_frame_failures`) mark the
+  camera lost and release it; `idle_timeout_seconds` (default 120) stops it
+  when nobody is watching. USB 2 links are surfaced as a `warning`.
+- **No OpenCV.** Pillow encodes JPEG/PNG and librealsense's own colorizer
+  renders the depth map, keeping the extra to three wheels.
+
+**Operational notes.**
+
+- `pyrealsense2` 2.58.4 installs and imports on the service venv's
+  Python 3.14. Syncing the extra while the `xarm` service runs hits the
+  DEVICE_PC_SETUP "own-service `.exe` lock" — use
+  `uv sync --inexact --no-install-project --extra realsense` (the project is
+  editable; nothing about it needed reinstalling) or stop the service
+  first, and verify the three packages landed.
+- The legacy `:6001` proxy (`src/web/server.py`) buffers whole response
+  bodies, so `/realsense/stream.mjpg` never renders through it; snapshots
+  do. Use the panel on the API port (`:8000/web/`). `/realsense` was added
+  to its proxied prefixes anyway so JSON and snapshots work.
+- The bench PC's D435i was **not enumerating** at the time of writing (no
+  Intel VID on the USB bus — cable/port, not driver). The layer reports
+  exactly that (`state: disconnected`, `reason: no RealSense device
+  connected`); nothing here has been exercised against live frames yet.
+
 ### Added — fume hood sash interlock
 
 Refuses arm motion into the fume hood / Opentrons region unless the **separate**
