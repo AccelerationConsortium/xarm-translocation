@@ -5,8 +5,11 @@ so everything here runs against ``tmp_path`` with no hardware, no
 ``pyrealsense2`` and no numpy. What is worth pinning down is the behaviour a
 later vision phase depends on and that a refactor could quietly break:
 
-* the on-disk layout and id format, because the nightly replication to the
-  lab data server and any offline consumer walk it by hand;
+* the on-disk layout and id format, including the camera level, because the
+  nightly replication to the lab data server and any offline consumer walk it
+  by hand;
+* that every camera_id reaching a path join is validated, which is the
+  traversal guard for the one path segment this module does interpolate;
 * atomicity, because a half-written capture that *looks* complete would be
   read as evidence;
 * retention, in both directions and in the right order, including the
@@ -34,6 +37,10 @@ COLOR = b"\xff\xd8\xff\xe0fake-jpeg-bytes"
 DEPTH = b"\x89PNG\r\n\x1a\nfake-png-bytes"
 
 
+CAM = "rs435i"
+OTHER = "overhead"
+
+
 def _store(tmp_path, **overrides):
     config = {"enabled": True, "root": str(tmp_path / "captures"),
               "keep_days": 30, "keep_max_gb": 20}
@@ -41,14 +48,16 @@ def _store(tmp_path, **overrides):
     return CaptureStore(config)
 
 
-def _write(store, *, at=None, label=None, protected=False, node_id=None, color=COLOR, depth=DEPTH):
+def _write(store, *, camera_id=CAM, at=None, label=None, protected=False, node_id=None,
+           color=COLOR, depth=DEPTH):
     meta = {"label": label, "protected": protected, "arm": {"node_id": node_id}}
     kwargs = {}
     if at is not None:
         kwargs["capture_id"] = rcap.new_capture_id(at)
         kwargs["now"] = at
         meta["captured_at"] = at.replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    return store.write(color_jpeg=color, depth_png=depth, meta=meta, **kwargs)
+    return store.write(camera_id=camera_id, color_jpeg=color, depth_png=depth,
+                       meta=meta, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -78,18 +87,65 @@ class TestCaptureIds:
         assert not rcap.is_capture_id(bad)
 
 
+class TestCameraIds:
+    """The camera id is the one path segment this module interpolates, so it
+    is whitelisted exactly the way capture ids and filenames are."""
+
+    @pytest.mark.parametrize("good", ["rs435i", "a", "overhead-2", "cam_1", "0"])
+    def test_well_formed_ids_are_accepted(self, good):
+        assert rcap.is_camera_id(good)
+
+    @pytest.mark.parametrize("bad", ["", "..", "../etc", "a/b", "a\\b", "RS435i",
+                                     "-leading", "_leading", "a" * 33, None, 7,
+                                     "c:", "cam.1", " rs435i"])
+    def test_traversal_shaped_ids_are_rejected(self, bad):
+        assert not rcap.is_camera_id(bad)
+
+    def test_write_refuses_a_traversal_shaped_camera_id(self, tmp_path):
+        store = _store(tmp_path)
+        with pytest.raises(CaptureStoreError):
+            _write(store, camera_id="../../etc")
+
+    def test_reads_refuse_a_traversal_shaped_camera_id(self, tmp_path):
+        store = _store(tmp_path)
+        record = _write(store)
+        cid = record["capture_id"]
+        with pytest.raises(CaptureNotFound):
+            store.get("../../etc", cid)
+        with pytest.raises(CaptureNotFound):
+            store.file_path("../../etc", cid, "color.jpg")
+        assert store.delete("../../etc", cid) is False
+        assert store.list_captures(camera_id="../../etc") == []
+
+
 # ---------------------------------------------------------------------------
 # Writing
 # ---------------------------------------------------------------------------
 
 class TestWrite:
-    def test_layout_is_root_day_id(self, tmp_path):
+    def test_layout_is_root_camera_day_id(self, tmp_path):
         store = _store(tmp_path)
         record = _write(store)
         cid = record["capture_id"]
-        directory = os.path.join(store.root, rcap.day_for_id(cid), cid)
+        directory = os.path.join(store.root, CAM, rcap.day_for_id(cid), cid)
         assert os.path.isdir(directory)
         assert sorted(os.listdir(directory)) == ["color.jpg", "depth.png", "meta.json"]
+
+    def test_meta_records_the_camera_that_took_it(self, tmp_path):
+        store = _store(tmp_path)
+        record = _write(store, camera_id=OTHER)
+        assert record["camera_id"] == OTHER
+        assert store.get(OTHER, record["capture_id"])["camera_id"] == OTHER
+
+    def test_two_cameras_do_not_collide(self, tmp_path):
+        store = _store(tmp_path)
+        at = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
+        a = _write(store, camera_id=CAM, at=at, label="a")
+        b = _write(store, camera_id=OTHER, at=at, label="b")
+        assert store.get(CAM, a["capture_id"])["label"] == "a"
+        assert store.get(OTHER, b["capture_id"])["label"] == "b"
+        with pytest.raises(CaptureNotFound):
+            store.get(OTHER, a["capture_id"])
 
     def test_meta_carries_checksums_and_sizes(self, tmp_path):
         import hashlib
@@ -104,7 +160,7 @@ class TestWrite:
         store = _store(tmp_path)
         record = _write(store, label="arrival")
         on_disk = json.loads(
-            open(store.file_path(record["capture_id"], "meta.json"), encoding="utf-8").read()
+            open(store.file_path(CAM, record["capture_id"], "meta.json"), encoding="utf-8").read()
         )
         assert on_disk == record
 
@@ -117,7 +173,7 @@ class TestWrite:
     def test_capture_with_no_frames_is_refused(self, tmp_path):
         store = _store(tmp_path)
         with pytest.raises(CaptureStoreError):
-            store.write(color_jpeg=None, depth_png=None, meta={})
+            store.write(camera_id=CAM, color_jpeg=None, depth_png=None, meta={})
 
     def test_disabled_store_refuses(self, tmp_path):
         store = _store(tmp_path, enabled=False)
@@ -127,7 +183,7 @@ class TestWrite:
     def test_partial_directory_is_never_listed_and_is_swept(self, tmp_path):
         """A crashed write leaves .partial debris, not a readable capture."""
         store = _store(tmp_path)
-        day = os.path.join(store.root, "2026-09-20")
+        day = os.path.join(store.root, CAM, "2026-09-20")
         os.makedirs(os.path.join(day, "20260920T010000Z-deadbeef.partial"), exist_ok=True)
         assert store.list_captures() == []
         store.prune()
@@ -136,8 +192,22 @@ class TestWrite:
     def test_capture_missing_meta_is_not_listed(self, tmp_path):
         store = _store(tmp_path)
         record = _write(store)
-        os.remove(store.file_path(record["capture_id"], "meta.json"))
+        os.remove(store.file_path(CAM, record["capture_id"], "meta.json"))
         assert store.list_captures() == []
+
+    def test_scan_derives_camera_id_from_the_directory(self, tmp_path):
+        """A capture written before the camera level existed (and any moved by
+        hand) has no camera_id in meta.json. The directory is the authority."""
+        store = _store(tmp_path)
+        record = _write(store, label="legacy")
+        meta_path = store.file_path(CAM, record["capture_id"], "meta.json")
+        on_disk = json.loads(open(meta_path, encoding="utf-8").read())
+        on_disk.pop("camera_id")
+        open(meta_path, "w", encoding="utf-8").write(json.dumps(on_disk))
+
+        listed = store.list_captures()
+        assert [c["camera_id"] for c in listed] == [CAM]
+        assert store.get(CAM, record["capture_id"])["camera_id"] == CAM
 
 
 # ---------------------------------------------------------------------------
@@ -171,10 +241,20 @@ class TestRead:
         got = store.list_captures(since="2026-09-19T00:00:00Z")
         assert [c["label"] for c in got] == ["new"]
 
+    def test_list_spans_cameras_newest_first(self, tmp_path):
+        store = _store(tmp_path)
+        base = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+        _write(store, camera_id=CAM, at=base, label="a")
+        _write(store, camera_id=OTHER, at=base + timedelta(hours=1), label="b")
+        _write(store, camera_id=CAM, at=base + timedelta(hours=2), label="c")
+        assert [c["label"] for c in store.list_captures()] == ["c", "b", "a"]
+        assert [c["label"] for c in store.list_captures(camera_id=OTHER)] == ["b"]
+        assert [c["label"] for c in store.list_captures(camera_id=CAM)] == ["c", "a"]
+
     def test_get_unknown_raises(self, tmp_path):
         store = _store(tmp_path)
         with pytest.raises(CaptureNotFound):
-            store.get(rcap.new_capture_id())
+            store.get(CAM, rcap.new_capture_id())
 
     def test_file_path_whitelists_names(self, tmp_path):
         """Traversal is impossible because the filename is not interpolated."""
@@ -182,18 +262,18 @@ class TestRead:
         record = _write(store)
         for bad in ("../../secret", "meta.json.bak", "..", "color.JPG"):
             with pytest.raises(CaptureNotFound):
-                store.file_path(record["capture_id"], bad)
+                store.file_path(CAM, record["capture_id"], bad)
 
     def test_file_path_rejects_malformed_id(self, tmp_path):
         store = _store(tmp_path)
         with pytest.raises(CaptureNotFound):
-            store.file_path("../../etc/passwd", "color.jpg")
+            store.file_path(CAM, "../../etc/passwd", "color.jpg")
 
     def test_delete_removes_and_reports(self, tmp_path):
         store = _store(tmp_path)
         record = _write(store)
-        assert store.delete(record["capture_id"]) is True
-        assert store.delete(record["capture_id"]) is False
+        assert store.delete(CAM, record["capture_id"]) is True
+        assert store.delete(CAM, record["capture_id"]) is False
         assert store.list_captures() == []
 
 
@@ -271,7 +351,46 @@ class TestRetention:
         store = _store(tmp_path, keep_days=1)
         _write(store, at=now - timedelta(days=30))
         store.prune(now=now)
-        assert not os.path.exists(os.path.join(store.root, "2026-08-21"))
+        assert not os.path.exists(os.path.join(store.root, CAM, "2026-08-21"))
+
+    def test_the_budget_is_shared_across_cameras(self, tmp_path):
+        """One budget, oldest first by capture id regardless of camera: a busy
+        camera must not be able to evict another's frames out of order, and an
+        idle camera must not hold a share it is not using."""
+        now = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
+        store = _store(tmp_path, keep_days=0, keep_max_gb=0)
+        _write(store, camera_id=OTHER, at=now - timedelta(hours=4), label="oldest")
+        _write(store, camera_id=CAM, at=now - timedelta(hours=3), label="older")
+        _write(store, camera_id=OTHER, at=now - timedelta(hours=2), label="newer")
+        _write(store, camera_id=CAM, at=now - timedelta(hours=1), label="newest")
+
+        # A ceiling with room for two and a half of these captures: the two
+        # oldest go, whichever cameras they belong to.
+        per_capture = store.describe()["bytes"] / 4
+        store.keep_max_gb = (per_capture * 2.5) / (1024 ** 3)
+        store.prune(now=now)
+        remaining = [c["label"] for c in store.list_captures()]
+        assert remaining == ["newest", "newer"]
+
+    def test_age_bound_spans_cameras(self, tmp_path):
+        now = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
+        store = _store(tmp_path, keep_days=0, keep_max_gb=0)
+        _write(store, camera_id=OTHER, at=now - timedelta(days=40), label="stale")
+        _write(store, camera_id=CAM, at=now - timedelta(days=2), label="fresh")
+        store.keep_days = 30
+        result = store.prune(now=now)
+        assert result.removed_age == 1
+        assert [c["label"] for c in store.list_captures()] == ["fresh"]
+
+    def test_protected_survives_in_any_camera(self, tmp_path):
+        now = datetime(2026, 9, 20, 12, 0, 0, tzinfo=timezone.utc)
+        store = _store(tmp_path, keep_days=1, keep_max_gb=0)
+        _write(store, camera_id=OTHER, at=now - timedelta(days=99),
+               label="reference", protected=True)
+        _write(store, camera_id=CAM, at=now - timedelta(days=99), label="ordinary")
+        store.keep_max_gb = 1 / (1024 ** 3)
+        store.prune(now=now)
+        assert [c["label"] for c in store.list_captures()] == ["reference"]
 
 
 # ---------------------------------------------------------------------------
@@ -309,12 +428,29 @@ class TestConfig:
         assert summary["last_id"] == record["capture_id"]
         assert summary["bytes"] > 0
 
-    def test_describe_reports_the_policy(self, tmp_path):
+    def test_summary_can_be_scoped_to_one_camera(self, tmp_path):
+        store = _store(tmp_path)
+        base = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+        _write(store, camera_id=CAM, at=base)
+        _write(store, camera_id=OTHER, at=base + timedelta(hours=1))
+        assert store.summary()["count"] == 2
+        assert store.summary(CAM)["count"] == 1
+        assert store.summary("../../etc")["count"] == 0
+
+    def test_describe_reports_the_policy_and_a_per_camera_breakdown(self, tmp_path):
         store = _store(tmp_path, keep_days=30, keep_max_gb=20)
+        base = datetime(2026, 9, 18, 12, 0, 0, tzinfo=timezone.utc)
+        _write(store, camera_id=CAM, at=base)
+        _write(store, camera_id=CAM, at=base + timedelta(hours=1))
+        _write(store, camera_id=OTHER, at=base + timedelta(hours=2))
         described = store.describe()
         assert described["keep_days"] == 30
         assert described["keep_max_gb"] == 20
         assert described["root"] == store.root
+        assert described["count"] == 3
+        assert described["cameras"][CAM]["count"] == 2
+        assert described["cameras"][OTHER]["count"] == 1
+        assert described["cameras"][OTHER]["bytes"] > 0
 
     def test_shared_store_roundtrip(self, tmp_path):
         store = rcap.configure_shared({"root": str(tmp_path), "keep_days": 5})

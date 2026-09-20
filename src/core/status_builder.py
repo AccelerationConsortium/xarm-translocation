@@ -112,9 +112,9 @@ def _disconnected_envelope() -> EquipmentStatus:
     ``required_actions: ["connect"]`` (matching the SDK's pre-migration
     ``LegacyXArmAdapter`` mapping).
 
-    The RealSense camera is process-wide and does not wait for the arm, so
-    its component/details blocks appear here too when it is configured --
-    an operator can see the bench camera's health before /connect.
+    The RealSense cameras are process-wide and do not wait for the arm, so
+    their component/details blocks appear here too when any is configured --
+    an operator can see the bench cameras' health before /connect.
     """
     components: dict[str, ComponentStatus] = {
         "arm": ComponentStatus(connected=False, state="disabled"),
@@ -123,9 +123,7 @@ def _disconnected_envelope() -> EquipmentStatus:
         "force_torque": ComponentStatus(connected=False, state="disabled"),
     }
     details: dict[str, Any] = {}
-    realsense_component = _build_realsense_component()
-    if realsense_component is not None:
-        components["realsense_camera"] = realsense_component
+    components.update(_build_realsense_components())
     realsense_block = _build_realsense_details()
     if realsense_block is not None:
         details["realsense"] = realsense_block
@@ -314,14 +312,15 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
             ),
         )
 
-    # RealSense depth camera, when src/settings/realsense.yaml enables it.
-    # A component, not a state input: arm motion does not depend on the
-    # camera, so an unplugged camera never pushes equipment_status (§2.2
-    # scopes degraded to subsystems a normal run needs). Absent when
-    # unconfigured so unmigrated deployments see an unchanged envelope.
-    realsense_component = _build_realsense_component()
-    if realsense_component is not None:
-        components["realsense_camera"] = realsense_component
+    # RealSense depth cameras, when src/settings/realsense.yaml enables them.
+    # One component per camera, keyed realsense_<camera_id>, because a
+    # component is a thing that can be healthy or not and two cameras fail
+    # independently -- a single merged entry would hide the working one.
+    # Components, not state inputs: arm motion does not depend on a camera,
+    # so an unplugged one never pushes equipment_status (§2.2 scopes degraded
+    # to subsystems a normal run needs). Absent when unconfigured so
+    # unmigrated deployments see an unchanged envelope.
+    components.update(_build_realsense_components())
 
     # Metrics (numeric values with units).
     metrics: dict[str, MetricValue] = {}
@@ -393,8 +392,8 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     if interlocks_block is not None:
         details["interlocks"] = interlocks_block
 
-    # Machine-readable twin of components.realsense_camera: device list,
-    # stream config, measured fps, and the reason when it is not streaming.
+    # Machine-readable twin of the components.realsense_<id> entries: device
+    # list, stream config, measured fps, and the reason when not streaming.
     realsense_block = _build_realsense_details()
     if realsense_block is not None:
         details["realsense"] = realsense_block
@@ -516,43 +515,60 @@ def _build_sash_interlock_details(controller: XArmController) -> dict[str, Any] 
     return {"fume_hood_sash": snapshot} if isinstance(snapshot, dict) else None
 
 
-def _build_realsense_component() -> ComponentStatus | None:
-    """``components.realsense_camera``, or None when no camera is configured.
+def _build_realsense_components() -> dict[str, ComponentStatus]:
+    """``components.realsense_<camera_id>`` for every configured camera.
 
-    Reads the process-wide camera (``realsense_camera.shared_camera()``) --
-    the camera outlives arm connections, so it is not a controller attribute.
+    Reads the process-wide registry (``realsense_camera.cameras()``) -- the
+    cameras outlive arm connections, so they are not controller attributes.
     ``describe()`` only touches cached state plus a TTL-cached USB
-    enumeration, keeping ``build_status`` cheap and side-effect-free.
+    enumeration, keeping ``build_status`` cheap and side-effect-free. A camera
+    whose reporting raises is dropped from the envelope rather than allowed to
+    break ``/status`` for the arm.
     """
-    camera = realsense_camera.shared_camera()
-    if camera is None or not getattr(camera, "configured", False):
-        return None
+    out: dict[str, ComponentStatus] = {}
     try:
-        block = camera.component_status()
+        registry = realsense_camera.cameras()
     except Exception:  # noqa: BLE001 - observability must not break /status
-        return None
-    if not isinstance(block, dict):
-        return None
-    return ComponentStatus(
-        connected=bool(block.get("connected")),
-        state=str(block.get("state") or "unknown"),
-        message=block.get("message"),
-    )
+        return out
+    for camera_id, camera in registry.items():
+        if not getattr(camera, "configured", False):
+            continue
+        try:
+            block = camera.component_status()
+        except Exception:  # noqa: BLE001 - observability must not break /status
+            continue
+        if not isinstance(block, dict):
+            continue
+        out[f"realsense_{camera_id}"] = ComponentStatus(
+            connected=bool(block.get("connected")),
+            state=str(block.get("state") or "unknown"),
+            message=block.get("message"),
+        )
+    return out
 
 
 def _realsense_capture_allowed() -> bool:
-    """Whether ``POST /control/realsense/capture`` would be honoured.
+    """Whether a ``POST /control/realsense/<id>/capture`` would be honoured.
 
-    Mirrors exactly what the endpoint checks before it touches the camera:
-    a configured camera that is either already streaming or allowed to start
-    on demand, and an enabled capture store. Argument-dependent refusals (a
-    disabled colour stream, a full disk) are 4xx/5xx that a flat action list
-    cannot predict, which is the same line ``graph.move_to`` draws.
+    Mirrors exactly what the endpoint checks before it touches a camera: a
+    configured camera that is either already streaming or allowed to start on
+    demand, and an enabled capture store. ``realsense.capture`` is one action
+    name for a family of routes, so ANY qualifying camera advertises it --
+    the list says the verb is available, and ``details.realsense.cameras``
+    says which lens can serve it. Argument-dependent refusals (a disabled
+    colour stream, a full disk) are 4xx/5xx that a flat action list cannot
+    predict, which is the same line ``graph.move_to`` draws.
     """
-    camera = realsense_camera.shared_camera()
-    if camera is None or not getattr(camera, "configured", False):
+    try:
+        registry = realsense_camera.cameras()
+    except Exception:  # noqa: BLE001
         return False
-    if not (getattr(camera, "streaming", False) or getattr(camera, "start_on_demand", False)):
+    ready = any(
+        getattr(camera, "configured", False)
+        and (getattr(camera, "streaming", False) or getattr(camera, "start_on_demand", False))
+        for camera in registry.values()
+    )
+    if not ready:
         return False
     try:
         store = realsense_captures.shared_store()
@@ -564,27 +580,42 @@ def _realsense_capture_allowed() -> bool:
 def _build_realsense_details() -> dict[str, Any] | None:
     """The ``details.realsense`` block, or None when nothing is configured.
 
-    The camera's own block is extended with a ``captures`` summary so a
-    client can see the store's occupancy without a second request -- the
-    same reasoning that puts ``motion_graph`` in details rather than behind
-    ``GET /graph``.
+    ``cameras`` is a map keyed by camera id rather than a list, because every
+    other surface (routes, component names, capture directories) addresses a
+    camera by that id and a client should never have to search a list to find
+    one. ``default`` repeats what ``GET /realsense/cameras`` says: the id a
+    caller may omit naming, null once there is more than one. The per-camera
+    blocks are extended with one shared ``captures`` summary so a client can
+    see the store's occupancy without a second request -- the same reasoning
+    that puts ``motion_graph`` in details rather than behind ``GET /graph``.
     """
-    camera = realsense_camera.shared_camera()
-    if camera is None or not getattr(camera, "configured", False):
-        return None
     try:
-        block = camera.status_block()
+        registry = realsense_camera.cameras()
     except Exception:  # noqa: BLE001 - observability must not break /status
         return None
-    if not isinstance(block, dict):
+    blocks: dict[str, Any] = {}
+    for camera_id, camera in registry.items():
+        if not getattr(camera, "configured", False):
+            continue
+        try:
+            block = camera.status_block()
+        except Exception:  # noqa: BLE001 - observability must not break /status
+            continue
+        if isinstance(block, dict):
+            blocks[camera_id] = block
+    if not blocks:
         return None
+    details: dict[str, Any] = {
+        "default": realsense_camera.default_camera_id(),
+        "cameras": blocks,
+    }
     try:
         store = realsense_captures.shared_store()
         if store is not None and store.enabled:
-            block["captures"] = store.summary()
+            details["captures"] = store.summary()
     except Exception:  # noqa: BLE001 - observability must not break /status
         pass
-    return block
+    return details
 
 
 def _sash_status_prefix(controller: XArmController) -> str | None:

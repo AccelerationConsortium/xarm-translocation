@@ -259,6 +259,7 @@ class FakeRS:
 
 def _config(**overrides):
     cfg = {
+        "id": "rs435i",
         "enabled": True,
         "serial": "",
         "label": "test cam",
@@ -283,7 +284,7 @@ def rs():
 
 @pytest.fixture
 def camera(rs):
-    cam = RealSenseCamera(_config(), rs_module=rs, np_module=np)
+    cam = RealSenseCamera(_config(), camera_id="rs435i", rs_module=rs, np_module=np)
     yield cam
     cam.stop()
 
@@ -333,28 +334,52 @@ class TestConfiguration:
         with pytest.raises(RealSenseUnavailable, match="not installed"):
             cam.start()
 
-    def test_from_config_file_missing_is_disabled(self, tmp_path, rs):
-        cam = RealSenseCamera.from_config_file(str(tmp_path / "nope.yaml"), rs_module=rs)
-        assert not cam.configured
+    def test_camera_id_is_carried_and_reported(self, rs):
+        cam = RealSenseCamera(_config(), camera_id="overhead", rs_module=rs, np_module=np)
+        assert cam.camera_id == "overhead"
+        assert cam.describe()["camera_id"] == "overhead"
+        assert cam.status_block()["camera_id"] == "overhead"
 
-    def test_from_config_file_reads_yaml(self, tmp_path, rs):
+    def test_config_file_missing_yields_no_cameras(self, tmp_path, rs):
+        config, reason = rc.load_config(str(tmp_path / "nope.yaml"))
+        assert config == {} and "nope.yaml" in reason
+        built, reason = rc.build_cameras(config, rs_module=rs)
+        assert built == {} and reason
+
+    def test_config_file_reads_the_cameras_list(self, tmp_path, rs):
         pytest.importorskip("yaml")
         path = tmp_path / "realsense.yaml"
-        path.write_text("enabled: true\nserial: 'ABC'\ncolor: {width: 320, height: 240, fps: 15}\n")
-        cam = RealSenseCamera.from_config_file(str(path), rs_module=rs, np_module=np)
-        assert cam.configured and cam.serial == "ABC"
+        path.write_text(
+            "enabled: true\n"
+            "cameras:\n"
+            "  - id: rs435i\n"
+            "    serial: 'ABC'\n"
+            "    color: {width: 320, height: 240, fps: 15}\n"
+        )
+        config, reason = rc.load_config(str(path))
+        assert reason is None
+        built, reason = rc.build_cameras(config, rs_module=rs, np_module=np)
+        assert reason is None and list(built) == ["rs435i"]
+        cam = built["rs435i"]
+        assert cam.configured and cam.serial == "ABC" and cam.camera_id == "rs435i"
         assert cam.color_profile == {"enabled": True, "width": 320, "height": 240, "fps": 15}
         assert cam.depth_profile["width"] == 640  # default kept
 
     def test_shipped_yaml_parses(self, rs):
         pytest.importorskip("yaml")
-        cam = RealSenseCamera.from_config_file(rc.default_config_path(), rs_module=rs, np_module=np)
+        config, reason = rc.load_config(rc.default_config_path())
+        assert reason is None
+        built, reason = rc.build_cameras(config, rs_module=rs, np_module=np)
+        assert reason is None
+        assert "rs435i" in built, "the shipped config must define the first camera as rs435i"
+        cam = built["rs435i"]
         assert cam.configured
         assert cam.color_profile["enabled"] and cam.depth_profile["enabled"]
 
     def test_bad_values_fall_back_to_defaults(self, rs):
         cam = RealSenseCamera(_config(jpeg_quality="x", frame_timeout_ms=None,
-                                      color={"width": "bad"}), rs_module=rs, np_module=np)
+                                      color={"width": "bad"}),
+                              camera_id="rs435i", rs_module=rs, np_module=np)
         assert cam.jpeg_quality == 80 and cam.frame_timeout_ms == 5000
         assert cam.color_profile["width"] == 640
 
@@ -671,8 +696,8 @@ class TestReporting:
         _wait_frames(camera)
         block = camera.status_block()
         assert set(block) == {
-            "state", "installed", "device", "devices", "streams", "fps_measured",
-            "frames_captured", "last_frame_age_s", "warnings", "reason",
+            "camera_id", "label", "state", "installed", "device", "devices", "streams",
+            "fps_measured", "frames_captured", "last_frame_age_s", "warnings", "reason",
         }
         assert block["state"] == "streaming" and block["reason"] is None
         assert block["streams"]["align_depth_to_color"] is True
@@ -691,16 +716,112 @@ class TestReporting:
         assert d["devices"] == [] and d["streaming"] is False
 
 
-class TestSharedInstance:
-    def test_configure_and_set(self, tmp_path, rs):
+class TestRegistry:
+    """The process-wide registry: what the API server and status_builder read.
+
+    A bad entry is a log line and a skipped camera, never an exception --
+    this runs at import time in the arm's own process.
+    """
+
+    @staticmethod
+    def _entry(camera_id, **overrides):
+        entry = dict(_config())
+        entry["id"] = camera_id
+        entry.pop("enabled", None)
+        entry.update(overrides)
+        return entry
+
+    def test_configure_from_a_missing_file_leaves_an_empty_registry(self, tmp_path, rs):
         try:
-            cam = rc.configure_shared(str(tmp_path / "missing.yaml"), rs_module=rs)
-            assert rc.shared_camera() is cam and not cam.configured
-            other = RealSenseCamera(_config(), rs_module=rs, np_module=np)
-            rc.set_shared(other)
-            assert rc.shared_camera() is other
+            built = rc.configure_cameras(str(tmp_path / "missing.yaml"), rs_module=rs)
+            assert built == {} and rc.cameras() == {}
+            assert rc.default_camera_id() is None
+            assert "missing.yaml" in rc.configuration_reason()
         finally:
-            rc.set_shared(None)
+            rc.set_cameras(None)
+
+    def test_set_cameras_installs_and_clears(self, rs):
+        try:
+            cam = RealSenseCamera(_config(), camera_id="rs435i", rs_module=rs, np_module=np)
+            rc.set_cameras({"rs435i": cam})
+            assert rc.cameras() == {"rs435i": cam}
+            assert rc.camera("rs435i") is cam and rc.camera("nope") is None
+            assert rc.default_camera_id() == "rs435i"
+            assert rc.configuration_reason() is None
+            rc.set_cameras(None)
+            assert rc.cameras() == {} and rc.configuration_reason()
+        finally:
+            rc.set_cameras(None)
+
+    def test_disabled_at_the_top_level_means_no_cameras(self, rs):
+        built, reason = rc.build_cameras(
+            {"enabled": False, "cameras": [self._entry("rs435i")]}, rs_module=rs, np_module=np)
+        assert built == {} and "enabled: false" in reason
+
+    def test_empty_camera_list_means_no_cameras(self, rs):
+        built, reason = rc.build_cameras({"enabled": True, "cameras": []}, rs_module=rs)
+        assert built == {} and "cameras:" in reason
+        built, reason = rc.build_cameras({"enabled": True}, rs_module=rs)
+        assert built == {} and "cameras:" in reason
+
+    @pytest.mark.parametrize("bad_id", ["", "RS435i", "../etc", "a/b", "cam.1",
+                                        "-lead", "a" * 33, None])
+    def test_malformed_ids_are_skipped_not_raised(self, rs, bad_id):
+        entry = self._entry("placeholder")
+        entry["id"] = bad_id
+        built, reason = rc.build_cameras({"enabled": True, "cameras": [entry]},
+                                         rs_module=rs, np_module=np)
+        assert built == {} and reason
+
+    def test_duplicate_ids_are_refused(self, rs):
+        built, reason = rc.build_cameras(
+            {"enabled": True,
+             "cameras": [self._entry("rs435i", serial="AAA"),
+                         self._entry("rs435i", serial="BBB")]},
+            rs_module=rs, np_module=np)
+        assert list(built) == ["rs435i"]
+        assert built["rs435i"].serial == "AAA"      # the first wins, the second is logged
+
+    def test_a_serial_is_required_once_there_are_two_cameras(self, rs):
+        """With two cameras on the bus, "the first one enumerated" is not
+        stable, so an entry without a serial is skipped rather than guessed."""
+        built, reason = rc.build_cameras(
+            {"enabled": True,
+             "cameras": [self._entry("rs435i", serial="AAA"),
+                         self._entry("overhead", serial="")]},
+            rs_module=rs, np_module=np)
+        assert list(built) == ["rs435i"]
+
+        built, reason = rc.build_cameras(
+            {"enabled": True,
+             "cameras": [self._entry("rs435i", serial="AAA"),
+                         self._entry("overhead", serial="BBB")]},
+            rs_module=rs, np_module=np)
+        assert sorted(built) == ["overhead", "rs435i"]
+
+    def test_a_single_camera_may_omit_its_serial(self, rs):
+        built, reason = rc.build_cameras(
+            {"enabled": True, "cameras": [self._entry("rs435i", serial="")]},
+            rs_module=rs, np_module=np)
+        assert list(built) == ["rs435i"] and built["rs435i"].serial is None
+
+    def test_a_disabled_entry_is_not_registered(self, rs):
+        built, reason = rc.build_cameras(
+            {"enabled": True, "cameras": [self._entry("rs435i", enabled=False)]},
+            rs_module=rs, np_module=np)
+        assert built == {} and reason
+
+    def test_default_camera_id_is_none_with_two_cameras(self, rs):
+        try:
+            built, _ = rc.build_cameras(
+                {"enabled": True,
+                 "cameras": [self._entry("rs435i", serial="AAA"),
+                             self._entry("overhead", serial="BBB")]},
+                rs_module=rs, np_module=np)
+            rc.set_cameras(built)
+            assert rc.default_camera_id() is None
+        finally:
+            rc.set_cameras(None)
 
     def test_default_config_path_points_at_settings(self):
         path = rc.default_config_path()

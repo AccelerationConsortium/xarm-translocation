@@ -31,7 +31,8 @@ PNG = b"\x89PNG\r\n\x1a\nfakepng"
 class FakeCamera:
     """Only the surface the capture endpoint touches."""
 
-    def __init__(self, start_on_demand=True):
+    def __init__(self, start_on_demand=True, camera_id="rs435i"):
+        self.camera_id = camera_id
         self.configured = True
         self.autostart = False  # the app lifespan reads this at startup
         self.start_on_demand = start_on_demand
@@ -42,7 +43,8 @@ class FakeCamera:
         self.calls = []
 
     def describe(self):
-        return {"configured": True, "installed": True, "streaming": self.streaming,
+        return {"camera_id": self.camera_id, "configured": True, "installed": True,
+                "streaming": self.streaming,
                 "device": {"serial": "S1", "firmware": "5.11.1.100"},
                 "library_version": "2.58.4",
                 "streams": {"color": {"width": 640, "height": 480, "fps": 30}}}
@@ -84,15 +86,25 @@ class FakeClaimManager:
         return {"session_id": "s1", "owner": "agent@lab"}
 
 
+CAM = "rs435i"
+
+
 @pytest.fixture
-def fake_cam():
+def registry():
+    previous = rc.cameras()
+
+    def install(*cameras):
+        rc.set_cameras({cam.camera_id: cam for cam in cameras})
+
+    yield install
+    rc.set_cameras(previous)
+
+
+@pytest.fixture
+def fake_cam(registry):
     cam = FakeCamera()
-    previous = rc.shared_camera()
-    rc.set_shared(cam)
-    try:
-        yield cam
-    finally:
-        rc.set_shared(previous)
+    registry(cam)
+    return cam
 
 
 @pytest.fixture
@@ -135,18 +147,20 @@ def client(monkeypatch, fake_cam, store):
 
 class TestCapture:
     def test_capture_writes_and_returns_urls(self, client):
-        response = client.post("/control/realsense/capture", json={"label": "arrival"})
+        response = client.post(f"/control/realsense/{CAM}/capture", json={"label": "arrival"})
         assert response.status_code == 200
         body = response.json()
         cid = body["capture_id"]
-        assert body["urls"]["color"] == f"/realsense/captures/{cid}/color.jpg"
-        assert body["urls"]["depth"] == f"/realsense/captures/{cid}/depth.png"
+        assert body["camera_id"] == CAM
+        assert body["meta"]["camera_id"] == CAM
+        assert body["urls"]["color"] == f"/realsense/{CAM}/captures/{cid}/color.jpg"
+        assert body["urls"]["depth"] == f"/realsense/{CAM}/captures/{cid}/depth.png"
         assert body["meta"]["label"] == "arrival"
 
     def test_capture_uses_one_frameset_for_both_images(self, client, fake_cam):
         """Colour and depth must come from the same bundle, or the record
         pairs two different moments and stops being a measurement."""
-        client.post("/control/realsense/capture", json={})
+        client.post(f"/control/realsense/{CAM}/capture", json={})
         encodes = [c for c in fake_cam.calls if isinstance(c, tuple)]
         frame_numbers = {c[1] for c in encodes}
         assert len(frame_numbers) == 1
@@ -156,24 +170,24 @@ class TestCapture:
         """Regression: the first version read a non-existent is_connected
         attribute, so every capture claimed the arm was disconnected even
         while recording its live joints and TCP pose."""
-        meta = client.post("/control/realsense/capture", json={}).json()["meta"]
+        meta = client.post(f"/control/realsense/{CAM}/capture", json={}).json()["meta"]
         assert meta["arm"]["connected"] is True
 
         import src.core.xarm_api_server as srv
         srv.controller.states = {"connection": SimpleNamespace(value="disabled")}
-        meta = client.post("/control/realsense/capture", json={}).json()["meta"]
+        meta = client.post(f"/control/realsense/{CAM}/capture", json={}).json()["meta"]
         assert meta["arm"]["connected"] is False
 
     def test_missing_states_map_does_not_break_a_capture(self, client):
         """Metadata is never worth failing a frame over."""
         import src.core.xarm_api_server as srv
         srv.controller.states = {}
-        response = client.post("/control/realsense/capture", json={})
+        response = client.post(f"/control/realsense/{CAM}/capture", json={})
         assert response.status_code == 200
         assert response.json()["meta"]["arm"]["connected"] is False
 
     def test_capture_records_arm_state(self, client):
-        meta = client.post("/control/realsense/capture", json={}).json()["meta"]
+        meta = client.post(f"/control/realsense/{CAM}/capture", json={}).json()["meta"]
         assert meta["arm"]["node_id"] == "deck_1"
         assert meta["arm"]["joints"] == [0.0, 1.0, 2.0, 3.0, 4.0]
         assert meta["arm"]["track_position"] == 42.0
@@ -181,12 +195,12 @@ class TestCapture:
         assert meta["arm"]["connected"] is True
 
     def test_explicit_node_id_overrides_the_live_one(self, client):
-        meta = client.post("/control/realsense/capture",
+        meta = client.post(f"/control/realsense/{CAM}/capture",
                            json={"node_id": "hood_2"}).json()["meta"]
         assert meta["arm"]["node_id"] == "hood_2"
 
     def test_capture_records_camera_and_frame_metadata(self, client):
-        meta = client.post("/control/realsense/capture", json={}).json()["meta"]
+        meta = client.post(f"/control/realsense/{CAM}/capture", json={}).json()["meta"]
         assert meta["camera"]["device"]["serial"] == "S1"
         assert meta["camera"]["library_version"] == "2.58.4"
         assert meta["frame"]["depth_scale_m"] == 0.001
@@ -195,28 +209,82 @@ class TestCapture:
 
     def test_capture_starts_the_pipeline_on_demand(self, client, fake_cam):
         assert fake_cam.streaming is False
-        assert client.post("/control/realsense/capture", json={}).status_code == 200
+        assert client.post(f"/control/realsense/{CAM}/capture", json={}).status_code == 200
         assert "ensure_started" in fake_cam.calls
 
     def test_capture_409_when_start_on_demand_is_off(self, client, fake_cam):
         fake_cam.start_on_demand = False
-        response = client.post("/control/realsense/capture", json={})
+        response = client.post(f"/control/realsense/{CAM}/capture", json={})
         assert response.status_code == 409
         assert response.json()["detail"]["error"] == "realsense_not_streaming"
 
     def test_capture_404_when_store_disabled(self, client, monkeypatch):
         rcap.set_shared(rcap.CaptureStore({"enabled": False}))
-        response = client.post("/control/realsense/capture", json={})
+        response = client.post(f"/control/realsense/{CAM}/capture", json={})
         assert response.status_code == 404
         assert response.json()["detail"]["error"] == "captures_not_configured"
 
     def test_capture_accepts_an_empty_body(self, client):
-        assert client.post("/control/realsense/capture").status_code == 200
+        assert client.post(f"/control/realsense/{CAM}/capture").status_code == 200
 
     def test_protected_flag_is_recorded(self, client):
-        meta = client.post("/control/realsense/capture",
+        meta = client.post(f"/control/realsense/{CAM}/capture",
                            json={"protected": True}).json()["meta"]
         assert meta["protected"] is True
+
+
+# ---------------------------------------------------------------------------
+# The fixed-path alias
+#
+# POST /control/realsense/capture exists because a SkillDef carries one fixed
+# endpoint string that the skill executor and the dashboard passthrough send
+# verbatim -- an agent plan cannot template a camera id into a path. These
+# pin down how it picks the camera, because getting that wrong files evidence
+# under the wrong lens.
+# ---------------------------------------------------------------------------
+
+class TestCaptureAlias:
+    def test_alias_resolves_the_sole_camera(self, client, fake_cam):
+        body = client.post("/control/realsense/capture", json={"label": "one"}).json()
+        assert body["camera_id"] == CAM
+        assert body["urls"]["meta"].startswith(f"/realsense/{CAM}/captures/")
+
+    def test_alias_accepts_an_empty_body(self, client):
+        assert client.post("/control/realsense/capture").status_code == 200
+
+    def test_alias_with_two_cameras_and_no_camera_field_is_400(self, client, registry):
+        registry(FakeCamera(camera_id="rs435i"), FakeCamera(camera_id="overhead"))
+        response = client.post("/control/realsense/capture", json={})
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert detail["error"] == "camera_required"
+        assert detail["cameras"] == ["overhead", "rs435i"]
+
+    def test_alias_with_an_explicit_camera(self, client, registry):
+        first, second = FakeCamera(camera_id="rs435i"), FakeCamera(camera_id="overhead")
+        registry(first, second)
+        body = client.post("/control/realsense/capture",
+                           json={"camera": "overhead", "label": "two"}).json()
+        assert body["camera_id"] == "overhead"
+        assert body["meta"]["camera_id"] == "overhead"
+        assert second.calls and not first.calls
+
+    def test_alias_with_an_unknown_camera_is_404(self, client, registry):
+        registry(FakeCamera(camera_id="rs435i"), FakeCamera(camera_id="overhead"))
+        response = client.post("/control/realsense/capture", json={"camera": "nope"})
+        assert response.status_code == 404
+        detail = response.json()["detail"]
+        assert detail["error"] == "camera_not_found"
+        assert detail["cameras"] == ["overhead", "rs435i"]
+
+    def test_camera_field_is_ignored_on_the_nested_route(self, client, registry):
+        """The path is the authority there; a stray body field cannot redirect
+        a capture to another camera."""
+        first, second = FakeCamera(camera_id="rs435i"), FakeCamera(camera_id="overhead")
+        registry(first, second)
+        body = client.post(f"/control/realsense/{CAM}/capture",
+                           json={"camera": "overhead"}).json()
+        assert body["camera_id"] == CAM
 
 
 # ---------------------------------------------------------------------------
@@ -225,32 +293,44 @@ class TestCapture:
 
 class TestCaptureReads:
     def test_list_is_open_and_reports_retention(self, client):
-        client.post("/control/realsense/capture", json={"label": "one"})
-        body = client.get("/realsense/captures").json()
+        client.post(f"/control/realsense/{CAM}/capture", json={"label": "one"})
+        body = client.get(f"/realsense/{CAM}/captures").json()
         assert body["count"] == 1
         assert body["retention"]["keep_days"] == 30
         assert body["retention"]["keep_max_gb"] == 20
 
+    def test_unscoped_list_spans_every_camera(self, client, registry):
+        first, second = FakeCamera(camera_id="rs435i"), FakeCamera(camera_id="overhead")
+        registry(first, second)
+        client.post("/control/realsense/rs435i/capture", json={"label": "a"})
+        client.post("/control/realsense/overhead/capture", json={"label": "b"})
+        everything = client.get("/realsense/captures").json()
+        assert everything["count"] == 2
+        assert {c["camera_id"] for c in everything["captures"]} == {"rs435i", "overhead"}
+        scoped = client.get("/realsense/overhead/captures").json()
+        assert scoped["camera_id"] == "overhead"
+        assert [c["label"] for c in scoped["captures"]] == ["b"]
+
     def test_list_filters_by_node(self, client):
-        client.post("/control/realsense/capture", json={"node_id": "a"})
-        client.post("/control/realsense/capture", json={"node_id": "b"})
-        body = client.get("/realsense/captures", params={"node_id": "a"}).json()
+        client.post(f"/control/realsense/{CAM}/capture", json={"node_id": "a"})
+        client.post(f"/control/realsense/{CAM}/capture", json={"node_id": "b"})
+        body = client.get(f"/realsense/{CAM}/captures", params={"node_id": "a"}).json()
         assert body["count"] == 1
 
     def test_meta_endpoint_returns_the_record(self, client):
-        cid = client.post("/control/realsense/capture", json={}).json()["capture_id"]
-        body = client.get(f"/realsense/captures/{cid}").json()
+        cid = client.post(f"/control/realsense/{CAM}/capture", json={}).json()["capture_id"]
+        body = client.get(f"/realsense/{CAM}/captures/{cid}").json()
         assert body["capture_id"] == cid
         assert body["meta"]["capture_id"] == cid
 
     def test_meta_404_for_unknown_id(self, client):
         cid = rcap.new_capture_id()
-        assert client.get(f"/realsense/captures/{cid}").status_code == 404
+        assert client.get(f"/realsense/{CAM}/captures/{cid}").status_code == 404
 
     def test_files_are_served_with_the_right_media_types(self, client):
-        cid = client.post("/control/realsense/capture", json={}).json()["capture_id"]
-        color = client.get(f"/realsense/captures/{cid}/color.jpg")
-        depth = client.get(f"/realsense/captures/{cid}/depth.png")
+        cid = client.post(f"/control/realsense/{CAM}/capture", json={}).json()["capture_id"]
+        color = client.get(f"/realsense/{CAM}/captures/{cid}/color.jpg")
+        depth = client.get(f"/realsense/{CAM}/captures/{cid}/depth.png")
         assert color.status_code == 200
         assert color.headers["content-type"] == "image/jpeg"
         assert color.content == JPEG
@@ -258,17 +338,17 @@ class TestCaptureReads:
         assert depth.content == PNG
 
     def test_unknown_filename_is_404_not_a_traversal(self, client):
-        cid = client.post("/control/realsense/capture", json={}).json()["capture_id"]
-        assert client.get(f"/realsense/captures/{cid}/meta.json.bak").status_code == 404
+        cid = client.post(f"/control/realsense/{CAM}/capture", json={}).json()["capture_id"]
+        assert client.get(f"/realsense/{CAM}/captures/{cid}/meta.json.bak").status_code == 404
 
     def test_delete_removes_the_capture(self, client):
-        cid = client.post("/control/realsense/capture", json={}).json()["capture_id"]
-        assert client.delete(f"/control/realsense/captures/{cid}").status_code == 200
-        assert client.get(f"/realsense/captures/{cid}").status_code == 404
+        cid = client.post(f"/control/realsense/{CAM}/capture", json={}).json()["capture_id"]
+        assert client.delete(f"/control/realsense/{CAM}/captures/{cid}").status_code == 200
+        assert client.get(f"/realsense/{CAM}/captures/{cid}").status_code == 404
 
     def test_delete_404_for_unknown_id(self, client):
         assert client.delete(
-            f"/control/realsense/captures/{rcap.new_capture_id()}"
+            f"/control/realsense/{CAM}/captures/{rcap.new_capture_id()}"
         ).status_code == 404
 
 
@@ -304,5 +384,9 @@ class TestAgentDocs:
     def test_routes_are_advertised_in_openapi(self, client):
         paths = client.get("/openapi.json").json()["paths"]
         for path in ("/agent-docs", "/agent-docs/api-reference", "/llms.txt",
-                     "/control/realsense/capture", "/realsense/captures"):
+                     "/realsense/cameras", "/realsense/captures",
+                     "/control/realsense/capture",
+                     "/control/realsense/{camera_id}/capture",
+                     "/realsense/{camera_id}/status",
+                     "/realsense/{camera_id}/captures/{capture_id}"):
             assert path in paths

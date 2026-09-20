@@ -2824,8 +2824,9 @@ document.addEventListener('DOMContentLoaded', () => {
         onLenses: renderCameraLenses,
     });
 
-    // Depth Camera card (local RealSense; reads /realsense/status, MJPEG
-    // preview, click-to-measure). No-op unless realsense.yaml enables it.
+    // Depth Camera cards (local RealSense; reads /realsense/cameras, then one
+    // card per camera on /realsense/<id>/… with an MJPEG preview and
+    // click-to-measure). No-op unless realsense.yaml configures a camera.
     if (window.setupRealSenseCard) window.setupRealSenseCard({ apiBase: API_BASE_URL });
     
     // Initialize real-time joints display

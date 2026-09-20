@@ -6,8 +6,8 @@ network camera driven through the dashboard. This module owns the
 librealsense pipeline and hands the API server ready-to-serve artefacts:
 
 * :meth:`RealSenseCamera.describe` -- device enumeration + stream state for
-  ``GET /realsense/status`` and the ``details.realsense`` block on
-  ``/status``.
+  ``GET /realsense/<id>/status`` and the ``details.realsense.cameras.<id>``
+  block on ``/status``.
 * :meth:`RealSenseCamera.jpeg` / :meth:`mjpeg_frames` -- colour or colourised
   depth as JPEG (snapshot) or a multipart MJPEG generator (live preview).
 * :meth:`RealSenseCamera.depth_png` -- the raw 16-bit depth map, lossless,
@@ -32,9 +32,17 @@ Design constraints, shared with the other optional subsystems:
    whole lifecycle with a fake -- no hardware, no DLL.
 4. **Camera health never changes ``equipment_status``.** Arm motion does
    not depend on the camera (yet), so an unplugged camera is reported on
-   ``components.realsense_camera`` + ``details.realsense`` and leaves the
+   ``components.realsense_<id>`` + ``details.realsense`` and leaves the
    top-level state alone -- the same reasoning STATUS_SPEC §2.2 applies to
    the sash interlock being blind.
+5. **Many cameras, addressed by a device-local id.** The YAML lists
+   ``cameras:``; this module turns that list into a registry keyed by
+   ``id`` (see :func:`configure_cameras`). The id is the first path segment
+   of every route for that camera and the top directory of its captures,
+   so it is validated against :data:`CAMERA_ID_RE` at load time rather than
+   sanitised at every use. A malformed, duplicate or ambiguous entry is
+   skipped with a logged reason -- a bad line in a config file must not stop
+   the arm service from booting.
 
 Configuration lives in ``src/settings/realsense.yaml``; see that file for
 the field documentation.
@@ -45,6 +53,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -53,6 +62,11 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 logger = logging.getLogger("xarm.realsense")
 
 _DEVICE_LIST_TTL_S = 5.0     # enumeration is a USB round-trip; cache it
+
+# A camera id is device-local, lands in URLs (/realsense/<id>/status) and in
+# the capture store's directory layout, so it is deliberately narrow: no
+# dots, no slashes, no upper case, nothing that could be read as a path.
+CAMERA_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 _STREAM_KINDS = ("color", "depth")
 _MJPEG_BOUNDARY = "xarm-realsense-frame"
 
@@ -95,10 +109,17 @@ class RealSenseCamera:
         self,
         config: Optional[Dict[str, Any]],
         *,
+        camera_id: str = "",
         rs_module: Any = None,
         np_module: Any = None,
     ):
         config = config or {}
+        # Device-local handle: the first path segment of every route for this
+        # camera and the top directory of its captures. Taken from the
+        # explicit argument (what :func:`configure_cameras` passes) or the
+        # entry's own ``id``; validated by the registry, not here, so a
+        # hand-built camera in a test never has to care.
+        self.camera_id = str(camera_id or config.get("id") or "camera").strip()
         self.enabled = bool(config.get("enabled", False))
         self.serial = str(config.get("serial", "") or "").strip() or None
         self.label = str(config.get("label", "") or "").strip() or "RealSense camera"
@@ -148,23 +169,6 @@ class RealSenseCamera:
     # ------------------------------------------------------------------
     # Construction helpers
     # ------------------------------------------------------------------
-
-    @classmethod
-    def from_config_file(cls, path: str, **kwargs: Any) -> "RealSenseCamera":
-        """Build from YAML. Missing/invalid file -> disabled no-op, never raises."""
-        config: Dict[str, Any] = {}
-        try:
-            import yaml  # local import: keeps the module importable without PyYAML
-
-            with open(path, "r") as handle:
-                loaded = yaml.safe_load(handle)
-            if isinstance(loaded, dict):
-                config = loaded
-        except FileNotFoundError:
-            logger.info("no config at %s; RealSense camera disabled", path)
-        except Exception as exc:  # noqa: BLE001 - never break service boot
-            logger.warning("failed to load %s: %s; RealSense camera disabled", path, exc)
-        return cls(config, **kwargs)
 
     def _import_backend(self) -> None:
         try:
@@ -383,7 +387,8 @@ class RealSenseCamera:
             return
         if not self.start_on_demand:
             raise RealSenseNotStreaming(
-                "RealSense pipeline is stopped; POST /realsense/start (start_on_demand is off)"
+                f"RealSense pipeline is stopped; POST /realsense/{self.camera_id}/start "
+                "(start_on_demand is off)"
             )
         self.start()
 
@@ -621,12 +626,13 @@ class RealSenseCamera:
             }
 
     def describe(self) -> Dict[str, Any]:
-        """Everything the panel / ``GET /realsense/status`` needs. Never raises."""
+        """Everything the panel / ``GET /realsense/<id>/status`` needs. Never raises."""
         devices = self.list_devices()
         with self._lock:
             state = self._state
             latest = self._latest
             info: Dict[str, Any] = {
+                "camera_id": self.camera_id,
                 "configured": self.configured,
                 "installed": self.installed,
                 "library_version": self.library_version,
@@ -674,7 +680,7 @@ class RealSenseCamera:
         return info
 
     def component_status(self) -> Optional[Dict[str, Any]]:
-        """``components.realsense_camera`` fields, or None when unconfigured."""
+        """``components.realsense_<id>`` fields, or None when unconfigured."""
         if not self.configured:
             return None
         d = self.describe()
@@ -702,11 +708,13 @@ class RealSenseCamera:
         return {"connected": present, "state": state, "message": " · ".join(bits)}
 
     def status_block(self) -> Optional[Dict[str, Any]]:
-        """Compact ``details.realsense`` block, or None when unconfigured."""
+        """Compact ``details.realsense.cameras.<id>`` block, or None when unconfigured."""
         if not self.configured:
             return None
         d = self.describe()
         return {
+            "camera_id": self.camera_id,
+            "label": self.label,
             "state": d["state"],
             "installed": d["installed"],
             "device": d["device"],
@@ -721,31 +729,147 @@ class RealSenseCamera:
 
 
 # ----------------------------------------------------------------------
-# Process-wide instance
+# Process-wide registry
 # ----------------------------------------------------------------------
 #
-# The camera outlives any one arm connection: an operator wants to see the
-# bench before /connect and after /disconnect. The API server configures it
-# once at import; status_builder reads it through shared_camera() so the
+# The cameras outlive any one arm connection: an operator wants to see the
+# bench before /connect and after /disconnect. The API server configures the
+# registry once at import; status_builder reads it through cameras() so the
 # /status envelope and /realsense/* never disagree.
+#
+# Keyed by the device-local id from the YAML, which is also the first path
+# segment of every route for that camera. Nothing here raises: a config file
+# that cannot be read, or an entry that cannot be trusted, yields an empty (or
+# smaller) registry plus a reason the API hands back on GET /realsense/cameras.
 
-_shared: Optional[RealSenseCamera] = None
-
-
-def configure_shared(config_path: str, **kwargs: Any) -> RealSenseCamera:
-    global _shared
-    _shared = RealSenseCamera.from_config_file(config_path, **kwargs)
-    return _shared
-
-
-def set_shared(camera: Optional[RealSenseCamera]) -> None:
-    """Install (or clear, with None) the process-wide camera. Tests use this."""
-    global _shared
-    _shared = camera
+_cameras: "Dict[str, RealSenseCamera]" = {}
+_reason: Optional[str] = None
 
 
-def shared_camera() -> Optional[RealSenseCamera]:
-    return _shared
+def load_config(path: str) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Parse ``realsense.yaml``. Returns ``(config, reason_it_is_empty)``."""
+    try:
+        import yaml  # local import: keeps the module importable without PyYAML
+
+        with open(path, "r") as handle:
+            loaded = yaml.safe_load(handle)
+    except FileNotFoundError:
+        logger.info("no config at %s; no RealSense cameras", path)
+        return {}, f"no RealSense config at {path}"
+    except Exception as exc:  # noqa: BLE001 - never break service boot
+        logger.warning("failed to load %s: %s; no RealSense cameras", path, exc)
+        return {}, f"could not read {path}: {exc}"
+    if not isinstance(loaded, dict):
+        return {}, f"{path} does not contain a mapping"
+    return loaded, None
+
+
+def build_cameras(
+    config: Optional[Dict[str, Any]], **kwargs: Any
+) -> Tuple["Dict[str, RealSenseCamera]", Optional[str]]:
+    """Turn a parsed config into ``{camera_id: RealSenseCamera}`` + a reason.
+
+    Every rejection is a log line and a skipped entry, never an exception:
+    this runs at import time in the arm's own process, and a typo in a camera
+    id must not be able to stop the service from booting. The rules:
+
+    * ``enabled: false`` at the top level, or an empty ``cameras:`` list,
+      means no cameras at all (the reason says which).
+    * an id must match :data:`CAMERA_ID_RE` -- it is interpolated into URLs
+      and into the capture store's paths.
+    * duplicate ids are refused rather than resolved, because which of the
+      two won would depend on file order.
+    * ``serial`` is required as soon as more than one entry is configured:
+      "the first device librealsense enumerates" is not stable across
+      reboots, and an id silently pointing at the wrong lens is worse than a
+      camera that is missing.
+    """
+    config = config or {}
+    if not bool(config.get("enabled", False)):
+        return {}, "RealSense disabled (enabled: false in realsense.yaml)"
+    entries = config.get("cameras")
+    if not isinstance(entries, list) or not entries:
+        return {}, "no cameras configured (cameras: is empty in realsense.yaml)"
+
+    built: Dict[str, RealSenseCamera] = {}
+    skipped: List[str] = []
+    require_serial = len(entries) > 1
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            skipped.append(f"cameras[{index}] is not a mapping")
+            continue
+        camera_id = str(entry.get("id", "") or "").strip()
+        if not CAMERA_ID_RE.match(camera_id):
+            skipped.append(f"cameras[{index}] id {camera_id!r} does not match {CAMERA_ID_RE.pattern}")
+            continue
+        if camera_id in built:
+            skipped.append(f"duplicate camera id {camera_id!r}")
+            continue
+        if not bool(entry.get("enabled", True)):
+            skipped.append(f"camera {camera_id!r} is disabled in realsense.yaml")
+            continue
+        serial = str(entry.get("serial", "") or "").strip()
+        if require_serial and not serial:
+            skipped.append(
+                f"camera {camera_id!r} has no serial; a serial is required with "
+                f"{len(entries)} cameras configured, or enumeration is ambiguous"
+            )
+            continue
+        settings = dict(entry)
+        settings["enabled"] = True           # the top-level switch already said yes
+        built[camera_id] = RealSenseCamera(settings, camera_id=camera_id, **kwargs)
+
+    for note in skipped:
+        logger.warning("RealSense config: skipped %s", note)
+    if built:
+        return built, None
+    return {}, "; ".join(skipped) or "no usable camera entries in realsense.yaml"
+
+
+def configure_cameras(config_path: str, **kwargs: Any) -> "Dict[str, RealSenseCamera]":
+    """Build the process-wide registry from ``realsense.yaml``. Never raises."""
+    global _cameras, _reason
+    config, reason = load_config(config_path)
+    if reason is not None:
+        _cameras, _reason = {}, reason
+        return _cameras
+    _cameras, _reason = build_cameras(config, **kwargs)
+    return _cameras
+
+
+def set_cameras(mapping: Optional["Dict[str, RealSenseCamera]"], *,
+                reason: Optional[str] = None) -> None:
+    """Install (or clear, with None/{}) the registry. Tests use this."""
+    global _cameras, _reason
+    _cameras = dict(mapping or {})
+    _reason = None if _cameras else (reason or "no RealSense cameras configured")
+
+
+def cameras() -> "Dict[str, RealSenseCamera]":
+    """The registry, id -> camera. Empty when nothing is configured."""
+    return dict(_cameras)
+
+
+def camera(camera_id: str) -> Optional["RealSenseCamera"]:
+    """One camera by id, or None when that id is not configured."""
+    return _cameras.get(str(camera_id))
+
+
+def default_camera_id() -> Optional[str]:
+    """The id to assume when a caller names none.
+
+    Exactly one configured camera means there is nothing to be ambiguous
+    about; two or more means a caller that did not say which one did not
+    say enough, and the API answers 400 rather than guessing.
+    """
+    if len(_cameras) == 1:
+        return next(iter(_cameras))
+    return None
+
+
+def configuration_reason() -> Optional[str]:
+    """Why the registry is empty, or None when it is not."""
+    return _reason if not _cameras else None
 
 
 def default_config_path() -> str:

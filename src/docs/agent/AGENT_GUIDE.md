@@ -35,15 +35,19 @@ first, do your work, release it. Do not hold one across a long idle stretch.
   **409**. That is the same rule on two surfaces, by design.
 - `allowed_actions` — the catalog names you may call now. Motion families are
   `graph.move_to`, `graph.travel_to`, `graph.gripper`, `graph.recover_to`,
-  `graph.mode`, `graph.record`. The camera adds `realsense.capture`.
+  `graph.mode`, `graph.record`. The depth cameras add `realsense.capture`,
+  which is offered when *any* configured camera could serve it.
 - `details.motion_graph.current_node` — where the arm is on the graph, or
   `null` when it is off-grid after a stop or a raw move.
-- `details.realsense` — camera health, and `details.realsense.captures` for
-  the store's occupancy.
+- `details.realsense` — `default`, a `cameras` map keyed by camera id with
+  each camera's health, and `captures` for the store's occupancy (one store,
+  shared by every camera).
 
-The camera never changes `equipment_status`. An unplugged camera shows up on
-`components.realsense_camera` and leaves the arm's state alone, because arm
-motion does not depend on it.
+A camera never changes `equipment_status`. An unplugged one shows up on its
+own `components.realsense_<camera_id>` entry (for example
+`components.realsense_rs435i`) and leaves the arm's state alone, because arm
+motion does not depend on it. Two cameras are two components: they fail
+independently, and one merged entry would hide the working one.
 
 ## Moving the arm
 
@@ -57,27 +61,43 @@ answers **412**. This is a safety floor, not an error.
 
 `POST /control/stop` is always available while the device is reachable.
 
-## The depth camera
+## The depth cameras
 
-The camera is local USB hardware owned by this process, unlike the lab PTZ
-cameras which are network devices driven through the dashboard. It idles by
+These are local USB cameras owned by this process, unlike the lab PTZ cameras
+which are network devices driven through the dashboard. A camera idles by
 default and starts on the first request, then stops itself after an idle
 timeout.
 
+**Find them first.** Each camera has a device-local id — the first is
+`rs435i` — and every route for it is nested under that id:
+
+```
+GET /realsense/cameras
+```
+
+That returns one entry per camera with a ready-made `urls` block, plus
+`default` (the id you may omit naming; `null` once there is more than one
+camera) and `reason` when the list is empty. Follow those URLs rather than
+building paths: the ids are device configuration, not something to hard-code.
+An unknown id answers **404** `camera_not_found` and lists the ids that do
+exist; a service with no camera at all answers **404**
+`realsense_not_configured`.
+
 Two kinds of read, and the difference matters:
 
-- **Transient** — `GET /realsense/snapshot.jpg`, `depth.png`, `stream.mjpg`,
-  `depth?x=&y=`, `intrinsics`. Nothing survives the response. Use these to
-  look.
-- **Durable** — `POST /control/realsense/capture`. Writes one aligned frameset
-  to disk as `color.jpg` + `depth.png` + `meta.json` and returns a
+- **Transient** — `GET /realsense/{id}/snapshot.jpg`, `depth.png`,
+  `stream.mjpg`, `depth?x=&y=`, `intrinsics`. Nothing survives the response.
+  Use these to look.
+- **Durable** — `POST /control/realsense/{id}/capture`. Writes one aligned
+  frameset to disk as `color.jpg` + `depth.png` + `meta.json` and returns a
   `capture_id`. Use this when the frame is evidence.
 
-`GET /realsense/depth?x=&y=` returns metres and a camera-frame 3-D point for
-one pixel, median-filtered over a `window` patch. It is an open read and it
-will **not** start the pipeline: a stopped camera answers **409** rather than
-letting an anonymous read switch hardware on. If you want numbers from a cold
-camera, take the claim and capture, or `POST /realsense/start` with a login.
+`GET /realsense/{id}/depth?x=&y=` returns metres and a camera-frame 3-D point
+for one pixel, median-filtered over a `window` patch. It is an open read and
+it will **not** start the pipeline: a stopped camera answers **409** rather
+than letting an anonymous read switch hardware on. If you want numbers from a
+cold camera, take the claim and capture, or `POST /realsense/{id}/start` with
+a login.
 
 ## Captures
 
@@ -85,29 +105,48 @@ A capture is the unit later vision work consumes, which is why `meta.json`
 carries the arm state the frames were taken from. A depth map without its pose
 is a picture, not a measurement.
 
-`meta.json` holds the capture id and UTC timestamp, the camera's serial,
-firmware and stream profiles, the intrinsics and depth scale, the arm block
-(`node_id`, joints, TCP position, rail position, gripper state, connected),
-who requested it, your label and tags, and a SHA-256 for each file.
+`meta.json` holds the capture id, the `camera_id` that took it, the UTC
+timestamp, the camera's serial, firmware and stream profiles, the intrinsics
+and depth scale, the arm block (`node_id`, joints, TCP position, rail
+position, gripper state, connected), who requested it, your label and tags,
+and a SHA-256 for each file.
 
 Body fields, all optional: `label`, `node_id` (defaults to the arm's current
 node), `tags`, and `protected`. Set `protected: true` only for records that
 must outlive retention, such as a reference frame for a node — it exempts the
 capture from both retention bounds.
 
+**The fixed-path alias.** `POST /control/realsense/capture` takes the camera
+in the body (`{"camera": "rs435i"}`) instead of the path. It exists because a
+SkillDef carries one fixed `endpoint` string that the skill executor and the
+dashboard passthrough send verbatim, with no path templating: a plan cannot
+put a camera id in a path, but it can put one in a body. Omit `camera` and the
+default camera is used; with two or more cameras configured there is no
+default and the call is refused with **400** `camera_required` listing the
+ids, because guessing would file the evidence under the wrong lens. The nested
+route stays canonical everywhere else.
+
+One store holds every camera's captures, under
+`<root>/<camera_id>/<YYYY-MM-DD>/<capture_id>/`. `GET /realsense/captures`
+lists all cameras newest first (each record carries its `camera_id`);
+`GET /realsense/{id}/captures` narrows it to one.
+
 Retention is enforced after every write: 30 days and 20 GB, oldest first, age
-before size. Do not build anything that assumes a capture from last quarter is
-still there unless you marked it protected.
+before size, and shared across all cameras rather than split between them. Do
+not build anything that assumes a capture from last quarter is still there
+unless you marked it protected.
 
 Fetching the image bytes is login-gated at
-`GET /realsense/captures/{id}/color.jpg` and `/depth.png`. The metadata and the
-listing are open.
+`GET /realsense/{camera_id}/captures/{capture_id}/color.jpg` and
+`/depth.png`. The metadata and the listings are open.
 
 ## Refusals you should expect
 
 | Code | Meaning | What to do |
 |---|---|---|
+| 400 | the capture alias needs a `camera` | read `cameras` from the body and name one |
 | 401 | login required | present `X-Api-Key`, or sign in |
+| 404 | no camera configured, or an unknown camera id | re-read `GET /realsense/cameras` |
 | 409 | a motion is in flight, or the camera is stopped | poll `/status`, retry when `activity` is `idle` |
 | 412 | a safety gate refused: sash not parked, vision rejected | fix the physical precondition; do not retry blindly |
 | 422 | the target is not on the whitelist from here | re-read `allowed_actions` |

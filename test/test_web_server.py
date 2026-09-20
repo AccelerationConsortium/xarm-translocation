@@ -20,7 +20,7 @@ class RequestSocket:
 
 
 @pytest.mark.parametrize("path", [
-    "/camera-player.js?v=20260915a", "/realsense-card.js?v=20260918a", "/graph.js", "/graph.css", "/graph.html",
+    "/camera-player.js?v=20260915a", "/realsense-card.js?v=20260920a", "/graph.js", "/graph.css", "/graph.html",
 ])
 def test_static_assets_are_served_instead_of_proxied(path):
     request = RequestSocket(path)
@@ -36,7 +36,8 @@ def test_static_assets_are_served_instead_of_proxied(path):
 
 @pytest.mark.parametrize("path", [
     "/camera/config", "/graph", "/graph/layout?refresh=1", "/auth/me", "/status",
-    "/realsense/status", "/realsense/snapshot.jpg?stream=depth",
+    "/realsense/cameras", "/realsense/rs435i/status",
+    "/realsense/rs435i/snapshot.jpg?stream=depth",
 ])
 def test_api_routes_still_proxy(path):
     with patch.object(XArmWebHandler, "proxy_to_api_server") as proxy:

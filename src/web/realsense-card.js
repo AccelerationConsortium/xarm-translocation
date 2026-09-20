@@ -1,49 +1,40 @@
-/* "Depth Camera" card — the Intel RealSense plugged into this device PC.
+/* "Depth Camera" cards — the Intel RealSense units plugged into this device PC.
  *
- * Reads GET {apiBase}/realsense/status to decide whether to show the card
- * (configured) and what to say when there is no picture (reason). The live
- * preview is a plain <img> pointed at /realsense/stream.mjpg (MJPEG, paced to
- * 10 fps server-side); Color/Depth swap the query string. Clicking the image
- * asks /realsense/depth for the metric distance under the cursor and pins a
- * marker with the reading — the same primitive a future "did the arm really
- * get there" check will use, exposed here so it can be sanity-checked at the
- * bench. Everything is best-effort: a missing camera or driver just explains
- * itself in the overlay and never touches arm control. See
- * core/realsense_camera.py.
+ * Reads GET {apiBase}/realsense/cameras first: that is the only endpoint whose
+ * path this file knows. It answers with one entry per configured camera, each
+ * carrying a ready-made `urls` block, so every other request here follows a
+ * URL the server handed over instead of a path this file built — a camera id
+ * is device-local configuration, and the panel should not have to agree with
+ * the YAML about how it is spelled.
+ *
+ * One card is cloned from #realsense-card-template per camera and appended to
+ * #realsense-cards; nothing renders when no camera is configured. Per card the
+ * behaviour is unchanged: the live preview is a plain <img> pointed at the
+ * camera's stream.mjpg (MJPEG, paced to 10 fps server-side), Color/Depth swap
+ * the query string, and clicking the image asks that camera's /depth for the
+ * metric distance under the cursor and pins a marker with the reading — the
+ * same primitive a future "did the arm really get there" check will use,
+ * exposed here so it can be sanity-checked at the bench. Everything is
+ * best-effort: a missing camera or driver just explains itself in the overlay
+ * and never touches arm control. See core/realsense_camera.py.
  *
  * Usage:  window.setupRealSenseCard({ apiBase: API_BASE });
  */
 (function () {
     'use strict';
 
+    var POLL_MS = 5000;
+
     window.setupRealSenseCard = function (opts) {
         opts = opts || {};
         var apiBase = opts.apiBase || '';
 
-        var card = document.getElementById('realsense-card');
-        var img = document.getElementById('realsense-img');
-        var overlay = document.getElementById('realsense-overlay');
-        var overlayText = document.getElementById('realsense-overlay-text');
-        var statusEl = document.getElementById('realsense-status');
-        var toggleBtn = document.getElementById('realsense-toggle');
-        var kindBtns = card ? card.querySelectorAll('[data-rs-kind]') : [];
-        var marker = document.getElementById('realsense-marker');
-        var readout = document.getElementById('realsense-readout');
-        if (!card || !img || !overlay || !toggleBtn) return;   // markup missing -> no-op
+        var host = document.getElementById('realsense-cards');
+        var template = document.getElementById('realsense-card-template');
+        if (!host || !template) return;            // markup missing -> no-op
 
-        var POLL_MS = 5000;
-        var kind = 'color';
-        var streaming = false;
-        var configured = false;
-        var attached = null;          // stream URL currently on the <img>
-        var busy = false;             // start/stop in flight
-        var pollTimer = null;
-
-        function showOverlay(text) {
-            if (overlayText) overlayText.textContent = text;
-            overlay.hidden = false;
-        }
-        function hideOverlay() { overlay.hidden = true; }
+        var cards = {};          // camera id -> card controller
+        var listTimer = null;
 
         function request(path, options) {
             return fetch(apiBase + path, Object.assign({ credentials: 'same-origin' }, options || {}))
@@ -60,137 +51,213 @@
                 });
         }
 
-        // --- Stream attach/detach -----------------------------------------
-        function streamUrl() {
-            return apiBase + '/realsense/stream.mjpg?stream=' + kind + '&fps=10&t=' + Date.now();
-        }
-        function attach() {
-            if (document.hidden) return;                 // no point decoding in a hidden tab
-            var url = streamUrl();
-            attached = url;
-            img.src = url;
-            img.hidden = false;
-        }
-        function detach() {
-            attached = null;
-            img.removeAttribute('src');
-            img.hidden = true;
-            clearMarker();
-        }
-        img.addEventListener('error', function () {
-            // The MJPEG socket dropped (camera stopped, login expired, USB
-            // yanked). Fall back to the poll, which re-attaches if it can.
-            if (attached) { detach(); showOverlay('Stream ended — reconnecting…'); }
-        });
-        document.addEventListener('visibilitychange', function () {
-            if (document.hidden) { if (attached) detach(); }
-            else if (streaming && configured) attach();
-        });
+        // --- One camera's card ------------------------------------------
+        function makeCard(entry) {
+            var root = template.content.firstElementChild.cloneNode(true);
+            host.appendChild(root);
 
-        // --- Depth readout on click ---------------------------------------
-        function clearMarker() {
-            if (marker) marker.hidden = true;
-            if (readout) readout.textContent = '';
-        }
-        img.addEventListener('click', function (ev) {
-            if (!streaming || !img.naturalWidth) return;
-            // The stage letterboxes with object-fit: contain; map the click
-            // back to frame pixels through the rendered image box.
-            var rect = img.getBoundingClientRect();
-            var scale = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
-            var drawW = img.naturalWidth * scale, drawH = img.naturalHeight * scale;
-            var offX = (rect.width - drawW) / 2, offY = (rect.height - drawH) / 2;
-            var px = Math.round((ev.clientX - rect.left - offX) / scale);
-            var py = Math.round((ev.clientY - rect.top - offY) / scale);
-            if (px < 0 || py < 0 || px >= img.naturalWidth || py >= img.naturalHeight) return;
-            if (marker) {
-                marker.style.left = (ev.clientX - rect.left) + 'px';
-                marker.style.top = (ev.clientY - rect.top) + 'px';
-                marker.hidden = false;
+            function el(name) { return root.querySelector('[data-rs="' + name + '"]'); }
+            var titleEl = el('title');
+            var statusEl = el('status');
+            var toggleBtn = el('toggle');
+            var img = el('img');
+            var marker = el('marker');
+            var overlay = el('overlay');
+            var overlayText = el('overlay-text');
+            var readout = el('readout');
+            var kindBtns = root.querySelectorAll('[data-rs-kind]');
+
+            // Every path for this camera comes from the listing; the fallbacks
+            // only matter if an older server answers without `urls`.
+            var urls = entry.urls || {};
+            var base = '/realsense/' + entry.id;
+            function url(key, fallback) { return urls[key] || (base + fallback); }
+
+            var kind = 'color';
+            var streaming = false;
+            var attached = null;          // stream URL currently on the <img>
+            var busy = false;             // start/stop in flight
+            var pollTimer = null;
+            var disposed = false;
+
+            if (titleEl) titleEl.textContent = entry.label || ('Depth Camera · ' + entry.id);
+            root.setAttribute('data-camera-id', entry.id);
+            root.hidden = false;
+
+            function showOverlay(text) {
+                if (overlayText) overlayText.textContent = text;
+                overlay.hidden = false;
             }
-            if (readout) readout.textContent = 'measuring…';
-            request('/realsense/depth?x=' + px + '&y=' + py + '&window=5')
-                .then(function (d) {
-                    if (!readout) return;
-                    if (d.distance_m == null) { readout.textContent = 'no depth at (' + px + ', ' + py + ')'; return; }
-                    var p = d.point_m;
-                    readout.textContent = d.distance_m.toFixed(3) + ' m at (' + px + ', ' + py + ')'
-                        + (p ? '  ·  xyz ' + p.map(function (v) { return v.toFixed(3); }).join(', ') + ' m' : '');
-                })
-                .catch(function (e) { if (readout) readout.textContent = 'depth: ' + e.message; });
-        });
+            function hideOverlay() { overlay.hidden = true; }
 
-        // --- Controls -------------------------------------------------------
-        Array.prototype.forEach.call(kindBtns, function (btn) {
-            btn.addEventListener('click', function () {
-                kind = btn.getAttribute('data-rs-kind') === 'depth' ? 'depth' : 'color';
-                Array.prototype.forEach.call(kindBtns, function (b) {
-                    b.classList.toggle('is-on', b === btn);
-                });
+            function streamUrl() {
+                return apiBase + url('stream', '/stream.mjpg')
+                    + '?stream=' + kind + '&fps=10&t=' + Date.now();
+            }
+            function attach() {
+                if (document.hidden || disposed) return;   // no point decoding in a hidden tab
+                var next = streamUrl();
+                attached = next;
+                img.src = next;
+                img.hidden = false;
+            }
+            function detach() {
+                attached = null;
+                img.removeAttribute('src');
+                img.hidden = true;
                 clearMarker();
-                if (streaming) attach();
+            }
+            img.addEventListener('error', function () {
+                // The MJPEG socket dropped (camera stopped, login expired, USB
+                // yanked). Fall back to the poll, which re-attaches if it can.
+                if (attached) { detach(); showOverlay('Stream ended — reconnecting…'); }
             });
-        });
+            document.addEventListener('visibilitychange', function () {
+                if (document.hidden) { if (attached) detach(); }
+                else if (streaming) attach();
+            });
 
-        toggleBtn.addEventListener('click', function () {
-            if (busy) return;
-            busy = true;
-            toggleBtn.disabled = true;
-            var path = streaming ? '/realsense/stop' : '/realsense/start';
-            showOverlay(streaming ? 'Stopping…' : 'Starting camera…');
-            request(path, { method: 'POST' })
-                .then(function (d) { render(d); })
-                .catch(function (e) { showOverlay(e.message); })
-                .then(function () { busy = false; toggleBtn.disabled = false; poll(); });
-        });
-
-        // --- Render from /realsense/status -----------------------------------
-        function render(d) {
-            configured = !!(d && d.configured);
-            card.hidden = !configured;
-            if (!configured) { if (attached) detach(); return; }
-
-            streaming = !!d.streaming;
-            toggleBtn.textContent = streaming ? 'Stop' : 'Start';
-            toggleBtn.disabled = busy || (!streaming && !d.installed);
-            var dev = d.device || (d.devices && d.devices[0]) || null;
-            var bits = [];
-            if (dev && dev.name) bits.push(dev.name.replace(/^Intel\(R\) RealSense\(TM\)\s*/, ''));
-            if (dev && dev.usb_type) bits.push('USB ' + dev.usb_type);
-            if (streaming && d.fps_measured) bits.push(d.fps_measured + ' fps');
-            if (streaming && d.streams && d.streams.color) {
-                bits.push(d.streams.color.width + '×' + d.streams.color.height);
+            function clearMarker() {
+                if (marker) marker.hidden = true;
+                if (readout) readout.textContent = '';
             }
-            if (statusEl) statusEl.textContent = bits.join(' · ');
+            img.addEventListener('click', function (ev) {
+                if (!streaming || !img.naturalWidth) return;
+                // The stage letterboxes with object-fit: contain; map the click
+                // back to frame pixels through the rendered image box.
+                var rect = img.getBoundingClientRect();
+                var scale = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
+                var drawW = img.naturalWidth * scale, drawH = img.naturalHeight * scale;
+                var offX = (rect.width - drawW) / 2, offY = (rect.height - drawH) / 2;
+                var px = Math.round((ev.clientX - rect.left - offX) / scale);
+                var py = Math.round((ev.clientY - rect.top - offY) / scale);
+                if (px < 0 || py < 0 || px >= img.naturalWidth || py >= img.naturalHeight) return;
+                if (marker) {
+                    marker.style.left = (ev.clientX - rect.left) + 'px';
+                    marker.style.top = (ev.clientY - rect.top) + 'px';
+                    marker.hidden = false;
+                }
+                if (readout) readout.textContent = 'measuring…';
+                request(url('depth', '/depth') + '?x=' + px + '&y=' + py + '&window=5')
+                    .then(function (d) {
+                        if (!readout) return;
+                        if (d.distance_m == null) { readout.textContent = 'no depth at (' + px + ', ' + py + ')'; return; }
+                        var p = d.point_m;
+                        readout.textContent = d.distance_m.toFixed(3) + ' m at (' + px + ', ' + py + ')'
+                            + (p ? '  ·  xyz ' + p.map(function (v) { return v.toFixed(3); }).join(', ') + ' m' : '');
+                    })
+                    .catch(function (e) { if (readout) readout.textContent = 'depth: ' + e.message; });
+            });
 
-            if (streaming) {
-                if (!attached && !document.hidden) attach();
-                if (attached) hideOverlay();
-            } else {
-                if (attached) detach();
-                var why = (d.warnings && d.warnings[0]) || d.reason || 'Camera idle';
-                if (!d.installed) why = 'Driver missing: run uv sync --extra realsense';
-                else if (d.devices && !d.devices.length) why = 'No RealSense detected — check the USB 3 cable';
-                else if (d.state === 'error') why = d.reason || 'Camera error';
-                showOverlay(why);
+            Array.prototype.forEach.call(kindBtns, function (btn) {
+                btn.addEventListener('click', function () {
+                    kind = btn.getAttribute('data-rs-kind') === 'depth' ? 'depth' : 'color';
+                    Array.prototype.forEach.call(kindBtns, function (b) {
+                        b.classList.toggle('is-on', b === btn);
+                    });
+                    clearMarker();
+                    if (streaming) attach();
+                });
+            });
+
+            toggleBtn.addEventListener('click', function () {
+                if (busy) return;
+                busy = true;
+                toggleBtn.disabled = true;
+                var path = streaming ? (base + '/stop') : (base + '/start');
+                showOverlay(streaming ? 'Stopping…' : 'Starting camera…');
+                request(path, { method: 'POST' })
+                    .then(function (d) { render(d); })
+                    .catch(function (e) { showOverlay(e.message); })
+                    .then(function () { busy = false; toggleBtn.disabled = false; poll(); });
+            });
+
+            // --- Render from /realsense/<id>/status ----------------------
+            function render(d) {
+                if (!d) return;
+                streaming = !!d.streaming;
+                toggleBtn.textContent = streaming ? 'Stop' : 'Start';
+                toggleBtn.disabled = busy || (!streaming && !d.installed);
+                var dev = d.device || (d.devices && d.devices[0]) || null;
+                var bits = [entry.id];
+                if (dev && dev.name) bits.push(dev.name.replace(/^Intel\(R\) RealSense\(TM\)\s*/, ''));
+                if (dev && dev.usb_type) bits.push('USB ' + dev.usb_type);
+                if (streaming && d.fps_measured) bits.push(d.fps_measured + ' fps');
+                if (streaming && d.streams && d.streams.color) {
+                    bits.push(d.streams.color.width + '×' + d.streams.color.height);
+                }
+                if (statusEl) statusEl.textContent = bits.join(' · ');
+
+                if (streaming) {
+                    if (!attached && !document.hidden) attach();
+                    if (attached) hideOverlay();
+                } else {
+                    if (attached) detach();
+                    var why = (d.warnings && d.warnings[0]) || d.reason || 'Camera idle';
+                    if (!d.installed) why = 'Driver missing: run uv sync --extra realsense';
+                    else if (d.devices && !d.devices.length) why = 'No RealSense detected — check the USB 3 cable';
+                    else if (d.state === 'error') why = d.reason || 'Camera error';
+                    showOverlay(why);
+                }
             }
+
+            function poll() {
+                clearTimeout(pollTimer);
+                if (disposed) return;
+                request(url('status', '/status'))
+                    .then(render)
+                    .catch(function () { /* API down; leave the card as it was */ })
+                    .then(function () { if (!disposed) pollTimer = setTimeout(poll, POLL_MS); });
+            }
+
+            showOverlay('Connecting…');
+            poll();
+
+            return {
+                refresh: poll,
+                setKind: function (k) { kind = k === 'depth' ? 'depth' : 'color'; if (streaming) attach(); },
+                dispose: function () {
+                    disposed = true;
+                    clearTimeout(pollTimer);
+                    if (attached) detach();
+                    if (root.parentNode) root.parentNode.removeChild(root);
+                },
+            };
         }
 
-        function poll() {
-            clearTimeout(pollTimer);
-            request('/realsense/status')
-                .then(render)
-                .catch(function () { /* API down; leave the card as it was */ })
-                .then(function () { pollTimer = setTimeout(poll, POLL_MS); });
+        // --- The camera list ---------------------------------------------
+        // Re-read periodically as well: the registry is built from the YAML at
+        // service start, so a restarted service with a new camera shows up in
+        // the panel without a reload.
+        function syncCameras(body) {
+            var listed = (body && body.cameras) || [];
+            var seen = {};
+            listed.forEach(function (entry) {
+                if (!entry || !entry.id) return;
+                seen[entry.id] = true;
+                if (!cards[entry.id]) cards[entry.id] = makeCard(entry);
+            });
+            Object.keys(cards).forEach(function (id) {
+                if (!seen[id]) { cards[id].dispose(); delete cards[id]; }
+            });
         }
 
-        card.hidden = true;
-        showOverlay('Connecting…');
-        poll();
+        function pollList() {
+            clearTimeout(listTimer);
+            request('/realsense/cameras')
+                .then(syncCameras)
+                .catch(function () { /* API down; leave the cards as they were */ })
+                .then(function () { listTimer = setTimeout(pollList, POLL_MS * 6); });
+        }
+
+        pollList();
 
         return {
-            refresh: poll,
-            setKind: function (k) { kind = k === 'depth' ? 'depth' : 'color'; if (streaming) attach(); },
+            refresh: function () {
+                pollList();
+                Object.keys(cards).forEach(function (id) { cards[id].refresh(); });
+            },
+            cards: cards,
         };
     };
 })();

@@ -7,6 +7,51 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — RealSense cameras are addressed by id (2026-09-20)
+
+The camera layer was a process-wide singleton: one camera, one set of
+`/realsense/*` routes, one `components.realsense_camera`. It now holds a
+registry of cameras keyed by a **device-local id**, and the first camera is
+`rs435i`. This is a breaking change to every `/realsense/*` path; there is one
+deployment and it is updated with this commit, so no compatibility shim was
+added — a permanent alias for a one-off migration is a cost that never ends.
+
+- **Config.** `realsense.yaml` grows a `cameras:` list. Each entry carries an
+  `id` matching `^[a-z0-9][a-z0-9_-]{0,31}$` (it lands in URLs and in capture
+  paths, so it is validated at load time rather than sanitised at every use)
+  and a `serial`, which is **required** once more than one camera is
+  configured: "the first device librealsense enumerates" is not stable across
+  reboots. A malformed, duplicate or serial-less entry is logged and skipped;
+  nothing here can stop the service from booting.
+- **Routes.** `GET /realsense/cameras` is the discovery endpoint — it never
+  404s and returns an empty list plus a `reason` when nothing is configured —
+  and everything else nests under the id: `/realsense/{camera_id}/status`,
+  `…/snapshot.jpg`, `…/depth.png`, `…/stream.mjpg`, `…/depth`, `…/intrinsics`,
+  `…/captures`, `POST /control/realsense/{camera_id}/capture`,
+  `DELETE /control/realsense/{camera_id}/captures/{capture_id}`. Gating is
+  unchanged. An unknown id answers **404** `camera_not_found` listing the ids
+  that do exist, which is a different fact from **404**
+  `realsense_not_configured`.
+- **The skill-facing alias stays a fixed path.** `POST
+  /control/realsense/capture` now takes an optional `camera` in the body. A
+  SkillDef carries one fixed `endpoint` string that `lab_skills.plan.execute_plan`
+  and the dashboard passthrough send verbatim — there is no path templating in
+  that chain, so an agent plan cannot express a camera id as a path segment.
+  Omitted `camera` resolves to the sole camera; with two or more it is
+  **400** `camera_required` rather than a guess that files evidence under the
+  wrong lens. The alias only resolves a name and delegates to the nested route.
+- **Capture store.** Layout becomes
+  `<root>/<camera_id>/<YYYY-MM-DD>/<capture_id>/` and `meta.json` records
+  `camera_id`; `_scan` derives it from the directory, so the two captures
+  written before this change describe themselves correctly once moved under
+  `rs435i/`. Retention stays **one** budget across all cameras, oldest first
+  regardless of camera — the bound that matters is the disk's, not any one
+  lens's. `tools/replicate_captures.py` walks and lands the same three levels.
+- **Status.** One `components.realsense_<camera_id>` per camera (they fail
+  independently, and a merged entry would hide the working one), and
+  `details.realsense` becomes `{default, cameras: {id: block}, captures}`.
+  `realsense.capture` is advertised when *any* configured camera qualifies.
+
 ### Changed — RealSense streams to 1280×720 (2026-09-19)
 
 Both stream profiles in `src/settings/realsense.yaml` move from 640×480 @ 30

@@ -1,15 +1,21 @@
 """Durable capture records for the RealSense depth camera.
 
-``/realsense/snapshot.jpg`` and friends are *transient*: they answer "what
+``/realsense/<camera_id>/snapshot.jpg`` and friends are *transient*: they answer "what
 does the camera see right now" and nothing survives the response. A capture
 is the opposite — one aligned frameset written to disk as three files, with
 enough metadata beside it that the record still means something months later
 without the process that took it:
 
-    <root>/<YYYY-MM-DD>/<capture_id>/
+    <root>/<camera_id>/<YYYY-MM-DD>/<capture_id>/
         color.jpg     colour frame, JPEG
         depth.png     raw 16-bit depth, lossless (units of depth_scale metres)
         meta.json     everything needed to interpret the two above
+
+The camera level is a directory rather than a separate store: every camera on
+this device PC shares one root and one retention budget, because the bound
+that matters is the disk's, not any one lens's. ``camera_id`` is derived from
+that directory on read, so a capture is still self-describing after a move
+and does not depend on meta.json having been written by this version.
 
 This is the unit every later vision phase consumes (node references,
 arrival-verification evidence, training data for plate detection), which is
@@ -22,8 +28,10 @@ Design constraints, following the rest of this subsystem:
    configured in ``realsense.yaml`` (``captures.root``) and defaults to
    ``C:\\SDL_Data\\xarm\\realsense`` on the device PC.
 2. **Bounded, pruned on write.** Retention is by age *and* by total size
-   (``keep_days`` / ``keep_max_gb``); both are enforced after every write so
-   the store cannot grow without an operator noticing. Captures flagged
+   (``keep_days`` / ``keep_max_gb``), one shared budget across all cameras
+   and oldest first regardless of which camera took the frame; both are
+   enforced after every write so the store cannot grow without an operator
+   noticing. Captures flagged
    ``protected`` are never pruned — Phase 4 node references live here and
    must outlive ordinary retention.
 3. **No hardware, no camera object.** This module only handles bytes and
@@ -66,6 +74,14 @@ _FILE_NAMES = (COLOR_NAME, DEPTH_NAME, META_NAME)
 # and the random tail makes two captures in the same second distinct.
 _ID_RE = re.compile(r"^\d{8}T\d{6}Z-[0-9a-f]{8}$")
 _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# Device-local camera id, the top directory of the layout above. Same pattern
+# as realsense_camera.CAMERA_ID_RE, repeated here rather than imported so the
+# store stays free of the camera module (and of pyrealsense2). Every camera_id
+# argument is checked against it before it is joined onto a path: that check
+# is this module's traversal guard, exactly as the filename whitelist is for
+# the artefacts inside a capture.
+CAMERA_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 
 _BYTES_PER_GB = 1024 ** 3
 
@@ -119,6 +135,11 @@ def is_capture_id(value: str) -> bool:
     return bool(value) and bool(_ID_RE.match(value))
 
 
+def is_camera_id(value: Any) -> bool:
+    """True for a well-formed device-local camera id."""
+    return isinstance(value, str) and bool(CAMERA_ID_RE.match(value))
+
+
 class CaptureStore:
     """A retention-bounded directory of capture records.
 
@@ -145,10 +166,24 @@ class CaptureStore:
         return int(self.keep_max_gb * _BYTES_PER_GB)
 
     def describe(self) -> Dict[str, Any]:
-        """Retention policy + current occupancy, for ``/realsense/status``."""
+        """Retention policy + current occupancy, for the capture listings.
+
+        ``cameras`` breaks the occupancy down per camera id, because the
+        budget is shared: an operator looking at a full store needs to see
+        which camera is filling it, and one number cannot say that.
+        """
         captures = self._scan()
         total = sum(entry["bytes"] for entry in captures)
         newest = captures[0] if captures else None
+        per_camera: Dict[str, Dict[str, Any]] = {}
+        for entry in captures:
+            block = per_camera.setdefault(entry["camera_id"], {"count": 0, "bytes": 0,
+                                                               "last_id": None, "last_at": None})
+            block["count"] += 1
+            block["bytes"] += entry["bytes"]
+            if block["last_id"] is None:      # _scan is newest-first
+                block["last_id"] = entry["id"]
+                block["last_at"] = entry["captured_at"]
         return {
             "enabled": self.enabled,
             "root": self.root,
@@ -158,16 +193,21 @@ class CaptureStore:
             "bytes": total,
             "last_id": newest["id"] if newest else None,
             "last_at": newest["captured_at"] if newest else None,
+            "cameras": per_camera,
         }
 
-    def summary(self) -> Dict[str, Any]:
-        """The compact ``details.realsense.captures`` block."""
-        described = self.describe()
+    def summary(self, camera_id: Optional[str] = None) -> Dict[str, Any]:
+        """The compact ``details.realsense.captures`` block.
+
+        ``camera_id`` narrows it to one camera; None is the whole store.
+        """
+        entries = self._scan(camera_id=camera_id)
+        newest = entries[0] if entries else None
         return {
-            "count": described["count"],
-            "bytes": described["bytes"],
-            "last_id": described["last_id"],
-            "last_at": described["last_at"],
+            "count": len(entries),
+            "bytes": sum(entry["bytes"] for entry in entries),
+            "last_id": newest["id"] if newest else None,
+            "last_at": newest["captured_at"] if newest else None,
         }
 
     # ------------------------------------------------------------------
@@ -177,6 +217,7 @@ class CaptureStore:
     def write(
         self,
         *,
+        camera_id: str,
         color_jpeg: Optional[bytes],
         depth_png: Optional[bytes],
         meta: Dict[str, Any],
@@ -189,9 +230,15 @@ class CaptureStore:
         place, so a reader never sees a half-written capture and a crash
         leaves debris that the next prune collects rather than a record that
         looks complete but is not.
+
+        ``camera_id`` selects the top directory *and* is recorded in
+        meta.json: the directory makes the record findable, the field makes a
+        copied-out capture still say which lens took it.
         """
         if not self.enabled:
             raise CaptureStoreError("capture store is disabled in realsense.yaml")
+        if not is_camera_id(camera_id):
+            raise CaptureStoreError(f"malformed camera id: {camera_id!r}")
         if color_jpeg is None and depth_png is None:
             raise CaptureStoreError("a capture needs at least one of colour or depth")
 
@@ -200,12 +247,13 @@ class CaptureStore:
         if not is_capture_id(cid):
             raise CaptureStoreError(f"malformed capture id: {cid!r}")
 
-        day_dir = os.path.join(self.root, day_for_id(cid))
+        day_dir = os.path.join(self.root, camera_id, day_for_id(cid))
         final_dir = os.path.join(day_dir, cid)
         staging = final_dir + ".partial"
 
         record = dict(meta)
         record["capture_id"] = cid
+        record["camera_id"] = camera_id
         record.setdefault("captured_at", moment.replace(microsecond=0).isoformat().replace("+00:00", "Z"))
 
         files: Dict[str, Any] = {}
@@ -244,13 +292,18 @@ class CaptureStore:
     def list_captures(
         self,
         *,
+        camera_id: Optional[str] = None,
         limit: int = 50,
         node_id: Optional[str] = None,
         since: Optional[str] = None,
         label: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Newest first, optionally filtered. Returns metadata, not bytes."""
-        entries = self._scan()
+        """Newest first, optionally filtered. Returns metadata, not bytes.
+
+        ``camera_id`` None means every camera, interleaved newest first --
+        capture ids are timestamps, so one sort orders the whole store.
+        """
+        entries = self._scan(camera_id=camera_id)
         out: List[Dict[str, Any]] = []
         for entry in entries:
             meta = entry["meta"]
@@ -265,33 +318,37 @@ class CaptureStore:
                 break
         return out
 
-    def get(self, capture_id: str) -> Dict[str, Any]:
+    def get(self, camera_id: str, capture_id: str) -> Dict[str, Any]:
         """One capture's ``meta.json``. Raises :class:`CaptureNotFound`."""
-        meta_path = self._meta_path(capture_id)
+        meta_path = self._meta_path(camera_id, capture_id)
         if meta_path is None or not os.path.isfile(meta_path):
-            raise CaptureNotFound(capture_id)
-        return _read_meta(meta_path) or {"capture_id": capture_id}
+            raise CaptureNotFound(f"{camera_id}/{capture_id}")
+        meta = _read_meta(meta_path) or {"capture_id": capture_id}
+        meta.setdefault("camera_id", camera_id)
+        return meta
 
-    def file_path(self, capture_id: str, name: str) -> str:
+    def file_path(self, camera_id: str, capture_id: str, name: str) -> str:
         """Absolute path of one artefact. Raises :class:`CaptureNotFound`.
 
         ``name`` is checked against a whitelist rather than sanitised: the
         only files a caller may ever fetch are the ones this module writes,
-        so there is no traversal surface to get wrong.
+        so there is no traversal surface to get wrong. ``camera_id`` gets the
+        same treatment through :func:`is_camera_id` -- it is now a path
+        segment too, and an unchecked one would undo the whitelist.
         """
         if name not in _FILE_NAMES:
-            raise CaptureNotFound(f"{capture_id}/{name}")
-        directory = self._capture_dir(capture_id)
+            raise CaptureNotFound(f"{camera_id}/{capture_id}/{name}")
+        directory = self._capture_dir(camera_id, capture_id)
         if directory is None:
-            raise CaptureNotFound(capture_id)
+            raise CaptureNotFound(f"{camera_id}/{capture_id}")
         path = os.path.join(directory, name)
         if not os.path.isfile(path):
-            raise CaptureNotFound(f"{capture_id}/{name}")
+            raise CaptureNotFound(f"{camera_id}/{capture_id}/{name}")
         return path
 
-    def delete(self, capture_id: str) -> bool:
+    def delete(self, camera_id: str, capture_id: str) -> bool:
         """Remove one capture. False when it was not there."""
-        directory = self._capture_dir(capture_id)
+        directory = self._capture_dir(camera_id, capture_id)
         if directory is None or not os.path.isdir(directory):
             return False
         shutil.rmtree(directory, ignore_errors=True)
@@ -309,6 +366,11 @@ class CaptureStore:
         sheds stale records rather than recent ones, and ``protected``
         captures are exempt from both — a node reference that expired
         silently would fail an arrival check months later with no clue why.
+
+        The budget is one budget for the whole store: cameras are not given
+        a share each, and eviction walks the oldest captures regardless of
+        which camera took them. A per-camera quota would mean a busy camera
+        losing this week's frames while an idle one held last year's.
         """
         moment = now or datetime.now(timezone.utc)
         result = PruneResult()
@@ -357,16 +419,34 @@ class CaptureStore:
     # Internals
     # ------------------------------------------------------------------
 
-    def _capture_dir(self, capture_id: str) -> Optional[str]:
-        if not is_capture_id(capture_id):
+    def _capture_dir(self, camera_id: str, capture_id: str) -> Optional[str]:
+        if not (is_camera_id(camera_id) and is_capture_id(capture_id)):
             return None
-        return os.path.join(self.root, day_for_id(capture_id), capture_id)
+        return os.path.join(self.root, camera_id, day_for_id(capture_id), capture_id)
 
-    def _meta_path(self, capture_id: str) -> Optional[str]:
-        directory = self._capture_dir(capture_id)
+    def _meta_path(self, camera_id: str, capture_id: str) -> Optional[str]:
+        directory = self._capture_dir(camera_id, capture_id)
         return None if directory is None else os.path.join(directory, META_NAME)
 
-    def _scan(self) -> List[Dict[str, Any]]:
+    def _camera_dirs(self, camera_id: Optional[str] = None) -> List[str]:
+        """The camera ids present under the root, or just the one asked for.
+
+        A malformed camera_id yields ``[]`` rather than a path join, which is
+        what keeps ``../`` out of every walk below.
+        """
+        if camera_id is not None:
+            if not is_camera_id(camera_id):
+                return []
+            path = os.path.join(self.root, camera_id)
+            return [camera_id] if os.path.isdir(path) else []
+        try:
+            return sorted(
+                d.name for d in os.scandir(self.root) if d.is_dir() and is_camera_id(d.name)
+            )
+        except (FileNotFoundError, NotADirectoryError, PermissionError):
+            return []
+
+    def _scan(self, camera_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Every complete capture, newest first.
 
         A full walk is deliberate: at ~250 KB a capture, the bound above tops
@@ -375,38 +455,49 @@ class CaptureStore:
         across pruning, external deletion and the daily replication sweep.
         """
         entries: List[Dict[str, Any]] = []
-        try:
-            days = sorted(
-                (d.name for d in os.scandir(self.root) if d.is_dir() and _DAY_RE.match(d.name)),
-                reverse=True,
-            )
-        except (FileNotFoundError, NotADirectoryError, PermissionError):
-            return entries
-
-        for day in days:
-            day_path = os.path.join(self.root, day)
+        for cam in self._camera_dirs(camera_id):
+            cam_path = os.path.join(self.root, cam)
             try:
-                names = sorted((d.name for d in os.scandir(day_path) if d.is_dir()), reverse=True)
-            except OSError:
-                continue
-            for name in names:
-                if not is_capture_id(name):
-                    continue
-                path = os.path.join(day_path, name)
-                meta_path = os.path.join(path, META_NAME)
-                meta = _read_meta(meta_path)
-                if meta is None:
-                    continue  # incomplete; prune sweeps it
-                entries.append(
-                    {
-                        "id": name,
-                        "path": path,
-                        "meta": meta,
-                        "captured_at": meta.get("captured_at"),
-                        "protected": bool(meta.get("protected")),
-                        "bytes": _dir_bytes(path),
-                    }
+                days = sorted(
+                    (d.name for d in os.scandir(cam_path) if d.is_dir() and _DAY_RE.match(d.name)),
+                    reverse=True,
                 )
+            except (FileNotFoundError, NotADirectoryError, PermissionError):
+                continue
+
+            for day in days:
+                day_path = os.path.join(cam_path, day)
+                try:
+                    names = sorted((d.name for d in os.scandir(day_path) if d.is_dir()), reverse=True)
+                except OSError:
+                    continue
+                for name in names:
+                    if not is_capture_id(name):
+                        continue
+                    path = os.path.join(day_path, name)
+                    meta_path = os.path.join(path, META_NAME)
+                    meta = _read_meta(meta_path)
+                    if meta is None:
+                        continue  # incomplete; prune sweeps it
+                    # The directory is the authority on which camera took
+                    # this: captures written before the camera level existed
+                    # (and any moved by hand) have no camera_id in meta.json,
+                    # and a record that disagrees with where it lives would be
+                    # unfindable by its own id.
+                    meta["camera_id"] = cam
+                    entries.append(
+                        {
+                            "id": name,
+                            "camera_id": cam,
+                            "path": path,
+                            "meta": meta,
+                            "captured_at": meta.get("captured_at"),
+                            "protected": bool(meta.get("protected")),
+                            "bytes": _dir_bytes(path),
+                        }
+                    )
+        # One sort across every camera: ids are timestamps, so the whole store
+        # is ordered by when the frame was taken, not by which lens took it.
         entries.sort(key=lambda e: e["id"], reverse=True)
         return entries
 
@@ -418,12 +509,20 @@ class CaptureStore:
             logger.warning("capture prune: could not remove %s: %s", entry["path"], exc)
             return False
 
+    def _day_dirs(self) -> List[str]:
+        """Every ``<root>/<camera_id>/<day>`` directory that exists."""
+        out: List[str] = []
+        for cam in self._camera_dirs():
+            cam_path = os.path.join(self.root, cam)
+            try:
+                out.extend(d.path for d in os.scandir(cam_path)
+                           if d.is_dir() and _DAY_RE.match(d.name))
+            except OSError:
+                continue
+        return out
+
     def _sweep_partials(self) -> None:
-        try:
-            days = [d.path for d in os.scandir(self.root) if d.is_dir() and _DAY_RE.match(d.name)]
-        except OSError:
-            return
-        for day_path in days:
+        for day_path in self._day_dirs():
             try:
                 for item in os.scandir(day_path):
                     if item.is_dir() and item.name.endswith(".partial"):
@@ -432,11 +531,10 @@ class CaptureStore:
                 continue
 
     def _prune_empty_days(self) -> None:
-        try:
-            days = [d.path for d in os.scandir(self.root) if d.is_dir() and _DAY_RE.match(d.name)]
-        except OSError:
-            return
-        for day_path in days:
+        # Day directories only: a camera directory is the store's namespace
+        # for that camera and is cheap to keep, while removing it would make
+        # an idle camera look unconfigured to anything walking the root.
+        for day_path in self._day_dirs():
             try:
                 if not any(os.scandir(day_path)):
                     os.rmdir(day_path)
@@ -547,12 +645,14 @@ def load_captures_config(path: str) -> Dict[str, Any]:
 
 
 __all__ = [
+    "CAMERA_ID_RE",
     "CaptureNotFound",
     "CaptureStore",
     "CaptureStoreError",
     "PruneResult",
     "configure_shared",
     "day_for_id",
+    "is_camera_id",
     "is_capture_id",
     "load_captures_config",
     "new_capture_id",

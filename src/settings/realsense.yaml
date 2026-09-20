@@ -1,82 +1,104 @@
-# Intel RealSense depth camera (D435i and friends) plugged into THIS device
+# Intel RealSense depth cameras (D435i and friends) plugged into THIS device
 # PC over USB 3. Unlike the lab PTZ camera (camera_tracking.yaml), which is a
-# network camera driven through the dashboard, this one is local hardware:
-# the xArm service talks to it directly through librealsense (pyrealsense2)
-# and exposes it under /realsense/* plus components.realsense_camera and
-# details.realsense on /status.
+# network camera driven through the dashboard, these are local hardware: the
+# xArm service talks to them directly through librealsense (pyrealsense2) and
+# exposes each one under /realsense/<id>/* plus components.realsense_<id> and
+# details.realsense.cameras.<id> on /status.
 #
 # Install the driver extra once per venv:   uv sync --extra realsense
-# Without it the service still boots; /realsense/status reports
+# Without it the service still boots; GET /realsense/<id>/status reports
 # installed: false and the panel card explains why.
 
 # Master switch. When false (or this file is missing) the camera layer is an
 # inert no-op: no /status block, no panel card, no USB access at all.
+# GET /realsense/cameras still answers, with an empty list and a reason.
 enabled: true
 
-# Serial number of the camera to open, from `details.realsense.devices` on
-# /status (or `GET /realsense/status`). Leave blank to open the first
-# RealSense found -- fine with one camera, ambiguous with two.
-serial: ""
+# ---------------------------------------------------------------------------
+# The cameras on this device PC.
+#
+# Each entry gets a device-local `id`: short, stable, and the first path
+# segment of every route for that camera (/realsense/rs435i/status). Ids must
+# match ^[a-z0-9][a-z0-9_-]{0,31}$ -- they are interpolated into URLs and into
+# the capture store's directory layout, so anything path-shaped is rejected at
+# load time rather than sanitised later. An id is local to this device: the
+# lab addresses it as <device>/<camera_id>, so it does not need to be globally
+# unique, only unique here. Renaming one changes its URLs and orphans its
+# captures under the old directory, so pick the id once.
+#
+# `serial` is REQUIRED as soon as more than one camera is configured: with two
+# RealSenses on the bus, "the first one found" is whatever librealsense
+# enumerates first, which can swap across reboots and would silently point an
+# id at the wrong lens. An entry that omits it while others exist is skipped
+# with a logged reason instead of being allowed to guess. With exactly one
+# camera an empty serial is fine (it opens whatever is plugged in).
+#
+# An entry may set `enabled: false` to park a camera without deleting its
+# configuration; it is then not registered and does not appear anywhere.
+#
+# Read the serials off `details.realsense.cameras.<id>.devices` on /status, or
+# `GET /realsense/<id>/status`.
+cameras:
+  - id: rs435i
+    serial: "050422071813"
+    label: "xArm depth camera (D435i, eye-in-hand)"
 
-# Free-form label surfaced on the panel card and in components.realsense_camera.
-label: "xArm depth camera"
+    # Streaming lifecycle.
+    #   autostart        - open the pipeline when the service boots (a missing
+    #                      camera is logged, never fatal). Off by default so a
+    #                      camera left unplugged does not spam the log at boot.
+    #   start_on_demand  - let the first snapshot / stream / capture request
+    #                      start the pipeline. The panel relies on this.
+    #   idle_timeout_seconds - stop the pipeline after this long with no
+    #                      consumer (no snapshot, no open stream). 0 keeps it
+    #                      running until POST /realsense/<id>/stop. Streaming
+    #                      costs USB bandwidth and ~5% CPU; there is no wear
+    #                      concern either way.
+    autostart: false
+    start_on_demand: true
+    idle_timeout_seconds: 120
 
-# Streaming lifecycle.
-#   autostart        - open the pipeline when the service boots (a missing
-#                      camera is logged, never fatal). Off by default so a
-#                      camera left unplugged does not spam the log at boot.
-#   start_on_demand  - let the first snapshot / stream request start the
-#                      pipeline. The panel relies on this.
-#   idle_timeout_seconds - stop the pipeline after this long with no consumer
-#                      (no snapshot, no open stream). 0 keeps it running until
-#                      POST /realsense/stop. Streaming costs USB bandwidth and
-#                      ~5% CPU; there is no wear concern either way.
-autostart: false
-start_on_demand: true
-idle_timeout_seconds: 120
+    # Stream profiles. 1280x720 for both (set 2026-09-19; the previous default
+    # was 640x480@30). Resolution is the priority here, not frame rate: if
+    # librealsense refuses 1280x720 on this USB link, drop fps to 15 or 6
+    # before lowering the resolution. Note the D435i's depth module is
+    # natively 848x480 in its best-accuracy mode, so 1280x720 depth is
+    # upsampled by the ASIC and adds pixels, not information; it is requested
+    # so the aligned depth.png matches the colour frame pixel for pixel. On a
+    # USB 2 link librealsense may refuse this combination outright -- check
+    # `usb_type` on GET /realsense/<id>/status (a 2.x link also silently drops
+    # the RGB sensor).
+    color: {enabled: true, width: 1280, height: 720, fps: 30}
+    depth: {enabled: true, width: 1280, height: 720, fps: 30}
 
-# Stream profiles. 1280x720 for both (set 2026-09-19; the previous default was
-# 640x480@30). Resolution is the priority here, not frame rate: if
-# librealsense refuses 1280x720 on this USB link, drop fps to 15 or 6 before
-# lowering the resolution. Note the D435i's depth module is natively 848x480
-# in its best-accuracy mode, so 1280x720 depth is upsampled by the ASIC and
-# adds pixels, not information; it is requested so the aligned depth.png
-# matches the colour frame pixel for pixel. On a USB 2 link librealsense may
-# refuse this combination outright -- check `usb_type` on
-# `GET /realsense/status` (a 2.x link also silently drops the RGB sensor).
-color:
-  enabled: true
-  width: 1280
-  height: 720
-  fps: 30
-depth:
-  enabled: true
-  width: 1280
-  height: 720
-  fps: 30
+    # Re-project depth onto the colour image so a pixel in the colour snapshot
+    # maps to the same pixel in the depth map (and to
+    # /realsense/<id>/depth?x=&y=). Costs a little CPU per frame. Turn off
+    # only if you consume raw depth.
+    align_depth_to_color: true
 
-# Re-project depth onto the colour image so a pixel in the colour snapshot
-# maps to the same pixel in the depth map (and to /realsense/depth?x=&y=).
-# Costs a little CPU per frame. Turn off only if you consume raw depth.
-align_depth_to_color: true
+    # JPEG quality for snapshots and the MJPEG preview (1-95).
+    jpeg_quality: 80
 
-# JPEG quality for snapshots and the MJPEG preview (1-95).
-jpeg_quality: 80
-
-# How long one wait_for_frames() may block before it counts as a dropped
-# frame. Several consecutive drops mark the camera as lost (unplugged) and
-# stop the pipeline; POST /realsense/start brings it back.
-frame_timeout_ms: 5000
-max_consecutive_frame_failures: 5
+    # How long one wait_for_frames() may block before it counts as a dropped
+    # frame. Several consecutive drops mark the camera as lost (unplugged) and
+    # stop the pipeline; POST /realsense/<id>/start brings it back.
+    frame_timeout_ms: 5000
+    max_consecutive_frame_failures: 5
 
 # ---------------------------------------------------------------------------
-# Capture records (POST /control/realsense/capture)
+# Capture records (POST /control/realsense/<id>/capture)
 #
 # A capture is one aligned frameset written to disk as colour.jpg +
-# depth.png + meta.json under <root>/<YYYY-MM-DD>/<capture_id>/. Unlike the
-# snapshot endpoints, it survives the request: it is the unit that node
-# references, arrival verification and any future training set consume, which
-# is why meta.json carries the arm pose the frames were taken from.
+# depth.png + meta.json under <root>/<camera_id>/<YYYY-MM-DD>/<capture_id>/.
+# Unlike the snapshot endpoints, it survives the request: it is the unit that
+# node references, arrival verification and any future training set consume,
+# which is why meta.json carries the arm pose the frames were taken from --
+# and, since 2026-09-20, the camera_id that took it.
+#
+# The store is shared by every camera: one root, one retention budget. The
+# camera level is a directory, not a separate store, because the bound that
+# matters is the disk's, not any one lens's.
 #
 # The root lives OUTSIDE the repo tree -- captures are data, not source, and
 # a data volume is not a working copy. On this device PC that is the SDL data
@@ -86,16 +108,17 @@ captures:
   enabled: true
   root: 'C:\SDL_Data\xarm\realsense'
 
-  # Retention. Both bounds are enforced after every write, oldest first, and
-  # age is applied before size so a store over both sheds stale records
-  # rather than recent ones. 0 disables that bound.
+  # Retention. Both bounds are enforced after every write, oldest first across
+  # ALL cameras, and age is applied before size so a store over both sheds
+  # stale records rather than recent ones. 0 disables that bound.
   #   keep_days   - discard captures older than this many days.
-  #   keep_max_gb - total ceiling for the store.
+  #   keep_max_gb - total ceiling for the store, all cameras together.
   # A 1280x720 capture measured ~250 KB on the bench (2026-09-19: colour JPEG
   # ~110 KB + 16-bit depth PNG ~145 KB; the 640x480 profile it replaced wrote
   # ~55 KB), so 20 GB is roughly 80k of them -- about 2,600 a day for 30 days
   # before keep_max_gb binds ahead of keep_days. JPEG size follows the scene,
-  # so treat these as bench figures, not constants. Captures whose meta.json sets "protected": true
-  # are exempt from both (Phase 4 node references must outlive retention).
+  # so treat these as bench figures, not constants. Captures whose meta.json
+  # sets "protected": true are exempt from both (Phase 4 node references must
+  # outlive retention).
   keep_days: 30
   keep_max_gb: 20
