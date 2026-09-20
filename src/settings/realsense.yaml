@@ -35,19 +35,24 @@ autostart: false
 start_on_demand: true
 idle_timeout_seconds: 120
 
-# Stream profiles. 640x480@30 for both is the safe default on USB 3 and the
-# native depth resolution of the D435i's best-accuracy mode is 848x480. On a
-# USB 2 link librealsense may refuse this combination -- drop to 15 fps or
-# 480x270 if `GET /realsense/status` shows usb_type "2.x".
+# Stream profiles. 1280x720 for both (set 2026-09-19; the previous default was
+# 640x480@30). Resolution is the priority here, not frame rate: if
+# librealsense refuses 1280x720 on this USB link, drop fps to 15 or 6 before
+# lowering the resolution. Note the D435i's depth module is natively 848x480
+# in its best-accuracy mode, so 1280x720 depth is upsampled by the ASIC and
+# adds pixels, not information; it is requested so the aligned depth.png
+# matches the colour frame pixel for pixel. On a USB 2 link librealsense may
+# refuse this combination outright -- check `usb_type` on
+# `GET /realsense/status` (a 2.x link also silently drops the RGB sensor).
 color:
   enabled: true
-  width: 640
-  height: 480
+  width: 1280
+  height: 720
   fps: 30
 depth:
   enabled: true
-  width: 640
-  height: 480
+  width: 1280
+  height: 720
   fps: 30
 
 # Re-project depth onto the colour image so a pixel in the colour snapshot
@@ -86,8 +91,11 @@ captures:
   # rather than recent ones. 0 disables that bound.
   #   keep_days   - discard captures older than this many days.
   #   keep_max_gb - total ceiling for the store.
-  # A 640x480 capture is ~0.5 MB, so 20 GB is roughly 40k of them; whichever
-  # bound binds first wins. Captures whose meta.json sets "protected": true
+  # A 1280x720 capture measured ~250 KB on the bench (2026-09-19: colour JPEG
+  # ~110 KB + 16-bit depth PNG ~145 KB; the 640x480 profile it replaced wrote
+  # ~55 KB), so 20 GB is roughly 80k of them -- about 2,600 a day for 30 days
+  # before keep_max_gb binds ahead of keep_days. JPEG size follows the scene,
+  # so treat these as bench figures, not constants. Captures whose meta.json sets "protected": true
   # are exempt from both (Phase 4 node references must outlive retention).
   keep_days: 30
   keep_max_gb: 20

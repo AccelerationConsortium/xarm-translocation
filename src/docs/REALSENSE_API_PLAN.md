@@ -12,7 +12,9 @@ plain RGB photo/video use is a first-class requirement.
 start/stop, colour + colourised-depth JPEG, raw 16-bit depth PNG, MJPEG
 preview, `depth?x=&y=` → metres + camera-frame XYZ, intrinsics, and health on
 `/status` (`components.realsense_camera`, `details.realsense`). Verified on
-the bench: D435i on USB 3, 640×480 @ 30 depth+colour.
+the bench: D435i on USB 3, 640×480 @ 30 depth+colour at the time; since
+2026-09-19 both streams run at **1280×720 @ 30** (negotiated first try on
+USB 3.2, ~70 % depth fill on the bench scene).
 
 What it is **not** yet: a control surface a workflow or agent can act on, a
 source of records, or anything that knows where the camera is relative to
@@ -73,9 +75,10 @@ Pillow-free `imageio-ffmpeg`, or MJPEG-in-AVI if we want zero new deps) into
 the same capture store, listed and served through the same `captures`
 routes; `details.realsense.recording = {active, since, seconds}`;
 `realsense.record` in `allowed_actions`. A recording is also stopped by
-`max_seconds` and by camera loss. Full-resolution colour (1280×720 or
-1920×1080 @ 30) is a config change in `realsense.yaml`; the depth stream
-can stay at 640×480 — the two are independent profiles.
+`max_seconds` and by camera loss. Stream resolution is a config change in
+`realsense.yaml` — both streams are at 1280×720 @ 30 as of 2026-09-19, and
+1920×1080 colour remains available; the two are independent profiles, so
+depth could be dropped back to its native 848×480 without touching colour.
 
 Also: emit a `realsense_capture` event to `/api/ingest/events` via the
 existing `events_exporter` (id, node, label, sizes); advertise
@@ -218,7 +221,8 @@ dashboard, and the assistant. Each is small once Phases 1–2 exist.
   the preview opt-in in the panel (it is) and never embed it in the
   dashboard grid — snapshots there.
 - **Storage.** `C:\SDL_Data\xarm\realsense\`, outside the repo tree, pruned by
-  retention. A 640×480 capture is ~0.5 MB (JPEG + 16-bit PNG).
+  retention. A 1280×720 capture measured ~250 KB on the bench (JPEG + 16-bit
+  PNG; ~55 KB at the previous 640×480), so `keep_max_gb: 20` is ~80k captures.
 - **Firmware.** 5.11.1.100 works; update to ≥ 5.13 with the RealSense Viewer
   during a bench session, before Phase 3 (calibration numbers should be
   taken on the firmware we intend to run).

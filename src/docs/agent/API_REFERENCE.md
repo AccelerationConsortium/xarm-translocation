@@ -120,7 +120,9 @@ Captures live outside the repo at `C:\SDL_Data\xarm\realsense\<YYYY-MM-DD>\<capt
 | `keep_max_gb` | 20 |
 
 Both are enforced after every write, oldest first, age before size. A capture
-is roughly 0.5 MB at 640x480. Captures marked `protected` are exempt from both.
+is roughly 250 KB at the configured 1280x720 (colour JPEG ~110 KB + 16-bit
+depth PNG ~145 KB, measured 2026-09-19; scene-dependent), so 20 GB holds about
+80k captures. Captures marked `protected` are exempt from both.
 New files replicate nightly to `/home/sdl2/storage/external/realsens_xarm/` on
 the lab data server.
 

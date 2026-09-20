@@ -7,6 +7,34 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — RealSense streams to 1280×720 (2026-09-19)
+
+Both stream profiles in `src/settings/realsense.yaml` move from 640×480 @ 30
+to **1280×720 @ 30**. Resolution was the request; frame rate was allowed to
+fall to 15 or 6 if the link refused, and it did not need to: librealsense
+accepted 1280×720 @ 30 for depth + colour on the first attempt on this
+machine's USB 3.2 link (D435i serial 050422071813, firmware 5.11.1.100), no
+warnings, `fps_measured` 30.0–31.4 over 76 frames.
+
+- **Depth is upsampled, not sharper.** The D435i depth module's native
+  best-accuracy mode is 848×480; 1280×720 depth is produced by the ASIC and
+  adds pixels, not information. It is requested so the aligned `depth.png`
+  matches the colour frame pixel for pixel. Bench fill on the current scene
+  was **70.1 % valid pixels** (min 69.8 %, max 70.4 % over 10 frames), range
+  0.30–19.2 m, median 0.38 m — the gripper's own view of the bench.
+- **Per-capture size ~253 KB** measured through the real `CaptureStore`
+  (colour JPEG 111.9 KB at quality 80 + 16-bit depth PNG 145.1 KB + meta):
+  about **4.6×** the 55 KB the 640×480 profile wrote, not the ~3× a pixel
+  count would predict, because the PNG grows with depth texture. Retention
+  bounds (`keep_days: 30`, `keep_max_gb: 20`) are unchanged; at this size
+  20 GB is ~80k captures, so `keep_max_gb` binds before `keep_days` only
+  above ~2,600 captures a day.
+- Comments and docs that stated the old resolution or the "~0.5 MB per
+  capture" figure as current fact were updated (`realsense.yaml`,
+  `realsense_captures.py`, `docs/agent/API_REFERENCE.md`,
+  `docs/REALSENSE_API_PLAN.md`). Earlier CHANGELOG entries are left as
+  written: they record what was verified at the time.
+
 ### Added — Intel RealSense depth camera (`/realsense/*`)
 
 The service can now own an Intel RealSense depth camera (D435i and any other

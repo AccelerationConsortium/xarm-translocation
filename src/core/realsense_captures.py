@@ -50,8 +50,9 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# One capture is ~0.5 MB at 640x480 (JPEG + 16-bit PNG), so these defaults
-# hold roughly 40k captures or 30 days, whichever binds first.
+# One capture measured ~250 KB at 1280x720 on the bench (JPEG + 16-bit PNG;
+# ~55 KB at the 640x480 it replaced), so these defaults hold roughly 80k
+# captures or 30 days, whichever binds first.
 DEFAULT_ROOT = r"C:\SDL_Data\xarm\realsense"
 DEFAULT_KEEP_DAYS = 30
 DEFAULT_KEEP_MAX_GB = 20.0
@@ -368,8 +369,8 @@ class CaptureStore:
     def _scan(self) -> List[Dict[str, Any]]:
         """Every complete capture, newest first.
 
-        A full walk is deliberate: at ~0.5 MB a capture, the bound above tops
-        out in the low tens of thousands of directories, which is a few
+        A full walk is deliberate: at ~250 KB a capture, the bound above tops
+        out around eighty thousand directories, which is still only tens of
         milliseconds of ``scandir`` — cheaper than keeping an index honest
         across pruning, external deletion and the daily replication sweep.
         """
