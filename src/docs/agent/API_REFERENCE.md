@@ -205,9 +205,15 @@ The camera is the top level, then the UTC day, then the capture.
 
 Both are enforced after every write, oldest first, age before size — and
 across **all** cameras together, not per camera: one root, one budget, because
-the bound that matters is the disk's. A capture is roughly 250 KB at the
-configured 1280x720 (colour JPEG ~110 KB + 16-bit depth PNG ~145 KB, measured
-2026-09-19; scene-dependent), so 20 GB holds about 80k captures. Captures
+the bound that matters is the disk's. A capture is roughly 175-255 KB at the
+configured 1280x720 (colour JPEG 55-110 KB + 16-bit depth PNG 119-145 KB,
+measured 2026-09-19 and re-measured 2026-09-20; strongly scene-dependent, a
+dim or flat scene compresses smaller), so 20 GB holds on the order of 100k
+captures. Both streams run at 1280x720 by design, not by limitation: depth
+is at its hardware maximum there, while colour could reach 1920x1080 but is
+matched to depth so the two images stay pixel-for-pixel comparable and the
+aligned depth map is not inflated with interpolated pixels — see the
+[agent guide](agent-docs). Captures
 marked `protected` are exempt from both.
 New files replicate nightly to
 `/home/sdl2/storage/external/realsens_xarm/<camera_id>/<YYYY-MM-DD>/` on the

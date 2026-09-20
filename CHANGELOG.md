@@ -7,6 +7,19 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Documented — why both RealSense streams stay at 1280x720 (2026-09-20)
+
+Stream ceilings were enumerated from the hardware rather than assumed:
+colour reaches 1920x1080 @ 30, depth reaches 1280x720 @ 30 and is
+ASIC-upsampled above 848x480. Colour at 1920x1080 was tried and reverted.
+With `align_depth_to_color` on, the depth map is resampled to the colour
+resolution, so the higher colour profile roughly doubles the bytes per
+capture to carry interpolated depth pixels and no extra measurement, and it
+breaks the pixel-for-pixel correspondence `/realsense/<id>/depth?x=&y=`
+relies on. Configuration unchanged; the reasoning is now in
+`settings/realsense.yaml`, the agent guide and the API reference so it is
+not rediscovered by experiment.
+
 ### Changed — RealSense cameras are addressed by id (2026-09-20)
 
 The camera layer was a process-wide singleton: one camera, one set of

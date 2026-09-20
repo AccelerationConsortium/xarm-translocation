@@ -68,6 +68,14 @@ cameras:
     # USB 2 link librealsense may refuse this combination outright -- check
     # `usb_type` on GET /realsense/<id>/status (a 2.x link also silently drops
     # the RGB sensor).
+    # Both streams at 1280x720 @ 30, matched on purpose (settled 2026-09-20).
+    # Ceilings on this D435i, enumerated from the device: colour 1920x1080 @ 30,
+    # depth 1280x720 @ 30 (everything above 848x480 is ASIC-upsampled from it).
+    # Depth is therefore already maxed. Colour is deliberately NOT raised to
+    # 1920x1080: align_depth_to_color resamples depth to the colour resolution,
+    # so that would double the bytes per capture to carry interpolated depth
+    # pixels and nothing more, and would break the pixel-for-pixel
+    # correspondence that /realsense/<id>/depth?x=&y= depends on.
     color: {enabled: true, width: 1280, height: 720, fps: 30}
     depth: {enabled: true, width: 1280, height: 720, fps: 30}
 

@@ -68,6 +68,42 @@ which are network devices driven through the dashboard. A camera idles by
 default and starts on the first request, then stops itself after an idle
 timeout.
 
+### Stream profiles, and why both are 1280x720
+
+`rs435i` runs **colour and depth both at 1280x720 @ 30**, with depth aligned
+to colour. Read the live values from `GET /realsense/{id}/status` rather than
+assuming them; this section explains the choice so you can reason about the
+data you get.
+
+The D435i's ceilings are not the same on each sensor:
+
+| Stream | Hardware maximum | Note |
+|---|---|---|
+| Colour | 1920x1080 @ 30 | native sensor resolution |
+| Depth | 1280x720 @ 30 | anything above 848x480 is ASIC-upsampled from it |
+
+Colour is deliberately **not** run at its 1920x1080 maximum. With
+`align_depth_to_color` on, the depth map is resampled to the colour
+resolution, so a 1920x1080 colour stream would produce a 1920x1080
+`depth.png` carrying no more depth information than the 1280x720 stereo
+stream behind it — roughly double the bytes per capture for pixels rather
+than measurements (reviewed and settled 2026-09-20).
+
+Two consequences that matter when you consume a capture:
+
+- **A pixel means the same thing in both images.** `color.jpg` and
+  `depth.png` share dimensions and come from one frameset, so the pixel you
+  pick in the colour frame is the pixel you read in depth — which is exactly
+  what `GET /realsense/{id}/depth?x=&y=` relies on.
+- **Depth above 848x480 is interpolated.** 1280x720 depth is upsampled from
+  the module's native stereo resolution. Treat fine-grained depth detail as
+  smoothed, not resolved. The values are still metric and still trustworthy
+  at the scale an arm works at.
+
+Unmeasured depth pixels read `0`; `65535` is the 16-bit saturation marker,
+not a 65 m reading. Expect roughly 60-75% valid pixels on a normal bench
+scene.
+
 **Find them first.** Each camera has a device-local id — the first is
 `rs435i` — and every route for it is nested under that id:
 
