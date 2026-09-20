@@ -114,7 +114,10 @@ def client(monkeypatch, fake_cam, store):
     controller = SimpleNamespace(
         claim_manager=FakeClaimManager(),
         disconnect=lambda: None,  # the app lifespan calls this on shutdown
-        is_connected=True,
+        # Connection is read from states["connection"], exactly as /status
+        # reads it -- there is no is_connected attribute on the real
+        # controller, and assuming one stamped every capture disconnected.
+        states={"connection": SimpleNamespace(value="enabled")},
         current_node="deck_1",
         current_gripper_state="open",
         last_joints=[0.0, 1.0, 2.0, 3.0, 4.0],
@@ -148,6 +151,26 @@ class TestCapture:
         frame_numbers = {c[1] for c in encodes}
         assert len(frame_numbers) == 1
         assert fake_cam.calls.count("latest") == 1
+
+    def test_connected_is_read_from_the_states_map(self, client, monkeypatch):
+        """Regression: the first version read a non-existent is_connected
+        attribute, so every capture claimed the arm was disconnected even
+        while recording its live joints and TCP pose."""
+        meta = client.post("/control/realsense/capture", json={}).json()["meta"]
+        assert meta["arm"]["connected"] is True
+
+        import src.core.xarm_api_server as srv
+        srv.controller.states = {"connection": SimpleNamespace(value="disabled")}
+        meta = client.post("/control/realsense/capture", json={}).json()["meta"]
+        assert meta["arm"]["connected"] is False
+
+    def test_missing_states_map_does_not_break_a_capture(self, client):
+        """Metadata is never worth failing a frame over."""
+        import src.core.xarm_api_server as srv
+        srv.controller.states = {}
+        response = client.post("/control/realsense/capture", json={})
+        assert response.status_code == 200
+        assert response.json()["meta"]["arm"]["connected"] is False
 
     def test_capture_records_arm_state(self, client):
         meta = client.post("/control/realsense/capture", json={}).json()["meta"]

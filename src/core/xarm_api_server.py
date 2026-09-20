@@ -3230,6 +3230,29 @@ def _capture_store():
     return store
 
 
+def _capture_arm_connected(controller: Any) -> bool:
+    """Whether the arm is connected, derived exactly as ``/status`` derives it.
+
+    There is no ``is_connected`` attribute on the controller: the connection
+    lives in ``controller.states["connection"]`` and ``status_builder`` reads
+    it as ``_component_state(controller, "connection") == "enabled"``. The
+    first version of this helper used ``getattr(controller, "is_connected",
+    False)``, which silently took the default and stamped
+    ``arm.connected: false`` on every capture -- including captures whose own
+    joints and TCP pose proved the arm was live (caught by the access test,
+    2026-09-20). Sharing the derivation is what stops the two surfaces
+    disagreeing again.
+    """
+    try:
+        state = controller.states.get("connection")
+    except Exception:  # noqa: BLE001 - a capture must not fail over metadata
+        return False
+    if state is None:
+        return False
+    value = getattr(state, "value", state)
+    return str(value) == "enabled"
+
+
 def _capture_arm_state() -> Dict[str, Any]:
     """The arm's pose at capture time, or a reason it is unknown.
 
@@ -3255,7 +3278,7 @@ def _capture_arm_state() -> Dict[str, Any]:
     if controller is None:
         state["reason"] = "arm controller not instantiated"
         return state
-    state["connected"] = bool(getattr(controller, "is_connected", False))
+    state["connected"] = _capture_arm_connected(controller)
     for field, attr in (
         ("node_id", "current_node"),
         ("gripper_state", "current_gripper_state"),
