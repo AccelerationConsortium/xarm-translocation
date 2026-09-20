@@ -48,7 +48,7 @@ try:
     )
     from .claims import ClaimConflict, InvalidClaimToken
     from .camera_tracker import CameraTracker
-    from . import realsense_camera
+    from . import realsense_camera, realsense_captures
     from .realsense_camera import RealSenseError, RealSenseNotStreaming, RealSenseUnavailable
     from .sash_interlock import SashInterlock, SashInterlockError
     from . import assistant_actions
@@ -77,7 +77,7 @@ except ImportError:
     )
     from core.claims import ClaimConflict, InvalidClaimToken
     from core.camera_tracker import CameraTracker
-    from core import realsense_camera
+    from core import realsense_camera, realsense_captures
     from core.realsense_camera import RealSenseError, RealSenseNotStreaming, RealSenseUnavailable
     from core.sash_interlock import SashInterlock, SashInterlockError
     from core import assistant_actions
@@ -3180,6 +3180,309 @@ async def realsense_intrinsics():
     """Pinhole intrinsics per stream + depth scale. Populated while streaming."""
     cam = _realsense()
     return await asyncio.to_thread(cam.intrinsics)
+
+
+# -----------------------------------------------------------------------------
+# CAPTURE RECORDS
+#
+# The endpoints above are transient: they answer "what does the camera see
+# right now". A capture is durable -- one aligned frameset written to disk with
+# the arm pose it was taken from, which is what makes it a measurement rather
+# than a picture. See core/realsense_captures.py for the store and
+# src/settings/realsense.yaml for the retention policy.
+#
+# Gating follows the same three tiers as the rest of this service and
+# STATUS_SPEC 5: taking a record is an authorised act, so POST/DELETE are
+# claim-gated; the metadata is an open read like /status; the image bytes are
+# login-gated like every other frame this service ships.
+# -----------------------------------------------------------------------------
+
+realsense_captures.configure_shared(
+    realsense_captures.load_captures_config(realsense_camera.default_config_path())
+)
+
+
+class RealSenseCaptureRequest(BaseModel):
+    """Body for POST /control/realsense/capture. Every field is optional."""
+
+    label: Optional[str] = Field(default=None, description="Free-form name for this capture")
+    node_id: Optional[str] = Field(
+        default=None,
+        description="Motion-graph node this capture belongs to; defaults to the arm's current node",
+    )
+    tags: Optional[List[str]] = Field(default=None, description="Free-form tags for later filtering")
+    protected: bool = Field(
+        default=False,
+        description="Exempt this capture from keep_days/keep_max_gb retention",
+    )
+
+
+def _capture_store():
+    store = realsense_captures.shared_store()
+    if store is None or not store.enabled:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "captures_not_configured",
+                "hint": "set captures.enabled: true in src/settings/realsense.yaml",
+            },
+        )
+    return store
+
+
+def _capture_arm_state() -> Dict[str, Any]:
+    """The arm's pose at capture time, or a reason it is unknown.
+
+    Never raises and never touches the SDK: it reads the same cached
+    telemetry /status serves, because a capture must not be able to stall on
+    a controller round-trip (or fail outright when the arm is not connected
+    -- the camera is useful before /connect).
+    """
+    state: Dict[str, Any] = {
+        "connected": False,
+        "node_id": None,
+        "joints": None,
+        "position": None,
+        "track_position": None,
+        "gripper_state": None,
+        "activity": None,
+    }
+    try:
+        controller = get_controller()
+    except Exception:  # noqa: BLE001 - no controller is a fact, not an error
+        state["reason"] = "arm controller not instantiated"
+        return state
+    if controller is None:
+        state["reason"] = "arm controller not instantiated"
+        return state
+    state["connected"] = bool(getattr(controller, "is_connected", False))
+    for field, attr in (
+        ("node_id", "current_node"),
+        ("gripper_state", "current_gripper_state"),
+        ("track_position", "last_track_position"),
+    ):
+        try:
+            state[field] = getattr(controller, attr, None)
+        except Exception:  # noqa: BLE001
+            state[field] = None
+    for field, attr in (("joints", "last_joints"), ("position", "last_position")):
+        try:
+            value = getattr(controller, attr, None)
+            state[field] = list(value) if value else None
+        except Exception:  # noqa: BLE001
+            state[field] = None
+    return state
+
+
+def _capture_requester(request: Request) -> str:
+    """Who took this capture: the verified login, else the claim holder.
+
+    Both can be absent (login not enforced, claim not enforced), and neither
+    lookup may raise into the capture path, so this falls back to "unknown"
+    rather than refusing to record a frame over an audit detail.
+    """
+    email = getattr(request.state, "identity_email", None)
+    if email:
+        return str(email)
+    try:
+        holder = get_controller().claim_manager.claimed_by()
+    except Exception:  # noqa: BLE001 - not connected / no claim manager
+        return "unknown"
+    if isinstance(holder, dict) and holder.get("owner"):
+        return str(holder["owner"])
+    return "unknown"
+
+
+def _capture_urls(capture_id: str, meta: Dict[str, Any]) -> Dict[str, str]:
+    base = f"/realsense/captures/{capture_id}"
+    urls = {"meta": base}
+    for name, key in ((realsense_captures.COLOR_NAME, "color"),
+                      (realsense_captures.DEPTH_NAME, "depth")):
+        if name in (meta.get("files") or {}):
+            urls[key] = f"{base}/{name}"
+    return urls
+
+
+@app.post("/control/realsense/capture", dependencies=[Depends(require_claim)])
+async def realsense_capture(request: Request, body: Optional[RealSenseCaptureRequest] = None):
+    """Grab the latest aligned frameset and keep it.
+
+    Writes colour.jpg + depth.png + meta.json and returns the record. The
+    pipeline is started on demand when realsense.yaml allows it: the caller
+    already holds the claim, so this is an authorised actor and the idle
+    timeout will stop the camera again.
+
+    409 when the camera is off and start_on_demand is false, 503 when the
+    extra or the hardware is missing, 404 when captures are disabled.
+    """
+    body = body or RealSenseCaptureRequest()
+    cam = _realsense()
+    store = _capture_store()
+
+    def _grab():
+        if cam.start_on_demand:
+            cam.ensure_started()
+        bundle = cam.latest()
+        color = cam.encode_jpeg(bundle, "color") if bundle.color is not None else None
+        depth = cam.encode_depth_png(bundle) if bundle.depth is not None else None
+        return bundle, color, depth
+
+    try:
+        bundle, color_jpeg, depth_png = await asyncio.to_thread(_grab)
+    except Exception as exc:  # noqa: BLE001
+        raise _realsense_http_error(exc)
+
+    arm = _capture_arm_state()
+    if body.node_id is not None:
+        arm["node_id"] = body.node_id
+    described = await asyncio.to_thread(cam.describe)
+    meta: Dict[str, Any] = {
+        "label": body.label,
+        "tags": list(body.tags or []),
+        "protected": bool(body.protected),
+        "arm": arm,
+        "requested_by": _capture_requester(request),
+        "camera": {
+            "label": getattr(cam, "label", None),
+            "device": described.get("device"),
+            "library_version": described.get("library_version"),
+            "streams": described.get("streams"),
+        },
+        "frame": {
+            "frame_number": bundle.frame_number,
+            "timestamp_ms": bundle.timestamp_ms,
+            "depth_scale_m": bundle.depth_scale,
+            "aligned_depth_to_color": bool(getattr(cam, "align_depth_to_color", False)),
+        },
+        "intrinsics": bundle.intrinsics,
+    }
+
+    try:
+        record = await asyncio.to_thread(
+            store.write, color_jpeg=color_jpeg, depth_png=depth_png, meta=meta
+        )
+    except realsense_captures.CaptureStoreError as exc:
+        raise HTTPException(status_code=500, detail={"error": "capture_write_failed",
+                                                     "reason": str(exc)})
+
+    capture_id = record["capture_id"]
+    return {"capture_id": capture_id, "urls": _capture_urls(capture_id, record), "meta": record}
+
+
+@app.get("/realsense/captures")
+async def realsense_captures_list(
+    limit: int = 50,
+    node_id: Optional[str] = None,
+    label: Optional[str] = None,
+    since: Optional[str] = None,
+):
+    """List capture metadata, newest first. Open read, like /status.
+
+    ``since`` is an ISO-8601 UTC instant compared against captured_at.
+    """
+    store = _capture_store()
+    limit = max(1, min(500, int(limit)))
+    items = await asyncio.to_thread(
+        store.list_captures, limit=limit, node_id=node_id, label=label, since=since
+    )
+    return {"captures": items, "count": len(items), "retention": store.describe()}
+
+
+@app.get("/realsense/captures/{capture_id}")
+async def realsense_capture_meta(capture_id: str):
+    """One capture's meta.json."""
+    store = _capture_store()
+    try:
+        meta = await asyncio.to_thread(store.get, capture_id)
+    except realsense_captures.CaptureNotFound:
+        raise HTTPException(status_code=404, detail={"error": "capture_not_found",
+                                                     "capture_id": capture_id})
+    return {"capture_id": capture_id, "urls": _capture_urls(capture_id, meta), "meta": meta}
+
+
+@app.get("/realsense/captures/{capture_id}/{filename}", dependencies=[Depends(require_login)])
+async def realsense_capture_file(capture_id: str, filename: str):
+    """One capture artefact: color.jpg or depth.png.
+
+    Login-gated for the same reason /realsense/snapshot.jpg is: these are
+    frames from a lab camera. The filename is whitelisted in the store, so
+    no path built here can escape the capture directory.
+    """
+    store = _capture_store()
+    try:
+        path = await asyncio.to_thread(store.file_path, capture_id, filename)
+    except realsense_captures.CaptureNotFound:
+        raise HTTPException(status_code=404, detail={"error": "capture_file_not_found",
+                                                     "capture_id": capture_id,
+                                                     "filename": filename})
+    media = "image/jpeg" if filename.endswith(".jpg") else "image/png"
+    return FileResponse(path, media_type=media, headers={"Cache-Control": "no-store"})
+
+
+@app.delete("/control/realsense/captures/{capture_id}", dependencies=[Depends(require_claim)])
+async def realsense_capture_delete(capture_id: str):
+    """Remove one capture, including a protected one."""
+    store = _capture_store()
+    removed = await asyncio.to_thread(store.delete, capture_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail={"error": "capture_not_found",
+                                                     "capture_id": capture_id})
+    return {"ok": True, "capture_id": capture_id}
+
+
+# -----------------------------------------------------------------------------
+# AGENT DOCUMENTATION
+#
+# Same shape as the other lab device services (torry-pines-shaker-server,
+# mt-xpr-balance-server, sense-every-zone): a Markdown agent guide, a Markdown
+# API reference, and a plain-text /llms.txt index, so an agent -- or the
+# dashboard's API reference page -- can discover how to drive this device
+# without reading the repo. Open reads: documentation is not actuation.
+# -----------------------------------------------------------------------------
+
+_AGENT_DOCS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "agent")
+
+
+def _agent_document(name: str) -> str:
+    path = os.path.join(_AGENT_DOCS_DIR, name)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+    except OSError:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "document_not_found", "document": name},
+        )
+
+
+@app.get("/agent-docs", response_class=RawResponse, summary="Agent guide (Markdown)")
+async def agent_docs():
+    return RawResponse(content=_agent_document("AGENT_GUIDE.md"), media_type="text/markdown")
+
+
+@app.get("/agent-docs/api-reference", response_class=RawResponse,
+         summary="API reference (Markdown)")
+async def agent_api_reference():
+    return RawResponse(content=_agent_document("API_REFERENCE.md"), media_type="text/markdown")
+
+
+@app.get("/llms.txt", response_class=RawResponse, summary="Discovery index for agents")
+async def llms_txt():
+    return RawResponse(
+        content=(
+            "# xArm translocation service (STATUS_SPEC v1.1 device service)\n\n"
+            "## Documentation\n\n"
+            "- [Agent guide](agent-docs): claims, motion-graph moves, the RealSense\n"
+            "  depth camera and capture records, refusal codes.\n"
+            "- [API reference](agent-docs/api-reference): every route with bodies and\n"
+            "  refusal codes.\n"
+            "- [OpenAPI](openapi.json): request/response schemas.\n\n"
+            "## Live status\n\n"
+            "Read GET /status through the lab-skills SDK or the dashboard; live status\n"
+            "is not a documentation-proxy resource. Read allowed_actions before acting.\n"
+        ),
+        media_type="text/plain",
+    )
 
 
 @app.post("/assistant/plan")

@@ -496,23 +496,37 @@ class RealSenseCamera:
         with self._lock:
             return self._frames_captured
 
-    def jpeg(self, kind: str = "color") -> Tuple[bytes, FrameBundle]:
-        """Encode the latest colour (BGR) or colourised depth frame as JPEG."""
+    def encode_jpeg(self, bundle: FrameBundle, kind: str = "color") -> bytes:
+        """Encode one *given* bundle as JPEG.
+
+        Split out from :meth:`jpeg` so a caller that needs colour and depth
+        from the *same* frameset (a capture record) encodes both from one
+        bundle instead of calling ``latest()`` twice and silently pairing
+        two different moments.
+        """
         kind = _check_kind(kind)
-        bundle = self.latest()
         array = bundle.color if kind == "color" else bundle.depth_color
         if array is None:
             raise RealSenseError(f"{kind} stream is disabled in realsense.yaml")
         if kind == "color":
             array = array[..., ::-1]  # BGR -> RGB for the encoder
-        return _encode_image(array, "JPEG", quality=self.jpeg_quality), bundle
+        return _encode_image(array, "JPEG", quality=self.jpeg_quality)
+
+    def encode_depth_png(self, bundle: FrameBundle) -> bytes:
+        """Encode one given bundle's raw depth as a lossless 16-bit PNG."""
+        if bundle.depth is None:
+            raise RealSenseError("depth stream is disabled in realsense.yaml")
+        return _encode_image(bundle.depth, "PNG", sixteen_bit=True)
+
+    def jpeg(self, kind: str = "color") -> Tuple[bytes, FrameBundle]:
+        """Encode the latest colour (BGR) or colourised depth frame as JPEG."""
+        bundle = self.latest()
+        return self.encode_jpeg(bundle, kind), bundle
 
     def depth_png(self) -> Tuple[bytes, FrameBundle]:
         """The raw 16-bit depth map as a lossless PNG (units: depth_scale metres)."""
         bundle = self.latest()
-        if bundle.depth is None:
-            raise RealSenseError("depth stream is disabled in realsense.yaml")
-        return _encode_image(bundle.depth, "PNG", sixteen_bit=True), bundle
+        return self.encode_depth_png(bundle), bundle
 
     def mjpeg_frames(self, kind: str = "color", max_fps: float = 10.0) -> Iterator[bytes]:
         """Yield ``multipart/x-mixed-replace`` parts until the pipeline stops.

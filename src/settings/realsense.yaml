@@ -63,3 +63,31 @@ jpeg_quality: 80
 # stop the pipeline; POST /realsense/start brings it back.
 frame_timeout_ms: 5000
 max_consecutive_frame_failures: 5
+
+# ---------------------------------------------------------------------------
+# Capture records (POST /control/realsense/capture)
+#
+# A capture is one aligned frameset written to disk as colour.jpg +
+# depth.png + meta.json under <root>/<YYYY-MM-DD>/<capture_id>/. Unlike the
+# snapshot endpoints, it survives the request: it is the unit that node
+# references, arrival verification and any future training set consume, which
+# is why meta.json carries the arm pose the frames were taken from.
+#
+# The root lives OUTSIDE the repo tree -- captures are data, not source, and
+# a data volume is not a working copy. On this device PC that is the SDL data
+# drive; a relative path would follow the service's CWD, which NSSM does not
+# guarantee.
+captures:
+  enabled: true
+  root: 'C:\SDL_Data\xarm\realsense'
+
+  # Retention. Both bounds are enforced after every write, oldest first, and
+  # age is applied before size so a store over both sheds stale records
+  # rather than recent ones. 0 disables that bound.
+  #   keep_days   - discard captures older than this many days.
+  #   keep_max_gb - total ceiling for the store.
+  # A 640x480 capture is ~0.5 MB, so 20 GB is roughly 40k of them; whichever
+  # bound binds first wins. Captures whose meta.json sets "protected": true
+  # are exempt from both (Phase 4 node references must outlive retention).
+  keep_days: 30
+  keep_max_gb: 20

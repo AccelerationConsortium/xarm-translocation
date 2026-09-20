@@ -24,7 +24,7 @@ from .models import (
     MetricValue,
 )
 
-from . import realsense_camera
+from . import realsense_camera, realsense_captures
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only for type hints
     from .xarm_controller import XArmController
@@ -540,8 +540,35 @@ def _build_realsense_component() -> ComponentStatus | None:
     )
 
 
+def _realsense_capture_allowed() -> bool:
+    """Whether ``POST /control/realsense/capture`` would be honoured.
+
+    Mirrors exactly what the endpoint checks before it touches the camera:
+    a configured camera that is either already streaming or allowed to start
+    on demand, and an enabled capture store. Argument-dependent refusals (a
+    disabled colour stream, a full disk) are 4xx/5xx that a flat action list
+    cannot predict, which is the same line ``graph.move_to`` draws.
+    """
+    camera = realsense_camera.shared_camera()
+    if camera is None or not getattr(camera, "configured", False):
+        return False
+    if not (getattr(camera, "streaming", False) or getattr(camera, "start_on_demand", False)):
+        return False
+    try:
+        store = realsense_captures.shared_store()
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(store is not None and store.enabled)
+
+
 def _build_realsense_details() -> dict[str, Any] | None:
-    """The ``details.realsense`` block, or None when nothing is configured."""
+    """The ``details.realsense`` block, or None when nothing is configured.
+
+    The camera's own block is extended with a ``captures`` summary so a
+    client can see the store's occupancy without a second request -- the
+    same reasoning that puts ``motion_graph`` in details rather than behind
+    ``GET /graph``.
+    """
     camera = realsense_camera.shared_camera()
     if camera is None or not getattr(camera, "configured", False):
         return None
@@ -549,7 +576,15 @@ def _build_realsense_details() -> dict[str, Any] | None:
         block = camera.status_block()
     except Exception:  # noqa: BLE001 - observability must not break /status
         return None
-    return block if isinstance(block, dict) else None
+    if not isinstance(block, dict):
+        return None
+    try:
+        store = realsense_captures.shared_store()
+        if store is not None and store.enabled:
+            block["captures"] = store.summary()
+    except Exception:  # noqa: BLE001 - observability must not break /status
+        pass
+    return block
 
 
 def _sash_status_prefix(controller: XArmController) -> str | None:
@@ -665,6 +700,15 @@ def _build_allowed_actions(
             # collision, and the move endpoints refuse it with 409, so the
             # list must not offer it either.
             return actions
+
+        # RealSense capture records. Advertised below the motion-in-flight
+        # gate above on purpose: a frameset grabbed mid-move pairs a blurred
+        # image with a pose that has already changed, which is not a
+        # measurement. Deliberately *above* the Studio-Sim gate that follows,
+        # because the camera is real hardware even when the box simulates and
+        # POST /control/realsense/capture has no simulator guard to mirror.
+        if _realsense_capture_allowed():
+            actions.append("realsense.capture")
 
         if getattr(controller, "is_real_box_simulating", False):
             # The real box is in Studio-Sim: every motion and gripper
