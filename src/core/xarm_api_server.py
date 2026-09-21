@@ -289,8 +289,29 @@ class PlateLinearRequest(BaseModel):
 
 
 class GraphModeRequest(BaseModel):
-    """Request model for switching motion-graph enforcement mode."""
+    """Request model for switching motion-graph enforcement mode.
+
+    ``reason`` is required only when *lowering* below STRICT, because that
+    is the direction that relaxes the safety model. Raising to STRICT needs
+    neither field.
+    """
     mode: str = Field(description="One of: 'off', 'advisory', 'strict'")
+    reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "Why enforcement is being lowered. REQUIRED when moving below "
+            "'strict'; ignored when raising to it."
+        ),
+    )
+    ttl_seconds: Optional[float] = Field(
+        default=None,
+        ge=1.0,
+        description=(
+            "Seconds to stay lowered before reverting to strict on its own; "
+            "clamped to mode_override_max_seconds (src/settings/"
+            "motion_graph.yaml). Defaults to mode_override_default_seconds."
+        ),
+    )
 
 
 class SashOverrideRequest(BaseModel):
@@ -4133,13 +4154,27 @@ async def set_gripper_state(request: GraphGripperRequest, background_tasks: Back
 
 
 @app.post("/control/graph/mode", dependencies=[Depends(require_claim)])
-async def set_graph_mode(request: GraphModeRequest):
+async def set_graph_mode(request: GraphModeRequest, http_request: Request):
     """Switch the enforcement mode (off | advisory | strict).
 
     OFF: graph is not consulted; legacy behavior.
     ADVISORY: graph observes; off-whitelist moves log a warning but proceed.
     STRICT: edge.mode overrides preset format, edge.speed caps caller's
     speed, off-whitelist moves return HTTP 409.
+
+    **Lowering below STRICT is time-limited and self-reverting.** It needs a
+    ``reason`` (422 without one), runs for ``ttl_seconds`` clamped to the cap
+    in motion_graph.yaml, and then snaps back to STRICT with no help from the
+    caller — as it also does when the lowering session releases or loses its
+    claim, and on ``/disconnect``. This is what makes the documented freehand
+    recipe (claim -> advisory -> raw moves -> strict) safe to hand out: the
+    mode is process-wide state shared with every other client of this device,
+    and the previous unbounded switch relied on the operator remembering to
+    put it back.
+
+    Returns ``granted_seconds`` and ``expires_at`` when a window was opened,
+    both null when none was needed. Re-issuing while lowered grants a fresh
+    full window rather than erroring.
     """
     c = get_controller()
     try:
@@ -4149,11 +4184,75 @@ async def set_graph_mode(request: GraphModeRequest):
             status_code=422,
             detail=f"mode must be one of: off, advisory, strict (got {request.mode!r})",
         )
+
+    holder = None
     try:
-        c.set_graph_mode(mode)
+        holder = c.claim_manager.claimed_by()
+    except Exception:  # noqa: BLE001 - claims not enforced / no manager
+        holder = None
+    owner = (getattr(http_request.state, "identity_email", None)
+             or (holder or {}).get("owner"))
+
+    try:
+        granted = c.set_graph_mode(
+            mode,
+            reason=request.reason,
+            ttl_seconds=request.ttl_seconds,
+            owner=owner,
+            session_id=(holder or {}).get("session_id"),
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"graph_mode": c.graph_mode.value}
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "reason_required",
+                "action": "graph.mode",
+                "mode": mode.value,
+                "message": str(exc),
+                "hint": (
+                    "Retry with {\"mode\": \"" + mode.value + "\", \"reason\": "
+                    "\"...\"}. Add ttl_seconds to choose the window; it reverts "
+                    "to strict on its own either way."
+                ),
+            },
+        )
+
+    override = c.graph_mode_override_snapshot()
+    await broadcast_status_update()
+    return {
+        "graph_mode": c.graph_mode.value,
+        "granted_seconds": granted,
+        "expires_at": (override or {}).get("expires_at"),
+        "reverts_to": (override or {}).get("restores_to"),
+        "mode_override": override,
+    }
+
+
+@app.post("/control/graph/mode/restore", dependencies=[Depends(require_claim)])
+async def restore_graph_mode():
+    """Drop a mode override early, restoring STRICT now.
+
+    Equivalent to ``POST /control/graph/mode {"mode": "strict"}`` and kept
+    beside it for the same reason the sash interlock has an explicit
+    ``override/clear``: "put the guard back" is a distinct intent from "set
+    the mode to this value", and a one-button UI control should not have to
+    know which value to send.
+    """
+    c = get_controller()
+    was_overridden = c.restore_graph_mode("explicit") is not None
+    # No override does not mean nothing to do: a deployment can boot below
+    # STRICT, or have been lowered before windows existed. The button means
+    # "enforce again", so raise the mode even then -- but only when there is
+    # a graph to enforce, since set_graph_mode refuses otherwise.
+    if c.graph_mode != GraphMode.STRICT and c.motion_graph is not None:
+        c.set_graph_mode(GraphMode.STRICT)
+    await broadcast_status_update()
+    return {
+        "graph_mode": c.graph_mode.value,
+        "override_cleared": was_overridden,
+    }
 
 
 @app.post("/control/graph/record", dependencies=[Depends(require_claim)])

@@ -1,6 +1,7 @@
 # Freehand Cartesian control without breaking the motion graph — plan
 
-**Status:** proposal, 2026-09-20. Nothing here is implemented. Written because
+**Status:** **Step 1 shipped 2026-09-21.** Steps 2 and 3 are still proposals.
+Originally written 2026-09-20, when nothing here was implemented. Written because
 two operators (Jiaru, Allan) asked for Cartesian control of the xArm and the
 answer today is "switch the graph to ADVISORY and remember to switch it
 back", which works and is the sanctioned escape hatch — but it hands out a
@@ -22,6 +23,12 @@ Every freehand endpoint still runs the controller's `workspace_limits` +
 collision check (`safety_config`), `interlock_freehand_guard` (fume-hood
 sash, 412, **every mode**) and `box_sim_guard`. So ADVISORY is not
 "unguarded"; it is "not graph-guarded".
+
+> **2026-09-21:** the sash interlock is disabled (`enabled: false`) pending
+> the xyz safe/danger volume, so of those three only `workspace_limits` +
+> collision and `box_sim_guard` are actually running. The table's paths have
+> also gained `/control/freehand/*` spellings. The rest of this section is
+> still accurate.
 
 Two consequences the operators must know:
 
@@ -53,7 +60,44 @@ change. Everything below is about removing the two consequences.
 5. **Testable without hardware** against the existing MagicMock controller +
    motion-graph fixtures.
 
-## Step 1 — Time-limited mode override with auto-revert (small)
+## Step 1 — Time-limited mode override with auto-revert — **SHIPPED**
+
+Landed 2026-09-21, close to as designed below. What actually shipped, and
+where it diverged:
+
+- `GraphModeRequest` gained `reason` and `ttl_seconds` as planned. Defaults
+  and cap live in `motion_graph.yaml` at the proposed 300 s / 900 s (**D-1
+  settled as proposed**).
+- **Expiry is lazy in the `graph_mode` property itself**, not checked at each
+  call site. `XArmController.graph_mode` is now a property whose getter runs
+  the revert check, so every guard, every controller move path and every
+  status build inherits it and none of them can be the one that forgot. This
+  is stronger than the plan's "checked on every /status build and every
+  motion endpoint" and removes a whole class of missed-call-site bug.
+- Revert triggers are all four proposed (TTL, claim release *or* expiry by
+  the lowering session, `/disconnect`, explicit STRICT). The claim trigger is
+  evaluated by comparing the live holder's `session_id` against the one
+  recorded at grant time, so it covers release and silent expiry with one
+  check. It is skipped when no claim was held at grant time — otherwise a
+  deployment with claims unenforced would revert on the first read.
+- **D-2 settled: OFF stays reachable through the API**, no config gate. Raw
+  `/track/move` and genuinely unguarded work need it, and a gate would only
+  push people toward `enabled: false`, which is the outcome the plan warns
+  about. It is logged more loudly and carries the same window.
+- Added beyond the plan: `POST /control/graph/mode/restore`, for the same
+  reason the sash interlock has `override/clear` — "put the guard back" is a
+  distinct intent from "set the mode to this value", and a one-button UI
+  control should not have to know which value to send.
+- `message` takes `[GRAPH-ADVISORY]` / `[GRAPH-OFF]`, keyed on an *active
+  window* rather than on the mode alone: a deployment with no graph sits at
+  OFF permanently and prefixing every poll there would be noise.
+- Tests: `test/test_graph_mode_override.py` (27, real controller + status
+  envelope + the freehand guard end-to-end), plus 6 API-level ones in
+  `test/test_motion_graph_api.py`.
+
+The original proposal follows, unedited.
+
+### Original proposal
 
 Extend `GraphModeRequest`:
 
@@ -191,8 +235,10 @@ Effort: ~1½ days + a bench session to size the first zone.
 
 ## Decisions needed
 
-- **D-1** Default and cap for the mode-override TTL (proposed 300 s / 900 s).
-- **D-2** Keep OFF reachable through the API, or config-gate it?
+- ~~**D-1** Default and cap for the mode-override TTL (proposed 300 s / 900 s).~~
+  **Settled 2026-09-21 as proposed**, in `motion_graph.yaml`.
+- ~~**D-2** Keep OFF reachable through the API, or config-gate it?~~
+  **Settled 2026-09-21: reachable, ungated.** See the Step 1 notes.
 - **D-3** First zone: which node and how big? Proposal: `robot_home` with a
   200 × 300 × 200 mm box above the bench, no rail motion — enough for
   camera inspection and gripper checks, nowhere near the hood.

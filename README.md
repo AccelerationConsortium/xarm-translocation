@@ -44,6 +44,55 @@ Covered: `/move/{position,joints,relative,location,home,plate_linear}`, `/track/
 
 Not covered, deliberately: `/move/stop` and `/clear/errors` (the safety floor must always be reachable), `/control/graph/recover_to` (a bookkeeping re-pin, not a motion), and the gripper endpoints (`set_gripper_state` already refuses while the arm is moving, and gripper actuation is not primary operation).
 
+### Motion-graph enforcement, and the bounded way to leave it
+
+The motion graph boots **STRICT** whenever `motion_graph.yaml` loads: moves
+must follow whitelisted edges, and the graph-bypassing `/control/freehand/*`
+family (raw Cartesian, raw joints, jog, velocity streaming, raw rail, freehand
+gripper) is refused outright with 409 `graph_mode_strict`. The one exception
+is `POST /control/freehand/nudge`, a ±3 mm node-anchored correction that keeps
+the arm pinned and so can still be gated by node.
+
+Real Cartesian work — camera surveys, teaching a pose, calibration — needs
+that family, which means lowering the mode. **Lowering is now bounded,
+audited and self-reverting**, because `graph_mode` is process-wide state: a
+forgotten ADVISORY was silently inherited by the next client, workflow or
+agent, and the only thing restoring it was someone remembering.
+
+```bash
+# Open a window. reason is REQUIRED below strict (422 without it).
+curl -XPOST localhost:8000/control/graph/mode -H "X-Claim-Token: $TOK" \
+     -d '{"mode":"advisory","reason":"freehand camera survey","ttl_seconds":600}'
+# -> {"graph_mode":"advisory","granted_seconds":600,"reverts_to":"strict", ...}
+
+# ... /control/freehand/* now works; take photos with
+#     POST /control/realsense/{camera_id}/capture between moves ...
+
+curl -XPOST localhost:8000/control/graph/mode/restore -H "X-Claim-Token: $TOK"
+```
+
+It goes back to STRICT on its own under **any** of: the window lapsing; the
+session that lowered it releasing or losing its claim; `/disconnect`; an
+explicit `{"mode":"strict"}` or `/control/graph/mode/restore`. Expiry is lazy
+in the `graph_mode` read itself rather than a timer thread, so there is no
+code path — guard, move, or status poll — that can observe a lapsed window as
+still in force. Re-issuing while lowered grants a fresh full window, so an
+expiry cannot strand a half-finished survey.
+
+Defaults and the hard cap live in `motion_graph.yaml`
+(`mode_override_default_seconds: 300`, `mode_override_max_seconds: 900`); the
+server clamps rather than erroring. While lowered, `message` carries a
+`[GRAPH-ADVISORY]` / `[GRAPH-OFF]` prefix and
+`details.motion_graph.mode_override` carries the countdown, reason and owner;
+both clear themselves. Each grant and each revert writes a
+`graph_mode_override` / `graph_mode_restored` row to the history DB, the
+revert tagged with its trigger. The `/web/` panel prompts for the reason and
+shows the countdown with a "Restore strict now" button.
+
+Note `OFF` is still reachable, deliberately — it is what raw `/track/move` and
+fully-unguarded work need — but it is louder in the log and gets the same
+window as ADVISORY.
+
 ### Fume hood sash interlock (cross-device precondition) — CURRENTLY DISABLED
 
 > **Disabled 2026-09-21** (`enabled: false` in `src/settings/interlocks.yaml`),

@@ -7,6 +7,49 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — lowering motion-graph enforcement is now bounded and self-reverting (2026-09-21)
+
+`POST /control/graph/mode` set process-wide state with no expiry. Lowering to
+ADVISORY to do Cartesian work relaxed the motion whitelist for every client of
+the arm until somebody remembered to put it back — and a forgotten switch was
+inherited by the next client, workflow or agent with no trace. That is Step 1
+of `src/docs/FREEHAND_CARTESIAN_PLAN.md`, now shipped.
+
+- **A reason is required to lower**, and only to lower: raising to STRICT
+  stays free. 422 `reason_required` without one, with the retry shape in the
+  hint. The reason is logged at WARNING and written to the history DB.
+- **The lowering runs on a clamped window** — `ttl_seconds`, defaulting to
+  `mode_override_default_seconds: 300` and capped at
+  `mode_override_max_seconds: 900` (both new in `motion_graph.yaml`; the
+  server clamps rather than erroring). The response carries
+  `granted_seconds`, `expires_at` and `reverts_to`. Re-issuing while lowered
+  grants a fresh full window, so an expiry cannot strand a half-finished
+  survey.
+- **It reverts on its own** under any of: the window lapsing; the session that
+  lowered it releasing *or* silently losing its claim; `/disconnect`; an
+  explicit STRICT. `XArmController.graph_mode` became a property whose getter
+  runs that check, so every guard, every move path and every status poll
+  inherits the expiry — there is no code path that can observe a lapsed
+  window as still in force, and no timer thread. The claim trigger is skipped
+  when no claim was held at grant time, or a deployment with claims
+  unenforced would revert on the first read.
+- **New:** `POST /control/graph/mode/restore` — "put the guard back" as a
+  distinct intent from "set the mode to this value", mirroring the sash
+  interlock's `override/clear`, so a one-button control needs no knowledge of
+  which value to send.
+- **Surfaces.** `message` takes a `[GRAPH-ADVISORY]` / `[GRAPH-OFF]` prefix
+  while a window is open (keyed on the window, not the mode: a deployment
+  with no graph sits at OFF permanently and prefixing every poll there would
+  be noise). `details.motion_graph.mode_override` carries the countdown,
+  reason, owner and `restores_to`. Both clear themselves. Each grant and
+  revert emits `graph_mode_override` / `graph_mode_restored`, the revert
+  tagged with its trigger. The `/web/` panel prompts for the reason and shows
+  the countdown with a "Restore strict now" button.
+- `OFF` stays reachable and ungated (plan decision D-2): raw `/track/move`
+  and genuinely unguarded work need it, and gating it would only push people
+  toward `enabled: false`, which disables far more and says nothing. It is
+  logged more loudly and carries the same window.
+
 ### Changed — the fume hood sash interlock is disabled, and the `hood` tag is gone (2026-09-21)
 
 **This is a real reduction in safety and is intended as a temporary state.**

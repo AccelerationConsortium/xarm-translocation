@@ -278,6 +278,16 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     if sash_prefix:
         message = f"{sash_prefix} {message}"
 
+    # Same reasoning for a lowered motion-graph mode: the whitelist is not
+    # being enforced right now, which is a fact about supervision rather than
+    # about this arm's health, so it rides on `message` (and, machine-readably,
+    # on details.motion_graph.mode_override) instead of pushing `degraded`.
+    # Worth the tile space because the mode is process-wide: a client that
+    # never touched it still inherits the relaxation.
+    graph_prefix = _graph_mode_prefix(controller)
+    if graph_prefix:
+        message = f"{graph_prefix} {message}"
+
     # Components.
     components: dict[str, ComponentStatus] = {
         "arm": ComponentStatus(connected=arm_connected, state=arm_state),
@@ -917,7 +927,49 @@ def _build_motion_graph_details(controller: XArmController) -> dict[str, Any] | 
         "allowed_gripper_targets": controller.allowed_gripper_targets(),
         "arm_pose_name": getattr(controller, "last_arm_pose_name", None),
         "rail_location_name": getattr(controller, "last_rail_location_name", None),
+        # Null unless enforcement is currently lowered by a bounded window.
+        # Carries the countdown, so a panel can show how long is left without
+        # a second endpoint.
+        "mode_override": _graph_mode_override(controller),
     }
+
+
+def _graph_mode_override(controller: XArmController) -> dict[str, Any] | None:
+    """The controller's mode-override snapshot, or None. Never raises.
+
+    Defensive about the shape for the same reason ``_sash_status_prefix`` is:
+    /status must not be the thing that breaks when a controller stand-in (a
+    test double, an older build) has no such method.
+    """
+    snapshot = getattr(controller, "graph_mode_override_snapshot", None)
+    if not callable(snapshot):
+        return None
+    try:
+        result = snapshot()
+    except Exception:  # noqa: BLE001 - a status read must not fail on this
+        return None
+    return result if isinstance(result, dict) else None
+
+
+def _graph_mode_prefix(controller: XArmController) -> str | None:
+    """A ``[GRAPH-ADVISORY]`` / ``[GRAPH-OFF]`` prefix, or None when enforcing.
+
+    Keyed on an *active override* rather than on the mode alone. Since every
+    lowering from STRICT opens one, the two coincide wherever it matters —
+    but a deployment with no graph to enforce sits at OFF permanently, and
+    prefixing every poll there would be noise, not a warning. The prefix
+    means "someone lowered the guard and it is coming back", which is
+    exactly what an override is.
+    """
+    override = _graph_mode_override(controller)
+    if not override:
+        return None
+    mode = override.get("mode")
+    if mode == "advisory":
+        return "[GRAPH-ADVISORY]"
+    if mode == "off":
+        return "[GRAPH-OFF]"
+    return None
 
 
 def _build_connection_details(controller: XArmController) -> dict[str, Any] | None:

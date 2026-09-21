@@ -295,6 +295,19 @@
                             </div>
                             <button id="mg-recover-btn" class="btn btn-secondary" style="margin-left:auto;">Recover…</button>
                         </div>
+                        <!-- Countdown for a lowered enforcement mode. Hidden
+                             while STRICT, which is the normal state, so the
+                             row's presence IS the warning. Enforcement comes
+                             back on its own when this reaches zero (and when
+                             the claim is released, or on disconnect) -- the
+                             button is only for coming back early.
+                             Rendered by renderGraphModeOverride in main.js. -->
+                        <div class="mg-row mg-mode-override" id="mg-mode-override-row" hidden>
+                            <span class="inline-label">Enforcement lowered</span>
+                            <strong id="mg-mode-override-text">&mdash;</strong>
+                            <button id="mg-mode-restore-btn" class="btn btn-secondary"
+                                    style="margin-left:auto;">Restore strict now</button>
+                        </div>
                         <div class="mg-row">
                             <span class="inline-label">Current Node</span>
                             <strong id="mg-current-node">—</strong>

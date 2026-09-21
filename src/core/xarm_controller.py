@@ -23,8 +23,10 @@ from core.xarm_utils import (
 try:
     from .motion_graph import (
         DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
-        GraphMode, GripIntent, GripperTransitionError, MotionGraph, MoveMode,
-        NodeMatch, RecoveryMismatch, find_nearest_node,
+        GraphMode, GripIntent, GripperTransitionError,
+        MODE_OVERRIDE_DEFAULT_SECONDS, MODE_OVERRIDE_MAX_SECONDS,
+        MotionGraph, MoveMode, NodeMatch, RecoveryMismatch,
+        find_nearest_node,
     )
     from .claims import ClaimManager
     from .events_exporter import EventsExporter
@@ -33,8 +35,10 @@ try:
 except ImportError:
     from core.motion_graph import (
         DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
-        GraphMode, GripIntent, GripperTransitionError, MotionGraph, MoveMode,
-        NodeMatch, RecoveryMismatch, find_nearest_node,
+        GraphMode, GripIntent, GripperTransitionError,
+        MODE_OVERRIDE_DEFAULT_SECONDS, MODE_OVERRIDE_MAX_SECONDS,
+        MotionGraph, MoveMode, NodeMatch, RecoveryMismatch,
+        find_nearest_node,
     )
     from core.claims import ClaimManager
     from core.events_exporter import EventsExporter
@@ -229,7 +233,11 @@ class XArmController:
         # configs. Downgrade at runtime via set_graph_mode / the
         # /control/graph/mode endpoint if the graph is being reworked.
         self.motion_graph: Optional[MotionGraph] = None
-        self.graph_mode: GraphMode = GraphMode.OFF
+        # Override bookkeeping must exist before the first `graph_mode`
+        # write: that attribute is a property whose getter consults it.
+        self._graph_mode_lock = threading.RLock()
+        self._graph_mode_override: Optional[dict] = None
+        self._graph_mode: GraphMode = GraphMode.OFF
         graph_path = os.path.join('src', 'settings', 'motion_graph.yaml')
         try:
             self.motion_graph = MotionGraph.from_yaml(
@@ -2517,14 +2525,232 @@ class XArmController:
         # ── Verification ──────────────────────────────────────────────
         return self._verify_gripper(target.stroke, target.intent)
 
-    def set_graph_mode(self, mode: GraphMode) -> None:
-        """Set the motion-graph enforcement mode. Safe at any time."""
+    # ── Motion-graph enforcement mode ────────────────────────────────
+    #
+    # `graph_mode` is a property rather than a plain attribute so that a
+    # lowered mode cannot outlive its window no matter who reads it. Every
+    # consumer -- the STRICT guards in the API layer, the controller's own
+    # move paths, the /status builder -- goes through this getter, so the
+    # lazy expiry below runs on all of them without any of them having to
+    # remember to ask. That is the same trick ClaimManager plays with
+    # `_expire_if_due`, and it is what makes "reverting is automatic and
+    # unconditional" true rather than aspirational: there is no code path
+    # that can observe an expired override as still in force.
+
+    @property
+    def graph_mode(self) -> GraphMode:
+        self._revert_graph_mode_if_due()
+        return self._graph_mode
+
+    @graph_mode.setter
+    def graph_mode(self, mode: GraphMode) -> None:
+        self._graph_mode = mode
+
+    def _claim_session_id(self) -> Optional[str]:
+        """Session id of the live claim holder, or None. Never raises."""
+        manager = getattr(self, "claim_manager", None)
+        if manager is None:
+            return None
+        try:
+            holder = manager.claimed_by()
+        except Exception:  # noqa: BLE001 - a mode read must not fail on this
+            return None
+        return (holder or {}).get("session_id")
+
+    def _revert_graph_mode_if_due(self) -> Optional[str]:
+        """Restore the pre-override mode if the window has closed.
+
+        Two triggers, both checked here so neither depends on an endpoint
+        remembering to call anything:
+
+        * ``ttl_expired`` -- the granted window elapsed.
+        * ``claim_released`` -- the session that lowered the mode no longer
+          holds the claim (released it, or let it expire). A relaxation is
+          granted to an operator, not to the device; when they walk away it
+          goes with them rather than waiting out the clock for whoever
+          claims next.
+
+        Returns the trigger that fired, or None.
+        """
+        override = getattr(self, "_graph_mode_override", None)
+        if override is None:
+            return None
+        with self._graph_mode_lock:
+            override = self._graph_mode_override
+            if override is None:
+                return None
+            if time.monotonic() >= override["until"]:
+                trigger = "ttl_expired"
+            elif (override["session_id"] is not None
+                    and self._claim_session_id() != override["session_id"]):
+                # Only when a claim was actually held at grant time. With
+                # enforcement off there is no session to lose, and treating
+                # that absence as a loss would revert instantly.
+                trigger = "claim_released"
+            else:
+                return None
+            self._restore_graph_mode(trigger)
+            return trigger
+
+    def _restore_graph_mode(self, trigger: str) -> None:
+        """Put the mode back and emit the audit row. Caller holds the lock."""
+        override = self._graph_mode_override
+        if override is None:
+            return
+        # Clear FIRST: _emit_event reads graph state, which reads this
+        # property, and an override still in place would recurse.
+        self._graph_mode_override = None
+        restored: GraphMode = override["previous"]
+        self._graph_mode = restored
+        print(
+            f"[motion_graph] mode override ended ({trigger}) — restored "
+            f"{restored.value} from {override['mode'].value}"
+        )
+        self._emit_event(
+            "graph_mode_restored",
+            from_state=override["mode"].value,
+            to_state=restored.value,
+            message=override["reason"],
+            trigger=trigger,
+            owner=override["owner"],
+        )
+
+    def _clamp_mode_override_ttl(self, ttl_seconds: Optional[float]) -> float:
+        graph = self.motion_graph
+        default = getattr(graph, "mode_override_default_seconds", MODE_OVERRIDE_DEFAULT_SECONDS)
+        cap = getattr(graph, "mode_override_max_seconds", MODE_OVERRIDE_MAX_SECONDS)
+        requested = float(default if ttl_seconds is None else ttl_seconds)
+        return max(1.0, min(requested, float(cap)))
+
+    def set_graph_mode(
+        self,
+        mode: GraphMode,
+        *,
+        reason: Optional[str] = None,
+        ttl_seconds: Optional[float] = None,
+        owner: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Optional[float]:
+        """Set the motion-graph enforcement mode. Safe at any time.
+
+        Lowering below STRICT is a **bounded, audited, self-reverting**
+        relaxation: it requires a ``reason``, runs for at most
+        ``mode_override_max_seconds`` (motion_graph.yaml), and snaps back to
+        STRICT on its own. Before this, ADVISORY was process-wide state with
+        no expiry — a forgotten switch was inherited by the next client,
+        workflow or agent, and the only thing restoring it was operator
+        discipline.
+
+        Re-issuing while lowered grants a fresh full window rather than
+        erroring, the way the sash override does: an expiry part-way through
+        a calibration should be extendable without first going back to
+        STRICT and losing the arm's position.
+
+        Returns the seconds granted, or None when no window was needed
+        (raising to STRICT, or a graph that was not enforcing to begin with).
+
+        Raises ``ValueError`` when a lowering carries no reason, and
+        ``RuntimeError`` when there is no graph to enforce.
+        """
         if self.motion_graph is None and mode != GraphMode.OFF:
             raise RuntimeError(
                 "cannot enable graph mode: motion_graph.yaml is not loaded"
             )
-        self.graph_mode = mode
-        print(f"[motion_graph] mode set to {mode.value}")
+
+        with self._graph_mode_lock:
+            self._revert_graph_mode_if_due()
+            override = self._graph_mode_override
+
+            if mode == GraphMode.STRICT:
+                # Raising needs no reason and no window; it *is* the restore
+                # the window existed to guarantee, so it clears one early
+                # (and emits the audit row, with trigger "explicit").
+                if override is not None:
+                    self._restore_graph_mode("explicit")
+                self._graph_mode = mode
+                print(f"[motion_graph] mode set to {mode.value}")
+                return None
+
+            # What a revert would go back to. While an override is live that
+            # is the mode it captured, not the lowered mode showing now —
+            # otherwise advisory -> off would re-baseline to advisory and the
+            # arm would never find its way back to STRICT.
+            baseline: GraphMode = (
+                override["previous"] if override is not None else self._graph_mode
+            )
+            if baseline != GraphMode.STRICT:
+                # Nothing was being enforced (no graph, or a deployment that
+                # boots below STRICT), so there is nothing to revert to and a
+                # reason would be theatre.
+                self._graph_mode = mode
+                print(f"[motion_graph] mode set to {mode.value}")
+                return None
+
+            text = str(reason or "").strip()
+            if not text:
+                raise ValueError(
+                    "lowering the motion-graph mode below strict requires a "
+                    "reason: it relaxes the motion whitelist for every client "
+                    "of this device, and the next reader will want it explained"
+                )
+
+            granted = self._clamp_mode_override_ttl(ttl_seconds)
+            self._graph_mode = mode
+            self._graph_mode_override = {
+                "mode": mode,
+                "previous": baseline,
+                "reason": text,
+                "owner": owner,
+                "session_id": session_id,
+                "until": time.monotonic() + granted,
+                "granted": granted,
+                "expires_at": time.time() + granted,
+            }
+            # OFF is louder than ADVISORY on purpose: ADVISORY still logs
+            # every off-whitelist move, OFF does not consult the graph at all.
+            level = "OFF (graph not consulted)" if mode == GraphMode.OFF else mode.value
+            print(
+                f"[motion_graph] mode LOWERED to {level} for {granted:.0f}s by "
+                f"{owner or 'unknown'}: {text}"
+            )
+            self._emit_event(
+                "graph_mode_override",
+                from_state=baseline.value,
+                to_state=mode.value,
+                message=text,
+                ttl_s=granted,
+                owner=owner,
+            )
+            return granted
+
+    def restore_graph_mode(self, trigger: str) -> Optional[str]:
+        """Drop any active override now. Returns the mode restored to."""
+        with self._graph_mode_lock:
+            override = self._graph_mode_override
+            if override is None:
+                return None
+            self._restore_graph_mode(trigger)
+            return self._graph_mode.value
+
+    def graph_mode_override_snapshot(self) -> Optional[dict]:
+        """``details.motion_graph.mode_override``, or None when not lowered."""
+        self._revert_graph_mode_if_due()
+        override = self._graph_mode_override
+        if override is None:
+            return None
+        remaining = max(0.0, override["until"] - time.monotonic())
+        return {
+            "active": True,
+            "mode": override["mode"].value,
+            "restores_to": override["previous"].value,
+            "reason": override["reason"],
+            "owner": override["owner"],
+            "granted_seconds": round(override["granted"], 1),
+            "remaining_seconds": round(remaining, 1),
+            "expires_at": datetime.fromtimestamp(
+                override["expires_at"], tz=timezone.utc
+            ).isoformat().replace("+00:00", "Z"),
+        }
 
     def _predict_target_node_for_arm_pose(self, arm_pose_name: str) -> Optional[str]:
         """Predict the node id we'd land on after move_to_named_location.
@@ -2744,6 +2970,10 @@ class XArmController:
     def disconnect(self):
         """Disconnects from the robot arm."""
         print("Disconnecting Robot Arm...")
+        # A lowered graph mode must not survive the arm it was lowered for.
+        # Reconnecting boots STRICT from the YAML, so leaving the override
+        # armed would silently re-lower the next session's floor.
+        self.restore_graph_mode("disconnect")
         self._emit_event("shutdown", message="Controller disconnecting")
         self._emit_state_transition("requires_init", message="Controller disconnected")
         # Stop the sash watchdog before the arm goes away: with no arm there is

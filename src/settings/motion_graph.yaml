@@ -51,6 +51,21 @@
 schema_version: "0.2"
 enforce_return_to_home: true
 
+# ── Enforcement-mode override window ────────────────────────────────────────
+# POST /control/graph/mode may only hold enforcement BELOW strict for a
+# bounded time; it then reverts on its own (also on claim release/expiry and
+# on /disconnect). Before this, ADVISORY was process-wide state with no
+# expiry -- a forgotten switch was inherited by the next client, workflow or
+# agent, and only operator discipline put it back.
+#
+# Sized for a calibration or camera-survey session, which is minutes. That is
+# deliberately much longer than the sash interlock's 120s cap: that one is
+# sized for a single retreat out of the hood, this one for a person working.
+# Lower them if a shorter leash is wanted -- the endpoint clamps to the cap,
+# so a caller asking for more gets the cap rather than an error.
+mode_override_default_seconds: 300     # when the caller names no ttl_seconds
+mode_override_max_seconds: 900         # hard cap on a single grant
+
 # ── Gripper-state catalog ───────────────────────────────────────────────────
 gripper_states:
   empty: {stroke: 150, intent: none}         # fully open, holding nothing

@@ -100,7 +100,7 @@ def test_set_graph_mode_changes_mode(graph_controller):
     c = graph_controller
     c.set_graph_mode(GraphMode.STRICT)
     assert c.graph_mode == GraphMode.STRICT
-    c.set_graph_mode(GraphMode.ADVISORY)
+    c.set_graph_mode(GraphMode.ADVISORY, reason="unit test")
     assert c.graph_mode == GraphMode.ADVISORY
 
 
@@ -123,7 +123,7 @@ def test_advisory_mode_preserves_preset_dispatch(graph_controller):
     format (dict in this fixture) still drives dispatch (Cartesian
     move_to_position), and the caller's speed is honored."""
     c = graph_controller
-    c.set_graph_mode(GraphMode.ADVISORY)
+    c.set_graph_mode(GraphMode.ADVISORY, reason="unit test")
     c.last_arm_pose_name = "home"  # pin starting node
     assert c.current_node == "n_home"
 
@@ -301,7 +301,7 @@ def test_strict_mode_honors_slower_speed(graph_controller):
 
 def test_successful_named_move_records_transition(graph_controller):
     c = graph_controller
-    c.set_graph_mode(GraphMode.ADVISORY)
+    c.set_graph_mode(GraphMode.ADVISORY, reason="unit test")
     c.last_arm_pose_name = "home"
     assert c.last_transition is None
     assert c.move_to_named_location("pickup") is True
@@ -312,7 +312,7 @@ def test_successful_named_move_records_transition(graph_controller):
 
 def test_off_grid_named_move_does_not_record(graph_controller):
     c = graph_controller
-    c.set_graph_mode(GraphMode.ADVISORY)
+    c.set_graph_mode(GraphMode.ADVISORY, reason="unit test")
     c.last_arm_pose_name = None  # off-grid start
     assert c.last_transition is None
     # Move succeeds in ADVISORY mode but starting node was None, so no
@@ -326,7 +326,7 @@ def test_off_grid_named_move_does_not_record(graph_controller):
 
 def test_off_mode_is_fully_permissive(graph_controller):
     c = graph_controller
-    c.set_graph_mode(GraphMode.OFF)
+    c.set_graph_mode(GraphMode.OFF, reason="unit test")
     c.last_arm_pose_name = None  # off-grid would refuse in STRICT
     # Add an orphan target that has no node.
     c.position_config["positions"]["orphan"] = {

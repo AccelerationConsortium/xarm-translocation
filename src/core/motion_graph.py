@@ -64,6 +64,15 @@ class MoveMode(str, Enum):
     LINEAR = "linear"
 
 
+# Bounds on the self-reverting mode override (POST /control/graph/mode with a
+# reason + ttl_seconds). Overridable per-deployment from motion_graph.yaml.
+# The default is sized for a calibration or camera session -- minutes, not the
+# one retreat the sash override's 120s cap is sized for -- and the cap is the
+# longest window anyone should be able to buy in a single call.
+MODE_OVERRIDE_DEFAULT_SECONDS = 300.0
+MODE_OVERRIDE_MAX_SECONDS = 900.0
+
+
 class GraphMode(str, Enum):
     OFF = "off"            # graph not consulted
     ADVISORY = "advisory"  # off-whitelist moves are warned, allowed
@@ -273,6 +282,8 @@ class MotionGraph:
         gripper_states: dict[str, GripperState],
         preconditions: dict[str, PreconditionFn] | None = None,
         enforce_return_to_home: bool = True,
+        mode_override_default_seconds: float = MODE_OVERRIDE_DEFAULT_SECONDS,
+        mode_override_max_seconds: float = MODE_OVERRIDE_MAX_SECONDS,
     ):
         self._nodes = nodes
         self._edges = edges
@@ -284,6 +295,16 @@ class MotionGraph:
         # and deliberate one-way poses exist. Consumed by the test-suite
         # guard, not enforced at load time.
         self.enforce_return_to_home = enforce_return_to_home
+        # How long POST /control/graph/mode may hold the enforcement mode
+        # below STRICT before it snaps back on its own. The graph owns these
+        # because they are a property of the safety model this graph defines,
+        # not of the HTTP layer that happens to expose the switch.
+        self.mode_override_default_seconds = max(
+            1.0, float(mode_override_default_seconds)
+        )
+        self.mode_override_max_seconds = max(
+            self.mode_override_default_seconds, float(mode_override_max_seconds)
+        )
         # Outgoing adjacency: from_node id -> [Edge]
         self._out: dict[str, list[Edge]] = {}
         for e in edges:
@@ -382,6 +403,12 @@ class MotionGraph:
         return cls(
             nodes, edges, gripper_states, preconditions,
             enforce_return_to_home=bool(data.get("enforce_return_to_home", True)),
+            mode_override_default_seconds=float(
+                data.get("mode_override_default_seconds", MODE_OVERRIDE_DEFAULT_SECONDS)
+            ),
+            mode_override_max_seconds=float(
+                data.get("mode_override_max_seconds", MODE_OVERRIDE_MAX_SECONDS)
+            ),
         )
 
     # ── Validation ───────────────────────────────────────────────

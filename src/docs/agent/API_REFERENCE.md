@@ -43,9 +43,26 @@ All claim-gated. Targets come from `allowed_actions` as `move.<node_id>`.
 | POST | `/control/graph/travel_to` | `{node_id}` | multi-hop; same refusals |
 | POST | `/control/graph/gripper` | `{state}` | **409** arm must be stationary · **422** state not reachable from here |
 | POST | `/control/graph/recover_to` | `{node_id, force?}` | **412** when vision verification rejects |
-| POST | `/control/graph/mode` | `{mode}` | `off` · `advisory` · `strict` |
+| POST | `/control/graph/mode` | `{mode, reason?, ttl_seconds?}` | `off` · `advisory` · `strict`. **422** `reason_required` when lowering below `strict` without a reason |
+| POST | `/control/graph/mode/restore` | | restores `strict` now; idempotent |
 | POST | `/control/graph/record` | | **412** on any simulator · **409** with no last transition |
 | GET | `/graph` | open | nodes, edges, current node, reachable targets |
+
+**Lowering enforcement is time-limited.** `mode: advisory` / `off` is what
+un-refuses the `/control/freehand/*` family (raw Cartesian, joints, jog,
+velocity, rail) — so it is the door to moving the arm freely and taking
+RealSense captures from wherever you put it. It needs a `reason`, runs for
+`ttl_seconds` (default 300 s, capped at 900 s, clamped not rejected), and
+**reverts to `strict` on its own** when the window lapses, when the claim
+that bought it is released or expires, or on `/disconnect`. Do not assume a
+window you opened is still open: read `details.motion_graph.mode_override`
+(`null` once it has reverted, and it carries `remaining_seconds`), and
+re-issue to extend rather than letting a long job run past it. A freehand
+move after the revert is refused with **409** `graph_mode_strict`.
+
+Note also that raw moves drop the node pin (`current_node` becomes `null`),
+so re-pin with `/move/location` or `/control/graph/recover_to` before using
+`graph.*` moves again.
 
 ## RealSense — discovering the cameras
 

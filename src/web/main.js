@@ -1063,6 +1063,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             const rec = document.getElementById('mg-recover-btn');
             if (rec) rec.disabled = true;
+            renderGraphModeOverride(null);   // no graph, nothing lowered
             return;
         }
         document.querySelectorAll('.mg-mode-btn').forEach(b => { b.disabled = false; });
@@ -1078,6 +1079,7 @@ document.addEventListener('DOMContentLoaded', () => {
         modeBtns.forEach(btn => {
             btn.classList.toggle('active', btn.dataset.mode === liveMode);
         });
+        renderGraphModeOverride(motionGraph.mode_override);
 
         // Current node + reachable buttons.
         const current = motionGraph.current_node;
@@ -1402,12 +1404,69 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Countdown for a lowered enforcement mode. The row is hidden while
+    // STRICT, so its appearance is itself the warning; the number is the
+    // point, because the whole bargain of lowering the mode is that it comes
+    // back without anyone remembering to put it back.
+    function renderGraphModeOverride(override) {
+        const row = document.getElementById('mg-mode-override-row');
+        if (!row) return;
+        if (!override || !override.active) {
+            row.hidden = true;
+            return;
+        }
+        row.hidden = false;
+        const textEl = document.getElementById('mg-mode-override-text');
+        if (!textEl) return;
+        const left = Math.max(0, Math.round(override.remaining_seconds || 0));
+        const who = override.owner ? ` — ${override.owner}` : '';
+        const why = override.reason ? `: ${override.reason}` : '';
+        textEl.textContent =
+            `${String(override.mode || '').toUpperCase()} for ${left}s more, `
+            + `then back to ${override.restores_to || 'strict'}${who}${why}`;
+        textEl.className = left <= 30 ? 'mg-sash--bad' : 'mg-sash--warn';
+    }
+
     async function changeGraphMode(newMode) {
-        const result = await apiRequest('/control/graph/mode', 'POST', { mode: newMode });
+        const body = { mode: newMode };
+        // Lowering below STRICT relaxes the motion whitelist for every
+        // client of this device, so the API requires a reason (422 without
+        // one). Ask here rather than letting the operator meet the refusal.
+        // Only when currently STRICT: advisory -> off already runs under the
+        // window opened by the first step, and re-asking would be noise.
+        // The lit button is the server's mode: renderMotionGraphCard sets it
+        // from /status on every poll, so there is no second copy to drift.
+        const currentMode = document.querySelector('.mg-mode-btn.active')?.dataset.mode;
+        if (newMode !== 'strict' && currentMode === 'strict') {
+            const reason = window.prompt(
+                `Why is motion-graph enforcement being lowered to ${newMode}?\n\n`
+                + 'This relaxes the whitelist for every client of this arm and is '
+                + 'recorded in the lab history. It reverts to strict on its own '
+                + '(when the window lapses, when the claim is released, or on '
+                + 'disconnect). Typical reason: freehand camera survey.'
+            );
+            if (!reason || !reason.trim()) return;   // cancelled: stay strict
+            body.reason = reason.trim();
+        }
+        const result = await apiRequest('/control/graph/mode', 'POST', body);
         if (result) {
-            addLogEntry(`graph_mode -> ${result.graph_mode}`, 'info');
+            const granted = result.granted_seconds;
+            addLogEntry(
+                `graph_mode -> ${result.graph_mode}`
+                + (granted ? ` for ${Math.round(granted)}s, then back to `
+                            + `${result.reverts_to || 'strict'}` : ''),
+                granted ? 'warning' : 'info',
+            );
         }
         // Re-fetch status so the UI reflects the change.
+        fetchAndUpdateStatus();
+    }
+
+    async function restoreGraphModeNow() {
+        const result = await apiRequest('/control/graph/mode/restore', 'POST');
+        if (result) {
+            addLogEntry(`graph_mode -> ${result.graph_mode} (restored)`, 'info');
+        }
         fetchAndUpdateStatus();
     }
 
@@ -2390,6 +2449,10 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.mg-mode-btn').forEach(btn => {
         btn.addEventListener('click', () => changeGraphMode(btn.dataset.mode));
     });
+    const mgRestoreBtn = document.getElementById('mg-mode-restore-btn');
+    if (mgRestoreBtn) {
+        mgRestoreBtn.addEventListener('click', restoreGraphModeNow);
+    }
     const mgRecoverBtn = document.getElementById('mg-recover-btn');
     if (mgRecoverBtn) {
         mgRecoverBtn.addEventListener('click', openRecoverPanel);
