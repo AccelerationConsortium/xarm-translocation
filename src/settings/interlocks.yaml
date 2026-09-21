@@ -113,6 +113,50 @@ fume_hood_sash:
   # forever, indistinguishably from the Pi being down.
   malformed_fails_closed: true
 
+  # --- Geometric danger volume (DEFINED 2026-09-21, NOT ENFORCED) --------
+  # The replacement for the node-membership clauses below, and the reason the
+  # interlock is currently `enabled: false`.
+  #
+  # Membership by graph node could never gate a freehand move: a raw cartesian
+  # or joint move carries no node id, so `interlock_freehand_guard` could only
+  # refuse an arm ALREADY inside the region, never one heading in. A volume is
+  # testable against a TARGET, which is what makes entry gating possible at
+  # all. It also needs no second device's tags to be correct and no assumption
+  # about another firmware's fields.
+  #
+  # Measured at the bench 2026-09-21: the hood begins at base-frame
+  # x = +200 mm. Anything with x greater than this is inside, and requires the
+  # sash at `required_position` (5, fully open) to be entered or moved within.
+  # Half-space, not a box: y and z are unbounded because the hood spans the
+  # full reach in both and a bound there would be invented, not measured.
+  #
+  # `enforce: false` means exactly that -- NOTHING reads this, for gating or
+  # for reporting. It is recorded here so the measured threshold is reviewable
+  # and version-controlled before any code depends on it.
+  #
+  # NOTE this is therefore currently dead config, the same shape of thing as
+  # `collision_zones` in safety.yaml -- which has looked like a guard since it
+  # was written and is read by nothing. Validating the 200 mm figure needs a
+  # shadow read-out (is the TCP inside right now?) that does not exist yet;
+  # without one, the number can only be confirmed by jogging and reading
+  # `details.current_position` by hand.
+  #
+  # Before flipping enforce to true, settle these:
+  #   1. Does 200 mm hold for the whole hood mouth, or only where it was
+  #      measured? A single jog found it; a sweep across y would confirm it.
+  #   2. Does the TCP position alone suffice, or does an elbow/link intrude
+  #      past x=200 while the TCP is still short of it? The controller checks
+  #      the TCP; the arm is not a point.
+  #   3. Is `metrics.sash_position` on the hood Pi a real readback or the last
+  #      commanded preset? Unanswered since this interlock shipped, and the
+  #      reason it was disabled. A volume does not fix that -- whatever gates
+  #      on the sash still trusts that field.
+  danger_volume:
+    enforce: false
+    frame: base
+    x_min: 200          # mm; TCP x greater than this is inside the hood
+    required_position: 5
+
   # --- What is gated ------------------------------------------------------
   # Membership is (gated_tags OR gated_rails OR gated_nodes) minus exempt_nodes.
   #
