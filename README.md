@@ -44,7 +44,27 @@ Covered: `/move/{position,joints,relative,location,home,plate_linear}`, `/track/
 
 Not covered, deliberately: `/move/stop` and `/clear/errors` (the safety floor must always be reachable), `/control/graph/recover_to` (a bookkeeping re-pin, not a motion), and the gripper endpoints (`set_gripper_state` already refuses while the arm is moving, and gripper actuation is not primary operation).
 
-### Fume hood sash interlock (cross-device precondition)
+### Fume hood sash interlock (cross-device precondition) — CURRENTLY DISABLED
+
+> **Disabled 2026-09-21** (`enabled: false` in `src/settings/interlocks.yaml`),
+> and the `hood` tag has been removed from the seven hood graph nodes. The arm
+> will now drive into the hood against a closed sash and nothing in this repo
+> will stop it, on entry or mid-move — **the sash is an operator
+> responsibility until the replacement lands.** The reason is the unsettled
+> question at the end of this section: it was never confirmed whether the fume
+> hood device's `metrics.sash_position` is a true readback or the last
+> commanded preset, so what the guard enforced was not known to be a collision
+> guard, while it did reliably refuse bench work. The replacement is an
+> explicit xyz safe/danger volume owned by this device, which needs no second
+> device to be reachable and no assumption about another firmware's fields.
+>
+> Re-enabling means restoring **both** the master switch and `tags: [hood, …]`
+> on the `hood_*` nodes (see the note in `motion_graph.yaml`). The
+> `gated_rails: [Hood]` clause still covers all seven on its own, so a
+> half-restore over-blocks rather than silently under-blocking. The rest of
+> this section describes the behaviour as designed, and is accurate again the
+> moment the switch goes back.
+
 
 The arm reaches into the fume hood (7 `hood`-tagged graph nodes) and over the Opentrons deck (8 `opentrons`-tagged nodes). The sash that closes over that space belongs to a **different device** — `fume_hood_actuator` — so this service reads that device's `/status` and refuses motion the sash could collide with. Configuration and the full rationale live in `src/settings/interlocks.yaml`; the implementation is `src/core/sash_interlock.py`.
 

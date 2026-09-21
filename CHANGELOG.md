@@ -7,6 +7,42 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — the fume hood sash interlock is disabled, and the `hood` tag is gone (2026-09-21)
+
+**This is a real reduction in safety and is intended as a temporary state.**
+With `enabled: false` in `src/settings/interlocks.yaml` the arm will drive
+into the hood against a closed sash and nothing in this repo will stop it, on
+entry or mid-move. The sash is an operator responsibility until the
+replacement lands.
+
+The reason is the open question the interlock shipped with and never had
+answered: whether the fume hood device's `metrics.sash_position` is a true
+readback or the last *commanded* preset. Unanswered, what the guard enforced
+was not known to be a collision guard — while it did reliably refuse bench
+work, and refusing the wrong thing is how a guard teaches people to reach for
+`mode: off`. The replacement is an explicit xyz safe/danger volume owned by
+this device, which needs no second device to be reachable and no assumption
+about another firmware's field semantics.
+
+- The `hood` tag was removed from the seven `hood_*` motion-graph nodes. It
+  was the interlock's primary membership clause (`gated_tags`) and a tag whose
+  only consumer is switched off is a tag that silently means nothing.
+- **`hood` was quietly a second consumer's station tag.** `assistant_actions`
+  grouped all seven nodes into places through it, so removing it would have
+  dropped the shaker and the filtration setup out of the assistant's catalog
+  entirely — "I don't know that place" for two stations that are still there.
+  `_STATION_TAGS` now carries `shaker` and `filter` instead, which is the
+  right grain anyway (they are separately reachable, and
+  `camera_tracking.yaml` already aimed on them rather than on `hood`). New
+  `test/test_place_catalog.py` pins this so the next tag edit fails a test
+  rather than an operator. The one place lost is `hood` itself, built solely
+  from `hood_home` — a transit gateway, not a destination; paths still route
+  through it.
+- Re-enabling means restoring **both** the master switch and `tags: [hood, …]`
+  on the nodes. `gated_rails: [Hood]` still covers all seven on its own, so a
+  half-restore over-blocks rather than silently under-blocking. Both files
+  carry the note.
+
 ### Documented — why both RealSense streams stay at 1280x720 (2026-09-20)
 
 Stream ceilings were enumerated from the hardware rather than assumed:

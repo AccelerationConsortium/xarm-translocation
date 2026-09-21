@@ -57,7 +57,10 @@ node are legal, and `allowed_actions` enumerates them as `move.<node_id>`.
 
 A fume-hood sash interlock withholds hood and Opentrons targets while the sash
 is not parked. Those targets vanish from `allowed_actions` and the endpoint
-answers **412**. This is a safety floor, not an error.
+answers **412**. This is a safety floor, not an error. **It is switched off as
+of 2026-09-21** pending an xyz safe/danger volume that replaces it, so no
+target is currently withheld for this reason and no **412** will come from it
+— do not read that silence as "the sash is open".
 
 `POST /control/stop` is always available while the device is reachable.
 

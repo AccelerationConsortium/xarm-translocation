@@ -18,7 +18,23 @@
 
 # Master switch. When false (or this file is missing) every interlock below is
 # an inert no-op and the arm behaves exactly as it did before they existed.
-enabled: true
+#
+# DISABLED 2026-09-21, deliberately, and this is a real reduction in safety:
+# with it false the arm will drive into the hood against a closed sash and
+# nothing here will stop it, on entry or mid-move. It is off because the
+# guard's own open question (below: is `metrics.sash_position` a readback or
+# the last commanded preset?) is still unanswered, so what it enforced was
+# never known to be a collision guard, while it did reliably refuse bench
+# work. The replacement is an explicit xyz safe/danger volume owned by this
+# device, which needs no second device to be up and no assumption about
+# another firmware's fields.
+#
+# Until that lands, the sash is an OPERATOR responsibility. Re-enable by
+# setting this true and restoring `tags: [hood, ...]` on the hood_* nodes in
+# motion_graph.yaml (see the note there) — `gated_rails: [Hood]` below still
+# catches all of them meanwhile, so a half-restore over-blocks rather than
+# silently under-blocks.
+enabled: false
 
 fume_hood_sash:
   # The fume hood device, per ac-organic-lab/equipment.yaml (`fume_hood_actuator`).

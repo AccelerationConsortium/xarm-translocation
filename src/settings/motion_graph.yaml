@@ -163,28 +163,42 @@ nodes:
 #     gripper_states: [grip_120], tags: [deck, solid]}
 
   # ── Hood (rail Hood=550). shaker + filtration sub-stations. ──
+  #
+  # These nodes carried a `hood` tag until 2026-09-21. It was the fume-hood
+  # sash interlock's primary membership clause (`gated_tags` in
+  # interlocks.yaml) and nothing else keyed off it — the camera tracker aims
+  # on `shaker`/`filter`, and the assistant's place catalog now groups on
+  # those two as well (assistant_actions._STATION_TAGS). The tag is gone
+  # because the interlock it fed is disabled: a tag whose only consumer is
+  # switched off is a tag that silently means nothing. The replacement is an
+  # explicit xyz safe/danger volume, which does not need a tag to be correct.
+  #
+  # Putting the interlock back means restoring BOTH: `enabled: true` in
+  # interlocks.yaml and `tags: [hood, ...]` here. The `gated_rails: [Hood]`
+  # clause alone still covers every node below (they are all rail Hood), so
+  # a restore that forgets the tags is gated but over-broad, not silent.
 - {id: hood_home, arm: hood_home, rail: Hood, gripper_states: [empty, grip_120, 
-      reach_90, grip_80], tags: [hood, transit_home]}
+      reach_90, grip_80], tags: [transit_home]}
 
 - {id: hood_shaker_high, arm: hood_shaker_high, rail: Hood, gripper_states: [
-      empty, grip_120, reach_90, grip_80], tags: [hood, shaker]}
+      empty, grip_120, reach_90, grip_80], tags: [shaker]}
 - {id: hood_shaker_low, arm: hood_shaker_low, rail: Hood, gripper_states: [empty,
     grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120], [
-        grip_120, empty]], tags: [hood, shaker]}
+        grip_120, empty]], tags: [shaker]}
 # Disconnected (no edges) — commented out during graph cleanup.
 # - {id: hood_shaker_low_press, arm: hood_shaker_low_press, rail: Hood, 
-#     gripper_states: [grip_120], tags: [hood, shaker]}
+#     gripper_states: [grip_120], tags: [shaker]}
 
 - {id: hood_filter_home, arm: hood_filter_home, rail: Hood, gripper_states: [
-      empty, grip_120, reach_90, grip_80], tags: [hood, filter]}
+      empty, grip_120, reach_90, grip_80], tags: [filter]}
 - {id: hood_filter_high, arm: hood_filter_high, rail: Hood, gripper_states: [
-      empty, grip_120, reach_90, grip_80], tags: [hood, filter]}
+      empty, grip_120, reach_90, grip_80], tags: [filter]}
 - {id: hood_filter_low, arm: hood_filter_low, rail: Hood, gripper_states: [empty,
     grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120], [
-        grip_120, empty]], tags: [hood, filter]}
+        grip_120, empty]], tags: [filter]}
 - {id: hood_filter_top_plate, arm: hood_filter_top_plate, rail: Hood, 
     gripper_states: [empty, grip_120, reach_90, grip_80], gripper_transitions: [[
-      empty, grip_120], [grip_120, empty]], tags: [hood, filter]}
+      empty, grip_120], [grip_120, empty]], tags: [filter]}
 
   # ── Cytation 5 reader (rail Cytation=700). cytation_high/cytation_low are
   #    manually-taught, hardware-verified joint angles (edges below use
