@@ -2818,3 +2818,28 @@ input#linear-speed {
 .realsense-readout:empty {
     display: none;
 }
+
+/* Node-anchored nudge pad (Graph Control). Six small axis buttons in one
+   row, matching .mg-reachable's rhythm so the card reads as one surface.
+   Visually lighter than the Arm Control jog pad on purpose: that pad is a
+   free jog, this one moves millimetres inside the pinned node's envelope. */
+.mg-nudge-pad {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+
+.mg-nudge-pad .mg-nudge-btn {
+    height: var(--control-height);
+    min-height: var(--control-height);
+    min-width: 48px;
+    padding: 0 10px;
+}
+
+/* The envelope readout. Sits under the pad and carries the live
+   offset/remaining figures after each press, plus the PIN LOST warning --
+   the one outcome that means stop. */
+#mg-nudge-status {
+    font-variant-numeric: tabular-nums;
+}

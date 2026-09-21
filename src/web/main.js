@@ -487,6 +487,74 @@ document.addEventListener('DOMContentLoaded', () => {
     // Reads details.interlocks.fume_hood_sash from the /status poll already in
     // flight -- no extra request, and it inherits the cached-reading staleness
     // that /status is contractually limited to (hence the age suffix).
+    // --- Node-anchored nudge pad (Graph Control) -----------------------
+    // Deliberately NOT the XYZ jog pad in Arm Control. That one posts
+    // /control/freehand/relative: unbounded, drops the graph pin, and is
+    // refused outright in STRICT. This posts /control/freehand/nudge, which
+    // is bounded to a small envelope around the pinned node, restores the pin
+    // afterwards, and therefore inherits that node's sash gating -- which is
+    // why it is the one freehand route allowed in STRICT.
+    //
+    // Enablement mirrors the server's own refusal (409 no_anchor_node): the
+    // buttons are live only while a node is pinned AND this browser holds
+    // control. A disabled button with a reason beats a 409 the operator has
+    // to interpret.
+    const NUDGE_MAX_STEP_MM = 2.0;
+
+    function setNudgeEnabled(pinnedNode, hasControl) {
+        const btns = document.querySelectorAll('.mg-nudge-btn');
+        const step = document.getElementById('mg-nudge-step');
+        const status = document.getElementById('mg-nudge-status');
+        const ok = Boolean(pinnedNode) && Boolean(hasControl);
+        btns.forEach(b => { b.disabled = !ok; });
+        if (step) step.disabled = !ok;
+        if (status && !status.dataset.sticky) {
+            status.textContent = ok
+                ? `Anchored at ${pinnedNode}. Each press moves up to ${NUDGE_MAX_STEP_MM} mm.`
+                : (!pinnedNode
+                    ? 'Pin the arm to a node to enable nudging (Recover…).'
+                    : 'Take Control to enable nudging.');
+        }
+    }
+
+    async function nudge(axis, sign) {
+        const stepEl = document.getElementById('mg-nudge-step');
+        const status = document.getElementById('mg-nudge-status');
+        let step = parseFloat(stepEl?.value) || 1;
+        // Clamp client-side too. The server is authoritative (422
+        // step_too_large), but a silent clamp here keeps a fat-fingered 20
+        // from becoming an error toast.
+        step = Math.min(Math.abs(step), NUDGE_MAX_STEP_MM);
+        const body = { dx: 0, dy: 0, dz: 0 };
+        body['d' + axis] = sign * step;
+
+        const res = await apiRequest('/control/freehand/nudge', 'POST', body, true);
+        if (!res) {
+            // apiRequest already surfaced the failure; leave the pad as-is.
+            return;
+        }
+        if (status) {
+            const rem = (res.remaining_mm || []).map(v => Number(v).toFixed(1)).join(' / ');
+            const off = (res.offset_mm || []).map(v => Number(v).toFixed(1)).join(', ');
+            status.dataset.sticky = '1';
+            status.textContent =
+                `Anchored at ${res.anchor} · offset [${off}] mm · remaining ${rem} mm`;
+            // The pin is the whole bargain; say so loudly if it is gone.
+            if (!res.pin_retained) {
+                status.textContent += ' — PIN LOST, re-pin before moving';
+                addLogEntry('nudge returned pin_retained=null; arm is off-grid', 'error');
+            }
+        }
+    }
+
+    function initNudgePad() {
+        document.querySelectorAll('.mg-nudge-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                nudge(btn.dataset.axis, parseFloat(btn.dataset.sign));
+            });
+        });
+    }
+
     function renderSashRow(interlock) {
         const row = document.getElementById('mg-sash-row');
         if (!row) return;
@@ -657,6 +725,14 @@ document.addEventListener('DOMContentLoaded', () => {
             // ...and the persistent position readout, which shows in every
             // state (including the normal one, where the banner is absent).
             renderSashRow(data.sash_interlock);
+
+            // Nudge availability tracks the pin, every tick: a raw move or a
+            // STOP can drop the pin between ticks, and the pad must re-lock
+            // without the operator discovering it via a 409.
+            setNudgeEnabled(
+                (data.motion_graph && data.motion_graph.current_node) || null,
+                claimToken !== null,
+            );
 
             // 3D-view card shows for BOTH connection targets: the iframe
             // points at the simulator's Studio or the real arm's Studio
@@ -2465,6 +2541,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const btn = document.getElementById(id);
         if (btn) btn.addEventListener('click', () => jog(dx, dy, dz));
     });
+
+    // Graph Control's nudge pad. Listeners attach once here; enablement is
+    // driven per status tick by setNudgeEnabled.
+    initNudgePad();
 
     // --- Lab Assistant (corner chat widget) ---
     // Natural-language motion control. The widget only ever calls two
