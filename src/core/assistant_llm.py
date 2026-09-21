@@ -31,14 +31,20 @@ from .assistant_actions import Place
 
 # Load a local .env (git-ignored) so OPENROUTER_API_KEY can live in a file
 # instead of a shell export. Existing environment variables take precedence.
+# NOTE: bare load_dotenv() resolves via find_dotenv(usecwd=False), which
+# starts at THIS file's directory and walks up — the process working
+# directory (NSSM AppDirectory on the device PC) is never consulted. On
+# sdl2-pc-03 that means C:\Users\sdl2\Projects\xarm-translocation\.env, the
+# same file as OPENROUTER_API_KEY; a .env anywhere else is silently ignored.
+# override=False, so anything already in the environment still wins.
 load_dotenv()
 
 # OpenRouter base URL for the OpenAI-compatible client.
 _OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
-# Default to GLM 5.2 via OpenRouter; override with XARM_ASSISTANT_MODEL
+# Default to GLM 5.3 via OpenRouter; override with XARM_ASSISTANT_MODEL
 # to use any other OpenRouter slug (e.g. openai/gpt-4o-mini).
-DEFAULT_MODEL = "z-ai/glm-5.2"
+DEFAULT_MODEL = "z-ai/glm-5.3"
 
 _ACTION_TOOL_NAME = "control_robot"
 

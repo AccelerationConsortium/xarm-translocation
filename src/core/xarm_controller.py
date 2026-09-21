@@ -349,6 +349,12 @@ class XArmController:
         # one — re-pin via a named move or recover_to().
         self.last_arm_pose_name: Optional[str] = None
         self.last_rail_location_name: Optional[str] = None
+        # Cumulative [dx, dy, dz] mm a node-anchored nudge has applied since
+        # the arm last arrived at a node by a NAMED move. Reset on every such
+        # arrival (below): the envelope is measured from the node's canonical
+        # pose, so an offset carried across an arrival would bound the wrong
+        # origin. None means "at the canonical pose".
+        self.freehand_offset: Optional[list] = None
         # Set while move_to_node dispatches the two sub-moves of a
         # cross-rail edge (one graph edge, two physical axes). The edge is
         # validated once at the move_to_node level; the intermediate state
@@ -932,6 +938,8 @@ class XArmController:
             )
             return False
         self.last_arm_pose_name = pose_name
+        # Arrived at the canonical pose: any nudge offset is now spent.
+        self.freehand_offset = None
         return True
 
     @property
@@ -2174,6 +2182,7 @@ class XArmController:
 
         self.last_arm_pose_name = node.arm
         self.last_rail_location_name = node.rail
+        self.freehand_offset = None
         if gripper_state is not None:
             self.last_gripper_position = (
                 self.motion_graph.gripper_state(gripper_state).stroke

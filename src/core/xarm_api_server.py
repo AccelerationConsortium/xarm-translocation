@@ -502,6 +502,66 @@ class GraphNodeCreateRequest(BaseModel):
     )
 
 
+class PoseSaveRequest(BaseModel):
+    """Body of POST /control/graph/pose — write a named arm pose into
+    joint_config.yaml.
+
+    This closes the authoring gap that made autonomous node growth
+    impossible: ``POST /control/graph/node`` takes ``arm`` as a pose NAME
+    that must already exist in joint_config.yaml, and until now nothing
+    could create one -- a pose could only be added by hand-editing YAML on
+    the device PC. Teach-by-demonstration is the normal flow: jog (or
+    nudge) the arm where you want it, POST this with a name, then POST
+    /control/graph/node referencing that name.
+    """
+    name: str = Field(
+        min_length=1, max_length=64,
+        description="Pose name, e.g. 'deck_slot3_high'. Convention: <station>_<target>_<height>.",
+    )
+    angles: Optional[List[float]] = Field(
+        default=None,
+        description=(
+            "Joint angles in degrees. Omit to capture the arm's CURRENT "
+            "joints, which is the teach-by-demonstration case."
+        ),
+    )
+    overwrite: bool = Field(
+        default=False,
+        description=(
+            "Replace an existing pose of this name. Required (409 without it) "
+            "when the name is taken -- this is how a node is re-calibrated. "
+            "The previous value is logged and returned as `replaced`."
+        ),
+    )
+    comment: Optional[str] = Field(
+        default=None, max_length=200,
+        description="Trailing YAML comment, e.g. why this pose was recalibrated.",
+    )
+
+
+class NudgeRequest(BaseModel):
+    """Body of POST /control/freehand/nudge — a small, node-anchored
+    Cartesian correction that KEEPS the graph pin.
+
+    Every other freehand route is refused in STRICT and drops
+    ``last_arm_pose_name``, putting the arm off-grid. A nudge is different
+    on both counts, and the two are connected: because it stays within a
+    bounded envelope of the node it is anchored to, it can honestly keep
+    claiming to be AT that node -- which means the sash interlock can gate
+    it by node membership exactly as it gates a named move. Freehand is
+    ungatable for entry precisely because it has no node; a nudge has one.
+    """
+    dx: float = Field(default=0.0, description="Delta X in mm (base frame)")
+    dy: float = Field(default=0.0, description="Delta Y in mm (base frame)")
+    dz: float = Field(default=0.0, description="Delta Z in mm (base frame)")
+    droll: float = Field(default=0.0, description="Delta roll in degrees")
+    dpitch: float = Field(default=0.0, description="Delta pitch in degrees")
+    dyaw: float = Field(default=0.0, description="Delta yaw in degrees")
+    speed: Optional[float] = Field(
+        default=None, gt=0, description="TCP speed; capped by nudge_max_speed."
+    )
+
+
 class GraphEdgeCreateRequest(BaseModel):
     """Body of POST /control/graph/edge/create — add a new edge (motion)
     between two existing nodes.
@@ -4430,6 +4490,293 @@ async def create_graph_node(request: GraphNodeCreateRequest):
             "tags": list(n.tags),
         }
     }
+
+
+# Default bound for a node-anchored nudge, in mm per axis of cumulative
+# offset from the anchor pose. Deliberately small: the graph's own pose
+# spacing sets the ceiling, and the closest functionally-distinct pairs in
+# joint_config.yaml are the plate "press" poses -- opentrons_6_low vs
+# opentrons_6_low_press is 0.45 deg apart, ~4mm at 500mm reach. An envelope
+# wider than that could carry the arm from one node onto another while the
+# pin still claimed the first, which would make the sash interlock's node
+# lookup a lie. Override per deployment once a bench sweep has measured the
+# real separation per node.
+_NUDGE_MAX_OFFSET_MM = float(os.environ.get("XARM_NUDGE_MAX_OFFSET_MM", "3.0"))
+_NUDGE_MAX_STEP_MM = float(os.environ.get("XARM_NUDGE_MAX_STEP_MM", "2.0"))
+_NUDGE_MAX_SPEED = float(os.environ.get("XARM_NUDGE_MAX_SPEED", "30.0"))
+
+
+@app.post("/control/freehand/nudge", dependencies=[Depends(require_claim)])
+async def freehand_nudge(request: NudgeRequest):
+    """A small Cartesian correction that keeps the arm pinned to its node.
+
+    Legal in STRICT -- the only freehand route that is. The bargain that
+    buys that: the move must stay inside a bounded envelope around the node
+    the arm is currently pinned at, so the arm can still honestly claim to
+    be AT that node afterwards. That claim is what lets the sash interlock
+    gate this by node membership, exactly as it gates a named move.
+    ``interlock_freehand_guard`` cannot gate a raw freehand move's ENTRY
+    into the hood because such a move has no target node; a nudge has one.
+
+    Refusals: **409** ``no_anchor_node`` the arm is off-grid (nothing to
+    anchor to or inherit gating from -- re-pin with graph/recover_to first)
+    · **422** ``step_too_large`` / ``offset_exceeded`` · **412** sash
+    interlock, inherited from the anchor node · **409** motion in flight.
+    """
+    c = get_controller()
+
+    anchor = c.current_node
+    if anchor is None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "no_anchor_node",
+                "message": (
+                    "Nudge requires the arm to be pinned at a graph node: the "
+                    "envelope is measured from it and the sash interlock is "
+                    "gated by it. The arm is off-grid. Re-pin with POST "
+                    "/control/graph/recover_to (GET /graph/nearest suggests "
+                    "which), or use the freehand routes in ADVISORY."
+                ),
+            },
+        )
+
+    step = max(abs(request.dx), abs(request.dy), abs(request.dz))
+    if step > _NUDGE_MAX_STEP_MM:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "step_too_large", "step_mm": round(step, 3),
+                "max_step_mm": _NUDGE_MAX_STEP_MM, "anchor": anchor,
+            },
+        )
+
+    # Cumulative offset from the anchor, so a sequence of legal single steps
+    # cannot walk the arm out of the envelope one safe-looking hop at a time.
+    prior = list(getattr(c, "freehand_offset", None) or [0.0, 0.0, 0.0])
+    proposed = [prior[0] + request.dx, prior[1] + request.dy, prior[2] + request.dz]
+    worst = max(abs(v) for v in proposed)
+    if worst > _NUDGE_MAX_OFFSET_MM:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "offset_exceeded",
+                "anchor": anchor,
+                "current_offset_mm": [round(v, 3) for v in prior],
+                "proposed_offset_mm": [round(v, 3) for v in proposed],
+                "max_offset_mm": _NUDGE_MAX_OFFSET_MM,
+                "hint": (
+                    "Return to the anchor with POST /move/location, or save "
+                    "this as a new pose (POST /control/graph/pose) and make it "
+                    "a node of its own."
+                ),
+            },
+        )
+
+    # Inherit the anchor's gating. This is the whole point of anchoring: the
+    # same call a named move makes, with the anchor as the target, so a nudge
+    # at a hood node is refused on an unparked sash just like graph/move_to.
+    interlock_target_guard("freehand.nudge", getattr(c, "last_arm_pose_name", None))
+
+    speed = min(request.speed or _NUDGE_MAX_SPEED, _NUDGE_MAX_SPEED)
+    pinned = getattr(c, "last_arm_pose_name", None)
+    reserve_motion()
+    try:
+        success = await asyncio.to_thread(
+            c.move_relative,
+            dx=request.dx, dy=request.dy, dz=request.dz,
+            droll=request.droll, dpitch=request.dpitch, dyaw=request.dyaw,
+            speed=speed,
+        )
+    finally:
+        c.exit_motion()
+
+    if not success:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "nudge_failed", "anchor": anchor},
+        )
+
+    # move_relative clears the pin (every raw move does). Restore it: the
+    # bounds above are exactly what make that honest. Same restore-on-success
+    # pattern the named-move wrapper uses.
+    c.last_arm_pose_name = pinned
+    c.freehand_offset = proposed
+
+    await broadcast_status_update()
+    return {
+        "anchor": anchor,
+        "applied_mm": {"dx": request.dx, "dy": request.dy, "dz": request.dz},
+        "offset_mm": [round(v, 3) for v in proposed],
+        "remaining_mm": [
+            round(_NUDGE_MAX_OFFSET_MM - abs(v), 3) for v in proposed
+        ],
+        "pin_retained": c.current_node,
+    }
+
+
+@app.post("/control/graph/pose", dependencies=[Depends(require_claim)])
+async def save_graph_pose(request: PoseSaveRequest):
+    """Write a named arm pose into joint_config.yaml.
+
+    Claim-gated like every mutating endpoint. With ``angles`` omitted the
+    arm's current joints are captured, which is the teach-by-demonstration
+    flow: jog or nudge into place, save, then reference the name from
+    POST /control/graph/node.
+
+    Refusals: **409** the name exists and ``overwrite`` is false · **422**
+    wrong joint count or an angle outside joint_config's limits · **409**
+    the arm is not connected and no explicit ``angles`` were given.
+    """
+    c = get_controller()
+
+    angles = request.angles
+    if angles is None:
+        if not (getattr(c, "arm", None) and getattr(c.arm, "connected", False)):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "arm_not_connected",
+                    "message": (
+                        "Cannot capture the current pose: the arm is not "
+                        "connected. Pass `angles` explicitly, or connect first."
+                    ),
+                },
+            )
+        angles = list(c.get_current_joints() or [])
+        if not angles:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "pose_unreadable",
+                        "message": "Controller returned no joint angles."},
+            )
+
+    expected = int(getattr(c, "num_joints", 5) or 5)
+    if len(angles) != expected:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "wrong_joint_count",
+                "expected": expected, "got": len(angles),
+            },
+        )
+    # Reuse the controller's own limit check rather than a second copy of the
+    # bounds: a pose this rejects could never be moved to anyway, so writing
+    # it would create a node that is unreachable by construction.
+    validator = getattr(c, "_validate_joint_angles", None)
+    if validator is not None and not validator(list(angles)):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "joint_limits",
+                "angles": list(angles),
+                "message": (
+                    "Pose is outside joint_config.yaml limits; it would be "
+                    "unreachable. Refusing to write it."
+                ),
+            },
+        )
+
+    positions = (c.position_config or {}).get("positions", {})
+    existed = request.name in positions
+    if existed and not request.overwrite:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "pose_exists",
+                "name": request.name,
+                "current": list(positions[request.name]),
+                "hint": "re-send with overwrite=true to recalibrate this pose",
+            },
+        )
+    previous = list(positions[request.name]) if existed else None
+
+    rounded = [round(float(a), 2) for a in angles]
+    try:
+        _write_pose_to_yaml(request.name, rounded, request.comment, existed)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"could not write joint_config.yaml: {exc}")
+
+    # Hot-reload in memory so the pose is usable immediately (no restart).
+    c.position_config.setdefault("positions", {})[request.name] = rounded
+
+    logger.warning(
+        "[pose] %s %r = %s%s",
+        "UPDATED" if existed else "CREATED", request.name, rounded,
+        f" (was {previous})" if previous else "",
+    )
+    return {
+        "saved": {"name": request.name, "angles": rounded},
+        "replaced": previous,
+        "captured_from_arm": request.angles is None,
+    }
+
+
+def _joint_config_path() -> str:
+    """Path of the pose file this endpoint writes.
+
+    Overridable so a test can point the writer at a tmp copy: the first
+    version of this endpoint wrote straight to the repo's real
+    joint_config.yaml, and a test that exercised it committed a junk pose
+    into the live cell's configuration. A writer aimed at production by
+    default is a writer that will eventually be aimed at production by
+    accident.
+    """
+    return os.environ.get(
+        "XARM_JOINT_CONFIG_PATH",
+        os.path.join("src", "settings", "joint_config.yaml"),
+    )
+
+
+def _write_pose_to_yaml(
+    name: str, angles: list, comment: Optional[str], existed: bool
+) -> None:
+    """Write one pose into joint_config.yaml, preserving comments.
+
+    Hand-edits the text rather than round-tripping the whole document:
+    joint_config.yaml is heavily commented (each pose carries the bench
+    note that explains it, e.g. "Gripper close to 120mm to grip from long
+    side") and those comments are the only record of why a pose is what it
+    is. A full ruamel dump would survive them but reflow the file; an
+    in-place line edit keeps the diff to one line, which is what makes a
+    recalibration reviewable in git.
+    """
+    path = _joint_config_path()
+    with open(path) as fh:
+        lines = fh.read().split("\n")
+
+    body = "[" + ", ".join(f"{a}" for a in angles) + "]"
+    rendered = f"  {name}: {body}"
+    if comment:
+        rendered += f"  # {comment}"
+
+    if existed:
+        import re as _re
+        pat = _re.compile(r"^\s{2}" + _re.escape(name) + r":\s*\[")
+        for i, line in enumerate(lines):
+            if pat.match(line):
+                # Keep any existing trailing comment when the caller gave none.
+                if not comment and "#" in line:
+                    rendered += "  #" + line.split("#", 1)[1]
+                lines[i] = rendered
+                break
+        else:  # pragma: no cover - guarded by the caller's `existed` check
+            raise OSError(f"pose {name!r} reported as existing but not found in {path}")
+    else:
+        # Append under `positions:`; find the last indented entry so the new
+        # pose lands inside the mapping rather than after a trailing comment.
+        last = max(
+            (i for i, l in enumerate(lines) if l.startswith("  ") and ":" in l),
+            default=None,
+        )
+        if last is None:
+            raise OSError(f"no `positions:` entries found in {path}")
+        lines.insert(last + 1, rendered)
+
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.write("\n".join(lines))
+    os.replace(tmp, path)
 
 
 def _append_node_to_yaml(req: "GraphNodeCreateRequest") -> "MotionGraph":  # type: ignore[name-defined]
