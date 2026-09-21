@@ -1104,6 +1104,24 @@ def reserve_motion() -> XArmController:
     c.enter_motion()
     return c
 
+# The eight graph-bypassing ("freehand") routes below each answer at TWO paths:
+# the canonical ``/control/freehand/*`` and the original spelling. The legacy
+# paths predate the ``/control/*`` namespace by ten months (``/move/position``
+# landed 2025-07-13 in 0.2.5; the first ``/control/*`` route arrived 2026-05-23
+# with STATUS_SPEC v1.1), so the family that most needs to look dangerous was
+# the one family whose URLs did not say so. ``/control/freehand/*`` groups by
+# permission model, not by subject: every path under it is refused by
+# ``strict_graph_guard`` in STRICT, which is now legible from the URL alone.
+# Note that means the rail (``/track/move``) and the gripper belong here too --
+# "freehand" is "bypasses the motion graph", not "Cartesian".
+#
+# Stacked decorators on ONE handler, the same device-local convention
+# ``/control/stop`` + ``/move/stop`` already use: same function, same gate,
+# same guards, so the two spellings cannot drift. The legacy paths stay
+# indefinitely -- the device panel, any operator muscle memory and the
+# dashboard's /device/* allowlist all predate the alias.
+
+
 def strict_graph_guard(action: str) -> None:
     """Refuse a freehand (graph-bypassing) legacy action in STRICT mode.
 
@@ -1583,6 +1601,7 @@ async def get_locations():
         raise HTTPException(status_code=500, detail=f"Get arm positions failed: {str(e)}")
 
 # Movement endpoints
+@app.post("/control/freehand/position", dependencies=[Depends(require_claim)])
 @app.post("/move/position", dependencies=[Depends(require_claim)])
 async def move_to_position(request: PositionRequest, background_tasks: BackgroundTasks):
     """Move the robot to a specific Cartesian position.
@@ -1616,6 +1635,7 @@ async def move_to_position(request: PositionRequest, background_tasks: Backgroun
     background_tasks.add_task(move_task)
     return {"message": "Move to position command accepted."}
 
+@app.post("/control/freehand/joints", dependencies=[Depends(require_claim)])
 @app.post("/move/joints", dependencies=[Depends(require_claim)])
 async def move_joints(request: JointRequest, background_tasks: BackgroundTasks):
     """Move the robot to a specific joint configuration.
@@ -1647,6 +1667,7 @@ async def move_joints(request: JointRequest, background_tasks: BackgroundTasks):
     background_tasks.add_task(move_task)
     return {"message": "Move joints command accepted."}
 
+@app.post("/control/freehand/relative", dependencies=[Depends(require_claim)])
 @app.post("/move/relative", dependencies=[Depends(require_claim)])
 async def move_relative(request: RelativeRequest, background_tasks: BackgroundTasks):
     """Move the robot relative to its current position.
@@ -1929,6 +1950,7 @@ async def disable_component(request: ComponentRequest):
     else:
         raise HTTPException(status_code=500, detail=f"Failed to disable component '{component}'.")
 
+@app.post("/control/freehand/velocity", dependencies=[Depends(require_claim)])
 @app.post("/velocity/cartesian", dependencies=[Depends(require_claim)])
 async def set_cartesian_velocity(request: VelocityRequest):
     """Set the Cartesian velocity of the robot arm.
@@ -2046,6 +2068,7 @@ async def close_gripper(request: Optional[GripperRequest] = None):
         logger.error(f"Close gripper failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Close gripper failed: {str(e)}")
 
+@app.post("/control/freehand/gripper/stroke", dependencies=[Depends(require_claim)])
 @app.post("/gripper/move/stroke", dependencies=[Depends(require_claim)])
 async def move_gripper_stroke(request: GripperStrokeRequest):
     """Move gripper to a specific stroke position.
@@ -2075,6 +2098,7 @@ async def move_gripper_stroke(request: GripperStrokeRequest):
         logger.error(f"Move gripper to stroke failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Move gripper to stroke failed: {str(e)}")
 
+@app.post("/control/freehand/gripper/force", dependencies=[Depends(require_claim)])
 @app.post("/gripper/force", dependencies=[Depends(require_claim)])
 async def set_gripper_force(request: GripperForceRequest):
     """Set gripping force for grippers that support force control.
@@ -2100,6 +2124,7 @@ async def get_gripper_position():
     return {"position": position}
 
 # Linear track endpoints
+@app.post("/control/freehand/track", dependencies=[Depends(require_claim)])
 @app.post("/track/move", dependencies=[Depends(require_claim)])
 async def move_track(request: TrackRequest, background_tasks: BackgroundTasks):
     """Move the linear track to a specific position.
@@ -2352,6 +2377,7 @@ async def move_joint_until_torque(request: JointTorqueMovementRequest, backgroun
     background_tasks.add_task(torque_movement_task)
     return {"message": "Torque-controlled joint movement started."}
 
+@app.post("/control/freehand/plate_linear", dependencies=[Depends(require_claim)])
 @app.post("/move/plate_linear", dependencies=[Depends(require_claim)])
 async def move_plate_linear(request: PlateLinearRequest, background_tasks: BackgroundTasks):
     """Move linearly from current position to target with constant tool orientation.

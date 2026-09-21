@@ -2376,7 +2376,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Use new plate_linear endpoint - moves from current position to target
         // Tool maintains the same absolute orientation throughout movement
-        apiRequest('/move/plate_linear', 'POST', {
+        apiRequest('/control/freehand/plate_linear', 'POST', {
             target_location: targetLocation,
             speed: speed
         });
@@ -2397,7 +2397,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         
-        apiRequest('/gripper/move/stroke', 'POST', { stroke, force: currentGripperForce() });
+        apiRequest('/control/freehand/gripper/stroke', 'POST', { stroke, force: currentGripperForce() });
     });
 
     setGripperForceBtn.addEventListener('click', () => {
@@ -2415,7 +2415,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        apiRequest('/gripper/force', 'POST', { force });
+        apiRequest('/control/freehand/gripper/force', 'POST', { force });
     });
     
     // --- Direct Motion Control handlers ---
@@ -2438,7 +2438,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
             const speed = parseFloat(directJointSpeed?.value) || 10;
-            apiRequest('/move/joints', 'POST', { angles, speed });
+            apiRequest('/control/freehand/joints', 'POST', { angles, speed });
             // Target dispatched — let telemetry take the inputs back so they
             // animate toward the commanded angles.
             dirtyJoints.clear();
@@ -2449,7 +2449,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function jog(dx, dy, dz) {
         const step = parseFloat(jogStepInput?.value) || 10;
         const speed = parseFloat(linearSpeedInput?.value) || 100;
-        apiRequest('/move/relative', 'POST', { dx: dx * step, dy: dy * step, dz: dz * step, speed });
+        apiRequest('/control/freehand/relative', 'POST', { dx: dx * step, dy: dy * step, dz: dz * step, speed });
     }
 
     const jogMap = {
