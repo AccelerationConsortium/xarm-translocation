@@ -239,8 +239,8 @@ header {
 .title-status-container {
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    padding: 20px;
+    gap: 10px;
+    padding: 16px 18px;
     /* Constant tile width; height flows with content. */
     width: 600px;
     box-sizing: border-box;
@@ -259,22 +259,23 @@ header {
    pulled out of the Arm Control card so they sit at the top of the page.
    `order: 1` places it after the title block (which stays first in the DOM
    for reading/tab order) so it renders on the right of the tile. */
-/* Action row: Take Control / STOP / Clear Errors on one line above the
-   Gripper | Linear Track columns. */
+/* Action stack: Take Control / STOP / Clear Errors stacked on the right
+   of the title tile, together as tall as the title block beside them. */
 .header-actions {
     display: flex;
-    flex-direction: row;
+    flex-direction: column;
     gap: 8px;
+    flex: 0 0 190px;
+    width: 190px;
 }
 
 .header-actions .btn {
     flex: 1 1 0;
-    height: 64px;
-    min-height: 0;
+    min-height: 44px;
     padding: 0;
     box-sizing: border-box;
     border-radius: 12px;
-    font-size: 1.4rem;
+    font-size: 1.15rem;
     font-weight: 700;
 }
 
@@ -290,7 +291,7 @@ header {
 }
 
 .header-actions #stop-btn {
-    font-size: 1.8rem;
+    font-size: 1.5rem;
     font-weight: 800;
     letter-spacing: 0.06em;
 }
@@ -301,7 +302,7 @@ header {
     /* Uniform 14px rhythm between every block (space-between produced
        uneven gaps that grew with the tile). */
     justify-content: flex-start;
-    gap: 14px;
+    gap: 8px;
     min-width: 0;
     flex: 1 1 auto;
 }
@@ -312,7 +313,7 @@ header {
 }
 
 .eyebrow {
-    margin: 0 0 4px;
+    margin: 0;
     color: var(--ink-subtle);
     font-size: var(--control-font-size);
     font-weight: var(--control-font-weight);
@@ -1581,7 +1582,7 @@ input#linear-speed {
 /* Form typography: sentence-case labels ("Connect to"), compact
    `text-xs` controls. */
 .connection-inline .form-group label {
-    flex: 0 0 132px;
+    flex: 0 0 96px;
     margin-bottom: 0;
     white-space: nowrap;
     font-size: 12px;

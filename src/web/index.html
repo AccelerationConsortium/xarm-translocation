@@ -39,7 +39,7 @@
         if (embedded) setInterval(applyTheme, 1000);
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260923g">
+    <link rel="stylesheet" href="style.css?v=20260923h">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -94,7 +94,7 @@
                 <div class="title-status-container">
                     <div class="title-top">
                     <div class="title-status-main">
-                        <p class="eyebrow">xArm Translocation</p>
+                        <p class="eyebrow">Robot Motion</p>
                         <h1>Control Interface</h1>
                         <div id="status-container">
                             <!-- Per-target connection lines: the service holds ONE
@@ -157,14 +157,14 @@
                             </div>
                         </div>
                     </div>
-                    </div><!-- /title-top -->
-                    <!-- Primary arm actions: one row spanning the tile, just
-                         above the Gripper / Linear Track columns. IDs unchanged. -->
+                    <!-- Primary arm actions, stacked on the right of the
+                         title tile. IDs unchanged. -->
                     <div class="header-actions">
                         <button id="take-control-btn" class="btn btn-claim" title="Acquire the device claim so you can drive the arm. While you hold it, workflows are locked out (HTTP 423) and see you as the claim holder.">Take Control</button>
                         <button id="stop-btn" class="btn btn-danger">STOP</button>
                         <button id="clear-errors-btn" class="btn btn-warning" title="Clear arm + gripper faults and re-energize the servos (replaces the old separate Enable). Works without taking control.">Clear Errors</button>
                     </div>
+                    </div><!-- /title-top -->
 
                 </div>
 
