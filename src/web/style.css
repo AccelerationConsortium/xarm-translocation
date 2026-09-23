@@ -2795,13 +2795,17 @@ input#linear-speed {
 /* Camera toggle: side by side like Wide / Tele, one button per camera
    in realsense.yaml ("RS D405" | "RS 435i"); wraps if a third arrives. */
 .realsense-cams {
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
 }
 
 .realsense-cams .lens-btn {
-    padding-left: 4px;
-    padding-right: 4px;
+    min-width: 0;
+    padding-left: 2px;
+    padding-right: 2px;
+    font-size: 0.75rem;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .realsense-hint {
