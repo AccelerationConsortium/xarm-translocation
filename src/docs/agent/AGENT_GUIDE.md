@@ -112,18 +112,11 @@ The dashboard API Reference lists `freehand.position` (absolute TCP pose),
 Coordinates and displacements are in mm; angles are in degrees. The live
 OpenAPI document supplies the request schemas.
 
-When admin OFF is inactive, an ordinary timed override uses `graph.mode`
-with `mode: off`, a nonempty
-`reason`, and optional `ttl_seconds`. The device applies its configured
-default and maximum; inspect `details.motion_graph.mode_override` for the
-actual remaining window. Claim release/expiry, window expiry or disconnect
-restores STRICT. Restore explicitly with `graph.mode` and `mode: strict`,
-or `POST /control/graph/mode/restore`, when done.
-
-For clients using the SDK's generic command surface, the device also offers
-`POST /control/graph/off` with no body: the same OFF operation with a default
-audit reason and configured duration. Optional `reason` and `ttl_seconds`
-override those defaults. The same claim and auto-restoration rules apply.
+Freehand is available only while an administrator has turned enforcement
+OFF (`details.motion_graph.mode_override.scope == "admin"`). Agents and
+other claim holders cannot lower enforcement: `graph.mode` below `strict`
+and `POST /control/graph/off` return **403** `admin_required`. Setting
+`graph.mode` to `strict` is always allowed.
 
 Freehand moves remain subject to claims, device safety checks, configured
 interlocks, and the motion reservation. STRICT rejects them with 409.

@@ -1,16 +1,11 @@
-"""Node-anchored nudge, and the pose-authoring endpoint.
+"""The pose-authoring endpoint, ``POST /control/graph/pose``.
 
-Two capabilities that together close the "grow the graph" loop:
+It writes a named pose into joint_config.yaml. Until it existed,
+``POST /control/graph/node`` could only reference poses a human had
+hand-edited into that file, so no agent could grow the graph.
 
-- ``POST /control/freehand/nudge`` is the ONLY freehand route legal in
-  STRICT. It earns that by staying inside a bounded envelope around the
-  node the arm is pinned at, and by restoring the pin afterwards -- which
-  is what lets the sash interlock gate it by node membership the way it
-  gates a named move. A raw freehand move cannot be gated on entry because
-  it has no target node; a nudge has one.
-- ``POST /control/graph/pose`` writes a named pose into joint_config.yaml.
-  Until it existed, ``POST /control/graph/node`` could only reference poses
-  a human had hand-edited into that file, so no agent could grow the graph.
+(The node-anchored ``/control/freehand/nudge`` that used to share this file
+was removed; one test pins that it stays gone.)
 """
 
 from __future__ import annotations
@@ -97,80 +92,10 @@ def claim_headers(client):
 # ── nudge: legal in STRICT, unlike every other freehand route ────────
 
 
-def test_nudge_is_allowed_in_strict(client, claim_headers, mock_controller):
-    """The whole point: STRICT refuses the other eight freehand routes."""
-    r = client.post("/control/freehand/nudge", json={"dz": 1.0}, headers=claim_headers)
-    assert r.status_code == 200, r.text
-    assert r.json()["anchor"] == "n_home"
-    assert mock_controller.move_relative.called
-
-
-def test_nudge_retains_the_pin(client, claim_headers, mock_controller):
-    """move_relative clears last_arm_pose_name (every raw move does).
-    The nudge must put it back, or the arm goes off-grid and the interlock
-    loses the node it gates by -- which is the entire bargain."""
-    def _clear(*a, **k):
-        mock_controller.last_arm_pose_name = None
-        return True
-    mock_controller.move_relative.side_effect = _clear
-
-    r = client.post("/control/freehand/nudge", json={"dx": 1.0}, headers=claim_headers)
-
-    assert r.status_code == 200, r.text
-    assert mock_controller.last_arm_pose_name == "home"
-
-
-def test_nudge_refused_off_grid(client, claim_headers, mock_controller):
-    """No anchor means no envelope origin AND no node for the sash
-    interlock to gate by. Refuse rather than fall back to unbounded."""
-    mock_controller.current_node = None
-
-    r = client.post("/control/freehand/nudge", json={"dz": 1.0}, headers=claim_headers)
-
-    assert r.status_code == 409
-    assert r.json()["detail"]["error"] == "no_anchor_node"
-    assert not mock_controller.move_relative.called
-
-
-def test_nudge_rejects_an_oversized_single_step(client, claim_headers, mock_controller):
-    r = client.post("/control/freehand/nudge", json={"dz": 50.0}, headers=claim_headers)
-    assert r.status_code == 422
-    assert r.json()["detail"]["error"] == "step_too_large"
-    assert not mock_controller.move_relative.called
-
-
-def test_nudge_bounds_the_CUMULATIVE_offset(client, claim_headers, mock_controller):
-    """A sequence of individually-legal steps must not walk the arm out of
-    the envelope. This is the failure a per-step cap alone would miss."""
-    for _ in range(2):
-        assert client.post(
-            "/control/freehand/nudge", json={"dx": 1.5}, headers=claim_headers
-        ).status_code == 200
-
-    r = client.post("/control/freehand/nudge", json={"dx": 1.5}, headers=claim_headers)
-
-    assert r.status_code == 422, r.text
-    assert r.json()["detail"]["error"] == "offset_exceeded"
-    assert r.json()["detail"]["current_offset_mm"] == [3.0, 0.0, 0.0]
-
-
-def test_nudge_reports_remaining_envelope(client, claim_headers):
-    r = client.post("/control/freehand/nudge", json={"dx": 1.0}, headers=claim_headers)
-    body = r.json()
-    assert body["offset_mm"] == [1.0, 0.0, 0.0]
-    assert body["remaining_mm"][0] == pytest.approx(2.0)
-
-
-def test_nudge_requires_a_claim(monkeypatch, enforcing_controller):
-    from src.core.xarm_api_server import app
-    monkeypatch.setattr("src.core.xarm_api_server.controller", enforcing_controller)
-    with TestClient(app) as c:
-        r = c.post("/control/freehand/nudge", json={"dz": 1.0})
-    assert r.status_code == 423
-    assert r.json()["detail"]["error"] == "claim_required"
-
-
-# ── pose authoring ───────────────────────────────────────────────────
+def test_nudge_route_is_gone(client, claim_headers):
+    """Nudge was removed (freehand moves cover it); the route must not linger."""
+    resp = client.post("/control/freehand/nudge", headers=claim_headers, json={"dz": 1})
+    assert resp.status_code in (404, 405)
 
 
 def test_pose_save_refuses_to_clobber_without_overwrite(client, claim_headers):

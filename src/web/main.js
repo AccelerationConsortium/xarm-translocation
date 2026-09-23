@@ -487,74 +487,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // Reads details.interlocks.fume_hood_sash from the /status poll already in
     // flight -- no extra request, and it inherits the cached-reading staleness
     // that /status is contractually limited to (hence the age suffix).
-    // --- Node-anchored nudge pad (Graph Control) -----------------------
-    // Deliberately NOT the XYZ jog pad in Arm Control. That one posts
-    // /control/freehand/relative: unbounded, drops the graph pin, and is
-    // refused outright in STRICT. This posts /control/freehand/nudge, which
-    // is bounded to a small envelope around the pinned node, restores the pin
-    // afterwards, and therefore inherits that node's sash gating -- which is
-    // why it is the one freehand route allowed in STRICT.
-    //
-    // Enablement mirrors the server's own refusal (409 no_anchor_node): the
-    // buttons are live only while a node is pinned AND this browser holds
-    // control. A disabled button with a reason beats a 409 the operator has
-    // to interpret.
-    const NUDGE_MAX_STEP_MM = 2.0;
-
-    function setNudgeEnabled(pinnedNode, hasControl) {
-        const btns = document.querySelectorAll('.mg-nudge-btn');
-        const step = document.getElementById('mg-nudge-step');
-        const status = document.getElementById('mg-nudge-status');
-        const ok = Boolean(pinnedNode) && Boolean(hasControl);
-        btns.forEach(b => { b.disabled = !ok; });
-        if (step) step.disabled = !ok;
-        if (status && !status.dataset.sticky) {
-            status.textContent = ok
-                ? `Anchored at ${pinnedNode}. Each press moves up to ${NUDGE_MAX_STEP_MM} mm.`
-                : (!pinnedNode
-                    ? 'Pin the arm to a node to enable nudging (Recover…).'
-                    : 'Take Control to enable nudging.');
-        }
-    }
-
-    async function nudge(axis, sign) {
-        const stepEl = document.getElementById('mg-nudge-step');
-        const status = document.getElementById('mg-nudge-status');
-        let step = parseFloat(stepEl?.value) || 1;
-        // Clamp client-side too. The server is authoritative (422
-        // step_too_large), but a silent clamp here keeps a fat-fingered 20
-        // from becoming an error toast.
-        step = Math.min(Math.abs(step), NUDGE_MAX_STEP_MM);
-        const body = { dx: 0, dy: 0, dz: 0 };
-        body['d' + axis] = sign * step;
-
-        const res = await apiRequest('/control/freehand/nudge', 'POST', body, true);
-        if (!res) {
-            // apiRequest already surfaced the failure; leave the pad as-is.
-            return;
-        }
-        if (status) {
-            const rem = (res.remaining_mm || []).map(v => Number(v).toFixed(1)).join(' / ');
-            const off = (res.offset_mm || []).map(v => Number(v).toFixed(1)).join(', ');
-            status.dataset.sticky = '1';
-            status.textContent =
-                `Anchored at ${res.anchor} · offset [${off}] mm · remaining ${rem} mm`;
-            // The pin is the whole bargain; say so loudly if it is gone.
-            if (!res.pin_retained) {
-                status.textContent += ' — PIN LOST, re-pin before moving';
-                addLogEntry('nudge returned pin_retained=null; arm is off-grid', 'error');
-            }
-        }
-    }
-
-    function initNudgePad() {
-        document.querySelectorAll('.mg-nudge-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                nudge(btn.dataset.axis, parseFloat(btn.dataset.sign));
-            });
-        });
-    }
-
     function renderSashRow(interlock) {
         const row = document.getElementById('mg-sash-row');
         if (!row) return;
@@ -725,14 +657,6 @@ document.addEventListener('DOMContentLoaded', () => {
             // ...and the persistent position readout, which shows in every
             // state (including the normal one, where the banner is absent).
             renderSashRow(data.sash_interlock);
-
-            // Nudge availability tracks the pin, every tick: a raw move or a
-            // STOP can drop the pin between ticks, and the pad must re-lock
-            // without the operator discovering it via a 409.
-            setNudgeEnabled(
-                (data.motion_graph && data.motion_graph.current_node) || null,
-                claimToken !== null,
-            );
 
             // Header "Open Studio" quick-link: the simulator's Studio or the
             // real arm's (via the device PC's 18333 portproxy), matching the
@@ -1036,28 +960,27 @@ document.addEventListener('DOMContentLoaded', () => {
             const reach = document.getElementById('mg-reachable');
             if (cur) cur.textContent = '—';
             if (reach) reach.innerHTML = '<span class="muted">(connect the arm)</span>';
-            document.querySelectorAll('.mg-mode-btn').forEach(b => {
-                b.disabled = true;
-                b.classList.remove('active');
-            });
+            const modeVal = document.getElementById('mg-mode-value');
+            if (modeVal) { modeVal.textContent = '—'; modeVal.dataset.mode = ''; }
             const rec = document.getElementById('mg-recover-btn');
             if (rec) rec.disabled = true;
             renderGraphModeOverride(null);   // no graph, nothing lowered
             return;
         }
-        document.querySelectorAll('.mg-mode-btn').forEach(b => { b.disabled = false; });
         const recBtn = document.getElementById('mg-recover-btn');
         if (recBtn) recBtn.disabled = false;
 
-        const modeBtns = document.querySelectorAll('.mg-mode-btn');
         const currentEl = document.getElementById('mg-current-node');
         const reachableEl = document.getElementById('mg-reachable');
 
-        // Mode buttons reflect server state: the active mode lights up.
+        // Enforcement is shown, not set: lowering it is administrator-only
+        // (the Administrator row). data-mode drives the colour.
         const liveMode = motionGraph.graph_mode || 'off';
-        modeBtns.forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.mode === liveMode);
-        });
+        const modeVal = document.getElementById('mg-mode-value');
+        if (modeVal) {
+            modeVal.textContent = liveMode.toUpperCase();
+            modeVal.dataset.mode = liveMode;
+        }
         renderGraphModeOverride(motionGraph.mode_override);
 
         // Current node + reachable buttons.
@@ -1069,7 +992,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (reachable.length === 0) {
             const span = document.createElement('span');
             span.className = 'muted';
-            span.textContent = current ? '(no outgoing edges)' : '(off-grid — use Recover)';
+            span.textContent = current ? '(no outgoing edges)' : 'None, off-grid';
             reachableEl.appendChild(span);
         } else {
             reachable.forEach(nodeId => {
@@ -1212,13 +1135,13 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // Best-effort, one-time: nudge the controller into STRICT the first
+        // Best-effort, one-time: switch the controller into STRICT the first
         // time the card shows with a graph and we hold the claim. The robust
         // guarantee is the ensure-strict step at Travel time.
         if (!driveArmStrictInitialized && claimToken
                 && (motionGraph.graph_mode || 'off') !== 'strict') {
             driveArmStrictInitialized = true;
-            changeGraphMode('strict');
+            ensureStrictMode();
         }
 
         // Gripper leaf row: live state readout + whitelisted transitions.
@@ -1420,38 +1343,11 @@ document.addEventListener('DOMContentLoaded', () => {
         textEl.className = left <= 30 ? 'mg-sash--bad' : 'mg-sash--warn';
     }
 
-    async function changeGraphMode(newMode) {
-        const body = { mode: newMode };
-        // Lowering below STRICT relaxes the motion whitelist for every
-        // client of this device, so the API requires a reason (422 without
-        // one). Ask here rather than letting the operator meet the refusal.
-        // Only when currently STRICT: advisory -> off already runs under the
-        // window opened by the first step, and re-asking would be noise.
-        // The lit button is the server's mode: renderMotionGraphCard sets it
-        // from /status on every poll, so there is no second copy to drift.
-        const currentMode = document.querySelector('.mg-mode-btn.active')?.dataset.mode;
-        if (newMode !== 'strict' && currentMode === 'strict') {
-            const reason = window.prompt(
-                `Why is motion-graph enforcement being lowered to ${newMode}?\n\n`
-                + 'This relaxes the whitelist for every client of this arm and is '
-                + 'recorded in the lab history. It reverts to strict on its own '
-                + '(when the window lapses, when the claim is released, or on '
-                + 'disconnect). Typical reason: freehand camera survey.'
-            );
-            if (!reason || !reason.trim()) return;   // cancelled: stay strict
-            body.reason = reason.trim();
-        }
-        const result = await apiRequest('/control/graph/mode', 'POST', body);
-        if (result) {
-            const granted = result.granted_seconds;
-            addLogEntry(
-                `graph_mode -> ${result.graph_mode}`
-                + (granted ? ` for ${Math.round(granted)}s, then back to `
-                            + `${result.reverts_to || 'strict'}` : ''),
-                granted ? 'warning' : 'info',
-            );
-        }
-        // Re-fetch status so the UI reflects the change.
+    // Raise enforcement to STRICT (the only mode a claim holder may set;
+    // lowering is administrator-only and the server refuses it with 403).
+    async function ensureStrictMode() {
+        const result = await apiRequest('/control/graph/mode', 'POST', { mode: 'strict' });
+        if (result) addLogEntry(`graph_mode -> ${result.graph_mode}`, 'info');
         fetchAndUpdateStatus();
     }
 
@@ -2494,9 +2390,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Motion-graph card listeners (Phase 4). All elements may be
     // missing if index.html is older than this build — guard each one.
-    document.querySelectorAll('.mg-mode-btn').forEach(btn => {
-        btn.addEventListener('click', () => changeGraphMode(btn.dataset.mode));
-    });
     const mgRestoreBtn = document.getElementById('mg-mode-restore-btn');
     if (mgRestoreBtn) {
         mgRestoreBtn.addEventListener('click', restoreGraphModeNow);
@@ -2680,9 +2573,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (btn) btn.addEventListener('click', () => jog(dx, dy, dz));
     });
 
-    // Graph Control's nudge pad. Listeners attach once here; enablement is
-    // driven per status tick by setNudgeEnabled.
-    initNudgePad();
 
     // --- Lab Assistant (corner chat widget) ---
     // Natural-language motion control. The widget only ever calls two

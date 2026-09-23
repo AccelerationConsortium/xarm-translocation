@@ -48,9 +48,9 @@ The ordinary control routes below are claim-gated. Targets come from
 | POST | `/control/graph/travel_to` | `{node_id}` | multi-hop; same refusals |
 | POST | `/control/graph/gripper` | `{state}` | **409** arm must be stationary · **422** state not reachable from here |
 | POST | `/control/graph/recover_to` | `{node_id, force?}` | **412** when vision verification rejects |
-| POST | `/control/graph/mode` | `{mode, reason?, ttl_seconds?}` | `off` · `advisory` · `strict`. **422** `reason_required` when lowering below `strict` without a reason |
+| POST | `/control/graph/mode` | `{mode}` | only `strict` is accepted. **403** `admin_required` for `off` / `advisory`: lowering enforcement is administrator-only |
 | POST | `/control/graph/mode/restore` | | restores `strict` now; idempotent |
-| POST | `/control/graph/off` | optional; see `GraphOffRequest` in OpenAPI | shortcut to OFF; default audit reason, configured duration/cap, same claim and auto-restore rules |
+| POST | `/control/graph/off` | | retired for claim holders: always **403** `admin_required`; use the administrator switch below |
 | POST | `/control/graph/record` | | **412** on any simulator · **409** with no last transition |
 
 `GET /graph` is an open read returning nodes, edges, the current node and
@@ -85,23 +85,15 @@ Ordinary `/control/graph/mode`, `/control/graph/off` and
 `detail.error: admin_graph_off` while this switch is active; only the admin
 restore endpoint clears it. `graph.mode` is withheld from `allowed_actions`.
 
-### Ordinary timed overrides
+### Lowering enforcement is administrator-only
 
-**Ordinary claim-bound overrides are time-limited.** The `/control/freehand/*`
-family (raw Cartesian, joints, jog, velocity, rail) requires `advisory` or
-`off` mode. An agent must not lower enforcement to work around a refusal. It needs a `reason`, runs for
-`ttl_seconds` (default and cap come from the deployed graph configuration;
-the request is clamped rather than rejected), and
-**reverts to `strict` on its own** when the window lapses, when the claim
-that bought it is released or expires, or on `/disconnect`. Do not assume a
-window you opened is still open: read `details.motion_graph.mode_override`
-(`null` once it has reverted, and it carries `remaining_seconds`), and
-re-issue to extend rather than letting a long job run past it. A freehand
-move after the revert is refused with **409** `graph_mode_strict`.
-
-Note also that raw moves drop the node pin (`current_node` becomes `null`),
-so re-pin with `/move/location` or `/control/graph/recover_to` before using
-`graph.*` moves again.
+The `/control/freehand/*` family (raw Cartesian, joints, jog, velocity,
+rail) requires `advisory` or `off` mode, and only an administrator can put
+the device there, with the switch above. Claim holders cannot lower
+enforcement: `/control/graph/mode` below `strict` and `/control/graph/off`
+return **403** `admin_required`. An agent that meets a STRICT refusal must
+report it; it must not try to lower enforcement. A freehand move in STRICT
+is refused with **409** `graph_mode_strict`.
 
 ## Freehand Cartesian and joint motion
 

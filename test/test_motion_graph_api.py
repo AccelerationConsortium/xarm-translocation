@@ -190,17 +190,12 @@ def test_post_graph_mode_invalid_value_returns_422(graph_client):
     assert resp.status_code == 422
 
 
-def test_post_graph_mode_off_works_without_graph(graph_client, mock_controller_with_graph):
-    mock_controller_with_graph.motion_graph = None
-    resp = graph_client.post("/control/graph/mode", json={"mode": "off"})
-    assert resp.status_code == 200
-
-
-# ── The lowering is bounded: reason + self-reverting window ──────────
+# ── Lowering is administrator-only ───────────────────────────────────
 #
-# The shared fixture boots ADVISORY (most of its tests want a permissive
-# graph), so these use a client pinned to STRICT: the window exists for a
-# *lowering*, and from ADVISORY there is nothing to lower away from.
+# The claim-holder routes refuse anything below STRICT with 403
+# admin_required; /control/admin/graph/off is the only way down (covered in
+# test_admin_graph_override.py). The shared fixture boots ADVISORY, so these
+# pin STRICT first to show the refusal leaves the mode untouched.
 
 
 @pytest.fixture
@@ -209,77 +204,42 @@ def strict_client(graph_client, mock_controller_with_graph):
     return graph_client
 
 
-def test_lowering_without_a_reason_returns_422(strict_client, mock_controller_with_graph):
-    """The operator meets the requirement here rather than discovering it
-    after the arm is already in a relaxed mode."""
-    resp = strict_client.post("/control/graph/mode", json={"mode": "advisory"})
-    assert resp.status_code == 422
+@pytest.mark.parametrize("body", [
+    {"mode": "off"},
+    {"mode": "advisory"},
+    {"mode": "off", "reason": "bench", "ttl_seconds": 120},
+])
+def test_lowering_via_graph_mode_is_admin_only(strict_client, mock_controller_with_graph, body):
+    resp = strict_client.post("/control/graph/mode", json=body)
+    assert resp.status_code == 403, resp.text
     detail = resp.json()["detail"]
-    assert detail["error"] == "reason_required"
-    assert detail["mode"] == "advisory"
-    assert "reason" in detail["hint"]
+    assert detail["error"] == "admin_required"
+    assert detail["mode"] == body["mode"]
+    assert "/control/admin/graph/off" in detail["message"]
+    mock_controller_with_graph.set_graph_mode.assert_not_called()
     assert mock_controller_with_graph.graph_mode == GraphMode.STRICT
 
 
-def test_lowering_with_a_reason_reports_its_window(strict_client):
-    resp = strict_client.post(
-        "/control/graph/mode",
-        json={"mode": "advisory", "reason": "freehand camera survey",
-              "ttl_seconds": 120},
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["graph_mode"] == "advisory"
-    assert body["granted_seconds"] == 120
-    assert body["reverts_to"] == "strict"
-    assert body["mode_override"]["reason"] == "freehand camera survey"
+def test_lowering_is_refused_even_without_a_graph(graph_client, mock_controller_with_graph):
+    mock_controller_with_graph.motion_graph = None
+    resp = graph_client.post("/control/graph/mode", json={"mode": "off"})
+    assert resp.status_code == 403
 
 
-def test_ttl_is_clamped_by_the_server(strict_client):
-    resp = strict_client.post(
-        "/control/graph/mode",
-        json={"mode": "off", "reason": "bench", "ttl_seconds": 100_000},
-    )
-    assert resp.json()["granted_seconds"] == 900
-
-
-@pytest.mark.parametrize("body", [None, {}])
-def test_graph_off_shortcut_defaults(strict_client, body):
+@pytest.mark.parametrize("body", [None, {}, {"reason": "Cartesian teaching", "ttl_seconds": 60}])
+def test_graph_off_shortcut_is_admin_only(strict_client, mock_controller_with_graph, body):
     resp = strict_client.post("/control/graph/off", json=body)
-    assert resp.status_code == 200, resp.text
-    result = resp.json()
-    assert result["graph_mode"] == "off"
-    assert result["granted_seconds"] == 300
-    assert result["reverts_to"] == "strict"
-    assert result["mode_override"]["reason"] == "Operator requested graph OFF via shortcut"
-    assert strict_client.post("/control/graph/mode/restore").json()["graph_mode"] == "strict"
-
-
-def test_graph_off_shortcut_preserves_claim_and_cap(strict_client, mock_controller_with_graph):
-    from src.core.claims import ClaimManager
-    manager = ClaimManager(enforce=True)
-    mock_controller_with_graph.claim_manager = manager
-    resp = strict_client.post("/control/graph/off")
-    assert resp.status_code == 423
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["error"] == "admin_required"
     mock_controller_with_graph.set_graph_mode.assert_not_called()
-    record = manager.acquire(owner="test-operator", session_id="off-shortcut")
-    resp = strict_client.post(
-        "/control/graph/off",
-        headers={"X-Claim-Token": record.token},
-        json={"reason": "Cartesian teaching", "ttl_seconds": 100_000},
-    )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["granted_seconds"] == 900
-    assert resp.json()["mode_override"]["owner"] == "test-operator"
-    mock_controller_with_graph.set_graph_mode.assert_called_once_with(
-        GraphMode.OFF, reason="Cartesian teaching", ttl_seconds=100_000,
-        owner="test-operator", session_id="off-shortcut",
-    )
+    assert mock_controller_with_graph.graph_mode == GraphMode.STRICT
 
 
-@pytest.mark.parametrize("body", [{"ttl_seconds": 0}, {"reason": " "}])
-def test_graph_off_shortcut_rejects_invalid_options(strict_client, body):
-    assert strict_client.post("/control/graph/off", json=body).status_code == 422
+def test_graph_off_shortcut_still_requires_the_claim(strict_client, mock_controller_with_graph):
+    from src.core.claims import ClaimManager
+    mock_controller_with_graph.claim_manager = ClaimManager(enforce=True)
+    assert strict_client.post("/control/graph/off").status_code == 423
+    mock_controller_with_graph.set_graph_mode.assert_not_called()
 
 
 def test_raising_to_strict_grants_no_window(strict_client):
@@ -290,9 +250,9 @@ def test_raising_to_strict_grants_no_window(strict_client):
 
 
 def test_restore_endpoint_clears_the_window(strict_client, mock_controller_with_graph):
-    strict_client.post(
-        "/control/graph/mode", json={"mode": "advisory", "reason": "survey"},
-    )
+    # No route can open a window any more; open one on the controller, as a
+    # window left over from before the restriction would be.
+    mock_controller_with_graph.set_graph_mode(GraphMode.ADVISORY, reason="survey")
     resp = strict_client.post("/control/graph/mode/restore")
     assert resp.status_code == 200
     assert resp.json() == {"graph_mode": "strict", "override_cleared": True}

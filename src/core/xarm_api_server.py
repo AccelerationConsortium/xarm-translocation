@@ -596,8 +596,8 @@ class PoseSaveRequest(BaseModel):
     impossible: ``POST /control/graph/node`` takes ``arm`` as a pose NAME
     that must already exist in joint_config.yaml, and until now nothing
     could create one -- a pose could only be added by hand-editing YAML on
-    the device PC. Teach-by-demonstration is the normal flow: jog (or
-    nudge) the arm where you want it, POST this with a name, then POST
+    the device PC. Teach-by-demonstration is the normal flow: jog the
+    arm where you want it, POST this with a name, then POST
     /control/graph/node referencing that name.
     """
     name: str = Field(
@@ -622,29 +622,6 @@ class PoseSaveRequest(BaseModel):
     comment: Optional[str] = Field(
         default=None, max_length=200,
         description="Trailing YAML comment, e.g. why this pose was recalibrated.",
-    )
-
-
-class NudgeRequest(BaseModel):
-    """Body of POST /control/freehand/nudge — a small, node-anchored
-    Cartesian correction that KEEPS the graph pin.
-
-    Every other freehand route is refused in STRICT and drops
-    ``last_arm_pose_name``, putting the arm off-grid. A nudge is different
-    on both counts, and the two are connected: because it stays within a
-    bounded envelope of the node it is anchored to, it can honestly keep
-    claiming to be AT that node -- which means the sash interlock can gate
-    it by node membership exactly as it gates a named move. Freehand is
-    ungatable for entry precisely because it has no node; a nudge has one.
-    """
-    dx: float = Field(default=0.0, description="Delta X in mm (base frame)")
-    dy: float = Field(default=0.0, description="Delta Y in mm (base frame)")
-    dz: float = Field(default=0.0, description="Delta Z in mm (base frame)")
-    droll: float = Field(default=0.0, description="Delta roll in degrees")
-    dpitch: float = Field(default=0.0, description="Delta pitch in degrees")
-    dyaw: float = Field(default=0.0, description="Delta yaw in degrees")
-    speed: Optional[float] = Field(
-        default=None, gt=0, description="TCP speed; capped by nudge_max_speed."
     )
 
 
@@ -4244,7 +4221,13 @@ async def set_gripper_state(request: GraphGripperRequest, background_tasks: Back
 
 @app.post("/control/graph/mode", dependencies=[Depends(require_claim)])
 async def set_graph_mode(request: GraphModeRequest, http_request: Request):
-    """Switch the enforcement mode (off | advisory | strict).
+    """Set the enforcement mode. Only ``strict`` is accepted here.
+
+    **Lowering enforcement is administrator-only.** ``off`` and ``advisory``
+    are refused with **403** ``admin_required``; an administrator turns
+    enforcement OFF with ``POST /control/admin/graph/off`` and back ON with
+    ``POST /control/admin/graph/restore``. ``strict`` stays open to the claim
+    holder, since raising enforcement is always safe.
 
     OFF: graph is not consulted; legacy behavior.
     ADVISORY: graph observes; off-whitelist moves log a warning but proceed.
@@ -4261,11 +4244,25 @@ async def set_graph_mode(request: GraphModeRequest, http_request: Request):
     and the previous unbounded switch relied on the operator remembering to
     put it back.
 
-    Returns ``granted_seconds`` and ``expires_at`` when a window was opened,
-    both null when none was needed. Re-issuing while lowered grants a fresh
-    full window rather than erroring.
+    The timed-window machinery described above now only matters for a
+    window opened before this restriction (it still reverts on its own).
     """
     return await _apply_graph_mode(request, http_request)
+
+
+def _reject_non_admin_lowering(mode: GraphMode) -> None:
+    """Refuse any claim-holder request that would lower enforcement."""
+    if mode != GraphMode.STRICT:
+        raise HTTPException(status_code=403, detail={
+            "error": "admin_required",
+            "action": "graph.mode",
+            "mode": mode.value,
+            "message": (
+                "Lowering motion-graph enforcement is administrator-only. An "
+                "administrator uses POST /control/admin/graph/off (and "
+                "/control/admin/graph/restore to turn it back on)."
+            ),
+        })
 
 
 async def _apply_graph_mode(
@@ -4280,6 +4277,7 @@ async def _apply_graph_mode(
             status_code=422,
             detail=f"mode must be one of: off, advisory, strict (got {request.mode!r})",
         )
+    _reject_non_admin_lowering(mode)
 
     holder = None
     try:
@@ -4330,12 +4328,11 @@ async def _apply_graph_mode(
 async def turn_graph_off(
     http_request: Request, request: Optional[GraphOffRequest] = None,
 ):
-    """Temporarily turn graph enforcement OFF; no request body is required.
+    """Retired for claim holders: always **403** ``admin_required``.
 
-    Uses the same claim, audit, TTL cap and automatic restoration as
-    /control/graph/mode. Optional reason and ttl_seconds customize the window.
-    Restore early with /control/graph/mode/restore. This changes graph
-    enforcement only, without moving the arm or disabling other checks.
+    Turning enforcement OFF is administrator-only; use
+    ``POST /control/admin/graph/off``. Kept (rather than removed) so an old
+    client gets an explanation instead of a 404.
     """
     options = request or GraphOffRequest()
     return await set_graph_mode(
@@ -4772,136 +4769,13 @@ async def create_graph_node(request: GraphNodeCreateRequest):
     }
 
 
-# Default bound for a node-anchored nudge, in mm per axis of cumulative
-# offset from the anchor pose. Deliberately small: the graph's own pose
-# spacing sets the ceiling, and the closest functionally-distinct pairs in
-# joint_config.yaml are the plate "press" poses -- opentrons_6_low vs
-# opentrons_6_low_press is 0.45 deg apart, ~4mm at 500mm reach. An envelope
-# wider than that could carry the arm from one node onto another while the
-# pin still claimed the first, which would make the sash interlock's node
-# lookup a lie. Override per deployment once a bench sweep has measured the
-# real separation per node.
-_NUDGE_MAX_OFFSET_MM = float(os.environ.get("XARM_NUDGE_MAX_OFFSET_MM", "3.0"))
-_NUDGE_MAX_STEP_MM = float(os.environ.get("XARM_NUDGE_MAX_STEP_MM", "2.0"))
-_NUDGE_MAX_SPEED = float(os.environ.get("XARM_NUDGE_MAX_SPEED", "30.0"))
-
-
-@app.post("/control/freehand/nudge", dependencies=[Depends(require_claim)])
-async def freehand_nudge(request: NudgeRequest):
-    """A small Cartesian correction that keeps the arm pinned to its node.
-
-    Legal in STRICT -- the only freehand route that is. The bargain that
-    buys that: the move must stay inside a bounded envelope around the node
-    the arm is currently pinned at, so the arm can still honestly claim to
-    be AT that node afterwards. That claim is what lets the sash interlock
-    gate this by node membership, exactly as it gates a named move.
-    ``interlock_freehand_guard`` cannot gate a raw freehand move's ENTRY
-    into the hood because such a move has no target node; a nudge has one.
-
-    Refusals: **409** ``no_anchor_node`` the arm is off-grid (nothing to
-    anchor to or inherit gating from -- re-pin with graph/recover_to first)
-    · **422** ``step_too_large`` / ``offset_exceeded`` · **412** sash
-    interlock, inherited from the anchor node · **409** motion in flight.
-    """
-    c = get_controller()
-
-    anchor = c.current_node
-    if anchor is None:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "no_anchor_node",
-                "message": (
-                    "Nudge requires the arm to be pinned at a graph node: the "
-                    "envelope is measured from it and the sash interlock is "
-                    "gated by it. The arm is off-grid. Re-pin with POST "
-                    "/control/graph/recover_to (GET /graph/nearest suggests "
-                    "which), or use the freehand routes in ADVISORY."
-                ),
-            },
-        )
-
-    step = max(abs(request.dx), abs(request.dy), abs(request.dz))
-    if step > _NUDGE_MAX_STEP_MM:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "step_too_large", "step_mm": round(step, 3),
-                "max_step_mm": _NUDGE_MAX_STEP_MM, "anchor": anchor,
-            },
-        )
-
-    # Cumulative offset from the anchor, so a sequence of legal single steps
-    # cannot walk the arm out of the envelope one safe-looking hop at a time.
-    prior = list(getattr(c, "freehand_offset", None) or [0.0, 0.0, 0.0])
-    proposed = [prior[0] + request.dx, prior[1] + request.dy, prior[2] + request.dz]
-    worst = max(abs(v) for v in proposed)
-    if worst > _NUDGE_MAX_OFFSET_MM:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "offset_exceeded",
-                "anchor": anchor,
-                "current_offset_mm": [round(v, 3) for v in prior],
-                "proposed_offset_mm": [round(v, 3) for v in proposed],
-                "max_offset_mm": _NUDGE_MAX_OFFSET_MM,
-                "hint": (
-                    "Return to the anchor with POST /move/location, or save "
-                    "this as a new pose (POST /control/graph/pose) and make it "
-                    "a node of its own."
-                ),
-            },
-        )
-
-    # Inherit the anchor's gating. This is the whole point of anchoring: the
-    # same call a named move makes, with the anchor as the target, so a nudge
-    # at a hood node is refused on an unparked sash just like graph/move_to.
-    interlock_target_guard("freehand.nudge", getattr(c, "last_arm_pose_name", None))
-
-    speed = min(request.speed or _NUDGE_MAX_SPEED, _NUDGE_MAX_SPEED)
-    pinned = getattr(c, "last_arm_pose_name", None)
-    reserve_motion()
-    try:
-        success = await asyncio.to_thread(
-            c.move_relative,
-            dx=request.dx, dy=request.dy, dz=request.dz,
-            droll=request.droll, dpitch=request.dpitch, dyaw=request.dyaw,
-            speed=speed,
-        )
-    finally:
-        c.exit_motion()
-
-    if not success:
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "nudge_failed", "anchor": anchor},
-        )
-
-    # move_relative clears the pin (every raw move does). Restore it: the
-    # bounds above are exactly what make that honest. Same restore-on-success
-    # pattern the named-move wrapper uses.
-    c.last_arm_pose_name = pinned
-    c.freehand_offset = proposed
-
-    await broadcast_status_update()
-    return {
-        "anchor": anchor,
-        "applied_mm": {"dx": request.dx, "dy": request.dy, "dz": request.dz},
-        "offset_mm": [round(v, 3) for v in proposed],
-        "remaining_mm": [
-            round(_NUDGE_MAX_OFFSET_MM - abs(v), 3) for v in proposed
-        ],
-        "pin_retained": c.current_node,
-    }
-
-
 @app.post("/control/graph/pose", dependencies=[Depends(require_claim)])
 async def save_graph_pose(request: PoseSaveRequest):
     """Write a named arm pose into joint_config.yaml.
 
     Claim-gated like every mutating endpoint. With ``angles`` omitted the
     arm's current joints are captured, which is the teach-by-demonstration
-    flow: jog or nudge into place, save, then reference the name from
+    flow: jog into place, save, then reference the name from
     POST /control/graph/node.
 
     Refusals: **409** the name exists and ``overwrite`` is false · **422**

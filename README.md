@@ -67,71 +67,32 @@ Without a saved administrator OFF setting, the motion graph boots **STRICT**
 whenever `motion_graph.yaml` loads: moves
 must follow whitelisted edges, and the graph-bypassing `/control/freehand/*`
 family (raw Cartesian, raw joints, jog, velocity streaming, raw rail, freehand
-gripper) is refused outright with 409 `graph_mode_strict`. The one exception
-is `POST /control/freehand/nudge`, a ±3 mm node-anchored correction that keeps
-the arm pinned and so can still be gated by node.
+gripper) is refused outright with 409 `graph_mode_strict`.
 
 Real Cartesian work — camera surveys, teaching a pose, calibration — needs
-that family, which means lowering the mode. **Lowering is now bounded,
-audited and self-reverting**, because `graph_mode` is process-wide state: a
-forgotten ADVISORY was silently inherited by the next client, workflow or
-agent, and the only thing restoring it was someone remembering.
+that family, which means lowering the mode. **Lowering is administrator-only**
+(since 2026-09-23): an administrator turns enforcement OFF with
+`POST /control/admin/graph/off` and back ON with
+`POST /control/admin/graph/restore`, or with the Administrator button on the
+`/web/` Motion Graph card. That OFF has no expiry and needs no claim; it
+persists across claims, disconnects and restarts until restored. Claim
+holders, including agents, cannot lower it: `POST /control/graph/mode` below
+`strict` and `POST /control/graph/off` return **403** `admin_required`.
+Setting `strict` stays open to any claim holder.
 
-```bash
-# Open a window. reason is REQUIRED below strict (422 without it).
-curl -XPOST localhost:8000/control/graph/mode -H "X-Claim-Token: $TOK" \
-     -d '{"mode":"advisory","reason":"freehand camera survey","ttl_seconds":600}'
-# -> {"graph_mode":"advisory","granted_seconds":600,"reverts_to":"strict", ...}
-
-# ... /control/freehand/* now works; take photos with
-#     POST /control/realsense/{camera_id}/capture between moves ...
-
-curl -XPOST localhost:8000/control/graph/mode/restore -H "X-Claim-Token: $TOK"
-```
-
-It goes back to STRICT on its own under **any** of: the window lapsing; the
-session that lowered it releasing or losing its claim; `/disconnect`; an
-explicit `{"mode":"strict"}` or `/control/graph/mode/restore`. Expiry is lazy
-in the `graph_mode` read itself rather than a timer thread, so there is no
-code path — guard, move, or status poll — that can observe a lapsed window as
-still in force. Re-issuing while lowered grants a fresh full window, so an
-expiry cannot strand a half-finished survey.
-
-Defaults and the hard cap live in `motion_graph.yaml`
-(`mode_override_default_seconds: 300`, `mode_override_max_seconds: 900`); the
-server clamps rather than erroring. While lowered, `message` carries a
-`[GRAPH-ADVISORY]` / `[GRAPH-OFF]` prefix and
-`details.motion_graph.mode_override` carries the countdown, reason and owner;
-both clear themselves. Each grant and each revert writes a
-`graph_mode_override` / `graph_mode_restored` row to the history DB, the
-revert tagged with its trigger. The `/web/` panel prompts for the reason and
-shows the countdown with a "Restore strict now" button.
-
-Note `OFF` is still reachable, deliberately — it is what raw `/track/move` and
-fully-unguarded work need — but it is louder in the log and gets the same
-window as ADVISORY.
-
-For agents using Cartesian motion with the graph **OFF**:
-
-The shortcut `POST /control/graph/off` accepts an empty body and the existing
-`X-Claim-Token`. It supplies an audit reason and uses the configured mode
-override duration/cap. To customize the window, send
-`{"reason":"Cartesian teaching","ttl_seconds":600}`. It uses the same
-bounded override as `/control/graph/mode`, including restoration on claim
-release/expiry; `POST /control/graph/mode/restore` restores enforcement early.
-It does not move the arm or change other interlocks. Agents should invoke
-device controls through the lab-skills SDK's claim/session handling.
+While an administrator has enforcement OFF:
 
 1. Acquire a claim with `POST /control/claim` and use its `claim_token` as
    `X-Claim-Token` on control requests.
-2. Send `POST /control/graph/mode` with JSON
-   `{"mode":"off","reason":"Jiaru agent Cartesian motion","ttl_seconds":300}`.
-3. Read `/status`. When idle and available, `allowed_actions` includes
-   `freehand.position`, `freehand.relative`, and `freehand.joints` in OFF
-   and ADVISORY, including when no graph is loaded. These map to
-   `POST /control/freehand/position`, `/control/freehand/relative`, and
+2. Read `/status`. When idle and available, `allowed_actions` includes
+   `freehand.position`, `freehand.relative`, and `freehand.joints`. These map
+   to `POST /control/freehand/position`, `/control/freehand/relative`, and
    `/control/freehand/joints`. Use `Content-Type: application/json`.
-4. Restore enforcement with `POST /control/graph/mode/restore` when finished.
+3. Release the claim when finished. Enforcement comes back only when an
+   administrator restores it.
+
+(The node-anchored `POST /control/freehand/nudge`, once the one freehand
+route allowed in STRICT, was removed on 2026-09-23.)
 
 Absolute Cartesian requests take `{x,y,z,roll?,pitch?,yaw?,speed?}`;
 relative requests take `{dx?,dy?,dz?,droll?,dpitch?,dyaw?,speed?}`.

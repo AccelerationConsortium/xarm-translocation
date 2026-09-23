@@ -39,7 +39,7 @@
         if (embedded) setInterval(applyTheme, 1000);
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260923h">
+    <link rel="stylesheet" href="style.css?v=20260923j">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -258,14 +258,13 @@
                         <h2>Motion Graph
                             <span class="panel-unit">interlock layer</span>
                         </h2>
+                        <!-- Enforcement is read-only here: lowering it is
+                             administrator-only (the Administrator row below;
+                             the claim-holder mode routes refuse anything
+                             below strict). Rendered by renderMotionGraphCard. -->
                         <div class="mg-row">
                             <span class="inline-label">Enforcement</span>
-                            <div class="mg-mode-btns" role="radiogroup" aria-label="Graph mode">
-                                <button type="button" class="mg-mode-btn" data-mode="off">off</button>
-                                <button type="button" class="mg-mode-btn" data-mode="advisory">advisory</button>
-                                <button type="button" class="mg-mode-btn" data-mode="strict">strict</button>
-                            </div>
-                            <button id="mg-recover-btn" class="btn btn-secondary" style="margin-left:auto;">Recover…</button>
+                            <strong id="mg-mode-value" class="mg-mode-value">&mdash;</strong>
                         </div>
                         <!-- Administrator-only persistent OFF / ON. Hidden
                              unless /auth/me reports role=admin; the server
@@ -312,35 +311,17 @@
                             <strong id="mg-sash-position">&mdash;</strong>
                             <span class="muted" id="mg-sash-note"></span>
                         </div>
-                        <!-- Node-anchored nudge. Lives here, not with the XYZ
-                             jog pad in Arm Control, because it is a GRAPH
-                             operation: it only works while the arm is pinned,
-                             it keeps the pin, and it inherits the pinned node's
-                             sash gating. The raw jog pad is the opposite on all
-                             three counts and is refused in STRICT.
-                             Wired by initNudgePad in main.js. -->
-                        <div class="mg-row mg-nudge-row" id="mg-nudge-row">
-                            <span class="inline-label">Nudge</span>
-                            <div class="mg-nudge-pad">
-                                <button type="button" class="btn jog-btn mg-nudge-btn" data-axis="x" data-sign="1"  disabled>X+</button>
-                                <button type="button" class="btn jog-btn mg-nudge-btn" data-axis="x" data-sign="-1" disabled>X&minus;</button>
-                                <button type="button" class="btn jog-btn mg-nudge-btn" data-axis="y" data-sign="1"  disabled>Y+</button>
-                                <button type="button" class="btn jog-btn mg-nudge-btn" data-axis="y" data-sign="-1" disabled>Y&minus;</button>
-                                <button type="button" class="btn jog-btn mg-nudge-btn" data-axis="z" data-sign="1"  disabled>Z+</button>
-                                <button type="button" class="btn jog-btn mg-nudge-btn" data-axis="z" data-sign="-1" disabled>Z&minus;</button>
-                            </div>
-                            <span class="inline-label" style="margin-left:1em;">Step</span>
-                            <input type="number" id="mg-nudge-step" value="1" min="0.1" max="2" step="0.1" class="inline-input" disabled>
-                            <span class="inline-unit">mm</span>
-                        </div>
-                        <div class="mg-row" id="mg-nudge-status-row">
-                            <span class="inline-label"></span>
-                            <span class="muted" id="mg-nudge-status">Pin the arm to a node to enable nudging.</span>
+                        <!-- Recover to node: re-pins an off-grid arm to its
+                             nearest graph node (GET /graph/nearest, then
+                             graph/recover_to). Opens #mg-recover-panel. -->
+                        <div class="mg-row">
+                            <span class="inline-label">Recover to Node</span>
+                            <button id="mg-recover-btn" class="btn btn-secondary">Recover…</button>
                         </div>
                         <div class="mg-row">
                             <span class="inline-label">Reachable Node</span>
                             <div id="mg-reachable" class="mg-reachable">
-                                <span class="muted">(no graph node pinned)</span>
+                                <span class="muted">None, off-grid</span>
                             </div>
                         </div>
                         <div id="mg-recover-panel" class="mg-recover-panel" hidden>
@@ -497,13 +478,14 @@
                     <div class="card realsense-card" hidden>
                         <div class="camera-head card-fold-head" data-rs="head" role="button" tabindex="0" aria-expanded="true">
                             <h2><span class="camera-dot" aria-hidden="true"></span>Stereo Camera</h2>
+                            <!-- Link + mount, above the feed (right of the title). -->
+                            <span data-rs="status" class="muted camera-status"></span>
                             <span class="card-fold-caret" aria-hidden="true"></span>
                         </div>
                         <div class="camera-row">
                         <div class="camera-side">
-                            <span data-rs="status" class="muted camera-status"></span>
-                            <!-- Camera toggle: one button per camera in the
-                                 YAML. Filled by realsense-card.js. -->
+                            <!-- Camera toggle: one stacked button per camera
+                                 in the YAML. Filled by realsense-card.js. -->
                             <div class="lens-btns realsense-cams" data-rs="cams" role="radiogroup" aria-label="Stereo camera"></div>
                             <button type="button" data-rs="toggle" class="btn btn-secondary realsense-btn" disabled>Start</button>
                             <div class="lens-btns realsense-kinds">
@@ -688,6 +670,6 @@
     </script>
     <script src="camera-player.js?v=20260915a"></script>
     <script src="realsense-card.js?v=20260923d"></script>
-    <script src="main.js?v=20260923d"></script>
+    <script src="main.js?v=20260923e"></script>
 </body>
 </html>
