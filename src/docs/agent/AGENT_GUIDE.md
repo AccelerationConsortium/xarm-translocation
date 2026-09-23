@@ -5,18 +5,31 @@ plus an Intel RealSense D435i mounted **eye-in-hand** on that gripper. It
 speaks STATUS_SPEC v1.1: read `GET /status` before acting, and treat
 `allowed_actions` as the contract for what will be honoured right now.
 
-Base URL on the lab tailnet: `http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:8000`.
+Paths are relative to the configured service base, including its mount prefix.
 
-## The three gates
+The binding [lab contract, Part I](https://github.com/AccelerationConsortium/ac-organic-lab/blob/main/docs/AGENTIC_LAB_DESIGN.md#part-i--binding-rules-normative)
+and [STATUS_SPEC](https://github.com/AccelerationConsortium/ac-organic-lab/blob/main/docs/STATUS_SPEC.md)
+remain authoritative. Transport documentation does not authorize hardware
+execution. Agent equipment use goes through the `lab-skills` SDK; a refusal
+must be reported, not worked around by lowering enforcement or switching
+endpoints. Ambiguous command outcomes require reconciliation before another
+physical action; recovery belongs to the operator.
 
-Every route sits in exactly one tier. Knowing which one saves you a round of
-guessing at a 401 or a 423.
+## Access gates
+
+Check the route's gate before calling it to avoid authentication and claim
+refusals.
 
 | Tier | What it covers | How you pass it |
 |---|---|---|
 | Open | `GET /status`, depth numbers, capture metadata, this document | nothing |
 | Login | anything that ships a frame or turns the camera on | session cookie, or `X-Api-Key` |
 | Claim | anything that moves the arm or writes a record | `X-Claim-Token` from `POST /control/claim` |
+| Admin | `/control/admin/graph/off` and `/control/admin/graph/restore` | verified admin session cookie, `X-Api-Key`, or authenticated edge identity; no claim needed |
+
+Admin verification applies even when the general login gate is disabled.
+A claim token alone is insufficient: missing identity returns **401**,
+a non-admin identity **403**, and unavailable identity verification **503**.
 
 A claim is cooperative and exclusive: one holder at a time, renewed with
 `POST /control/heartbeat`, released with `POST /control/release`. Acting
@@ -70,11 +83,25 @@ target is currently withheld for this reason and no **412** will come from it
 
 An administrator may enable persistent OFF using
 `POST /control/admin/graph/off` (no body or claim required; verified admin
-identity required). It remains OFF for all users until
-`POST /control/admin/graph/restore`, including across restarts. Users retain
-their own motion claims; releasing those claims does not restore the graph.
-The status override has `scope: admin` and no expiry. This is separate from
-the ordinary timed `graph.mode` workflow below.
+identity required). The optional audit reason and request/response schemas
+are documented in [OpenAPI](openapi.json).
+
+OFF persists for all users across claim release/expiry, changes of user,
+disconnects and service restarts. Only an administrator can clear it using
+`POST /control/admin/graph/restore`, with no body or claim required. Restore
+re-enables STRICT when a graph is loaded; without a graph the mode remains
+OFF. Repeated restoration is idempotent. State storage failures leave the
+mode unchanged. Neither endpoint acquires or releases a user's claim.
+An agent encountering a graph refusal must stop and report it; the admin
+switch is not an alternate execution route.
+
+Inspect `details.motion_graph.mode_override`: admin OFF reports
+`scope: admin`, `persistent: true`, `claim_bound: false`, the admin's `owner`
+and `reason`, and null `expires_at` / `remaining_seconds`. While active,
+`graph.mode` is absent from `allowed_actions`. Ordinary graph mode, OFF and
+restore requests with a valid claim return **409** `admin_graph_off`; an
+administrator must restore enforcement. Request and response
+details are in the [API reference](agent-docs/api-reference).
 
 Use the `lab-skills` SDK and its claim/session handling for agent control.
 The dashboard API Reference lists `freehand.position` (absolute TCP pose),
@@ -82,11 +109,13 @@ The dashboard API Reference lists `freehand.position` (absolute TCP pose),
 Coordinates and displacements are in mm; angles are in degrees. The live
 OpenAPI document supplies the request schemas.
 
-An authorized mode change uses `graph.mode` with `mode: off`, a nonempty
+When admin OFF is inactive, an ordinary timed override uses `graph.mode`
+with `mode: off`, a nonempty
 `reason`, and optional `ttl_seconds`. The device applies its configured
 default and maximum; inspect `details.motion_graph.mode_override` for the
-actual remaining window. Claim release/expiry or window expiry restores
-STRICT. Restore explicitly with `graph.mode` and `mode: strict` when done.
+actual remaining window. Claim release/expiry, window expiry or disconnect
+restores STRICT. Restore explicitly with `graph.mode` and `mode: strict`,
+or `POST /control/graph/mode/restore`, when done.
 
 For clients using the SDK's generic command surface, the device also offers
 `POST /control/graph/off` with no body: the same OFF operation with a default

@@ -15,7 +15,7 @@ import logging
 import os
 from collections import deque
 from contextlib import asynccontextmanager
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Literal, Union
 from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, HTTPException, BackgroundTasks, Header, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -334,8 +334,49 @@ class AdminGraphOffRequest(BaseModel):
     reason: str = Field(
         default="Administrator requested graph OFF independent of claims",
         min_length=1,
-        description="Audit reason for persistent OFF until an administrator restores it.",
+        description="Nonblank audit reason for persistent OFF until an administrator restores it. No TTL is accepted.",
     )
+
+
+class AdminGraphOverrideResponse(BaseModel):
+    active: Literal[True]
+    mode: Literal["off"]
+    restores_to: Literal["strict"]
+    scope: Literal["admin"]
+    persistent: Literal[True]
+    claim_bound: Literal[False]
+    owner: str = Field(description="Verified administrator identity.")
+    reason: str
+    created_at: datetime
+    granted_seconds: None
+    remaining_seconds: None
+    expires_at: None
+
+
+class AdminGraphOffResponse(BaseModel):
+    graph_mode: Literal["off"]
+    mode_override: AdminGraphOverrideResponse
+
+
+class AdminGraphRestoreResponse(BaseModel):
+    graph_mode: Literal["strict", "off"] = Field(
+        description="STRICT when a motion graph is loaded; OFF otherwise.",
+    )
+    override_cleared: bool = Field(description="Whether an admin override was active before restoration.")
+
+
+class AdminGraphErrorResponse(BaseModel):
+    detail: Union[str, Dict[str, Any], List[Dict[str, Any]]] = Field(
+        description="Authentication error object, plain-text service/reason error, or request validation error list.",
+    )
+
+
+_ADMIN_GRAPH_ERROR_RESPONSES = {
+    400: {"model": AdminGraphErrorResponse, "description": "Controller is not initialized."},
+    401: {"model": AdminGraphErrorResponse, "description": "No verified identity; detail.error is login_required."},
+    403: {"model": AdminGraphErrorResponse, "description": "Verified identity is not an administrator; detail.error is admin_required."},
+    503: {"model": AdminGraphErrorResponse, "description": "Identity verification unavailable, or persistent state could not be written/cleared. Mode unchanged."},
+}
 
 
 class SashOverrideRequest(BaseModel):
@@ -4302,7 +4343,11 @@ async def turn_graph_off(
     )
 
 
-@app.post("/control/admin/graph/off", dependencies=[Depends(require_admin)])
+@app.post("/control/admin/graph/off", dependencies=[Depends(require_admin)],
+          responses={200: {"model": AdminGraphOffResponse},
+                     **_ADMIN_GRAPH_ERROR_RESPONSES,
+                     422: {"model": AdminGraphErrorResponse,
+                           "description": "Blank reason, unsupported fields (including ttl_seconds), or invalid request body."}})
 async def admin_turn_graph_off(
     http_request: Request, request: Optional[AdminGraphOffRequest] = None,
 ):
@@ -4311,6 +4356,11 @@ async def admin_turn_graph_off(
     No body required. OFF persists until explicit admin restoration, including
     across claim changes, disconnects and service restarts. No TTL. Ordinary
     motion still requires its existing claim and other safety checks.
+
+    Requires a verified admin session cookie, X-Api-Key, or authenticated edge
+    identity even when general login enforcement is disabled. A claim token
+    alone is insufficient. Neither admin endpoint acquires or releases claims.
+    While active, ordinary mode/off/restore calls return 409 admin_graph_off.
     """
     options = request or AdminGraphOffRequest()
     c = get_controller()
@@ -4327,9 +4377,17 @@ async def admin_turn_graph_off(
     return {"graph_mode": c.graph_mode.value, "mode_override": override}
 
 
-@app.post("/control/admin/graph/restore", dependencies=[Depends(require_admin)])
+@app.post("/control/admin/graph/restore", dependencies=[Depends(require_admin)],
+          responses={200: {"model": AdminGraphRestoreResponse},
+                     **_ADMIN_GRAPH_ERROR_RESPONSES})
 async def admin_restore_graph_mode(http_request: Request):
-    """Admin-only restoration to STRICT, without a claim."""
+    """Clear persistent admin OFF and any ordinary timed override, without a claim.
+
+    No body required. Requires a verified admin identity even when general
+    login enforcement is disabled. Restores STRICT if a graph is loaded,
+    otherwise OFF. Repeated restoration is idempotent; override_cleared reports
+    whether an admin override was active. Existing claims are unaffected.
+    """
     c = get_controller()
     try:
         cleared = c.restore_admin_graph_mode(owner=http_request.state.identity_email)

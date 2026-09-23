@@ -1,10 +1,14 @@
 # xArm translocation — API reference
 
 Every route this service exposes, with its gate, body and refusal codes. Gates
-are defined in the [agent guide](agent-docs): **open** needs nothing, **login**
-needs a session cookie or `X-Api-Key`, **claim** needs `X-Claim-Token`.
+are defined in the [agent guide](../agent-docs): **open** needs nothing, **login**
+needs a session cookie or `X-Api-Key`, **claim** needs `X-Claim-Token`, and
+**admin** needs a verified identity with role `admin` (no claim required).
 
-Base URL: `http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:8000`.
+Paths are relative to the configured service base, including its mount prefix.
+OpenAPI is authoritative for request and response schemas. Transport
+documentation does not authorize hardware execution; see the agent guide for
+the binding lab contract and SDK boundary.
 
 ## Status and discovery
 
@@ -35,7 +39,8 @@ Base URL: `http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:8000`.
 
 ## Motion graph
 
-All claim-gated. Targets come from `allowed_actions` as `move.<node_id>`.
+The ordinary control routes below are claim-gated. Targets come from
+`allowed_actions` as `move.<node_id>`. Administrator routes are listed separately.
 
 | Method | Path | Body | Refusals |
 |---|---|---|---|
@@ -46,13 +51,20 @@ All claim-gated. Targets come from `allowed_actions` as `move.<node_id>`.
 | POST | `/control/graph/mode` | `{mode, reason?, ttl_seconds?}` | `off` · `advisory` · `strict`. **422** `reason_required` when lowering below `strict` without a reason |
 | POST | `/control/graph/mode/restore` | | restores `strict` now; idempotent |
 | POST | `/control/graph/off` | optional; see `GraphOffRequest` in OpenAPI | shortcut to OFF; default audit reason, configured duration/cap, same claim and auto-restore rules |
+| POST | `/control/graph/record` | | **412** on any simulator · **409** with no last transition |
+
+`GET /graph` is an open read returning nodes, edges, the current node and
+reachable targets.
 
 ### Administrator switch (no claim required)
 
-| Method | Path | Body | Authorization |
-|---|---|---|---|
-| POST | `/control/admin/graph/off` | optional `AdminGraphOffRequest`; see OpenAPI | verified admin identity |
-| POST | `/control/admin/graph/restore` | none | verified admin identity |
+`POST /control/admin/graph/off` enables persistent OFF;
+`POST /control/admin/graph/restore` clears it and any ordinary timed override.
+Both require verified administrator identity and neither requires a claim.
+See [OpenAPI](../openapi.json) for the optional OFF audit reason, request
+validation, response fields and refusal envelopes. Restore re-enables STRICT
+when a graph is loaded; without a graph the mode remains OFF. Repeating
+restore is idempotent.
 
 The admin OFF switch has **no expiry**. It persists across claim release,
 claim expiry, different users, disconnects and service restarts, until an
@@ -68,17 +80,16 @@ verification 503. State storage failures return 503 without changing the mode.
 
 `details.motion_graph.mode_override` reports `scope: admin`, `persistent: true`,
 `claim_bound: false`, the administrator/reason, and null expiry/countdown.
-Ordinary graph mode changes/restore return 409 `admin_graph_off` while this
-switch is active; `graph.mode` is withheld from `allowed_actions`.
+Ordinary `/control/graph/mode`, `/control/graph/off` and
+`/control/graph/mode/restore` requests with a valid claim return **409** with
+`detail.error: admin_graph_off` while this switch is active; only the admin
+restore endpoint clears it. `graph.mode` is withheld from `allowed_actions`.
 
 ### Ordinary timed overrides
-| POST | `/control/graph/record` | | **412** on any simulator · **409** with no last transition |
-| GET | `/graph` | open | nodes, edges, current node, reachable targets |
 
-**Lowering enforcement is time-limited.** `mode: advisory` / `off` is what
-un-refuses the `/control/freehand/*` family (raw Cartesian, joints, jog,
-velocity, rail) — so it is the door to moving the arm freely and taking
-RealSense captures from wherever you put it. It needs a `reason`, runs for
+**Ordinary claim-bound overrides are time-limited.** The `/control/freehand/*`
+family (raw Cartesian, joints, jog, velocity, rail) requires `advisory` or
+`off` mode. An agent must not lower enforcement to work around a refusal. It needs a `reason`, runs for
 `ttl_seconds` (default and cap come from the deployed graph configuration;
 the request is clamped rather than rejected), and
 **reverts to `strict` on its own** when the window lapses, when the claim
@@ -103,7 +114,7 @@ The dashboard and `lab-skills` expose these xArm-specific catalog names:
 | `freehand.joints` | POST | `/control/freehand/joints` | `JointRequest` |
 
 Use the SDK for agent actuation. Full argument schemas, units and defaults
-are in [OpenAPI](openapi.json) and the dashboard's catalog action cards.
+are in [OpenAPI](../openapi.json) and the dashboard's catalog action cards.
 These commands require a claim and graph mode OFF or ADVISORY. They are
 advertised in `allowed_actions` only when available; STRICT returns 409,
 as does a motion already in flight. Configured interlock and simulation
@@ -278,7 +289,7 @@ captures. Both streams run at 1280x720 by design, not by limitation: depth
 is at its hardware maximum there, while colour could reach 1920x1080 but is
 matched to depth so the two images stay pixel-for-pixel comparable and the
 aligned depth map is not inflated with interpolated pixels — see the
-[agent guide](agent-docs). Captures
+[agent guide](../agent-docs). Captures
 marked `protected` are exempt from both.
 New files replicate nightly to
 `/home/sdl2/storage/external/realsens_xarm/<camera_id>/<YYYY-MM-DD>/` on the
@@ -299,10 +310,11 @@ lab data server, mirroring the source layout.
 |---|---|
 | 400 | the alias needs a `camera` and more than one is configured |
 | 401 | login required |
+| 403 | verified identity does not have the required admin role |
 | 404 | no camera configured, unknown camera id, or unknown capture |
-| 409 | motion in flight, or camera pipeline stopped |
+| 409 | motion in flight, camera pipeline stopped, or `admin_graph_off` blocks ordinary mode changes |
 | 412 | safety gate: sash not parked, simulator guard, vision rejected |
-| 422 | target not whitelisted from the current node |
+| 422 | target not whitelisted from the current node, invalid graph override reason, or unsupported admin OFF fields |
 | 423 | claim required, or held by another session |
 | 500 | capture store write failure |
-| 503 | RealSense extra or hardware missing |
+| 503 | RealSense extra or hardware missing, admin identity verification unavailable, or admin graph state could not be persisted/cleared |
