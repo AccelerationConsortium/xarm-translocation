@@ -46,7 +46,25 @@ Not covered, deliberately: `/move/stop` and `/clear/errors` (the safety floor mu
 
 ### Motion-graph enforcement, and the bounded way to leave it
 
-The motion graph boots **STRICT** whenever `motion_graph.yaml` loads: moves
+**Administrator one-click OFF:** `POST /control/admin/graph/off` with an
+authenticated administrator session/API key; no body or claim is required.
+Optional `reason` is recorded for audit. OFF remains active for all users until
+`POST /control/admin/graph/restore`, including across claim changes,
+disconnects and service restarts. Freehand still requires the caller's motion
+claim and passes the existing device safety checks. Ordinary mode switches
+cannot replace this admin setting. Authentication is mandatory even when the
+general login gate is disabled.
+
+This state is stored separately from graph topology in ignored
+`src/settings/graph_admin_override_*.json` files, scoped to device/profile.
+Set `XARM_GRAPH_ADMIN_STATE_DIR` to place them in a persistent service-writable
+directory. Preserve these files during deployment. The status override reports
+`scope: admin`, the owner and reason, and null expiry; the device panel shows
+"OFF until an administrator restores it". The timed workflow below remains
+available when the administrator switch is inactive.
+
+Without a saved administrator OFF setting, the motion graph boots **STRICT**
+whenever `motion_graph.yaml` loads: moves
 must follow whitelisted edges, and the graph-bypassing `/control/freehand/*`
 family (raw Cartesian, raw joints, jog, velocity streaming, raw rail, freehand
 gripper) is refused outright with 409 `graph_mode_strict`. The one exception
@@ -92,6 +110,36 @@ shows the countdown with a "Restore strict now" button.
 Note `OFF` is still reachable, deliberately — it is what raw `/track/move` and
 fully-unguarded work need — but it is louder in the log and gets the same
 window as ADVISORY.
+
+For agents using Cartesian motion with the graph **OFF**:
+
+The shortcut `POST /control/graph/off` accepts an empty body and the existing
+`X-Claim-Token`. It supplies an audit reason and uses the configured mode
+override duration/cap. To customize the window, send
+`{"reason":"Cartesian teaching","ttl_seconds":600}`. It uses the same
+bounded override as `/control/graph/mode`, including restoration on claim
+release/expiry; `POST /control/graph/mode/restore` restores enforcement early.
+It does not move the arm or change other interlocks. Agents should invoke
+device controls through the lab-skills SDK's claim/session handling.
+
+1. Acquire a claim with `POST /control/claim` and use its `claim_token` as
+   `X-Claim-Token` on control requests.
+2. Send `POST /control/graph/mode` with JSON
+   `{"mode":"off","reason":"Jiaru agent Cartesian motion","ttl_seconds":300}`.
+3. Read `/status`. When idle and available, `allowed_actions` includes
+   `freehand.position`, `freehand.relative`, and `freehand.joints` in OFF
+   and ADVISORY, including when no graph is loaded. These map to
+   `POST /control/freehand/position`, `/control/freehand/relative`, and
+   `/control/freehand/joints`. Use `Content-Type: application/json`.
+4. Restore enforcement with `POST /control/graph/mode/restore` when finished.
+
+Absolute Cartesian requests take `{x,y,z,roll?,pitch?,yaw?,speed?}`;
+relative requests take `{dx?,dy?,dz?,droll?,dpitch?,dyaw?,speed?}`.
+The agent's tool catalog must register the matching `freehand.*` names.
+Claims, motion concurrency, and configured controller/interlock checks still
+apply. A raw move clears the named pose pin; graph motion may require recovery
+to a known node afterward. A move response means the command was accepted;
+poll status to follow completion.
 
 ### Fume hood sash interlock (cross-device precondition) — CURRENTLY DISABLED
 

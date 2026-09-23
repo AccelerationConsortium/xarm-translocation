@@ -768,6 +768,19 @@ def _build_allowed_actions(
         # Compare on .value to avoid having to import GraphMode here
         # (which would risk a second module load under test conditions).
         graph_mode_value = getattr(graph_mode, "value", graph_mode)
+
+        # Freehand (graph-bypassing) Cartesian/joint moves. strict_graph_guard
+        # refuses them with 409 only in STRICT, so they are advertised in every
+        # other mode — including with no graph loaded — to keep §6.2's "listed
+        # means honored" true. Without this, clients that gate on this list
+        # (the lab-skills catalog, agents) never see them even after a
+        # deliberate mode lowering. The sash interlock's freehand guard is
+        # position-dependent, the same class of refusal the node gate is.
+        if graph_mode_value != "strict":
+            actions.extend(
+                ["freehand.position", "freehand.relative", "freehand.joints"]
+            )
+
         if graph is not None:
             strict = graph_mode_value == "strict"
             has_gripper = bool(controller.has_gripper())
@@ -802,7 +815,9 @@ def _build_allowed_actions(
             if has_gripper and (not strict or gripper_targets):
                 actions.append("graph.gripper")
             actions.append("graph.recover_to")
-            actions.append("graph.mode")
+            override = _graph_mode_override(controller)
+            if not (override and override.get("scope") == "admin"):
+                actions.append("graph.mode")
             if (
                 not getattr(controller, "is_simulated", False)
                 and getattr(controller, "last_transition", None) is not None
@@ -927,9 +942,8 @@ def _build_motion_graph_details(controller: XArmController) -> dict[str, Any] | 
         "allowed_gripper_targets": controller.allowed_gripper_targets(),
         "arm_pose_name": getattr(controller, "last_arm_pose_name", None),
         "rail_location_name": getattr(controller, "last_rail_location_name", None),
-        # Null unless enforcement is currently lowered by a bounded window.
-        # Carries the countdown, so a panel can show how long is left without
-        # a second endpoint.
+        # Bounded overrides carry a countdown; persistent administrator OFF
+        # carries scope=admin and null expiry, until explicit admin restore.
         "mode_override": _graph_mode_override(controller),
     }
 

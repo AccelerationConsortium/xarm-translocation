@@ -1411,6 +1411,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderGraphModeOverride(override) {
         const row = document.getElementById('mg-mode-override-row');
         if (!row) return;
+        row.dataset.admin = override?.scope === 'admin' ? 'true' : 'false';
         if (!override || !override.active) {
             row.hidden = true;
             return;
@@ -1418,6 +1419,11 @@ document.addEventListener('DOMContentLoaded', () => {
         row.hidden = false;
         const textEl = document.getElementById('mg-mode-override-text');
         if (!textEl) return;
+        if (override.scope === 'admin') {
+            textEl.textContent = `OFF until an administrator restores it — ${override.owner}: ${override.reason}`;
+            textEl.className = 'mg-sash--warn';
+            return;
+        }
         const left = Math.max(0, Math.round(override.remaining_seconds || 0));
         const who = override.owner ? ` — ${override.owner}` : '';
         const why = override.reason ? `: ${override.reason}` : '';
@@ -1463,7 +1469,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function restoreGraphModeNow() {
-        const result = await apiRequest('/control/graph/mode/restore', 'POST');
+        const admin = document.getElementById('mg-mode-override-row')?.dataset.admin === 'true';
+        const result = await apiRequest(
+            admin ? '/control/admin/graph/restore' : '/control/graph/mode/restore', 'POST');
         if (result) {
             addLogEntry(`graph_mode -> ${result.graph_mode} (restored)`, 'info');
         }
@@ -3006,4 +3014,4 @@ document.addEventListener('DOMContentLoaded', () => {
     addLogEntry('System initialized', 'info');
     
     window.apiRequest = apiRequest;
-}); 
+});

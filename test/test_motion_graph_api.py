@@ -243,6 +243,45 @@ def test_ttl_is_clamped_by_the_server(strict_client):
     assert resp.json()["granted_seconds"] == 900
 
 
+@pytest.mark.parametrize("body", [None, {}])
+def test_graph_off_shortcut_defaults(strict_client, body):
+    resp = strict_client.post("/control/graph/off", json=body)
+    assert resp.status_code == 200, resp.text
+    result = resp.json()
+    assert result["graph_mode"] == "off"
+    assert result["granted_seconds"] == 300
+    assert result["reverts_to"] == "strict"
+    assert result["mode_override"]["reason"] == "Operator requested graph OFF via shortcut"
+    assert strict_client.post("/control/graph/mode/restore").json()["graph_mode"] == "strict"
+
+
+def test_graph_off_shortcut_preserves_claim_and_cap(strict_client, mock_controller_with_graph):
+    from src.core.claims import ClaimManager
+    manager = ClaimManager(enforce=True)
+    mock_controller_with_graph.claim_manager = manager
+    resp = strict_client.post("/control/graph/off")
+    assert resp.status_code == 423
+    mock_controller_with_graph.set_graph_mode.assert_not_called()
+    record = manager.acquire(owner="test-operator", session_id="off-shortcut")
+    resp = strict_client.post(
+        "/control/graph/off",
+        headers={"X-Claim-Token": record.token},
+        json={"reason": "Cartesian teaching", "ttl_seconds": 100_000},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["granted_seconds"] == 900
+    assert resp.json()["mode_override"]["owner"] == "test-operator"
+    mock_controller_with_graph.set_graph_mode.assert_called_once_with(
+        GraphMode.OFF, reason="Cartesian teaching", ttl_seconds=100_000,
+        owner="test-operator", session_id="off-shortcut",
+    )
+
+
+@pytest.mark.parametrize("body", [{"ttl_seconds": 0}, {"reason": " "}])
+def test_graph_off_shortcut_rejects_invalid_options(strict_client, body):
+    assert strict_client.post("/control/graph/off", json=body).status_code == 422
+
+
 def test_raising_to_strict_grants_no_window(strict_client):
     resp = strict_client.post("/control/graph/mode", json={"mode": "strict"})
     assert resp.status_code == 200

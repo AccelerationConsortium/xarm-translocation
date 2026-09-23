@@ -81,6 +81,8 @@ venv.bak/
 # shared default layout to ship with the repo.
 src/settings/motion_graph_layout.json
 src/settings/motion_graph_layout.json.tmp
+src/settings/graph_admin_override_*.json
+src/settings/graph_admin_override_*.tmp
 
 # IDE settings
 .vscode/

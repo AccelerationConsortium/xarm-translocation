@@ -20,9 +20,9 @@ Base URL: `http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:8000`.
 
 | Method | Path | Gate | Body | Notes |
 |---|---|---|---|---|
-| POST | `/control/claim` | open | `{owner, session_id?, ttl_s?}` | **409** when held by someone else; returns the claim token |
-| POST | `/control/heartbeat` | open | `{session_id}` | renews the TTL |
-| POST | `/control/release` | open | `{session_id}` | drops the claim |
+| POST | `/control/claim` | login when configured | see OpenAPI | **409** when held by someone else; returns the claim token |
+| POST | `/control/heartbeat` | claim token | no body | renews the TTL using `X-Claim-Token` |
+| POST | `/control/release` | claim token | no body | drops the claim using `X-Claim-Token` |
 
 ## Connection and safety
 
@@ -45,6 +45,33 @@ All claim-gated. Targets come from `allowed_actions` as `move.<node_id>`.
 | POST | `/control/graph/recover_to` | `{node_id, force?}` | **412** when vision verification rejects |
 | POST | `/control/graph/mode` | `{mode, reason?, ttl_seconds?}` | `off` · `advisory` · `strict`. **422** `reason_required` when lowering below `strict` without a reason |
 | POST | `/control/graph/mode/restore` | | restores `strict` now; idempotent |
+| POST | `/control/graph/off` | optional; see `GraphOffRequest` in OpenAPI | shortcut to OFF; default audit reason, configured duration/cap, same claim and auto-restore rules |
+
+### Administrator switch (no claim required)
+
+| Method | Path | Body | Authorization |
+|---|---|---|---|
+| POST | `/control/admin/graph/off` | optional `AdminGraphOffRequest`; see OpenAPI | verified admin identity |
+| POST | `/control/admin/graph/restore` | none | verified admin identity |
+
+The admin OFF switch has **no expiry**. It persists across claim release,
+claim expiry, different users, disconnects and service restarts, until an
+administrator restores it. All users may then use freehand with their own
+valid motion claims, without graph path restrictions. Other device checks
+continue to apply. These endpoints never acquire or release a user's claim.
+
+Admin identity is verified using a session cookie, API key, or authenticated
+edge headers. A claim token alone does not authorize admin actions. Verification
+is mandatory even when the general login gate is disabled. Anonymous requests
+return 401, non-admin identities 403, and transport failures during identity
+verification 503. State storage failures return 503 without changing the mode.
+
+`details.motion_graph.mode_override` reports `scope: admin`, `persistent: true`,
+`claim_bound: false`, the administrator/reason, and null expiry/countdown.
+Ordinary graph mode changes/restore return 409 `admin_graph_off` while this
+switch is active; `graph.mode` is withheld from `allowed_actions`.
+
+### Ordinary timed overrides
 | POST | `/control/graph/record` | | **412** on any simulator · **409** with no last transition |
 | GET | `/graph` | open | nodes, edges, current node, reachable targets |
 
@@ -52,7 +79,8 @@ All claim-gated. Targets come from `allowed_actions` as `move.<node_id>`.
 un-refuses the `/control/freehand/*` family (raw Cartesian, joints, jog,
 velocity, rail) — so it is the door to moving the arm freely and taking
 RealSense captures from wherever you put it. It needs a `reason`, runs for
-`ttl_seconds` (default 300 s, capped at 900 s, clamped not rejected), and
+`ttl_seconds` (default and cap come from the deployed graph configuration;
+the request is clamped rather than rejected), and
 **reverts to `strict` on its own** when the window lapses, when the claim
 that bought it is released or expires, or on `/disconnect`. Do not assume a
 window you opened is still open: read `details.motion_graph.mode_override`
@@ -63,6 +91,26 @@ move after the revert is refused with **409** `graph_mode_strict`.
 Note also that raw moves drop the node pin (`current_node` becomes `null`),
 so re-pin with `/move/location` or `/control/graph/recover_to` before using
 `graph.*` moves again.
+
+## Freehand Cartesian and joint motion
+
+The dashboard and `lab-skills` expose these xArm-specific catalog names:
+
+| SDK action | Method | Device endpoint | OpenAPI request model |
+|---|---|---|---|
+| `freehand.position` | POST | `/control/freehand/position` | `PositionRequest` |
+| `freehand.relative` | POST | `/control/freehand/relative` | `RelativeRequest` |
+| `freehand.joints` | POST | `/control/freehand/joints` | `JointRequest` |
+
+Use the SDK for agent actuation. Full argument schemas, units and defaults
+are in [OpenAPI](openapi.json) and the dashboard's catalog action cards.
+These commands require a claim and graph mode OFF or ADVISORY. They are
+advertised in `allowed_actions` only when available; STRICT returns 409,
+as does a motion already in flight. Configured interlock and simulation
+guards can return 412; invalid claims return 423. Existing workspace and
+collision checks still apply. A successful HTTP response means accepted,
+not completed: poll status for completion/errors. Raw moves clear the node
+pin; recover to a verified node before resuming graph motion.
 
 ## RealSense — discovering the cameras
 

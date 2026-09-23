@@ -1,5 +1,8 @@
 import time
 import os
+import json
+import hashlib
+import tempfile
 import threading
 from collections import deque
 from datetime import datetime, timezone
@@ -138,6 +141,7 @@ class XArmController:
         # 2. Host from the selected profile
         # 3. Default to '127.0.0.1'
         self.host = host or self.xarm_config.get('host', '127.0.0.1')
+        self._load_admin_graph_off()
 
         # Determine model
         # 1. Direct `model` parameter
@@ -237,6 +241,7 @@ class XArmController:
         # write: that attribute is a property whose getter consults it.
         self._graph_mode_lock = threading.RLock()
         self._graph_mode_override: Optional[dict] = None
+        self._admin_graph_off: Optional[dict] = None
         self._graph_mode: GraphMode = GraphMode.OFF
         graph_path = os.path.join('src', 'settings', 'motion_graph.yaml')
         try:
@@ -2539,6 +2544,8 @@ class XArmController:
 
     @property
     def graph_mode(self) -> GraphMode:
+        if getattr(self, "_admin_graph_off", None) is not None:
+            return GraphMode.OFF
         self._revert_graph_mode_if_due()
         return self._graph_mode
 
@@ -2556,6 +2563,73 @@ class XArmController:
         except Exception:  # noqa: BLE001 - a mode read must not fail on this
             return None
         return (holder or {}).get("session_id")
+
+    def _admin_graph_state_path(self) -> str:
+        # Separate device/profile state so a simulator cannot inherit the
+        # physical arm's override. Local runtime data, never graph topology.
+        key = json.dumps([self.host, self.profile_name], separators=(",", ":"))
+        suffix = hashlib.sha256(key.encode()).hexdigest()[:16]
+        directory = os.environ.get("XARM_GRAPH_ADMIN_STATE_DIR", os.path.join("src", "settings"))
+        return os.path.join(directory, f"graph_admin_override_{suffix}.json")
+
+    def _load_admin_graph_off(self) -> None:
+        try:
+            with open(self._admin_graph_state_path(), encoding="utf-8") as handle:
+                record = json.load(handle)
+        except FileNotFoundError:
+            return
+        # Invalid state must not silently enable freehand operation.
+        if (not isinstance(record, dict) or record.get("schema_version") != 1
+                or record.get("mode") != "off"
+                or not all(isinstance(record.get(k), str) and record[k].strip()
+                           for k in ("owner", "reason", "created_at"))):
+            raise ValueError("Invalid administrator graph override state")
+        self._admin_graph_off = record
+
+    def set_admin_graph_off(self, *, owner: str, reason: str) -> dict:
+        """Persist an admin-authorized OFF latch until explicit admin restore."""
+        if not owner.strip() or not reason.strip():
+            raise ValueError("Admin owner and reason must be nonempty")
+        record = {"schema_version": 1, "mode": "off", "owner": owner,
+                  "reason": reason.strip(),
+                  "created_at": datetime.now(timezone.utc).isoformat()}
+        with self._graph_mode_lock:
+            path = self._admin_graph_state_path()
+            directory = os.path.dirname(path)
+            os.makedirs(directory, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(prefix="graph_admin_override_", suffix=".tmp", dir=directory)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(record, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            previous = self.graph_mode.value
+            self._graph_mode_override = None
+            self._admin_graph_off = record
+            self._emit_event("graph_mode_override", from_state=previous,
+                             to_state="off", message=record["reason"], owner=owner,
+                             scope="admin", persistent=True)
+            return self.graph_mode_override_snapshot()
+
+    def restore_admin_graph_mode(self, *, owner: str) -> bool:
+        with self._graph_mode_lock:
+            was_active = self._admin_graph_off is not None
+            try:
+                os.unlink(self._admin_graph_state_path())
+            except FileNotFoundError:
+                pass
+            previous = self.graph_mode.value
+            self._admin_graph_off = None
+            self._graph_mode_override = None
+            self._graph_mode = GraphMode.STRICT if self.motion_graph is not None else GraphMode.OFF
+            self._emit_event("graph_mode_restored", from_state=previous,
+                             to_state=self._graph_mode.value, owner=owner,
+                             trigger="admin_restore")
+            return was_active
 
     def _revert_graph_mode_if_due(self) -> Optional[str]:
         """Restore the pre-override mode if the window has closed.
@@ -2583,9 +2657,8 @@ class XArmController:
                 trigger = "ttl_expired"
             elif (override["session_id"] is not None
                     and self._claim_session_id() != override["session_id"]):
-                # Only when a claim was actually held at grant time. With
-                # enforcement off there is no session to lose, and treating
-                # that absence as a loss would revert instantly.
+                # Only for claim-bound overrides. Admin overrides deliberately
+                # have no session_id and survive changes of claim ownership.
                 trigger = "claim_released"
             else:
                 return None
@@ -2658,6 +2731,8 @@ class XArmController:
             )
 
         with self._graph_mode_lock:
+            if getattr(self, "_admin_graph_off", None) is not None:
+                raise RuntimeError("Administrator graph OFF is active; only an administrator can restore it")
             self._revert_graph_mode_if_due()
             override = self._graph_mode_override
 
@@ -2734,6 +2809,13 @@ class XArmController:
 
     def graph_mode_override_snapshot(self) -> Optional[dict]:
         """``details.motion_graph.mode_override``, or None when not lowered."""
+        admin = getattr(self, "_admin_graph_off", None)
+        if admin is not None:
+            return {"active": True, "mode": "off", "restores_to": "strict",
+                    "scope": "admin", "persistent": True, "claim_bound": False,
+                    "owner": admin["owner"], "reason": admin["reason"],
+                    "created_at": admin["created_at"], "granted_seconds": None,
+                    "remaining_seconds": None, "expires_at": None}
         self._revert_graph_mode_if_due()
         override = self._graph_mode_override
         if override is None:
@@ -2745,6 +2827,7 @@ class XArmController:
             "restores_to": override["previous"].value,
             "reason": override["reason"],
             "owner": override["owner"],
+            "claim_bound": override["session_id"] is not None,
             "granted_seconds": round(override["granted"], 1),
             "remaining_seconds": round(remaining, 1),
             "expires_at": datetime.fromtimestamp(
@@ -2970,9 +3053,8 @@ class XArmController:
     def disconnect(self):
         """Disconnects from the robot arm."""
         print("Disconnecting Robot Arm...")
-        # A lowered graph mode must not survive the arm it was lowered for.
-        # Reconnecting boots STRICT from the YAML, so leaving the override
-        # armed would silently re-lower the next session's floor.
+        # End ordinary claim-bound windows. The separate persistent admin
+        # latch deliberately survives disconnect and is restored only by admin.
         self.restore_graph_mode("disconnect")
         self._emit_event("shutdown", message="Controller disconnecting")
         self._emit_state_transition("requires_init", message="Controller disconnected")
@@ -3660,4 +3742,3 @@ class XArmController:
         else:
             print(f"Error: Unsupported position format for '{location_name}': {type(position_data)}")
             return None
-

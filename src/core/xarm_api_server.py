@@ -314,6 +314,30 @@ class GraphModeRequest(BaseModel):
     )
 
 
+class GraphOffRequest(BaseModel):
+    """Optional settings for the one-call, bounded graph OFF shortcut."""
+
+    reason: str = Field(
+        default="Operator requested graph OFF via shortcut",
+        min_length=1,
+        description="Audit reason; a default is supplied for the shortcut.",
+    )
+    ttl_seconds: Optional[float] = Field(
+        default=None,
+        ge=1.0,
+        description="OFF duration; omitted uses the graph configuration default, capped by its maximum.",
+    )
+
+
+class AdminGraphOffRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    reason: str = Field(
+        default="Administrator requested graph OFF independent of claims",
+        min_length=1,
+        description="Audit reason for persistent OFF until an administrator restores it.",
+    )
+
+
 class SashOverrideRequest(BaseModel):
     """Request model for suspending the fume hood sash interlock.
 
@@ -936,14 +960,14 @@ def _edge_identity(request: Request) -> Optional[dict]:
     return {"email": email, "role": role}
 
 
-async def _resolve_identity(request: Request) -> Optional[str]:
+async def _resolve_verified_identity(request: Request) -> Optional[dict]:
     """Resolve a verified principal email for a control request.
 
     Checks, in order: the trusted edge identity (``X-Auth-User`` +
     ``X-Edge-Auth``, see ``_edge_identity``), then an ``X-Api-Key`` header
     (machine principals / future SDK workflows -> the sidecar's
     GET /auth/verify), then the ``ac_auth_session`` cookie (humans ->
-    GET /auth/me). Returns the verified email, or None when no credential was
+    GET /auth/me). Returns the verified identity, or None when no credential was
     presented / it didn't validate.
 
     Fails closed: the sidecar round-trip runs off the event loop and any
@@ -953,20 +977,41 @@ async def _resolve_identity(request: Request) -> Optional[str]:
     """
     edge = _edge_identity(request)
     if edge:
-        return edge["email"]
+        return edge
     api_key = request.headers.get("X-Api-Key")
     if api_key:
         status, payload, _ = await asyncio.to_thread(
             _auth_sidecar_call, "GET", "/auth/verify", None, None, api_key=api_key,
         )
-        return _identity_email(payload) if status == 200 else None
-    token = request.cookies.get(AUTH_COOKIE_NAME)
-    if token:
+    elif request.cookies.get(AUTH_COOKIE_NAME):
+        token = request.cookies[AUTH_COOKIE_NAME]
         status, payload, _ = await asyncio.to_thread(
             _auth_sidecar_call, "GET", "/auth/me", None, token,
         )
-        return _identity_email(payload) if status == 200 else None
-    return None
+    else:
+        return None
+    if status != 200 or not _identity_email(payload):
+        return None
+    identity = payload.get("identity")
+    return identity if isinstance(identity, dict) and identity.get("email") else payload
+
+
+async def _resolve_identity(request: Request) -> Optional[str]:
+    identity = await _resolve_verified_identity(request)
+    return identity["email"] if identity else None
+
+
+async def require_admin(request: Request):
+    """Always verify admin identity, even when the general login gate is off."""
+    try:
+        identity = await _resolve_verified_identity(request)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Auth service unreachable; cannot verify admin identity.")
+    if not identity:
+        raise HTTPException(status_code=401, detail={"error": "login_required", "hint": _LOGIN_HINT})
+    if identity.get("role") != "admin":
+        raise HTTPException(status_code=403, detail={"error": "admin_required"})
+    request.state.identity_email = identity["email"]
 
 
 class AuthEmailIn(BaseModel):
@@ -4176,7 +4221,14 @@ async def set_graph_mode(request: GraphModeRequest, http_request: Request):
     both null when none was needed. Re-issuing while lowered grants a fresh
     full window rather than erroring.
     """
+    return await _apply_graph_mode(request, http_request)
+
+
+async def _apply_graph_mode(
+    request: GraphModeRequest, http_request: Request,
+):
     c = get_controller()
+    _reject_admin_graph_override(c)
     try:
         mode = GraphMode(request.mode)
     except ValueError:
@@ -4230,6 +4282,73 @@ async def set_graph_mode(request: GraphModeRequest, http_request: Request):
     }
 
 
+@app.post("/control/graph/off", dependencies=[Depends(require_claim)])
+async def turn_graph_off(
+    http_request: Request, request: Optional[GraphOffRequest] = None,
+):
+    """Temporarily turn graph enforcement OFF; no request body is required.
+
+    Uses the same claim, audit, TTL cap and automatic restoration as
+    /control/graph/mode. Optional reason and ttl_seconds customize the window.
+    Restore early with /control/graph/mode/restore. This changes graph
+    enforcement only, without moving the arm or disabling other checks.
+    """
+    options = request or GraphOffRequest()
+    return await set_graph_mode(
+        GraphModeRequest(
+            mode="off", reason=options.reason, ttl_seconds=options.ttl_seconds,
+        ),
+        http_request,
+    )
+
+
+@app.post("/control/admin/graph/off", dependencies=[Depends(require_admin)])
+async def admin_turn_graph_off(
+    http_request: Request, request: Optional[AdminGraphOffRequest] = None,
+):
+    """Admin-only graph OFF, without acquiring or holding a claim.
+
+    No body required. OFF persists until explicit admin restoration, including
+    across claim changes, disconnects and service restarts. No TTL. Ordinary
+    motion still requires its existing claim and other safety checks.
+    """
+    options = request or AdminGraphOffRequest()
+    c = get_controller()
+    try:
+        override = c.set_admin_graph_off(
+            owner=http_request.state.identity_email, reason=options.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except OSError:
+        logger.exception("Could not persist administrator graph OFF")
+        raise HTTPException(status_code=503, detail="Could not persist administrator graph state; mode unchanged.")
+    await broadcast_status_update()
+    return {"graph_mode": c.graph_mode.value, "mode_override": override}
+
+
+@app.post("/control/admin/graph/restore", dependencies=[Depends(require_admin)])
+async def admin_restore_graph_mode(http_request: Request):
+    """Admin-only restoration to STRICT, without a claim."""
+    c = get_controller()
+    try:
+        cleared = c.restore_admin_graph_mode(owner=http_request.state.identity_email)
+    except OSError:
+        logger.exception("Could not clear administrator graph OFF")
+        raise HTTPException(status_code=503, detail="Could not clear administrator graph state; mode unchanged.")
+    await broadcast_status_update()
+    return {"graph_mode": c.graph_mode.value, "override_cleared": cleared}
+
+
+def _reject_admin_graph_override(c):
+    override = c.graph_mode_override_snapshot()
+    if isinstance(override, dict) and override.get("scope") == "admin":
+        raise HTTPException(status_code=409, detail={
+            "error": "admin_graph_off",
+            "message": "Administrator OFF is active; use the admin restore endpoint to re-enable the graph.",
+        })
+
+
 @app.post("/control/graph/mode/restore", dependencies=[Depends(require_claim)])
 async def restore_graph_mode():
     """Drop a mode override early, restoring STRICT now.
@@ -4241,6 +4360,7 @@ async def restore_graph_mode():
     know which value to send.
     """
     c = get_controller()
+    _reject_admin_graph_override(c)
     was_overridden = c.restore_graph_mode("explicit") is not None
     # No override does not mean nothing to do: a deployment can boot below
     # STRICT, or have been lowered before windows existed. The button means
@@ -5027,4 +5147,4 @@ if __name__ == "__main__":
 
     # app.add_event_handler("startup", startup_connect)
     
-    uvicorn.run(app, host=host, port=port) 
+    uvicorn.run(app, host=host, port=port)

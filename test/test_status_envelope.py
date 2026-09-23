@@ -483,6 +483,45 @@ def test_graph_family_names_listed_in_advisory_mode(client_with_controller):
     assert not [a for a in envelope.allowed_actions if a.startswith('gripper.')]
 
 
+@pytest.mark.parametrize('mode', ['off', 'advisory', 'strict'])
+@pytest.mark.parametrize('graph_loaded', [True, False])
+def test_freehand_actions_follow_graph_mode(mode, graph_loaded):
+    controller = _fake_controller(graph_mode=MagicMock(value=mode))
+    if not graph_loaded:
+        controller.motion_graph = None
+    actions = set(build_status(controller).allowed_actions)
+    freehand = {'freehand.position', 'freehand.relative', 'freehand.joints'}
+    if mode == 'strict':
+        assert actions.isdisjoint(freehand)
+    else:
+        assert freehand <= actions
+
+
+@pytest.mark.parametrize('overrides', [
+    {'_motion_in_progress': True},
+    {'is_real_box_simulating': True},
+    {'last_error_code': 1},
+])
+def test_freehand_actions_withheld_when_not_available(overrides):
+    controller = _fake_controller(graph_mode=MagicMock(value='off'), **overrides)
+    assert not any(
+        action.startswith('freehand.')
+        for action in build_status(controller).allowed_actions
+    )
+
+
+def test_admin_off_advertises_freehand_but_withholds_ordinary_mode_switch():
+    controller = _fake_controller(graph_mode=MagicMock(value='off'))
+    controller.graph_mode_override_snapshot.return_value = {
+        'active': True, 'scope': 'admin', 'mode': 'off', 'persistent': True,
+        'claim_bound': False, 'remaining_seconds': None, 'expires_at': None,
+    }
+    status = build_status(controller)
+    assert {'freehand.position', 'freehand.relative', 'freehand.joints'} <= set(status.allowed_actions)
+    assert 'graph.mode' not in status.allowed_actions
+    assert status.details['motion_graph']['mode_override']['scope'] == 'admin'
+
+
 def test_graph_gripper_family_withheld_without_a_gripper(client_with_controller):
     """No gripper attached: the family name is withheld in every mode, same
     as the per-state enumeration."""

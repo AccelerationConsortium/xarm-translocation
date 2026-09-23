@@ -128,8 +128,9 @@ def test_strict_refuses_freehand(client, claim_headers, path, body, action):
 
 
 @pytest.mark.parametrize("path,body,action", FREEHAND_CALLS)
-def test_advisory_allows_freehand(client, claim_headers, mock_controller, path, body, action):
-    mock_controller.graph_mode = GraphMode.ADVISORY
+@pytest.mark.parametrize("mode", [GraphMode.ADVISORY, GraphMode.OFF])
+def test_lowered_mode_allows_freehand(client, claim_headers, mock_controller, path, body, action, mode):
+    mock_controller.graph_mode = mode
     resp = client.post(path, json=body, headers=claim_headers)
     assert resp.status_code == 200, resp.text
 

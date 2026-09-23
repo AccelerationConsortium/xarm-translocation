@@ -35,7 +35,9 @@ first, do your work, release it. Do not hold one across a long idle stretch.
   **409**. That is the same rule on two surfaces, by design.
 - `allowed_actions` — the catalog names you may call now. Motion families are
   `graph.move_to`, `graph.travel_to`, `graph.gripper`, `graph.recover_to`,
-  `graph.mode`, `graph.record`. The depth cameras add `realsense.capture`,
+  `graph.mode`, `graph.record`. In OFF or ADVISORY, idle motion also exposes
+  `freehand.position`, `freehand.relative`, and `freehand.joints`. These are
+  xArm-specific `lab-skills` catalog entries. The depth cameras add `realsense.capture`,
   which is offered when *any* configured camera could serve it.
 - `details.motion_graph.current_node` — where the arm is on the graph, or
   `null` when it is off-grid after a stop or a raw move.
@@ -51,8 +53,8 @@ independently, and one merged entry would hide the working one.
 
 ## Moving the arm
 
-Motion is a graph, not free space. Nodes are named positions; edges are
-whitelisted transitions. In `strict` mode only the edges out of the current
+Nodes are named positions; edges are whitelisted transitions. In `strict`
+mode only the edges out of the current
 node are legal, and `allowed_actions` enumerates them as `move.<node_id>`.
 
 A fume-hood sash interlock withholds hood and Opentrons targets while the sash
@@ -63,6 +65,40 @@ target is currently withheld for this reason and no **412** will come from it
 — do not read that silence as "the sash is open".
 
 `POST /control/stop` is always available while the device is reachable.
+
+### Cartesian work with the graph OFF
+
+An administrator may enable persistent OFF using
+`POST /control/admin/graph/off` (no body or claim required; verified admin
+identity required). It remains OFF for all users until
+`POST /control/admin/graph/restore`, including across restarts. Users retain
+their own motion claims; releasing those claims does not restore the graph.
+The status override has `scope: admin` and no expiry. This is separate from
+the ordinary timed `graph.mode` workflow below.
+
+Use the `lab-skills` SDK and its claim/session handling for agent control.
+The dashboard API Reference lists `freehand.position` (absolute TCP pose),
+`freehand.relative` (TCP displacement), and `freehand.joints` (joint angles).
+Coordinates and displacements are in mm; angles are in degrees. The live
+OpenAPI document supplies the request schemas.
+
+An authorized mode change uses `graph.mode` with `mode: off`, a nonempty
+`reason`, and optional `ttl_seconds`. The device applies its configured
+default and maximum; inspect `details.motion_graph.mode_override` for the
+actual remaining window. Claim release/expiry or window expiry restores
+STRICT. Restore explicitly with `graph.mode` and `mode: strict` when done.
+
+For clients using the SDK's generic command surface, the device also offers
+`POST /control/graph/off` with no body: the same OFF operation with a default
+audit reason and configured duration. Optional `reason` and `ttl_seconds`
+override those defaults. The same claim and auto-restoration rules apply.
+
+Freehand moves remain subject to claims, device safety checks, configured
+interlocks, and the motion reservation. STRICT rejects them with 409.
+They clear the named pose pin. Before resuming graph motion, recover to a
+verified node. HTTP success acknowledges acceptance; poll status to observe
+completion and errors before issuing another move. A disconnected device
+must be connected by an authenticated operator; the SDK does not auto-connect.
 
 ## The depth cameras
 
