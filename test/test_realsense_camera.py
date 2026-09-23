@@ -384,6 +384,9 @@ class TestConfiguration:
         cam = built["rs405"]
         assert cam.serial == "218622279627"
         assert cam.mount["facing"] == "down"
+        assert cam.short_label == "RS D405"
+        assert built["rs435i"].short_label == "RS 435i"
+        assert cam.describe()["short_label"] == "RS D405"
 
     def test_mount_is_reported_and_defaults_to_nulls(self, rs):
         cam = RealSenseCamera(_config(mount={"location": " gripper ", "facing": "down"}),

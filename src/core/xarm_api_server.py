@@ -3332,6 +3332,7 @@ async def realsense_cameras():
             out.append({
                 "id": camera_id,
                 "label": camera.label,
+                "short_label": getattr(camera, "short_label", None) or camera_id,
                 "mount": dict(getattr(camera, "mount", None) or {}),
                 "state": described["state"],
                 "streaming": described["streaming"],

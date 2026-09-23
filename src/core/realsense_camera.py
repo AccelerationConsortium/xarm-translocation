@@ -123,6 +123,8 @@ class RealSenseCamera:
         self.enabled = bool(config.get("enabled", False))
         self.serial = str(config.get("serial", "") or "").strip() or None
         self.label = str(config.get("label", "") or "").strip() or "RealSense camera"
+        # Button-sized name for the panel's camera toggle ("RS D405").
+        self.short_label = str(config.get("short_label", "") or "").strip() or self.camera_id
         # Where the camera sits and which way it looks. Descriptive only: it
         # never alters the frames. Reported on every surface and in each
         # capture's meta.json so a frame can be interpreted without knowing
@@ -649,6 +651,7 @@ class RealSenseCamera:
                 "installed": self.installed,
                 "library_version": self.library_version,
                 "label": self.label,
+                "short_label": self.short_label,
                 "mount": dict(self.mount),
                 "state": state,
                 "streaming": state == "streaming",

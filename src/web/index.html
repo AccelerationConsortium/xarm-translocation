@@ -39,7 +39,7 @@
         if (embedded) setInterval(applyTheme, 1000);
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260923c">
+    <link rel="stylesheet" href="style.css?v=20260923d">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -423,8 +423,9 @@
                      is shared with graph.html via camera-player.js. See
                      core/camera_tracker.py. -->
                 <div class="card" id="camera-card" hidden>
-                    <div class="camera-head">
+                    <div class="camera-head card-fold-head" id="camera-card-head" role="button" tabindex="0" aria-expanded="true">
                         <h2><span class="camera-dot" id="camera-dot" aria-hidden="true"></span>Lab Camera</h2>
+                        <span class="card-fold-caret" aria-hidden="true"></span>
                     </div>
                     <!-- PTZ pad, mirroring the dashboard's CameraTile
                          (ac-organic-lab web/src/components/PtzPad.tsx):
@@ -478,30 +479,32 @@
                     </div><!-- /camera-row -->
                 </div>
 
-                <!-- Depth Cameras — the Intel RealSense units plugged into
-                     THIS PC (src/settings/realsense.yaml). One card per
-                     camera, built from the template below:
-                     GET /realsense/cameras lists them and every path is then
-                     /realsense/<id>/… . The preview is an MJPEG <img> from
-                     /realsense/<id>/stream.mjpg; clicking it reads the metric
-                     distance under the cursor from /realsense/<id>/depth.
+                <!-- Stereo Camera — the Intel RealSense units plugged into
+                     THIS PC (src/settings/realsense.yaml). Same layout as
+                     the Lab Camera card: title with live dot, a side column
+                     (status, camera toggle, controls) and the stage. The
+                     toggle lists every camera in the YAML by its
+                     `short_label` (RS D405 / RS 435i); one card per camera
+                     is cloned from the template below but only the chosen
+                     one is shown or streams. The preview is an MJPEG <img>
+                     from /realsense/<id>/stream.mjpg; clicking it reads the
+                     metric distance under the cursor from
+                     /realsense/<id>/depth. Click the title to fold the card.
                      Nothing renders when no camera is configured. Wiring in
                      realsense-card.js; see core/realsense_camera.py. -->
                 <div id="realsense-cards"></div>
                 <template id="realsense-card-template">
                     <div class="card realsense-card" hidden>
-                        <div class="camera-head">
-                            <h2 data-rs="title">Depth Camera</h2>
-                            <span data-rs="status" class="muted camera-status"></span>
+                        <div class="camera-head card-fold-head" data-rs="head" role="button" tabindex="0" aria-expanded="true">
+                            <h2><span class="camera-dot" aria-hidden="true"></span>Stereo Camera</h2>
+                            <span class="card-fold-caret" aria-hidden="true"></span>
                         </div>
                         <div class="camera-row">
-                        <div class="camera-side realsense-side">
-                            <!-- Camera picker: one button per configured
-                                 RealSense, shown only when there are two or
-                                 more. Only the chosen camera's card is
-                                 visible and streaming. Filled by
-                                 realsense-card.js. -->
-                            <div class="lens-btns realsense-cams" data-rs="cams" role="radiogroup" aria-label="Depth camera" hidden></div>
+                        <div class="camera-side">
+                            <span data-rs="status" class="muted camera-status"></span>
+                            <!-- Camera toggle: one button per camera in the
+                                 YAML. Filled by realsense-card.js. -->
+                            <div class="lens-btns realsense-cams" data-rs="cams" role="radiogroup" aria-label="Stereo camera"></div>
                             <button type="button" data-rs="toggle" class="btn btn-secondary realsense-btn" disabled>Start</button>
                             <div class="lens-btns realsense-kinds">
                                 <button type="button" class="lens-btn is-on" data-rs-kind="color">Color</button>
@@ -510,7 +513,7 @@
                             <span class="muted realsense-hint">Click the image to measure distance.</span>
                         </div>
                         <div class="camera-stage realsense-stage">
-                            <img data-rs="img" class="camera-video realsense-img" alt="RealSense live preview" hidden>
+                            <img data-rs="img" class="camera-video realsense-img" alt="Stereo camera live preview" hidden>
                             <div data-rs="marker" class="realsense-marker" hidden aria-hidden="true"></div>
                             <div data-rs="overlay" class="camera-overlay">
                                 <span data-rs="overlay-text">Connecting…</span>
@@ -684,7 +687,7 @@
       }
     </script>
     <script src="camera-player.js?v=20260915a"></script>
-    <script src="realsense-card.js?v=20260923c"></script>
-    <script src="main.js?v=20260923c"></script>
+    <script src="realsense-card.js?v=20260923d"></script>
+    <script src="main.js?v=20260923d"></script>
 </body>
 </html>

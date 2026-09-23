@@ -410,6 +410,57 @@ h3 {
     min-height: 0;
 }
 
+/* Stereo Camera matches the Lab Camera card's frame exactly. */
+.realsense-card {
+    height: 320px;
+    display: flex;
+    flex-direction: column;
+}
+
+.realsense-card .camera-stage {
+    flex: 1 1 auto;
+    aspect-ratio: auto;
+    min-height: 0;
+}
+
+/* Foldable camera cards: click the title row. Folded, only the title
+   row remains and the card drops its fixed height. */
+.card-fold-head {
+    cursor: pointer;
+    user-select: none;
+}
+
+.card-fold-head:focus-visible {
+    outline: 2px solid var(--primary-active);
+    outline-offset: 4px;
+    border-radius: 4px;
+}
+
+.card-fold-caret::before {
+    content: "\25BE";               /* ▾ */
+    display: inline-block;
+    color: var(--ink-subtle);
+    font-size: 1rem;
+    transition: transform 0.15s ease;
+}
+
+.card.is-folded .card-fold-caret::before {
+    transform: rotate(-90deg);
+}
+
+#camera-card.is-folded,
+.realsense-card.is-folded {
+    height: auto;
+}
+
+.card.is-folded .camera-head {
+    margin-bottom: 0;
+}
+
+.card.is-folded .camera-row {
+    display: none;
+}
+
 .page-right .log-stream {
     min-height: 0;
     max-height: none;
@@ -886,7 +937,8 @@ input#linear-speed {
     transition: background 0.2s ease, box-shadow 0.2s ease;
 }
 
-#camera-card.camera-live .camera-dot {
+#camera-card.camera-live .camera-dot,
+.realsense-card.camera-live .camera-dot {
     background: var(--emerald);
     box-shadow: 0 0 6px rgba(16, 185, 129, 0.7);
 }
@@ -2724,14 +2776,9 @@ input#linear-speed {
 :root.dark .mg-sash--warn     { color: #fbbf24; }   /* amber-400 */
 :root.dark .mg-sash--override { color: #60a5fa; }   /* blue-400 */
 
-/* Depth Camera card (RealSense). Reuses the Lab Camera stage/overlay
-   rules; these cover the click-to-measure marker + readout and the
-   narrower side column (no PTZ pad to size against). */
-.realsense-side {
-    flex-basis: 7.5rem;
-    width: 7.5rem;
-}
-
+/* Stereo Camera card (RealSense). Reuses the Lab Camera side column,
+   stage and overlay rules; these cover the camera toggle, the
+   click-to-measure marker and readout. */
 .realsense-btn {
     width: 100%;
 }
@@ -2745,17 +2792,15 @@ input#linear-speed {
     flex: 1 1 0;
 }
 
-/* Camera picker: stacked full-width in the narrow side column, one
-   button per RealSense ("D405 · down"). */
+/* Camera toggle: side by side like Wide / Tele, one button per camera
+   in realsense.yaml ("RS D405" | "RS 435i"); wraps if a third arrives. */
 .realsense-cams {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+    flex-wrap: wrap;
 }
 
 .realsense-cams .lens-btn {
-    flex: 0 0 auto;
-    width: 100%;
+    padding-left: 4px;
+    padding-right: 4px;
     white-space: nowrap;
 }
 

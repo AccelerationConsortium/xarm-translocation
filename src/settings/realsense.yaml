@@ -33,6 +33,9 @@ enabled: true
 # with a logged reason instead of being allowed to guess. With exactly one
 # camera an empty serial is fine (it opens whatever is plugged in).
 #
+# `short_label` is the camera's name on the panel's Stereo Camera toggle
+# (defaults to the id). Keep it button-sized, e.g. "RS D405".
+#
 # An entry may set `mount: {location: ..., facing: ...}` to record where the
 # camera sits and which way it looks. Descriptive only (frames are never
 # rotated); it is echoed on every surface and into each capture's meta.json.
@@ -46,6 +49,7 @@ cameras:
   - id: rs435i
     serial: "050422071813"
     label: "xArm depth camera (D435i, eye-in-hand)"
+    short_label: "RS 435i"
     mount: {location: "gripper (eye-in-hand)"}
 
     # Streaming lifecycle.
@@ -108,6 +112,7 @@ cameras:
   - id: rs405
     serial: "218622279627"
     label: "xArm close-range depth camera (D405, facing down)"
+    short_label: "RS D405"
     # `mount` is descriptive only -- it never rotates or flips the frames.
     # It is reported on /realsense/cameras, /status and in each capture's
     # meta.json. `location` is left unset until the mount point is recorded.

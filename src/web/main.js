@@ -2502,6 +2502,32 @@ document.addEventListener('DOMContentLoaded', () => {
         mgRestoreBtn.addEventListener('click', restoreGraphModeNow);
     }
     initAdminGraphOff();
+
+    // Lab Camera folds on a click of its title, like the Stereo Camera card
+    // (realsense-card.js). Only the body hides; camera-player.js keeps
+    // managing the card itself. Remembered per browser.
+    (function initLabCameraFold() {
+        const card = document.getElementById('camera-card');
+        const head = document.getElementById('camera-card-head');
+        if (!card || !head) return;
+        const KEY = 'xarm.fold.labcam';
+        const apply = (folded) => {
+            card.classList.toggle('is-folded', folded);
+            head.setAttribute('aria-expanded', folded ? 'false' : 'true');
+        };
+        let folded = false;
+        try { folded = localStorage.getItem(KEY) === '1'; } catch { folded = false; }
+        apply(folded);
+        const toggle = () => {
+            folded = !folded;
+            try { localStorage.setItem(KEY, folded ? '1' : '0'); } catch { /* storage blocked */ }
+            apply(folded);
+        };
+        head.addEventListener('click', toggle);
+        head.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); }
+        });
+    })();
     const mgRecoverBtn = document.getElementById('mg-recover-btn');
     if (mgRecoverBtn) {
         mgRecoverBtn.addEventListener('click', openRecoverPanel);

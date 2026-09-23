@@ -8,12 +8,14 @@
  * the YAML about how it is spelled.
  *
  * One card is cloned from #realsense-card-template per camera and appended to
- * #realsense-cards; nothing renders when no camera is configured. With two or
- * more cameras only one card is shown at a time: each card carries a picker
- * (one button per camera), and the hidden cards drop their stream so an
- * unseen camera costs no USB bandwidth (its pipeline then idles out on the
- * server's idle_timeout_seconds). The choice is remembered per browser. Per
- * card the
+ * #realsense-cards; nothing renders when no camera is configured. Only one
+ * card is shown at a time, titled "Stereo Camera": each carries a toggle
+ * with one button per camera in realsense.yaml (named by `short_label`), and
+ * the hidden cards drop their stream so an unseen camera costs no USB
+ * bandwidth (its pipeline then idles out on the server's
+ * idle_timeout_seconds). Clicking the title folds the card, which also drops
+ * the stream. The choice and the fold are remembered per browser. Per card
+ * the
  * behaviour is unchanged: the live preview is a plain <img> pointed at the
  * camera's stream.mjpg (MJPEG, paced to 10 fps server-side), Color/Depth swap
  * the query string, and clicking the image asks that camera's /depth for the
@@ -44,12 +46,23 @@
         var activeId = null;     // the one camera whose card is visible
         var listTimer = null;
         var STORE_KEY = 'xarm.realsense.active';
+        var FOLD_KEY = 'xarm.fold.stereo';
 
         function loadActive() {
             try { return window.localStorage.getItem(STORE_KEY); } catch (e) { return null; }
         }
         function saveActive(id) {
             try { window.localStorage.setItem(STORE_KEY, id); } catch (e) { /* storage blocked */ }
+        }
+
+        // Fold state is shared by every clone: only one is ever visible, and
+        // switching cameras should not unfold the card.
+        var folded = false;
+        try { folded = window.localStorage.getItem(FOLD_KEY) === '1'; } catch (e) { folded = false; }
+        function setFolded(on) {
+            folded = !!on;
+            try { window.localStorage.setItem(FOLD_KEY, folded ? '1' : '0'); } catch (e) { /* storage blocked */ }
+            order.forEach(function (cid) { cards[cid].applyFold(); });
         }
 
         function selectCamera(id) {
@@ -60,26 +73,16 @@
             renderPickers();
         }
 
-        // Short model name: the live device's, else the "(D435i, ...)" in the
-        // configured label (an unplugged camera has no device), else the id.
+        // The YAML's short_label ("RS D405"); older servers omit it.
         function pickerLabel(entry) {
-            var facing = entry.mount && entry.mount.facing;
-            var name = entry.device && entry.device.name;
-            if (!name) {
-                var m = /\((D\d+\w*)/i.exec(entry.label || '');
-                name = m ? m[1] : entry.id;
-            }
-            name = String(name).replace(/^Intel\(R\) RealSense\(TM\)\s*/, '').replace(/^RealSense\s*/, '');
-            return facing ? name + ' · ' + facing : name;
+            return entry.short_label || entry.id;
         }
 
         function renderPickers() {
             order.forEach(function (cid) {
                 var box = cards[cid].pickerEl;
                 if (!box) return;
-                box.hidden = order.length < 2;
                 box.innerHTML = '';
-                if (order.length < 2) return;
                 order.forEach(function (id) {
                     var b = document.createElement('button');
                     b.type = 'button';
@@ -115,7 +118,7 @@
             host.appendChild(root);
 
             function el(name) { return root.querySelector('[data-rs="' + name + '"]'); }
-            var titleEl = el('title');
+            var headEl = el('head');
             var statusEl = el('status');
             var toggleBtn = el('toggle');
             var img = el('img');
@@ -140,8 +143,8 @@
             var disposed = false;
             var active = true;            // false: card hidden, no stream held
 
-            if (titleEl) titleEl.textContent = entry.label || ('Depth Camera · ' + entry.id);
             root.setAttribute('data-camera-id', entry.id);
+            root.title = entry.label || '';
             root.hidden = false;
 
             function showOverlay(text) {
@@ -155,16 +158,18 @@
                     + '?stream=' + kind + '&fps=10&t=' + Date.now();
             }
             function attach() {
-                if (document.hidden || disposed || !active) return;   // no point decoding unseen frames
+                if (document.hidden || disposed || !active || folded) return;   // no point decoding unseen frames
                 var next = streamUrl();
                 attached = next;
                 img.src = next;
                 img.hidden = false;
+                root.classList.add('camera-live');      // glowing title dot, like the Lab Camera
             }
             function detach() {
                 attached = null;
                 img.removeAttribute('src');
                 img.hidden = true;
+                root.classList.remove('camera-live');
                 clearMarker();
             }
             img.addEventListener('error', function () {
@@ -176,6 +181,14 @@
                 if (document.hidden) { if (attached) detach(); }
                 else if (streaming && active) attach();
             });
+
+            function toggleFold() { setFolded(!folded); }
+            if (headEl) {
+                headEl.addEventListener('click', toggleFold);
+                headEl.addEventListener('keydown', function (ev) {
+                    if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggleFold(); }
+                });
+            }
 
             function clearMarker() {
                 if (marker) marker.hidden = true;
@@ -240,8 +253,9 @@
                 toggleBtn.disabled = busy || (!streaming && (!d.installed || d.present === false));
                 // `devices` is the whole bus; only trust it when this camera is on it.
                 var dev = d.device || (d.present !== false && d.devices && d.devices[0]) || null;
-                var bits = [entry.id];
-                if (dev && dev.name) bits.push(dev.name.replace(/^Intel\(R\) RealSense\(TM\)\s*/, ''));
+                // Compact, like the Lab Camera's status: the toggle already
+                // names the camera, so this carries link + rate only.
+                var bits = [];
                 if (dev && dev.usb_type) bits.push('USB ' + dev.usb_type);
                 if (d.mount && d.mount.facing) bits.push('facing ' + d.mount.facing);
                 if (streaming && d.fps_measured) bits.push(d.fps_measured + ' fps');
@@ -278,6 +292,12 @@
 
             return {
                 pickerEl: pickerEl,
+                applyFold: function () {
+                    root.classList.toggle('is-folded', folded);
+                    if (headEl) headEl.setAttribute('aria-expanded', folded ? 'false' : 'true');
+                    if (folded && attached) detach();
+                    else if (!folded && active && streaming) attach();
+                },
                 setActive: function (on) {
                     active = !!on;
                     root.hidden = !active;
@@ -308,7 +328,7 @@
                 seen[entry.id] = true;
                 order.push(entry.id);
                 entries[entry.id] = entry;
-                if (!cards[entry.id]) cards[entry.id] = makeCard(entry);
+                if (!cards[entry.id]) { cards[entry.id] = makeCard(entry); cards[entry.id].applyFold(); }
             });
             Object.keys(cards).forEach(function (id) {
                 if (!seen[id]) { cards[id].dispose(); delete cards[id]; delete entries[id]; }
