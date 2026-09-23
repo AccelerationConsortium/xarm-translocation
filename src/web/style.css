@@ -995,7 +995,8 @@ input#linear-speed {
     color: var(--ink);
 }
 
-.lens-btn.active {
+.lens-btn.active,
+.lens-btn.is-on {
     background: var(--primary);
     border-color: var(--primary);
     color: #ffffff;
