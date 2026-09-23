@@ -40,6 +40,14 @@ enabled: true
 # camera sits and which way it looks. Descriptive only (frames are never
 # rotated); it is echoed on every surface and into each capture's meta.json.
 #
+# `keep_frame_rate` (default true) turns off the RGB sensor's "auto exposure
+# priority", which otherwise stretches exposure in dim light and halves the
+# frame rate (the D435i measured 14 fps against 30 configured, 2026-09-23).
+# Set it false to prefer brighter frames over rate.
+#
+# A camera that opens but delivers no first frame is hardware-reset and
+# retried once on start (a stuck D405 needed exactly that, 2026-09-23).
+#
 # An entry may set `enabled: false` to park a camera without deleting its
 # configuration; it is then not registered and does not appear anywhere.
 #

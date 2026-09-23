@@ -65,8 +65,33 @@ class FakeDevice:
     def first_depth_sensor(self):
         return self
 
+    # hardware_reset / query_sensors: the stuck-camera recovery and the
+    # keep-frame-rate option. ``rs_ns`` is attached by FakePipelineProfile.
+    rs_ns = None
+
+    def hardware_reset(self):
+        if self.rs_ns is not None:
+            self.rs_ns.resets += 1
+            self.rs_ns.stuck = self.rs_ns.stuck_after_reset
+
+    def query_sensors(self):
+        return [FakeSensor(self.rs_ns)] if self.rs_ns is not None else []
+
     def get_depth_scale(self):
         return 0.001
+
+
+class FakeSensor:
+    """rs.sensor: supports / set_option (records what was set)."""
+
+    def __init__(self, rs_ns):
+        self.rs_ns = rs_ns
+
+    def supports(self, option):
+        return True
+
+    def set_option(self, option, value):
+        self.rs_ns.options_set.append((option.name, value))
 
 
 class FakeIntrinsics:
@@ -148,10 +173,11 @@ class FakePipeline:
         dev = self.rs.devices[0] if not cfg.serial else next(
             d for d in self.rs.devices if d.get_info(_Enum("serial_number")) == cfg.serial
         )
+        dev.rs_ns = self.rs
         return FakePipelineProfile(dev, self.rs.width, self.rs.height)
 
     def wait_for_frames(self, timeout_ms):
-        if self.rs.fail_frames:
+        if self.rs.fail_frames or self.rs.stuck:
             raise RuntimeError("Frame didn't arrive within 5000")
         self._n += 1
         time.sleep(self.rs.frame_interval_s)
@@ -218,6 +244,9 @@ class FakeRS:
         z16 = _Enum("z16")
         bgr8 = _Enum("bgr8")
 
+    class option:
+        auto_exposure_priority = _Enum("auto_exposure_priority")
+
     class camera_info:
         name = _Enum("name")
         serial_number = _Enum("serial_number")
@@ -232,6 +261,10 @@ class FakeRS:
         self.start_error = None
         self.enumeration_error = None
         self.fail_frames = False
+        self.stuck = False                 # no frames until hardware_reset()
+        self.stuck_after_reset = False     # ...and whether the reset helps
+        self.resets = 0
+        self.options_set = []
         self.frame_interval_s = 0.002
         self.started_pipelines = []
         self.last_config = None
@@ -587,6 +620,37 @@ class TestCapture:
         rs.fail_frames = False
         camera.start()
         assert camera.streaming and camera.describe()["last_error"] is None
+
+    def test_stuck_camera_is_reset_and_recovers(self, rs, monkeypatch):
+        monkeypatch.setattr(rc.time, "sleep", lambda s: None)
+        rs.stuck = True
+        cam = RealSenseCamera(_config(), rs_module=rs, np_module=np)
+        try:
+            cam.start()
+            assert rs.resets == 1 and cam.streaming
+            assert rs.started_pipelines[0].stopped      # the stuck one was released
+        finally:
+            cam.stop()
+
+    def test_camera_dead_after_reset_is_an_error(self, rs, monkeypatch):
+        monkeypatch.setattr(rc.time, "sleep", lambda s: None)
+        rs.stuck = rs.stuck_after_reset = True
+        cam = RealSenseCamera(_config(), rs_module=rs, np_module=np)
+        with pytest.raises(RealSenseError, match="even after a hardware reset"):
+            cam.start()
+        assert rs.resets == 1 and cam.state == "error"
+        assert all(p.stopped for p in rs.started_pipelines)
+
+    def test_keep_frame_rate_clears_exposure_priority(self, rs):
+        cam = RealSenseCamera(_config(), rs_module=rs, np_module=np)
+        cam.start()
+        cam.stop()
+        assert ("auto_exposure_priority", 0) in rs.options_set
+        rs.options_set.clear()
+        off = RealSenseCamera(_config(keep_frame_rate=False), rs_module=rs, np_module=np)
+        off.start()
+        off.stop()
+        assert rs.options_set == []
 
     def test_idle_timeout_stops_pipeline(self, rs):
         cam = RealSenseCamera(_config(idle_timeout_seconds=0.05), rs_module=rs, np_module=np)

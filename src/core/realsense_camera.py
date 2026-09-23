@@ -137,6 +137,10 @@ class RealSenseCamera:
         self.jpeg_quality = int(min(95, max(1, _as_float(config.get("jpeg_quality"), 80))))
         self.frame_timeout_ms = int(_as_float(config.get("frame_timeout_ms"), 5000))
         self.max_frame_failures = int(_as_float(config.get("max_consecutive_frame_failures"), 5))
+        # Hold the configured frame rate in dim light: librealsense's RGB
+        # "auto exposure priority" otherwise stretches exposure and halves
+        # fps (a D435i measured 14 fps against 30 configured, 2026-09-23).
+        self.keep_frame_rate = bool(config.get("keep_frame_rate", True))
         self.color_profile = _stream_profile(config.get("color"), 640, 480, 30)
         self.depth_profile = _stream_profile(config.get("depth"), 640, 480, 30)
 
@@ -302,21 +306,27 @@ class RealSenseCamera:
         try:
             device = self._pick_device()
             rs = self._rs
-            cfg = rs.config()
-            if device.get("serial"):
-                cfg.enable_device(str(device["serial"]))
-            if self.depth_profile["enabled"]:
-                cfg.enable_stream(rs.stream.depth, self.depth_profile["width"],
-                                  self.depth_profile["height"], rs.format.z16,
-                                  self.depth_profile["fps"])
-            if self.color_profile["enabled"]:
-                cfg.enable_stream(rs.stream.color, self.color_profile["width"],
-                                  self.color_profile["height"], rs.format.bgr8,
-                                  self.color_profile["fps"])
-            pipeline = rs.pipeline()
-            profile = pipeline.start(cfg)
+            pipeline, profile = self._open_pipeline(device)
+            if not self._first_frame_arrives(pipeline):
+                # Seen on a D405 (2026-09-23): the pipeline opens but the
+                # device never delivers a frame at any profile until it is
+                # hardware-reset. Reset once and retry before giving up.
+                logger.warning("RealSense %s delivered no first frame; hardware reset and retry",
+                               device.get("serial"))
+                self._safe_stop(pipeline)
+                self._hardware_reset(profile, device)
+                device = self._pick_device()
+                pipeline, profile = self._open_pipeline(device)
+                if not self._first_frame_arrives(pipeline):
+                    self._safe_stop(pipeline)
+                    raise RuntimeError(
+                        "camera delivers no frames, even after a hardware reset "
+                        "(re-seat the USB 3 cable)"
+                    )
 
             dev = profile.get_device()
+            if self.keep_frame_rate:
+                self._disable_exposure_priority(dev)
             depth_scale = None
             if self.depth_profile["enabled"]:
                 try:
@@ -372,6 +382,70 @@ class RealSenseCamera:
                 self._state = "error"
                 self._last_error = f"{type(exc).__name__}: {exc}"
             raise RealSenseError(f"RealSense pipeline failed to start: {exc}") from exc
+
+    def _open_pipeline(self, device: Dict[str, Any]) -> Tuple[Any, Any]:
+        rs = self._rs
+        cfg = rs.config()
+        if device.get("serial"):
+            cfg.enable_device(str(device["serial"]))
+        if self.depth_profile["enabled"]:
+            cfg.enable_stream(rs.stream.depth, self.depth_profile["width"],
+                              self.depth_profile["height"], rs.format.z16,
+                              self.depth_profile["fps"])
+        if self.color_profile["enabled"]:
+            cfg.enable_stream(rs.stream.color, self.color_profile["width"],
+                              self.color_profile["height"], rs.format.bgr8,
+                              self.color_profile["fps"])
+        pipeline = rs.pipeline()
+        profile = pipeline.start(cfg)
+        return pipeline, profile
+
+    def _first_frame_arrives(self, pipeline: Any) -> bool:
+        try:
+            pipeline.wait_for_frames(self.frame_timeout_ms)
+            return True
+        except Exception as exc:  # noqa: BLE001 - librealsense raises RuntimeError
+            logger.warning("RealSense first frame did not arrive: %s", exc)
+            return False
+
+    @staticmethod
+    def _safe_stop(pipeline: Any) -> None:
+        try:
+            pipeline.stop()
+        except Exception:  # noqa: BLE001 - already stopped is fine
+            pass
+
+    def _hardware_reset(self, profile: Any, device: Dict[str, Any]) -> None:
+        """Reset the device and wait (up to ~15 s) for it to re-enumerate."""
+        try:
+            profile.get_device().hardware_reset()
+        except Exception as exc:  # noqa: BLE001 - best effort
+            logger.warning("RealSense hardware_reset failed: %s", exc)
+            return
+        serial = device.get("serial")
+        time.sleep(1.0)                     # let it drop off the bus first
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            if any(d.get("serial") == serial for d in self.list_devices(force=True)):
+                time.sleep(2.0)             # enumerated is not yet streamable
+                return
+            time.sleep(0.5)
+
+    def _disable_exposure_priority(self, dev: Any) -> None:
+        rs = self._rs
+        option = getattr(getattr(rs, "option", None), "auto_exposure_priority", None)
+        if option is None:
+            return
+        try:
+            sensors = dev.query_sensors()
+        except Exception:  # noqa: BLE001
+            return
+        for sensor in sensors:
+            try:
+                if sensor.supports(option):
+                    sensor.set_option(option, 0)
+            except Exception as exc:  # noqa: BLE001 - not every sensor allows it
+                logger.debug("could not clear auto_exposure_priority: %s", exc)
 
     def stop(self) -> None:
         """Stop capturing and release the device. Safe to call when stopped."""
