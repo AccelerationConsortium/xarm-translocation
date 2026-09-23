@@ -594,6 +594,17 @@ class XArmController:
                         if self.enable_track:
                             self.enable_track_component()
 
+                        # Opt-in via force_torque_config.yaml. Enabling also
+                        # zeroes the sensor (auto_calibrate, ~10 s), so the
+                        # gripper must be free of contact at connect. Never
+                        # fatal: a sensor fault must not block the arm.
+                        if (self.has_force_torque_sensor()
+                                and self.force_torque_config.get('auto_enable_on_connect', False)):
+                            try:
+                                self.enable_force_torque_sensor()
+                            except Exception as e:  # noqa: BLE001
+                                print(f"Force torque auto-enable failed: {e}")
+
                     print("xArm Controller Initialized")
                     self._emit_event("startup", message="Controller connected and enabled")
                     self._emit_state_transition("ready", message="Controller initialized")

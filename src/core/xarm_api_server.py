@@ -1567,12 +1567,17 @@ async def connect_robot(request: ConnectionRequest, background_tasks: Background
     
     try:
         # Create and initialize the controller instance
-        controller = XArmController(
+        # Built in a worker thread: with auto_enable (the default) the
+        # constructor itself runs initialize() -- the connect handshake plus,
+        # when force_torque_config.yaml opts in, F/T enable + zeroing (~10 s).
+        # On the event loop that would freeze /health, /status and STOP.
+        controller = await asyncio.to_thread(
+            XArmController,
             profile_name=request.profile_name,
             host=request.host,
             model=request.model,
             gripper_type=request.gripper_type,
-            safety_level=request.get_safety_level_enum()
+            safety_level=request.get_safety_level_enum(),
         )
 
         # initialize() opens the SDK sockets and runs the connect/enable

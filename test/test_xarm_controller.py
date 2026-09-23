@@ -485,3 +485,41 @@ class TestGripperStatusRegister:
         assert controller.close_gripper() is True
         assert controller.last_gripper_motion_state == 'object_detected'
         assert controller.last_gripper_object_detected is True
+
+
+class TestForceTorqueAutoEnable:
+    """force_torque_config.yaml auto_enable_on_connect: F/T comes up with the arm."""
+
+    def _controller(self, mock_config_files, mock_xarm_api, monkeypatch, ft_config):
+        monkeypatch.setattr('src.core.xarm_controller.XArmAPI', lambda *a, **k: mock_xarm_api)
+        # auto_enable=True would connect inside the constructor, before the
+        # config below is in place; switch it on afterwards instead.
+        controller = XArmController(profile_name='test_profile', auto_enable=False,
+                                    gripper_type='none', enable_track=False)
+        controller.auto_enable = True
+        controller.force_torque_config = ft_config
+        controller.enable_force_torque_sensor = MagicMock(return_value=True)
+        return controller
+
+    def test_enabled_on_connect_when_configured(self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._controller(mock_config_files, mock_xarm_api, monkeypatch,
+                             {'enable': True, 'auto_enable_on_connect': True})
+        assert c.initialize() is True
+        c.enable_force_torque_sensor.assert_called_once_with()
+
+    @pytest.mark.parametrize("ft_config", [
+        {'enable': True},                                      # opt-in, default off
+        {'enable': True, 'auto_enable_on_connect': False},
+        {'enable': False, 'auto_enable_on_connect': True},     # no sensor
+    ])
+    def test_not_enabled_otherwise(self, mock_config_files, mock_xarm_api, monkeypatch, ft_config):
+        c = self._controller(mock_config_files, mock_xarm_api, monkeypatch, ft_config)
+        assert c.initialize() is True
+        c.enable_force_torque_sensor.assert_not_called()
+
+    def test_sensor_failure_never_blocks_connect(self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._controller(mock_config_files, mock_xarm_api, monkeypatch,
+                             {'enable': True, 'auto_enable_on_connect': True})
+        c.enable_force_torque_sensor.side_effect = RuntimeError("ft bus fault")
+        assert c.initialize() is True
+        assert c.states['connection'] == ComponentState.ENABLED

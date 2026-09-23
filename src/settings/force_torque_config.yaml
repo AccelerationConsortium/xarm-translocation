@@ -4,6 +4,12 @@
 # Sensor enable/disable
 enable: true
 
+# Turn the sensor on (and zero it, per calibration.auto_calibrate) every time
+# the arm connects, instead of waiting for POST /force-torque/enable. Keep the
+# gripper free of contact when pressing Connect: whatever load is on it at that
+# moment becomes the zero point. Adds ~10 s to connect (100 samples x 0.1 s).
+auto_enable_on_connect: true
+
 # Safety thresholds for force monitoring (Newtons)
 safety_thresholds:
   force:
