@@ -231,8 +231,9 @@
                 if (!d) return;
                 streaming = !!d.streaming;
                 toggleBtn.textContent = streaming ? 'Stop' : 'Start';
-                toggleBtn.disabled = busy || (!streaming && !d.installed);
-                var dev = d.device || (d.devices && d.devices[0]) || null;
+                toggleBtn.disabled = busy || (!streaming && (!d.installed || d.present === false));
+                // `devices` is the whole bus; only trust it when this camera is on it.
+                var dev = d.device || (d.present !== false && d.devices && d.devices[0]) || null;
                 var bits = [entry.id];
                 if (dev && dev.name) bits.push(dev.name.replace(/^Intel\(R\) RealSense\(TM\)\s*/, ''));
                 if (dev && dev.usb_type) bits.push('USB ' + dev.usb_type);
@@ -251,6 +252,7 @@
                     var why = (d.warnings && d.warnings[0]) || d.reason || 'Camera idle';
                     if (!d.installed) why = 'Driver missing: run uv sync --extra realsense';
                     else if (d.devices && !d.devices.length) why = 'No RealSense detected — check the USB 3 cable';
+                    else if (d.present === false) why = 'Not connected — ' + (d.reason || 'plug this camera in');
                     else if (d.state === 'error') why = d.reason || 'Camera error';
                     showOverlay(why);
                 }

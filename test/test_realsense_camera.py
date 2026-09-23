@@ -394,6 +394,23 @@ class TestConfiguration:
         bare = RealSenseCamera(_config(mount="nonsense"), rs_module=rs, np_module=np)
         assert bare.mount == {"location": None, "facing": None}
 
+    def test_other_camera_on_the_bus_is_not_this_one(self):
+        rs = FakeRS(devices=[FakeDevice("OTHER", name="Intel RealSense D405")])
+        cam = RealSenseCamera(_config(serial="MINE"), camera_id="rs435i", rs_module=rs, np_module=np)
+        d = cam.describe()
+        assert d["present"] is False
+        assert "MINE" in d["reason"] and "OTHER" in d["reason"]
+        comp = cam.component_status()
+        assert comp["connected"] is False and comp["state"] == "disconnected"
+        assert "OTHER" not in comp["message"].split(" · ")[1:2]
+        assert "D405" not in comp["message"]
+
+    def test_matching_serial_is_present(self):
+        rs = FakeRS(devices=[FakeDevice("OTHER"), FakeDevice("MINE")])
+        cam = RealSenseCamera(_config(serial="MINE"), rs_module=rs, np_module=np)
+        assert cam.describe()["present"] is True
+        assert "sn MINE" in cam.component_status()["message"]
+
     def test_bad_values_fall_back_to_defaults(self, rs):
         cam = RealSenseCamera(_config(jpeg_quality="x", frame_timeout_ms=None,
                                       color={"width": "bad"}),

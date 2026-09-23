@@ -268,6 +268,13 @@ class RealSenseCamera:
             )
         return devices[0]
 
+    def _own_devices(self, devices: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """The entries in ``devices`` that are THIS camera: the serial match
+        when a serial is configured, else everything on the bus."""
+        if not self.serial:
+            return list(devices)
+        return [d for d in devices if d.get("serial") == self.serial]
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -661,6 +668,7 @@ class RealSenseCamera:
                 "uptime_s": (round(time.monotonic() - self._started_at, 1)
                              if self._started_at and state == "streaming" else None),
                 "last_error": self._last_error,
+                "present": state == "streaming" or bool(self._own_devices(devices)),
                 "warnings": [],
                 "reason": None,
             }
@@ -679,6 +687,11 @@ class RealSenseCamera:
             info["reason"] = info["last_error"] or "camera error"
         elif state != "streaming" and not devices:
             info["reason"] = "no RealSense device connected"
+        elif state != "streaming" and not info["present"]:
+            # Another RealSense is on the bus, but not this one: without this
+            # an unplugged camera would read "starts on first request".
+            info["reason"] = f"RealSense sn {self.serial} not connected (on the bus: " + ", ".join(
+                str(d.get("serial")) for d in devices) + ")"
         elif state != "streaming":
             info["reason"] = "pipeline stopped" + (
                 " (starts on first request)" if self.start_on_demand else ""
@@ -690,7 +703,7 @@ class RealSenseCamera:
         if not self.configured:
             return None
         d = self.describe()
-        present = bool(d["devices"]) or d["streaming"]
+        present = d["present"]
         if d["streaming"]:
             state = "streaming"
         elif d["state"] == "error":
@@ -701,7 +714,8 @@ class RealSenseCamera:
             state = "idle"
         else:
             state = "disconnected"
-        dev = d["device"] or (d["devices"][0] if d["devices"] else {})
+        own = self._own_devices(d["devices"])
+        dev = d["device"] or (own[0] if own else {})
         bits = [self.label]
         if dev.get("name"):
             bits.append(str(dev["name"]))
