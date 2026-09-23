@@ -2802,7 +2802,7 @@ input#linear-speed {
     min-width: 0;
     padding-left: 2px;
     padding-right: 2px;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
