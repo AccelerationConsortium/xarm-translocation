@@ -734,35 +734,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 claimToken !== null,
             );
 
-            // 3D-view card shows for BOTH connection targets: the iframe
-            // points at the simulator's Studio or the real arm's Studio
-            // (via the device PC's 18333 portproxy) to match the session,
-            // and unloads when the connection ends.
-            const sim3dCard = document.getElementById('sim-3d-card');
-            if (sim3dCard) {
-                const fr = document.getElementById('sim-3d-frame');
-                const studioUrl = fr && (data.simulated === true
-                    ? fr.dataset.srcSim : fr.dataset.srcHw);
-                if (isConnected) {
-                    sim3dCard.hidden = false;
-                    if (fr && fr.getAttribute('src') !== studioUrl) {
-                        fr.src = studioUrl;
-                    }
-                } else if (!sim3dCard.hidden) {
-                    sim3dCard.hidden = true;
-                    if (fr) fr.removeAttribute('src');
-                }
-            }
-
-            // Header "Open Studio" quick-link follows the same target.
+            // Header "Open Studio" quick-link: the simulator's Studio or the
+            // real arm's (via the device PC's 18333 portproxy), matching the
+            // session; hidden while disconnected.
             const simStudioLink = document.getElementById('sim-studio-link');
             if (simStudioLink) {
                 simStudioLink.hidden = !isConnected;
-                const fr = document.getElementById('sim-3d-frame');
-                if (fr) {
-                    simStudioLink.href = data.simulated === true
-                        ? fr.dataset.srcSim : fr.dataset.srcHw;
-                }
+                simStudioLink.href = data.simulated === true
+                    ? simStudioLink.dataset.srcSim : simStudioLink.dataset.srcHw;
             }
 
             // Per-target connection lines (Hardware / Docker).
@@ -1411,18 +1390,24 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderGraphModeOverride(override) {
         const row = document.getElementById('mg-mode-override-row');
         if (!row) return;
-        row.dataset.admin = override?.scope === 'admin' ? 'true' : 'false';
-        const adminOffBtn = document.getElementById('mg-admin-off-btn');
-        if (adminOffBtn) adminOffBtn.disabled = override?.scope === 'admin' && !!override?.active;
+        const adminOff = override?.scope === 'admin' && !!override?.active;
+        row.dataset.admin = adminOff ? 'true' : 'false';
+        setAdminGraphButton(adminOff);
         if (!override || !override.active) {
             row.hidden = true;
             return;
         }
         row.hidden = false;
+        const labelEl = document.getElementById('mg-mode-override-label');
+        const restoreBtn = document.getElementById('mg-mode-restore-btn');
         const textEl = document.getElementById('mg-mode-override-text');
+        // Admin OFF: one plain line and no restore button here -- only an
+        // administrator can end it, from the Administrator row.
+        if (labelEl) labelEl.hidden = adminOff;
+        if (restoreBtn) restoreBtn.hidden = adminOff;
         if (!textEl) return;
-        if (override.scope === 'admin') {
-            textEl.textContent = `OFF until an administrator restores it — ${override.owner}: ${override.reason}`;
+        if (adminOff) {
+            textEl.textContent = 'Enforcement OFF until admin restores it.';
             textEl.className = 'mg-sash--warn';
             return;
         }
@@ -1480,16 +1465,36 @@ document.addEventListener('DOMContentLoaded', () => {
         fetchAndUpdateStatus();
     }
 
+    // One Administrator button, two faces: red "Turn enforcement OFF" while
+    // enforcement is on, green "Turn enforcement ON" while an admin OFF is in
+    // force. Driven from /status by renderGraphModeOverride.
+    let adminGraphIsOff = false;
+    function setAdminGraphButton(isOff) {
+        adminGraphIsOff = !!isOff;
+        const btn = document.getElementById('mg-admin-off-btn');
+        if (!btn) return;
+        btn.textContent = adminGraphIsOff ? 'Turn enforcement ON' : 'Turn enforcement OFF';
+        btn.classList.toggle('btn-danger', !adminGraphIsOff);
+        btn.classList.toggle('btn-success', adminGraphIsOff);
+    }
+
+    async function adminGraphOn() {
+        const result = await apiRequest('/control/admin/graph/restore', 'POST');
+        if (result) {
+            addLogEntry(`graph_mode -> ${result.graph_mode} (admin restored)`, 'info');
+        }
+        fetchAndUpdateStatus();
+    }
+
     // Persistent administrator OFF: no TTL, no claim. Unlike the timed
     // override it survives claim changes, disconnects and restarts, so the
-    // confirmation says so. Restoration is the existing "Restore strict now"
-    // button, which routes to the admin endpoint while scope=admin.
+    // confirmation says so. The same button then turns it back ON.
     async function adminGraphOff() {
         if (!window.confirm(
             'Turn motion-graph enforcement OFF until you restore it?\n\n'
             + 'There is no time limit: it stays OFF for every client across '
             + 'claim changes, disconnects and service restarts until an '
-            + 'administrator presses "Restore strict now". Motion still needs '
+            + 'administrator presses "Turn enforcement ON". Motion still needs '
             + 'a claim and the other safety checks.'
         )) return;
         const reason = window.prompt('Reason (recorded in the lab history):');
@@ -1508,7 +1513,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const row = document.getElementById('mg-admin-off-row');
         const btn = document.getElementById('mg-admin-off-btn');
         if (!row || !btn) return;
-        btn.addEventListener('click', adminGraphOff);
+        btn.addEventListener('click', () => (adminGraphIsOff ? adminGraphOn() : adminGraphOff()));
         const me = await apiRequest('/auth/me', 'GET', null, true);
         row.hidden = me?.identity?.role !== 'admin';
     }

@@ -39,7 +39,7 @@
         if (embedded) setInterval(applyTheme, 1000);
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260921a">
+    <link rel="stylesheet" href="style.css?v=20260923a">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -93,35 +93,6 @@
             <div class="page-left">
                 <div class="title-status-container">
                     <div class="title-top">
-                    <!-- 3D preview, in the action stack's old right-hand slot.
-                         The Studio arm canvas for WHICHEVER target is
-                         connected: the simulator's Studio (central server), or the
-                         REAL arm's Studio via this PC's 18333 portproxy — embedded
-                         at the operator's explicit request. The crop shows only
-                         the model canvas (Studio's buttons sit outside it; drag
-                         orbits the camera). Loads/unloads with the connection and
-                         switches URL with the target (main.js). -->
-                    <div class="card" id="sim-3d-card" hidden>
-                        <h2>3D View</h2>
-                        <!-- The crop isolates Studio's arm panel (.xarm-container:
-                             STOP, 3D canvas, Real/Sim switch, pose + joints) — the
-                             right column of /control, x 896-1300 at a 1300x900
-                             viewport (measured on Studio v2.4.0, headless-Edge
-                             screenshot 2026-08-02). The iframe is held at that
-                             fixed viewport so Studio's vw-scaled layout is
-                             deterministic; geometry + display scale live in the
-                             .sim-3d-crop CSS variables. Cross-origin, so a crop
-                             is the only isolation available — the canvas stays
-                             fully interactive (drag to orbit). -->
-                        <div id="sim-3d-stage" class="sim-3d-stage">
-                            <div class="sim-3d-crop">
-                                <iframe id="sim-3d-frame" class="sim-3d-frame"
-                                        title="UFACTORY Studio — live arm view"
-                                        data-src-sim="http://100.64.254.6:18333/control"
-                                        data-src-hw="http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:18333/control"></iframe>
-                            </div>
-                        </div>
-                    </div>
                     <div class="title-status-main">
                         <p class="eyebrow">xArm Translocation</p>
                         <h1>Control Interface</h1>
@@ -180,14 +151,15 @@
                                    title="Open the motion-graph view (interlock topology, live node)">Motion Graph &#8599;</a>
                                 <a id="sim-studio-link" class="studio-link" hidden
                                    href="http://100.64.254.6:18333/control" target="_blank" rel="noopener"
+                                   data-src-sim="http://100.64.254.6:18333/control"
+                                   data-src-hw="http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:18333/control"
                                    title="Open the full UFACTORY Studio control interface for the connected target">Open Studio &#8599;</a>
                             </div>
                         </div>
                     </div>
                     </div><!-- /title-top -->
                     <!-- Primary arm actions: one row spanning the tile, just
-                         above the Gripper / Linear Track columns (the 3D preview
-                         took their old right-hand slot). IDs unchanged. -->
+                         above the Gripper / Linear Track columns. IDs unchanged. -->
                     <div class="header-actions">
                         <button id="take-control-btn" class="btn btn-claim" title="Acquire the device claim so you can drive the arm. While you hold it, workflows are locked out (HTTP 423) and see you as the claim holder.">Take Control</button>
                         <button id="stop-btn" class="btn btn-danger">STOP</button>
@@ -202,8 +174,8 @@
                      pane keep their own JS-managed hidden attributes. -->
                 <div class="card" id="control-modes-card">
                     <div class="mode-tabs" role="tablist">
-                        <button id="mode-tab-arm" class="mode-tab" type="button">Direct Drive</button>
                         <button id="mode-tab-graph" class="mode-tab active" type="button">Graph Control</button>
+                        <button id="mode-tab-arm" class="mode-tab" type="button">Direct Drive</button>
                         <label id="manual-mode-switch" class="manual-switch is-disabled mode-tabs-switch" title="Release the joint brakes for hand-guiding. While on, XYZ and joint commands are locked out; joint angles keep updating live.">
                             <input type="checkbox" id="manual-mode-checkbox" disabled>
                             <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
@@ -295,33 +267,36 @@
                             </div>
                             <button id="mg-recover-btn" class="btn btn-secondary" style="margin-left:auto;">Recover…</button>
                         </div>
-                        <!-- Administrator-only persistent OFF. Hidden unless
-                             /auth/me reports role=admin; the server re-checks
-                             (require_admin) regardless. No TTL and no claim:
-                             it stays OFF across claims, disconnects and
-                             restarts until "Restore strict now" (which routes
-                             to /control/admin/graph/restore while it is set).
+                        <!-- Administrator-only persistent OFF / ON. Hidden
+                             unless /auth/me reports role=admin; the server
+                             re-checks (require_admin) regardless. One button,
+                             two faces: red "Turn enforcement OFF" (no TTL, no
+                             claim; survives claims, disconnects and restarts)
+                             and, while that is in force, green "Turn
+                             enforcement ON" (/control/admin/graph/restore).
                              Wired by initAdminGraphOff in main.js. -->
                         <div class="mg-row" id="mg-admin-off-row" hidden>
                             <span class="inline-label">Administrator</span>
-                            <button id="mg-admin-off-btn" class="btn btn-danger">Graph OFF until I restore it</button>
+                            <button id="mg-admin-off-btn" class="btn btn-danger">Turn enforcement OFF</button>
                         </div>
                         <!-- Countdown for a lowered enforcement mode. Hidden
                              while STRICT, which is the normal state, so the
                              row's presence IS the warning. Enforcement comes
                              back on its own when this reaches zero (and when
                              the claim is released, or on disconnect) -- the
-                             button is only for coming back early.
+                             button is only for coming back early. An admin
+                             OFF shows one line and no button here: only an
+                             administrator can end it (the Administrator row).
                              Rendered by renderGraphModeOverride in main.js. -->
                         <div class="mg-row mg-mode-override" id="mg-mode-override-row" hidden>
-                            <span class="inline-label">Enforcement lowered</span>
+                            <span class="inline-label" id="mg-mode-override-label">Enforcement lowered</span>
                             <strong id="mg-mode-override-text">&mdash;</strong>
                             <button id="mg-mode-restore-btn" class="btn btn-secondary"
                                     style="margin-left:auto;">Restore strict now</button>
                         </div>
-                        <div class="mg-row">
-                            <span class="inline-label">Current Node</span>
-                            <strong id="mg-current-node">—</strong>
+                        <div class="mg-node-tile">
+                            <span class="mg-node-tile__label">Current Node</span>
+                            <strong id="mg-current-node" class="mg-node-tile__value">—</strong>
                         </div>
                         <!-- Fume hood sash readout. Persistent, unlike the
                              #sash-banner above, which only appears when the
@@ -710,6 +685,6 @@
     </script>
     <script src="camera-player.js?v=20260915a"></script>
     <script src="realsense-card.js?v=20260923b"></script>
-    <script src="main.js?v=20260923b"></script>
+    <script src="main.js?v=20260923c"></script>
 </body>
 </html>

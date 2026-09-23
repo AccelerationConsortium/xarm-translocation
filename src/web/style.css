@@ -2055,6 +2055,34 @@ input#linear-speed {
     min-width: 72px;
 }
 
+/* Current Node as a tile: the one fact every graph action starts from,
+   so it gets its own box rather than a row among the controls. */
+.mg-node-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 10px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-soft);
+}
+
+.mg-node-tile__label {
+    color: var(--ink-subtle);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.mg-node-tile__value {
+    color: var(--ink);
+    font-size: 1.35rem;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+}
+
 .mg-reachable {
     display: flex;
     flex-wrap: wrap;
@@ -2513,35 +2541,6 @@ input#linear-speed {
 :root.dark .camera-stage,
 :root.dark .camera-video { background: #020617; }     /* slate-950 */
 
-/* ── Simulator 3D view (UFACTORY Studio iframe, cropped) ───────────────
-   Cross-origin, so Studio's DOM is untouchable — isolation is a visual
-   crop: the iframe is pinned to a FIXED 1300x900 viewport (Studio lays
-   itself out in vw units, so a fixed viewport makes the geometry
-   deterministic), and the wrapper clips to the arm panel's rectangle,
-   then scales for display. Offsets measured on Studio v2.4.0 at
-   1300x900; if a Studio update moves the panel, retune the four
-   geometry vars below. */
-/* Compact preview in the title tile's right-hand slot — bare, no card
-   chrome (it sits inside the tile that already has a border). */
-#sim-3d-card {
-    order: 1;                 /* right of the title block (DOM order first) */
-    flex: 0 0 200px;
-    width: 200px;
-    /* Height follows content (label + 250px preview + link row); a fixed
-       height clipped the links into the action row below. */
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: none;
-    box-shadow: none;
-    box-sizing: border-box;
-}
-
-#sim-3d-card h2 {
-    margin-bottom: 8px;
-    font-size: 0.9rem;
-}
-
 /* Link row (Motion Graph + Open Studio), one line under the
    Safety level control in the title tile. */
 .preview-links {
@@ -2563,42 +2562,6 @@ input#linear-speed {
 .studio-link:hover {
     text-decoration: underline;
 }
-
-/* The frame window itself carries no border either. */
-#sim-3d-card .sim-3d-crop {
-    /* Window = a square slice of Studio's .arm3d model canvas, centred on
-       the arm. Measured on Studio v2.4.0 / 2.6.0 at the fixed 1300x900
-       viewport: the canvas region runs x 910-1240, y 85-505 — STOP sits
-       above it and the Real/Sim toggle below (y~515), so neither is in
-       frame. 330 source * 0.758 = 250px displayed. */
-    --sim3d-x: 910px;      /* crop origin inside the Studio viewport */
-    --sim3d-y: 130px;      /* square slice centred on the arm */
-    --sim3d-w: 330px;
-    --sim3d-h: 330px;
-    --sim3d-scale: 0.606;  /* 330 * 0.606 = 200px square */
-    position: relative;
-    overflow: hidden;
-    width: calc(var(--sim3d-w) * var(--sim3d-scale));
-    height: calc(var(--sim3d-h) * var(--sim3d-scale));
-    max-width: 100%;
-    margin: 0 auto;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: #17191d;   /* Studio's dark surface, avoids a load flash */
-}
-
-.sim-3d-frame {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 1300px;         /* fixed Studio viewport — do not make fluid */
-    height: 900px;
-    border: 0;
-    transform: scale(var(--sim3d-scale))
-        translate(calc(-1 * var(--sim3d-x)), calc(-1 * var(--sim3d-y)));
-    transform-origin: top left;
-}
-
 
 /* ── Top banner stack (auth bar + simulation banner) ───────────────────
    One sticky wrapper so the auth bar and the sim banner pin together
