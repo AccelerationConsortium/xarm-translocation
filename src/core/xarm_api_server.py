@@ -3332,6 +3332,7 @@ async def realsense_cameras():
             out.append({
                 "id": camera_id,
                 "label": camera.label,
+                "mount": dict(getattr(camera, "mount", None) or {}),
                 "state": described["state"],
                 "streaming": described["streaming"],
                 "start_on_demand": camera.start_on_demand,
@@ -3652,6 +3653,7 @@ async def _realsense_capture(request: Request, camera: Any,
         "camera": {
             "id": camera_id,
             "label": getattr(camera, "label", None),
+            "mount": dict(getattr(camera, "mount", None) or {}),
             "device": described.get("device"),
             "library_version": described.get("library_version"),
             "streams": described.get("streams"),

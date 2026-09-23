@@ -123,6 +123,11 @@ class RealSenseCamera:
         self.enabled = bool(config.get("enabled", False))
         self.serial = str(config.get("serial", "") or "").strip() or None
         self.label = str(config.get("label", "") or "").strip() or "RealSense camera"
+        # Where the camera sits and which way it looks. Descriptive only: it
+        # never alters the frames. Reported on every surface and in each
+        # capture's meta.json so a frame can be interpreted without knowing
+        # which lens was on the bench that day.
+        self.mount = _mount_dict(config.get("mount"))
         self.autostart = bool(config.get("autostart", False))
         self.start_on_demand = bool(config.get("start_on_demand", True))
         self.idle_timeout_s = _as_float(config.get("idle_timeout_seconds"), 0.0)
@@ -637,6 +642,7 @@ class RealSenseCamera:
                 "installed": self.installed,
                 "library_version": self.library_version,
                 "label": self.label,
+                "mount": dict(self.mount),
                 "state": state,
                 "streaming": state == "streaming",
                 "start_on_demand": self.start_on_demand,
@@ -715,6 +721,7 @@ class RealSenseCamera:
         return {
             "camera_id": self.camera_id,
             "label": self.label,
+            "mount": dict(self.mount),
             "state": d["state"],
             "installed": d["installed"],
             "device": d["device"],
@@ -886,6 +893,16 @@ def _as_float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _mount_dict(block: Any) -> Dict[str, Any]:
+    """Normalise a ``mount`` entry to ``{"location": str|None, "facing": str|None}``."""
+    block = block if isinstance(block, dict) else {}
+    out: Dict[str, Any] = {}
+    for key in ("location", "facing"):
+        value = str(block.get(key, "") or "").strip()
+        out[key] = value or None
+    return out
 
 
 def _stream_profile(block: Any, width: int, height: int, fps: int) -> Dict[str, Any]:

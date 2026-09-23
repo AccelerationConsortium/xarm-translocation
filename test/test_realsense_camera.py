@@ -376,6 +376,24 @@ class TestConfiguration:
         assert cam.configured
         assert cam.color_profile["enabled"] and cam.depth_profile["enabled"]
 
+    def test_shipped_yaml_defines_the_downward_d405(self, rs):
+        pytest.importorskip("yaml")
+        config, _ = rc.load_config(rc.default_config_path())
+        built, reason = rc.build_cameras(config, rs_module=rs, np_module=np)
+        assert reason is None and "rs405" in built
+        cam = built["rs405"]
+        assert cam.serial == "218622279627"
+        assert cam.mount["facing"] == "down"
+
+    def test_mount_is_reported_and_defaults_to_nulls(self, rs):
+        cam = RealSenseCamera(_config(mount={"location": " gripper ", "facing": "down"}),
+                              camera_id="rs405", rs_module=rs, np_module=np)
+        assert cam.mount == {"location": "gripper", "facing": "down"}
+        assert cam.describe()["mount"] == cam.mount
+        assert cam.status_block()["mount"] == cam.mount
+        bare = RealSenseCamera(_config(mount="nonsense"), rs_module=rs, np_module=np)
+        assert bare.mount == {"location": None, "facing": None}
+
     def test_bad_values_fall_back_to_defaults(self, rs):
         cam = RealSenseCamera(_config(jpeg_quality="x", frame_timeout_ms=None,
                                       color={"width": "bad"}),
@@ -696,7 +714,7 @@ class TestReporting:
         _wait_frames(camera)
         block = camera.status_block()
         assert set(block) == {
-            "camera_id", "label", "state", "installed", "device", "devices", "streams",
+            "camera_id", "label", "mount", "state", "installed", "device", "devices", "streams",
             "fps_measured", "frames_captured", "last_frame_age_s", "warnings", "reason",
         }
         assert block["state"] == "streaming" and block["reason"] is None

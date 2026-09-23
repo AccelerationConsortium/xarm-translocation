@@ -8,7 +8,12 @@
  * the YAML about how it is spelled.
  *
  * One card is cloned from #realsense-card-template per camera and appended to
- * #realsense-cards; nothing renders when no camera is configured. Per card the
+ * #realsense-cards; nothing renders when no camera is configured. With two or
+ * more cameras only one card is shown at a time: each card carries a picker
+ * (one button per camera), and the hidden cards drop their stream so an
+ * unseen camera costs no USB bandwidth (its pipeline then idles out on the
+ * server's idle_timeout_seconds). The choice is remembered per browser. Per
+ * card the
  * behaviour is unchanged: the live preview is a plain <img> pointed at the
  * camera's stream.mjpg (MJPEG, paced to 10 fps server-side), Color/Depth swap
  * the query string, and clicking the image asks that camera's /depth for the
@@ -34,7 +39,54 @@
         if (!host || !template) return;            // markup missing -> no-op
 
         var cards = {};          // camera id -> card controller
+        var order = [];          // camera ids in listing order
+        var entries = {};        // camera id -> listing entry
+        var activeId = null;     // the one camera whose card is visible
         var listTimer = null;
+        var STORE_KEY = 'xarm.realsense.active';
+
+        function loadActive() {
+            try { return window.localStorage.getItem(STORE_KEY); } catch (e) { return null; }
+        }
+        function saveActive(id) {
+            try { window.localStorage.setItem(STORE_KEY, id); } catch (e) { /* storage blocked */ }
+        }
+
+        function selectCamera(id) {
+            if (!cards[id]) return;
+            activeId = id;
+            saveActive(id);
+            order.forEach(function (cid) { cards[cid].setActive(cid === id); });
+            renderPickers();
+        }
+
+        function pickerLabel(entry) {
+            var facing = entry.mount && entry.mount.facing;
+            var name = (entry.device && entry.device.name) || entry.id;
+            name = String(name).replace(/^Intel\(R\) RealSense\(TM\)\s*/, '').replace(/^RealSense\s*/, '');
+            return facing ? name + ' (' + facing + ')' : name;
+        }
+
+        function renderPickers() {
+            order.forEach(function (cid) {
+                var box = cards[cid].pickerEl;
+                if (!box) return;
+                box.hidden = order.length < 2;
+                box.innerHTML = '';
+                if (order.length < 2) return;
+                order.forEach(function (id) {
+                    var b = document.createElement('button');
+                    b.type = 'button';
+                    b.className = 'lens-btn' + (id === activeId ? ' is-on' : '');
+                    b.setAttribute('role', 'radio');
+                    b.setAttribute('aria-checked', id === activeId ? 'true' : 'false');
+                    b.title = (entries[id] && entries[id].label) || id;
+                    b.textContent = pickerLabel(entries[id] || { id: id });
+                    b.addEventListener('click', function () { selectCamera(id); });
+                    box.appendChild(b);
+                });
+            });
+        }
 
         function request(path, options) {
             return fetch(apiBase + path, Object.assign({ credentials: 'same-origin' }, options || {}))
@@ -66,6 +118,7 @@
             var overlayText = el('overlay-text');
             var readout = el('readout');
             var kindBtns = root.querySelectorAll('[data-rs-kind]');
+            var pickerEl = el('cams');
 
             // Every path for this camera comes from the listing; the fallbacks
             // only matter if an older server answers without `urls`.
@@ -79,6 +132,7 @@
             var busy = false;             // start/stop in flight
             var pollTimer = null;
             var disposed = false;
+            var active = true;            // false: card hidden, no stream held
 
             if (titleEl) titleEl.textContent = entry.label || ('Depth Camera · ' + entry.id);
             root.setAttribute('data-camera-id', entry.id);
@@ -95,7 +149,7 @@
                     + '?stream=' + kind + '&fps=10&t=' + Date.now();
             }
             function attach() {
-                if (document.hidden || disposed) return;   // no point decoding in a hidden tab
+                if (document.hidden || disposed || !active) return;   // no point decoding unseen frames
                 var next = streamUrl();
                 attached = next;
                 img.src = next;
@@ -114,7 +168,7 @@
             });
             document.addEventListener('visibilitychange', function () {
                 if (document.hidden) { if (attached) detach(); }
-                else if (streaming) attach();
+                else if (streaming && active) attach();
             });
 
             function clearMarker() {
@@ -182,6 +236,7 @@
                 var bits = [entry.id];
                 if (dev && dev.name) bits.push(dev.name.replace(/^Intel\(R\) RealSense\(TM\)\s*/, ''));
                 if (dev && dev.usb_type) bits.push('USB ' + dev.usb_type);
+                if (d.mount && d.mount.facing) bits.push('facing ' + d.mount.facing);
                 if (streaming && d.fps_measured) bits.push(d.fps_measured + ' fps');
                 if (streaming && d.streams && d.streams.color) {
                     bits.push(d.streams.color.width + '×' + d.streams.color.height);
@@ -189,7 +244,7 @@
                 if (statusEl) statusEl.textContent = bits.join(' · ');
 
                 if (streaming) {
-                    if (!attached && !document.hidden) attach();
+                    if (!attached && !document.hidden && active) attach();
                     if (attached) hideOverlay();
                 } else {
                     if (attached) detach();
@@ -214,6 +269,13 @@
             poll();
 
             return {
+                pickerEl: pickerEl,
+                setActive: function (on) {
+                    active = !!on;
+                    root.hidden = !active;
+                    if (!active && attached) detach();
+                    else if (active && streaming) attach();
+                },
                 refresh: poll,
                 setKind: function (k) { kind = k === 'depth' ? 'depth' : 'color'; if (streaming) attach(); },
                 dispose: function () {
@@ -232,14 +294,21 @@
         function syncCameras(body) {
             var listed = (body && body.cameras) || [];
             var seen = {};
+            order = [];
             listed.forEach(function (entry) {
                 if (!entry || !entry.id) return;
                 seen[entry.id] = true;
+                order.push(entry.id);
+                entries[entry.id] = entry;
                 if (!cards[entry.id]) cards[entry.id] = makeCard(entry);
             });
             Object.keys(cards).forEach(function (id) {
-                if (!seen[id]) { cards[id].dispose(); delete cards[id]; }
+                if (!seen[id]) { cards[id].dispose(); delete cards[id]; delete entries[id]; }
             });
+            if (!order.length) { activeId = null; return; }
+            // Keep the current choice; else the remembered one; else the first.
+            var want = (activeId && cards[activeId]) ? activeId : loadActive();
+            selectCamera(cards[want] ? want : order[0]);
         }
 
         function pollList() {

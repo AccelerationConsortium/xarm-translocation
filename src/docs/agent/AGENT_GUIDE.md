@@ -1,7 +1,10 @@
 # xArm translocation — agent guide
 
 This service drives a UFactory xArm5 on a linear rail with a BioGripper Gen2,
-plus an Intel RealSense D435i mounted **eye-in-hand** on that gripper. It
+plus Intel RealSense depth cameras: `rs435i` (D435i, eye-in-hand on that
+gripper) and `rs405` (D405 close-range, mounted **facing down**). Either may be
+unplugged at a given time; `GET /realsense/cameras` lists both, and because two
+are configured every capture must name its `camera`. It
 speaks STATUS_SPEC v1.1: read `GET /status` before acting, and treat
 `allowed_actions` as the contract for what will be honoured right now.
 

@@ -33,6 +33,10 @@ enabled: true
 # with a logged reason instead of being allowed to guess. With exactly one
 # camera an empty serial is fine (it opens whatever is plugged in).
 #
+# An entry may set `mount: {location: ..., facing: ...}` to record where the
+# camera sits and which way it looks. Descriptive only (frames are never
+# rotated); it is echoed on every surface and into each capture's meta.json.
+#
 # An entry may set `enabled: false` to park a camera without deleting its
 # configuration; it is then not registered and does not appear anywhere.
 #
@@ -42,6 +46,7 @@ cameras:
   - id: rs435i
     serial: "050422071813"
     label: "xArm depth camera (D435i, eye-in-hand)"
+    mount: {location: "gripper (eye-in-hand)"}
 
     # Streaming lifecycle.
     #   autostart        - open the pipeline when the service boots (a missing
@@ -91,6 +96,29 @@ cameras:
     # How long one wait_for_frames() may block before it counts as a dropped
     # frame. Several consecutive drops mark the camera as lost (unplugged) and
     # stop the pipeline; POST /realsense/<id>/start brings it back.
+    frame_timeout_ms: 5000
+    max_consecutive_frame_failures: 5
+
+  # D405 (added 2026-09-23): close-range stereo camera, mounted facing down.
+  # Unlike the D435i it has no separate RGB sensor -- "color" comes from the
+  # left imager of the stereo pair, so colour and depth share one viewpoint
+  # and align_depth_to_color is close to an identity. Its optimal range is
+  # ~7-50 cm (it is built for close work; beyond ~50 cm depth noise rises
+  # quickly). 1280x720 @ 30 is a native profile for both streams.
+  - id: rs405
+    serial: "218622279627"
+    label: "xArm close-range depth camera (D405, facing down)"
+    # `mount` is descriptive only -- it never rotates or flips the frames.
+    # It is reported on /realsense/cameras, /status and in each capture's
+    # meta.json. `location` is left unset until the mount point is recorded.
+    mount: {facing: down}
+    autostart: false
+    start_on_demand: true
+    idle_timeout_seconds: 120
+    color: {enabled: true, width: 1280, height: 720, fps: 30}
+    depth: {enabled: true, width: 1280, height: 720, fps: 30}
+    align_depth_to_color: true
+    jpeg_quality: 80
     frame_timeout_ms: 5000
     max_consecutive_frame_failures: 5
 

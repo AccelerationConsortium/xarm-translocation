@@ -125,8 +125,11 @@ pin; recover to a verified node before resuming graph motion.
 
 ## RealSense — discovering the cameras
 
-Every camera on this device PC has a device-local id (`rs435i` is the first
-one) and every route for it is nested under that id. Start here; the listing
+Every camera on this device PC has a device-local id (`rs435i`, the D435i
+eye-in-hand, and `rs405`, the D405 facing down) and every route for it is
+nested under that id. Each entry carries a descriptive `mount`
+(`{location, facing}`, either may be null) that is also recorded under
+`camera.mount` in every capture's `meta.json`; it never alters the frames. Start here; the listing
 hands back a ready-made URL per route, so nothing downstream has to build a
 path by concatenation.
 
@@ -140,6 +143,7 @@ path by concatenation.
     {
       "id": "rs435i",
       "label": "xArm depth camera (D435i, eye-in-hand)",
+      "mount": {"location": "gripper (eye-in-hand)", "facing": null},
       "state": "off",
       "streaming": false,
       "start_on_demand": true,

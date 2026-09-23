@@ -521,6 +521,12 @@
                         </div>
                         <div class="camera-row">
                         <div class="camera-side realsense-side">
+                            <!-- Camera picker: one button per configured
+                                 RealSense, shown only when there are two or
+                                 more. Only the chosen camera's card is
+                                 visible and streaming. Filled by
+                                 realsense-card.js. -->
+                            <div class="lens-btns realsense-cams" data-rs="cams" role="radiogroup" aria-label="Depth camera" hidden></div>
                             <button type="button" data-rs="toggle" class="btn btn-secondary realsense-btn" disabled>Start</button>
                             <div class="lens-btns realsense-kinds">
                                 <button type="button" class="lens-btn is-on" data-rs-kind="color">Color</button>
@@ -703,7 +709,7 @@
       }
     </script>
     <script src="camera-player.js?v=20260915a"></script>
-    <script src="realsense-card.js?v=20260920a"></script>
+    <script src="realsense-card.js?v=20260923a"></script>
     <script src="main.js?v=20260923b"></script>
 </body>
 </html>
