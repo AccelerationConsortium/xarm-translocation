@@ -2802,10 +2802,17 @@ input#linear-speed {
     min-width: 0;
     padding-left: 2px;
     padding-right: 2px;
-    font-size: 0.75rem;
+    font-size: 0.8rem;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+/* In the Lab Camera the status sits in a row and may grow; in this
+   column growing opens a gap above the toggle, so pin it. */
+.realsense-card .camera-status {
+    flex: 0 0 auto;
+    text-align: center;
 }
 
 .realsense-hint {
