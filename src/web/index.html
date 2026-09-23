@@ -295,6 +295,17 @@
                             </div>
                             <button id="mg-recover-btn" class="btn btn-secondary" style="margin-left:auto;">Recover…</button>
                         </div>
+                        <!-- Administrator-only persistent OFF. Hidden unless
+                             /auth/me reports role=admin; the server re-checks
+                             (require_admin) regardless. No TTL and no claim:
+                             it stays OFF across claims, disconnects and
+                             restarts until "Restore strict now" (which routes
+                             to /control/admin/graph/restore while it is set).
+                             Wired by initAdminGraphOff in main.js. -->
+                        <div class="mg-row" id="mg-admin-off-row" hidden>
+                            <span class="inline-label">Administrator</span>
+                            <button id="mg-admin-off-btn" class="btn btn-danger">Graph OFF until I restore it</button>
+                        </div>
                         <!-- Countdown for a lowered enforcement mode. Hidden
                              while STRICT, which is the normal state, so the
                              row's presence IS the warning. Enforcement comes
@@ -693,6 +704,6 @@
     </script>
     <script src="camera-player.js?v=20260915a"></script>
     <script src="realsense-card.js?v=20260920a"></script>
-    <script src="main.js?v=20260923a"></script>
+    <script src="main.js?v=20260923b"></script>
 </body>
 </html>

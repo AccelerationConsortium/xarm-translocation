@@ -1412,6 +1412,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const row = document.getElementById('mg-mode-override-row');
         if (!row) return;
         row.dataset.admin = override?.scope === 'admin' ? 'true' : 'false';
+        const adminOffBtn = document.getElementById('mg-admin-off-btn');
+        if (adminOffBtn) adminOffBtn.disabled = override?.scope === 'admin' && !!override?.active;
         if (!override || !override.active) {
             row.hidden = true;
             return;
@@ -1476,6 +1478,39 @@ document.addEventListener('DOMContentLoaded', () => {
             addLogEntry(`graph_mode -> ${result.graph_mode} (restored)`, 'info');
         }
         fetchAndUpdateStatus();
+    }
+
+    // Persistent administrator OFF: no TTL, no claim. Unlike the timed
+    // override it survives claim changes, disconnects and restarts, so the
+    // confirmation says so. Restoration is the existing "Restore strict now"
+    // button, which routes to the admin endpoint while scope=admin.
+    async function adminGraphOff() {
+        if (!window.confirm(
+            'Turn motion-graph enforcement OFF until you restore it?\n\n'
+            + 'There is no time limit: it stays OFF for every client across '
+            + 'claim changes, disconnects and service restarts until an '
+            + 'administrator presses "Restore strict now". Motion still needs '
+            + 'a claim and the other safety checks.'
+        )) return;
+        const reason = window.prompt('Reason (recorded in the lab history):');
+        if (!reason || !reason.trim()) return;
+        const result = await apiRequest(
+            '/control/admin/graph/off', 'POST', { reason: reason.trim() });
+        if (result) {
+            addLogEntry(`graph_mode -> ${result.graph_mode} (admin, until restored)`, 'warning');
+        }
+        fetchAndUpdateStatus();
+    }
+
+    // Show the admin row only to an admin. Cosmetic: the server enforces
+    // require_admin on the endpoint whatever the page shows.
+    async function initAdminGraphOff() {
+        const row = document.getElementById('mg-admin-off-row');
+        const btn = document.getElementById('mg-admin-off-btn');
+        if (!row || !btn) return;
+        btn.addEventListener('click', adminGraphOff);
+        const me = await apiRequest('/auth/me', 'GET', null, true);
+        row.hidden = me?.identity?.role !== 'admin';
     }
 
     async function openRecoverPanel() {
@@ -2461,6 +2496,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (mgRestoreBtn) {
         mgRestoreBtn.addEventListener('click', restoreGraphModeNow);
     }
+    initAdminGraphOff();
     const mgRecoverBtn = document.getElementById('mg-recover-btn');
     if (mgRecoverBtn) {
         mgRecoverBtn.addEventListener('click', openRecoverPanel);
