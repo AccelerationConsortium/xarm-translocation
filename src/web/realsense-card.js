@@ -60,11 +60,17 @@
             renderPickers();
         }
 
+        // Short model name: the live device's, else the "(D435i, ...)" in the
+        // configured label (an unplugged camera has no device), else the id.
         function pickerLabel(entry) {
             var facing = entry.mount && entry.mount.facing;
-            var name = (entry.device && entry.device.name) || entry.id;
+            var name = entry.device && entry.device.name;
+            if (!name) {
+                var m = /\((D\d+\w*)/i.exec(entry.label || '');
+                name = m ? m[1] : entry.id;
+            }
             name = String(name).replace(/^Intel\(R\) RealSense\(TM\)\s*/, '').replace(/^RealSense\s*/, '');
-            return facing ? name + ' (' + facing + ')' : name;
+            return facing ? name + ' · ' + facing : name;
         }
 
         function renderPickers() {

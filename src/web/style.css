@@ -2744,6 +2744,20 @@ input#linear-speed {
     flex: 1 1 0;
 }
 
+/* Camera picker: stacked full-width in the narrow side column, one
+   button per RealSense ("D405 · down"). */
+.realsense-cams {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.realsense-cams .lens-btn {
+    flex: 0 0 auto;
+    width: 100%;
+    white-space: nowrap;
+}
+
 .realsense-hint {
     font-size: 0.7rem;
     line-height: 1.3;
