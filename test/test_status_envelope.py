@@ -41,6 +41,12 @@ from src.core.xarm_controller import ComponentState  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def no_physical_cameras(monkeypatch):
+    """Status unit tests must not inherit the bench's camera configuration."""
+    monkeypatch.setattr('src.core.status_builder.realsense_camera.cameras', lambda: {})
+
+
 def _fake_controller(**overrides):
     """Return a MagicMock that mimics the surface ``status_builder`` reads.
 
@@ -78,8 +84,8 @@ def _fake_controller(**overrides):
     mc.last_position = [300, 0, 300, 180, 0, 0]
     mc.last_joints = [0, 0, 0, 0, 0]
     mc.last_track_position = 0.0
-    mc.last_force_torque = [0.0] * 6
-    mc.force_torque_calibrated = False
+    mc.last_force_torque_sample = None
+    mc._ft_tare = {'completed': False}
     mc.gripper_type = 'bio'
     mc.model = 5
     mc.model_name = 'xArm5'
@@ -956,15 +962,19 @@ def test_status_omits_gripper_block_when_uncached():
     assert envelope.components["gripper"].message == "bio_gen2"
 
 
-def test_build_status_emits_force_torque_metric_when_calibrated():
+def test_build_status_emits_cached_force_torque_metric():
     controller = _fake_controller()
     controller.has_force_torque_sensor.return_value = True
     controller.states['force_torque'] = ComponentState.ENABLED
-    controller.last_force_torque = [3.0, 4.0, 0.0, 0.0, 0.0, 0.0]
-    controller.force_torque_calibrated = True
+    controller.last_force_torque_sample = {
+        'force_magnitude': 5.0, 'service_received_at': '2026-09-25T03:40:00Z'}
+    controller._ft_tare = {'completed': True}
 
     envelope = build_status(controller)
     metric = envelope.metrics.get('force_magnitude')
     assert metric is not None
     assert metric.unit == 'N'
     assert metric.value == pytest.approx(5.0)
+    assert metric.timestamp.isoformat() == '2026-09-25T03:40:00+00:00'
+    assert envelope.components['force_torque'].message == (
+        'service tare completed; compensation validation unknown')

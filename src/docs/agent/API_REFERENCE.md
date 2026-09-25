@@ -355,3 +355,18 @@ lab data server, mirroring the source layout.
 | 423 | claim required, or held by another session |
 | 500 | capture store write failure |
 | 503 | RealSense extra or hardware missing, admin identity verification unavailable, or admin graph state could not be persisted/cleared |
+
+
+### Force/torque read semantics
+
+`GET /force-torque/data` returns one SDK acquisition as `wrench`, with flat
+`force_magnitude`, `torque_magnitude`, `force_direction`, `torque_direction`,
+`sample_id`, `config_revision`, `sensor_sampled_at: null`, `service_received_at`,
+and `service_tare_applied`. Fetch `/force-torque/config?revision=...` for units,
+channel, tare offsets, independent direction deadbands and explicit unknown
+geometry/compensation validation. `/force-torque/status` only returns cached
+`last_sample` and current service state; it does not poll the sensor.
+
+The `calibrated`, `total_magnitude`, nested magnitude/direction and old `data`
+fields have been removed, without aliases. No raw selection or frame transform
+is supported. See [the detailed contract](../PYXARM_API.md#get-force-torquedata).

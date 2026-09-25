@@ -4,6 +4,10 @@ import json
 import hashlib
 import tempfile
 import threading
+import math
+from copy import deepcopy
+from importlib.metadata import version, PackageNotFoundError
+from uuid import uuid4
 from collections import deque
 from datetime import datetime, timezone
 from enum import Enum
@@ -71,6 +75,32 @@ class ComponentState(Enum):
     ENABLED = "enabled"
     ERROR = "error"
     MAINTENANCE = "maintenance"  # State for maintenance mode
+
+
+def _ft_vector(values):
+    """Validate SDK values without accepting strings, booleans or non-finite data."""
+    if not isinstance(values, (list, tuple)) or len(values) != 6:
+        raise ValueError("Expected six finite force/torque values")
+    if any(isinstance(v, bool) or not isinstance(v, (int, float))
+           or not math.isfinite(v) for v in values):
+        raise ValueError("Expected six finite force/torque values")
+    return [float(v) for v in values]
+
+
+def force_torque_derived(wrench, force_deadband_n, torque_deadband_nm):
+    """Pure calculation: both directions and norms belong to this one wrench."""
+    force = math.hypot(*wrench[:3])
+    torque = math.hypot(*wrench[3:])
+    if not math.isfinite(force) or not math.isfinite(torque):
+        raise ValueError("Non-finite force/torque magnitude")
+    return {
+        'force_magnitude': force,
+        'torque_magnitude': torque,
+        'force_direction': ([v / force for v in wrench[:3]]
+                            if force > 0 and force >= force_deadband_n else None),
+        'torque_direction': ([v / torque for v in wrench[3:]]
+                             if torque > 0 and torque >= torque_deadband_nm else None),
+    }
 
 class XArmController:
     """
@@ -339,13 +369,23 @@ class XArmController:
         self.last_gripper_error_code = 0           # BIO register 0x0F; 0 == OK, 12 == object slipped
         self.last_gripper_error_text = None         # human-readable mapping of the code
 
-        # Force torque sensor tracking
+        # FT snapshots and their interpretation are published under one lock.
+        self._ft_lock = threading.RLock()
+        self._ft_session = uuid4().hex
+        try:
+            self._ft_sdk_version = version('xarm-python-sdk')
+        except PackageNotFoundError:
+            self._ft_sdk_version = None
+        self._ft_sequence = 0
+        self._ft_config_sequence = 0
+        self._ft_configs = {}
+        self._ft_current_revision = None
+        self._ft_tare = {'completed': False, 'offset': None, 'completed_at': None}
         self.force_torque_history = deque(maxlen=1000)
-        self.last_force_torque = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # [fx, fy, fz, tx, ty, tz]
-        self.force_torque_zero = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # Calibrated zero point
-        self.force_torque_calibrated = False
+        self.last_force_torque_sample = None
         self.force_torque_alerts_active = False
         self.last_alert_time = 0
+        self._ft_deadbands()  # Reject obsolete/invalid configuration before connecting.
 
         # Motion state tracking. A depth counter rather than a bool so a
         # composite move (a cross-rail edge is two sub-moves; a travel is N
@@ -1125,9 +1165,7 @@ class XArmController:
             'force_torque': {
                 'state': self.states['force_torque'].value,
                 'has_sensor': self.has_force_torque_sensor(),
-                'calibrated': self.force_torque_calibrated,
-                'last_reading': self.last_force_torque,
-                'magnitude': self.get_force_torque_magnitude()
+                **self.get_force_torque_status(),
             },
             'errors': {
                 'last_error': self.last_error_code,
@@ -3068,6 +3106,9 @@ class XArmController:
         self.alive = False
         self.states['connection'] = ComponentState.DISABLED
         self.states['arm'] = ComponentState.DISABLED
+        with self._ft_lock:
+            self.states['force_torque'] = ComponentState.DISABLED
+            self._ft_tare = {'completed': False, 'offset': None, 'completed_at': None}
         if self.arm:
             try:
                 self.arm.disconnect()
@@ -3184,176 +3225,185 @@ class XArmController:
 
     def enable_force_torque_sensor(self):
         """Enable the 6-axis force torque sensor."""
-        if not self.force_torque_config.get('enable', True):
-            print("Force torque sensor is disabled in configuration")
-            return False
+        with self._ft_lock:
+            if not self.force_torque_config.get('enable', True):
+                print("Force torque sensor is disabled in configuration")
+                return False
 
-        try:
-            # Enable force torque sensor on the arm
-            code = self.arm.ft_sensor_enable(True)
-            if self.check_code(code, 'enable_force_torque_sensor'):
-                self.states['force_torque'] = ComponentState.ENABLED
-                print("Force torque sensor enabled")
+            try:
+                # Enable force torque sensor on the arm
+                code = self.arm.ft_sensor_enable(True)
+                if self.check_code(code, 'enable_force_torque_sensor'):
+                    self.states['force_torque'] = ComponentState.ENABLED
+                    print("Force torque sensor enabled")
                 
-                # Auto-calibrate if configured
-                if self.force_torque_config.get('calibration', {}).get('auto_calibrate', True):
-                    self.calibrate_force_torque_sensor()
+                    # Auto-calibrate if configured
+                    if self.force_torque_config.get('calibration', {}).get('auto_calibrate', True):
+                        self.calibrate_force_torque_sensor()
                 
-                return True
-            return False
-        except Exception as e:
-            print(f"Failed to enable force torque sensor: {e}")
-            self.states['force_torque'] = ComponentState.ERROR
-            return False
+                    return True
+                return False
+            except Exception as e:
+                print(f"Failed to enable force torque sensor: {e}")
+                self.states['force_torque'] = ComponentState.ERROR
+                return False
 
     def disable_force_torque_sensor(self):
         """Disable the 6-axis force torque sensor."""
-        try:
-            code = self.arm.ft_sensor_enable(False)
-            if self.check_code(code, 'disable_force_torque_sensor'):
-                self.states['force_torque'] = ComponentState.DISABLED
-                print("Force torque sensor disabled")
-                return True
-            return False
-        except Exception as e:
-            print(f"Failed to disable force torque sensor: {e}")
-            return False
-
-    def calibrate_force_torque_sensor(self, samples=None, delay=None):
-        """Calibrate the force torque sensor to zero."""
-        if not self.is_component_enabled('force_torque'):
-            print("Force torque sensor must be enabled before calibration")
-            return False
-
-        config = self.force_torque_config.get('calibration', {})
-        samples = samples or config.get('calibration_samples', 100)
-        delay = delay or config.get('calibration_delay', 0.1)
-        zero_threshold = config.get('zero_threshold', 0.5)
-
-        print(f"Calibrating force torque sensor with {samples} samples...")
-
-        try:
-            # Collect samples for calibration
-            readings = []
-            for i in range(samples):
-                ret = self.arm.get_ft_sensor_data()
-                if ret[0] == 0:
-                    # Get the actual list of 6 values [fx, fy, fz, tx, ty, tz]
-                    raw_data = ret[1]  # ret[1] is the list, not ret[1:]
-                    if len(raw_data) == 6:
-                        readings.append(raw_data)  # Take the 6 values
-                    else:
-                        print(f"Warning: Expected 6 values, got {len(raw_data)}: {raw_data}")
-                time.sleep(delay)
-
-            if len(readings) < samples // 2:
-                print("Insufficient readings for calibration")
+        with self._ft_lock:
+            try:
+                code = self.arm.ft_sensor_enable(False)
+                if self.check_code(code, 'disable_force_torque_sensor'):
+                    self.states['force_torque'] = ComponentState.DISABLED
+                    print("Force torque sensor disabled")
+                    return True
+                return False
+            except Exception as e:
+                print(f"Failed to disable force torque sensor: {e}")
                 return False
 
-            # Calculate average zero point
-            self.force_torque_zero = [
-                sum(reading[i] for reading in readings) / len(readings)
-                for i in range(6)
-            ]
-            
-            self.force_torque_calibrated = True
-            print("Force torque sensor calibrated successfully")
-            return True
+    def _ft_deadbands(self):
+        config = self.force_torque_config.get('direction_detection', {})
+        if 'dead_zone' in config:
+            raise ValueError("Replace dead_zone with force_direction_deadband_n and torque_direction_deadband_nm")
+        values = [config.get('force_direction_deadband_n', 2.0),
+                  config.get('torque_direction_deadband_nm', 2.0)]
+        if any(isinstance(v, bool) or not isinstance(v, (int, float))
+               or not math.isfinite(v) or v < 0 for v in values):
+            raise ValueError("FT direction deadbands must be finite and nonnegative")
+        return values
 
-        except Exception as e:
-            print(f"Calibration failed: {e}")
-            return False
+    def _ft_configuration(self):
+        """Called under _ft_lock. No SDK getters, including lazy version getters."""
+        force_deadband, torque_deadband = self._ft_deadbands()
+        # SDK 1.18.4's public version property may query hardware. Inspect only
+        # its populated cache; unknown versions remain null until connected.
+        sdk_arm = vars(self.arm).get('_arm') if self.arm is not None else None
+        firmware = vars(sdk_arm).get('_version') if sdk_arm is not None else None
+        if not isinstance(firmware, str) or not firmware:
+            firmware = None
+        body = {
+            'device': {'sdk_version': self._ft_sdk_version, 'controller_firmware': firmware,
+                       'controller_firmware_source': 'sdk_cache' if firmware else 'unknown',
+                       'ft_sensor_firmware': None},
+            'source': {'method': 'get_ft_sensor_data', 'is_raw': False,
+                       'channel': 'controller_compensated_filtered'},
+            'wrench_order': ['Fx', 'Fy', 'Fz', 'Tx', 'Ty', 'Tz'],
+            'units': {'force': 'N', 'torque': 'N*m'},
+            'geometry': {'status': 'unknown', 'frame_id': None,
+                         'axis_convention': None, 'torque_reference_point': None,
+                         'interaction_sign': None},
+            'controller_compensation': {
+                'configuration_status': 'unknown', 'reason': 'ft_parameters_not_read',
+                'payload_coverage': 'unknown', 'validation_status': 'unknown'},
+            'service_tare': deepcopy(self._ft_tare),
+            'direction_deadband': {'force_n': force_deadband, 'torque_nm': torque_deadband},
+        }
+        current = self._ft_configs.get(self._ft_current_revision)
+        if current is None or body != {k: v for k, v in current.items() if k != 'revision'}:
+            self._ft_config_sequence += 1
+            self._ft_current_revision = f'{self._ft_session}:{self._ft_config_sequence}'
+            self._ft_configs[self._ft_current_revision] = {
+                'revision': self._ft_current_revision, **body}
+            self._ft_prune_configs()
+        return self._ft_configs[self._ft_current_revision]
+
+    def _ft_prune_configs(self):
+        keep = {sample['config_revision'] for sample in self.force_torque_history}
+        keep.add(self._ft_current_revision)
+        if self.last_force_torque_sample is not None:
+            keep.add(self.last_force_torque_sample['config_revision'])
+        self._ft_configs = {key: val for key, val in self._ft_configs.items() if key in keep}
+
+    def get_force_torque_config(self, revision=None):
+        """Return a defensive copy; a missing revision is never the current one."""
+        with self._ft_lock:
+            config = (self._ft_configuration() if revision is None
+                      else self._ft_configs.get(revision))
+            return deepcopy(config)
+
+    def calibrate_force_torque_sensor(self, samples=None, delay=None):
+        """Existing explicit action: compute a service tare, not gravity calibration."""
+        with self._ft_lock:
+            if self.arm is None or not self.arm.connected or not self.is_component_enabled('force_torque'):
+                return False
+            config = self.force_torque_config.get('calibration', {})
+            samples = config.get('calibration_samples', 100) if samples is None else samples
+            delay = config.get('calibration_delay', 0.1) if delay is None else delay
+            if (isinstance(samples, bool) or not isinstance(samples, int) or samples < 1
+                    or isinstance(delay, bool) or not isinstance(delay, (int, float))
+                    or not math.isfinite(delay) or delay < 0):
+                return False
+            previous_tare = self._ft_tare
+            try:
+                self._ft_deadbands()
+                readings = []
+                for _ in range(samples):
+                    code, values = self.arm.get_ft_sensor_data(is_raw=False)
+                    if code == 0:
+                        try:
+                            readings.append(_ft_vector(values))
+                        except ValueError:
+                            pass
+                    time.sleep(delay)
+                if len(readings) < max(1, (samples + 1) // 2):
+                    return False
+                offset = _ft_vector([math.fsum(row[i] / len(readings) for row in readings)
+                                     for i in range(6)])
+                self._ft_tare = {'completed': True, 'offset': offset,
+                                 'completed_at': datetime.now(timezone.utc).isoformat()}
+                self._ft_configuration()
+                return True
+            except Exception as exc:
+                self._ft_tare = previous_tare
+                print(f"Service FT tare failed: {exc}")
+                return False
 
     def get_force_torque_data(self):
-        """Get current force torque sensor data."""
-        if not self.is_component_enabled('force_torque'):
-            return None
-
-        try:
-            ret = self.arm.get_ft_sensor_data()
-            if ret[0] == 0:
-                raw_data = ret[1]  # ret[1] is the list of 6 values
-                
-                # Apply calibration if available
-                if self.force_torque_calibrated:
-                    calibrated_data = [
-                        raw_data[i] - self.force_torque_zero[i]
-                        for i in range(6)
-                    ]
-                else:
-                    calibrated_data = raw_data
-
-                # Update last reading and history
-                self.last_force_torque = calibrated_data
-                self.force_torque_history.append({
-                    'timestamp': time.time(),
-                    'data': calibrated_data.copy()
-                })
-
-                return calibrated_data
-            return None
-        except Exception as e:
-            print(f"Failed to get force torque data: {e}")
-            return None
-
-    def get_force_torque_magnitude(self):
-        """Get the magnitude of force and torque vectors."""
-        data = self.get_force_torque_data()
-        if data is None:
-            return None
-
-        # Calculate force magnitude (first 3 values)
-        force_magnitude = (data[0]**2 + data[1]**2 + data[2]**2)**0.5
-        
-        # Calculate torque magnitude (last 3 values)
-        torque_magnitude = (data[3]**2 + data[4]**2 + data[5]**2)**0.5
-
-        return {
-            'force_magnitude': force_magnitude,
-            'torque_magnitude': torque_magnitude,
-            'total_magnitude': (force_magnitude**2 + torque_magnitude**2)**0.5
-        }
-
-    def get_force_torque_direction(self):
-        """Get the direction of force and torque vectors."""
-        data = self.get_force_torque_data()
-        if data is None:
-            return None
-
-        config = self.force_torque_config.get('direction_detection', {})
-        dead_zone = config.get('dead_zone', 2.0)
-
-        # Check if force is above dead zone
-        force_magnitude = (data[0]**2 + data[1]**2 + data[2]**2)**0.5
-        if force_magnitude < dead_zone:
-            force_direction = None
-        else:
-            # Normalize force vector
-            force_direction = [data[i] / force_magnitude for i in range(3)]
-
-        # Check if torque is above dead zone
-        torque_magnitude = (data[3]**2 + data[4]**2 + data[5]**2)**0.5
-        if torque_magnitude < dead_zone:
-            torque_direction = None
-        else:
-            # Normalize torque vector
-            torque_direction = [data[i+3] / torque_magnitude for i in range(3)]
-
-        return {
-            'force_direction': force_direction,
-            'torque_direction': torque_direction,
-            'force_magnitude': force_magnitude,
-            'torque_magnitude': torque_magnitude
-        }
+        """One controller read, one configuration revision, one complete snapshot."""
+        with self._ft_lock:
+            if self.arm is None or not self.arm.connected or not self.is_component_enabled('force_torque'):
+                return None
+            try:
+                config = self._ft_configuration()
+                code, values = self.arm.get_ft_sensor_data(is_raw=False)
+                received_at = datetime.now(timezone.utc).isoformat()
+                if code != 0:
+                    return None
+                wrench = _ft_vector(values)
+                tare = config['service_tare']
+                if tare['completed']:
+                    wrench = _ft_vector([v - zero for v, zero in zip(wrench, tare['offset'])])
+                derived = force_torque_derived(
+                    wrench, config['direction_deadband']['force_n'],
+                    config['direction_deadband']['torque_nm'])
+                self._ft_sequence += 1
+                sample = {
+                    'sample_id': f'{self._ft_session}:{self._ft_sequence}',
+                    'config_revision': config['revision'],
+                    'sensor_sampled_at': None,
+                    'service_received_at': received_at,
+                    'wrench': wrench,
+                    'service_tare_applied': tare['completed'],
+                    **derived,
+                }
+                self.last_force_torque_sample = sample
+                self.force_torque_history.append(sample)
+                self._ft_prune_configs()
+                return deepcopy(sample)
+            except Exception as exc:
+                print(f"Failed to get force torque data: {exc}")
+                return None
 
     def check_force_torque_safety(self):
         """Check if force/torque exceeds safety thresholds and trigger alerts."""
         if not self.is_component_enabled('force_torque'):
             return False
 
-        data = self.get_force_torque_data()
-        if data is None:
+        sample = self.get_force_torque_data()
+        if sample is None:
             return False
+        data = sample['wrench']
 
         thresholds = self.force_torque_config.get('safety_thresholds', {})
         force_thresholds = thresholds.get('force', {})
@@ -3373,14 +3423,10 @@ class XArmController:
             if abs(data[i+3]) > threshold:
                 torque_violations.append(f"{axis}: {data[i+3]:.2f}Nm > {threshold}Nm")
 
-        # Check total magnitudes
-        magnitudes = self.get_force_torque_magnitude()
-        if magnitudes:
-            if magnitudes['force_magnitude'] > force_thresholds.get('magnitude', float('inf')):
-                force_violations.append(f"total: {magnitudes['force_magnitude']:.2f}N > {force_thresholds.get('magnitude')}N")
-            
-            if magnitudes['torque_magnitude'] > torque_thresholds.get('magnitude', float('inf')):
-                torque_violations.append(f"total: {magnitudes['torque_magnitude']:.2f}Nm > {torque_thresholds.get('magnitude')}Nm")
+        if sample['force_magnitude'] > force_thresholds.get('magnitude', float('inf')):
+            force_violations.append(f"total: {sample['force_magnitude']:.2f}N > {force_thresholds.get('magnitude')}N")
+        if sample['torque_magnitude'] > torque_thresholds.get('magnitude', float('inf')):
+            torque_violations.append(f"total: {sample['torque_magnitude']:.2f}Nm > {torque_thresholds.get('magnitude')}Nm")
 
         # Trigger alerts if violations detected
         if force_violations or torque_violations:
@@ -3457,9 +3503,10 @@ class XArmController:
 
             # Monitor force until threshold is reached
             while time.time() - start_time < timeout:
-                data = self.get_force_torque_data()
-                if data is None:
+                sample = self.get_force_torque_data()
+                if sample is None:
                     continue
+                data = sample['wrench']
 
                 # Check if force threshold is exceeded
                 if abs(data[0 if axis == 'x' else 1 if axis == 'y' else 2]) > force_threshold:
@@ -3540,9 +3587,10 @@ class XArmController:
 
             # Monitor torque until threshold is reached
             while time.time() - start_time < timeout:
-                data = self.get_force_torque_data()
-                if data is None:
+                sample = self.get_force_torque_data()
+                if sample is None:
                     continue
+                data = sample['wrench']
 
                 # Check if torque threshold is exceeded
                 # Map joint to torque axis (simplified mapping)
@@ -3577,17 +3625,17 @@ class XArmController:
             return False
 
     def get_force_torque_status(self):
-        """Get comprehensive force torque sensor status."""
-        return {
-            'enabled': self.is_component_enabled('force_torque'),
-            'calibrated': self.force_torque_calibrated,
-            'last_reading': self.last_force_torque,
-            'zero_point': self.force_torque_zero,
-            'history_length': len(self.force_torque_history),
-            'alerts_active': self.force_torque_alerts_active,
-            'magnitude': self.get_force_torque_magnitude(),
-            'direction': self.get_force_torque_direction()
-        }
+        """Return the last complete sample without reading hardware."""
+        with self._ft_lock:
+            config = self._ft_configuration()
+            return {
+                'enabled': self.is_component_enabled('force_torque'),
+                'config_revision': config['revision'],
+                'service_tare_completed': self._ft_tare['completed'],
+                'last_sample': deepcopy(self.last_force_torque_sample),
+                'history_length': len(self.force_torque_history),
+                'alerts_active': self.force_torque_alerts_active,
+            }
 
     def has_force_torque_sensor(self):
         """Check if force torque sensor is available and enabled."""

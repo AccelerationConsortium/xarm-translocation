@@ -269,8 +269,8 @@ class ComponentRequest(BaseModel):
     component: str = Field(description="Component to manage ('gripper', 'track', or 'force_torque')")
 
 class ForceTorqueCalibrationRequest(BaseModel):
-    """Request model for force torque sensor calibration."""
-    samples: Optional[int] = Field(default=None, description="Number of calibration samples")
+    """Request an explicit fixed service tare; not payload/gravity calibration."""
+    samples: Optional[int] = Field(default=None, description="Number of service tare samples")
     delay: Optional[float] = Field(default=None, description="Delay between samples in seconds")
 
 class ForceTorqueMovementRequest(BaseModel):
@@ -2473,7 +2473,7 @@ async def disable_force_torque_sensor():
 
 @app.post("/force-torque/calibrate", dependencies=[Depends(require_claim)])
 async def calibrate_force_torque_sensor(request: ForceTorqueCalibrationRequest, background_tasks: BackgroundTasks):
-    """Calibrate the force torque sensor to zero."""
+    """Compute a fixed service tare from the compensated controller channel."""
     c = get_controller()
 
     async def calibration_task():
@@ -2483,11 +2483,11 @@ async def calibrate_force_torque_sensor(request: ForceTorqueCalibrationRequest, 
             delay=request.delay,
         )
         if not success:
-            logger.error("Failed to calibrate force torque sensor.")
+            logger.error("Failed to compute force torque service tare.")
         await broadcast_status_update()
 
     background_tasks.add_task(calibration_task)
-    return {"message": "Force torque sensor calibration started."}
+    return {"message": "Force torque service tare started."}
 
 @app.get("/force-torque/data")
 async def get_force_torque_data():
@@ -2501,24 +2501,24 @@ async def get_force_torque_data():
     if data is None:
         raise HTTPException(status_code=500, detail="Failed to get force torque data.")
 
-    # magnitude/direction each re-read the sensor (get_ft_sensor_data); fetch
-    # them in one worker hop so neither blocks the event loop.
-    magnitude, direction = await asyncio.to_thread(
-        lambda: (c.get_force_torque_magnitude(), c.get_force_torque_direction())
-    )
-    return {
-        "data": data,
-        "magnitude": magnitude,
-        "direction": direction,
-        "calibrated": c.force_torque_calibrated
-    }
+    return data
+
+
+@app.get("/force-torque/config")
+async def get_force_torque_config(revision: Optional[str] = None):
+    """Interpretation of a sample; no device reads or automatic connection."""
+    config = await asyncio.to_thread(get_controller().get_force_torque_config, revision)
+    if config is None:
+        raise HTTPException(status_code=404, detail={"error": "ft_config_revision_unavailable"})
+    return config
+
 
 @app.get("/force-torque/status")
 async def get_force_torque_status():
     """Get comprehensive force torque sensor status."""
     c = get_controller()
     
-    return c.get_force_torque_status()
+    return await asyncio.to_thread(c.get_force_torque_status)
 
 @app.post("/force-torque/check-safety", dependencies=[Depends(require_claim)])
 async def check_force_torque_safety():

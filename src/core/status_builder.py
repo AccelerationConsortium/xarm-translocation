@@ -316,9 +316,9 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
             connected=arm_connected,
             state=force_torque_state,
             message=(
-                "calibrated"
-                if getattr(controller, "force_torque_calibrated", False)
-                else "uncalibrated"
+                "service tare completed; compensation validation unknown"
+                if getattr(controller, "_ft_tare", {}).get("completed") is True
+                else "service tare not completed; compensation validation unknown"
             ),
         )
 
@@ -339,18 +339,12 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         if isinstance(track_pos, (int, float)):
             metrics["track_position"] = MetricValue(value=float(track_pos), unit="mm")
 
-    last_ft = getattr(controller, "last_force_torque", None)
-    if (
-        controller.has_force_torque_sensor()
-        and isinstance(last_ft, (list, tuple))
-        and len(last_ft) >= 3
-    ):
-        try:
-            fx, fy, fz = (float(last_ft[0]), float(last_ft[1]), float(last_ft[2]))
-            magnitude = (fx * fx + fy * fy + fz * fz) ** 0.5
-            metrics["force_magnitude"] = MetricValue(value=magnitude, unit="N")
-        except (TypeError, ValueError):
-            pass
+    last_ft = getattr(controller, "last_force_torque_sample", None)
+    if controller.has_force_torque_sensor() and isinstance(last_ft, dict):
+        magnitude = last_ft.get("force_magnitude")
+        if isinstance(magnitude, (int, float)):
+            metrics["force_magnitude"] = MetricValue(
+                value=magnitude, unit="N", timestamp=last_ft.get("service_received_at"))
 
     tcp_speed = getattr(controller, "tcp_speed", None)
     if isinstance(tcp_speed, (int, float)):

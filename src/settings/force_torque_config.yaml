@@ -42,18 +42,18 @@ operation_thresholds:
     j6: 2.0      # Torque threshold for joint 6
     j7: 2.0      # Torque threshold for joint 7
 
-# Calibration settings
+# Fixed service tare settings (not payload/gravity calibration)
 calibration:
   auto_calibrate: true
   calibration_samples: 100
   calibration_delay: 0.1  # seconds between samples
-  zero_threshold: 0.5     # threshold for considering sensor "zeroed"
+  zero_threshold: 0.5     # Reserved; not used to validate tare or compensation
 
 # Monitoring settings
 monitoring:
   update_rate: 100        # Hz - how often to read sensor data
-  filter_enabled: true    # Enable low-pass filtering
-  filter_cutoff: 10.0     # Hz - cutoff frequency for low-pass filter
+  filter_enabled: true    # Reserved; no service low-pass filter is implemented
+  filter_cutoff: 10.0     # Reserved Hz; not a controller filter readback
   history_length: 1000    # Number of samples to keep in history
 
 # Alert settings
@@ -66,5 +66,6 @@ alerts:
 # Direction detection settings
 direction_detection:
   enable: true
-  dead_zone: 2.0          # Minimum force/torque to consider as "detected"
-  smoothing_samples: 5     # Number of samples to average for direction detection 
+  force_direction_deadband_n: 2.0   # N; preserves previous numerical threshold
+  torque_direction_deadband_nm: 2.0 # N*m; not a validated noise threshold
+  smoothing_samples: 5     # Reserved; directions use the single snapshot
