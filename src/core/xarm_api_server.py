@@ -2041,7 +2041,7 @@ async def stop_movement(request: Request, background_tasks: BackgroundTasks):
 @app.post("/control/clear_errors", dependencies=[Depends(require_login)])
 @app.post("/clear/errors", dependencies=[Depends(require_login)])
 async def clear_errors(background_tasks: BackgroundTasks):
-    """Clear all robot errors and warnings"""
+    """Clear faults, re-enable the arm, and verify controller recovery."""
     ctrl = get_controller()
     
     try:
@@ -2050,11 +2050,11 @@ async def clear_errors(background_tasks: BackgroundTasks):
         if result:
             background_tasks.add_task(broadcast_status_update)
             return {
-                "message": "All errors and warnings cleared successfully",
+                "message": "Errors cleared; arm re-enabled and controller recovery verified",
                 "timestamp": datetime.now().isoformat()
             }
         else:
-            raise HTTPException(status_code=500, detail="Failed to clear all errors")
+            raise HTTPException(status_code=500, detail="Controller recovery failed; inspect /status details.health_failure")
             
     except HTTPException:
         raise

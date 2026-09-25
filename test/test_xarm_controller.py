@@ -6,7 +6,7 @@ Hardware paths are exercised against a mocked ``XArmAPI`` via the
 
 import sys
 import os
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -284,7 +284,8 @@ class TestStateManagement:
 
     def test_clear_errors(self, initialized_controller):
         initialized_controller.arm.error_code = 1
-        initialized_controller.clear_errors()
+        initialized_controller.arm.clean_error.side_effect = lambda: setattr(initialized_controller.arm, 'error_code', 0) or 0
+        assert initialized_controller.clear_errors() is True
         assert initialized_controller.last_error_code == 0
 
     def test_clear_errors_after_stop_reenables_arm(
@@ -523,3 +524,75 @@ class TestForceTorqueAutoEnable:
         c.enable_force_torque_sensor.side_effect = RuntimeError("ft bus fault")
         assert c.initialize() is True
         assert c.states['connection'] == ComponentState.ENABLED
+
+
+class TestHealthRecovery:
+    def test_success_code_cannot_override_unhealthy_controller(self, initialized_controller):
+        c = initialized_controller
+        c.arm.state = 4
+        assert c.check_code(0, "ft_enable") is False
+        assert c.alive is False
+        assert c.health_failure["operation"] == "ft_enable"
+        assert c.health_failure["controller_state"] == 4
+        first = dict(c.health_failure)
+        assert c.check_code(0, "later") is False
+        assert c.health_failure == first
+
+    @pytest.mark.parametrize("operation", ["clean_error", "clean_warn", "clean_bio_gripper_error", "motion_enable", "set_mode", "set_state"])
+    def test_recovery_command_failure_stays_unhealthy(self, initialized_controller, operation):
+        c = initialized_controller
+        c.arm.__getattr__(operation).return_value = 1
+        c._emit_state_transition = Mock()
+        assert c.clear_errors() is False
+        assert c.alive is False
+        assert c.health_failure["return_code"] == 1
+        c._emit_state_transition.assert_not_called()
+
+    @pytest.mark.parametrize("state,error,warn", [(4, 0, 0), (5, 0, 0), (0, 12, 0), (0, 0, 1)])
+    def test_recovery_requires_healthy_readback(self, initialized_controller, state, error, warn):
+        c = initialized_controller
+        c.arm.state, c.arm.error_code, c.arm.warn_code = state, error, warn
+        assert c.clear_errors() is False
+        assert c.alive is False
+        assert c.health_failure["operation"] == "recovery_readback"
+
+    def test_readback_failure_preserves_fault(self, initialized_controller):
+        c = initialized_controller
+        c._error_warn_callback({"error_code": 12})
+        original = dict(c.health_failure)
+        c.arm.get_state.side_effect = lambda: (1, 0)
+        assert c.clear_errors() is False
+        assert c.last_error_code == 12
+        assert c.health_failure == original
+
+    def test_verified_recovery_clears_latch(self, initialized_controller):
+        c = initialized_controller
+        assert c.check_code(1, "earlier_failure") is False
+        assert c.clear_errors() is True
+        assert c.alive is True
+        assert c.health_failure is None
+        c.arm.get_state.assert_called_once()
+        c.arm.get_err_warn_code.assert_called_once()
+
+    def test_component_recovery_failure_does_not_report_ready(self, initialized_controller):
+        c = initialized_controller
+        c.arm.set_bio_gripper_enable.return_value = 1
+        assert c.clear_errors() is False
+        assert c.alive is False
+
+    def test_connect_can_initialize_before_motion_ready(self, initialized_controller):
+        controller = initialized_controller
+        controller.states['connection'] = ComponentState.DISABLED
+        controller.alive = False
+        controller.arm.state = 4
+        controller.arm.set_state.side_effect = lambda state: setattr(controller.arm, "state", state) or 0
+        assert controller.initialize() is True
+        assert controller.alive is True
+
+
+    def test_stop_success_is_independent_of_motion_readiness(self, initialized_controller):
+        c = initialized_controller
+        c.arm.emergency_stop.side_effect = lambda: setattr(c.arm, "state", 4) or 0
+        assert c.stop_motion() is True
+        assert c.alive is False
+        assert c.health_failure["operation"] == "emergency_stop"

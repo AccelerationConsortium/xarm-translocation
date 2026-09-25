@@ -521,6 +521,8 @@ class XArmController:
 
         # State tracking
         self.alive = True
+        self.health_failure = None
+        self._recovering = False
         self._ignore_exit_state = False
 
         # Joint limits for different models (degrees)
@@ -588,7 +590,7 @@ class XArmController:
             try:
                 # Connect to the arm
                 code = self.arm.connect()
-                if self.check_code(code, "connect"):
+                if check_operation_result(code, "connect") and self.arm.connected:
                     # Connection successful, proceed with initialization
                     # Enable motion and set mode/state
                     enable_code = self.arm.motion_enable(enable=True)
@@ -617,6 +619,7 @@ class XArmController:
                     # Reset alive state to True after successful initialization
                     # This ensures minor errors during init don't permanently disable the controller
                     self.alive = True
+                    self.health_failure = None
 
                     # Start the sash watchdog only once there is a live arm to
                     # stop. It doubles as the cache warmer, so from here on the
@@ -877,7 +880,7 @@ class XArmController:
                 'warn_code': data.get('warn_code', 0)
             })
 
-            self.alive = False
+            self._record_health_failure("error_callback", None, f"Controller error {error_code}")
             self.states['arm'] = ComponentState.ERROR
             print(f'Error {error_code} detected')
             self._emit_event(
@@ -907,7 +910,7 @@ class XArmController:
             return
         state = data['state']
         if not self._ignore_exit_state and state == 4:
-            self.alive = False
+            self._record_health_failure("state_callback", None, "Controller entered state 4")
             self.states['arm'] = ComponentState.ERROR
             print('State 4 detected, stopping operations')
         self._emit_state_transition(
@@ -916,15 +919,30 @@ class XArmController:
             xarm_state=state,
         )
 
-    def check_code(self, code, operation_name):
-        """Check if an SDK operation was successful (None or 0)."""
-        is_success = (code is None or code == 0)
+    def _record_health_failure(self, operation, return_code, reason):
+        """Latch the first failure until verified recovery; never perform I/O."""
+        self.alive = False
+        if getattr(self, "health_failure", None) is None:
+            self.health_failure = {
+                "operation": operation,
+                "return_code": return_code,
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "controller_state": getattr(self.arm, "state", None),
+                "controller_error_code": getattr(self.arm, "error_code", None),
+            }
+            print(f"Controller degraded: {self.health_failure}")
 
-        if not self.is_alive or not is_success:
-            self.alive = False
-            state = self.arm.state if self.arm else None
-            error = self.arm.error_code if self.arm else None
-            return check_operation_result(code, operation_name, state, error)
+    def check_code(self, code, operation_name):
+        """An operation succeeds only when its result AND controller are healthy."""
+        if code not in (None, 0):
+            self._record_health_failure(operation_name, code, "SDK operation failed")
+            return False
+        if not self.is_alive:
+            self._record_health_failure(
+                operation_name, code, "Controller health check failed"
+            )
+            return False
         return True
 
     @property
@@ -1195,66 +1213,73 @@ class XArmController:
             print("Cannot clear errors: No arm connection")
             return False
 
+        self._recovering = True
+
+        def checked(operation, call):
+            # Recovery must work while alive is latched false. Check command
+            # results here, then explicitly read back health before unlatching.
+            code = call()
+            if code not in (None, 0):
+                self._record_health_failure(operation, code, "Recovery command failed")
+                return False
+            return True
+
         try:
-            print("Clearing robot errors and warnings...")
+            for operation, call in (
+                ("clean_error", self.arm.clean_error),
+                ("clean_warn", self.arm.clean_warn),
+            ):
+                if not checked(operation, call):
+                    return False
+            if self.gripper_type in ('bio', 'bio_gen2'):
+                if not checked("clean_bio_gripper_error", self.arm.clean_bio_gripper_error):
+                    return False
+            for operation, call in (
+                ("motion_enable", lambda: self.arm.motion_enable(enable=True)),
+                ("set_mode(0)", lambda: self.arm.set_mode(0)),
+                ("set_state(0)", lambda: self.arm.set_state(0)),
+            ):
+                if not checked(operation, call):
+                    return False
 
-            # Clear errors and warnings
-            error_clear_code = self.arm.clean_error()
-            warn_clear_code = self.arm.clean_warn()
+            state_code, state = self.arm.get_state()
+            error_code, errors = self.arm.get_err_warn_code()
+            if (state_code != 0 or error_code != 0 or not self.arm.connected
+                    or state not in (0, 1, 2) or errors != [0, 0]):
+                self._record_health_failure(
+                    "recovery_readback", state_code or error_code,
+                    f"Recovery not verified: state={state}, error/warn={errors}",
+                )
+                return False
 
-            # BIO Gripper hardware errors (e.g. code 12 "object slipped") live
-            # in the gripper's own register; clean_error() doesn't touch them.
-            # An unresolved gripper fault can pin the arm in state 4, so clear
-            # it here too.
-            if self.gripper_type in ('bio', 'bio_gen2') and hasattr(self.arm, 'clean_bio_gripper_error'):
-                self.arm.clean_bio_gripper_error()
+            self.alive = True
+            # Keep the original failure until component recovery also succeeds.
+            if self.gripper_type in ('bio', 'bio_gen2') or (
+                self.has_gripper() and self.states['gripper'] == ComponentState.ERROR
+            ):
+                if not self.enable_gripper_component():
+                    self._record_health_failure("recover_gripper", None, "Gripper recovery failed")
+                    return False
+            if self.has_track() and self.states['track'] == ComponentState.ERROR:
+                if not self.enable_track_component():
+                    self._record_health_failure("recover_track", None, "Track recovery failed")
+                    return False
+            if not self.is_alive:
+                self._record_health_failure("recovery_health", None, "Controller remains unhealthy")
+                return False
 
-            # Reset error tracking
             self.error_history.clear()
             self.last_error_code = 0
             self.last_warn_code = 0
-
-            # Reset alive state if errors were cleared successfully
-            if error_clear_code == 0 and warn_clear_code == 0:
-                self.alive = True
-                print("[OK] All errors and warnings cleared successfully")
-                self._emit_state_transition("ready", message="Errors cleared")
-
-                # Always re-arm the arm. This is the single recovery button
-                # (it replaced the separate "Enable"), so it must re-energize
-                # the servos unconditionally — NOT just when auto_enable is on
-                # or the arm is flagged ERROR. The SDK parks the arm in state 4
-                # after emergency_stop and refuses motion until mode/state are
-                # re-asserted; a merely-disabled arm must also come back live.
-                print("Re-enabling arm and components...")
-                if hasattr(self.arm, 'motion_enable'):
-                    self.arm.motion_enable(enable=True)
-                if hasattr(self.arm, 'set_mode'):
-                    self.arm.set_mode(0)
-                if hasattr(self.arm, 'set_state'):
-                    self.arm.set_state(0)
-                self.states['arm'] = ComponentState.ENABLED
-
-                # BIO gripper faults live in the gripper's own register;
-                # re-enable unconditionally so clean_bio_gripper_error +
-                # set_bio_gripper_enable(True) actually take effect on the
-                # hardware after a slip/overcurrent. Other grippers/track:
-                # re-enable when they were in error.
-                if self.gripper_type in ('bio', 'bio_gen2'):
-                    self.enable_gripper_component()
-                elif self.has_gripper() and self.states['gripper'] == ComponentState.ERROR:
-                    self.enable_gripper_component()
-                if self.has_track() and self.states['track'] == ComponentState.ERROR:
-                    self.enable_track_component()
-
-                return True
-            else:
-                print(f"[WARN] Error clearing partially failed: error_clear={error_clear_code}, warn_clear={warn_clear_code}")
-                return False
-
+            self.health_failure = None
+            self.states['arm'] = ComponentState.ENABLED
+            self._emit_state_transition("ready", message="Errors cleared; controller recovery verified")
+            return True
         except Exception as e:
-            print(f"[ERROR] Failed to clear errors: {e}")
+            self._record_health_failure("clear_errors", None, f"Recovery exception: {e}")
             return False
+        finally:
+            self._recovering = False
 
     # =============================================================================
     # LINEAR/CARTESIAN MOVEMENTS
@@ -1551,7 +1576,10 @@ class XArmController:
         self.last_arm_pose_name = None
         self.last_rail_location_name = None
         code = self.arm.emergency_stop()
-        return self.check_code(code, 'emergency_stop')
+        # Stopping deliberately leaves the arm unready. Report whether the
+        # stop command succeeded without treating that state as stop failure.
+        self._record_health_failure("emergency_stop", code, "Stop requested; recovery required")
+        return check_operation_result(code, 'emergency_stop')
 
     def set_manual_mode(self, enable):
         """Enable or disable manual (drag/teach) mode.

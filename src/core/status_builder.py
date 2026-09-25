@@ -211,7 +211,11 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         last_error_text = None
 
     activity, activity_since = _observe_activity(controller)
-    alive = bool(getattr(controller, "alive", False))
+    recovering = getattr(controller, "_recovering", False) is True
+    alive = bool(getattr(controller, "alive", False)) and not recovering
+    health_failure = getattr(controller, "health_failure", None)
+    if not isinstance(health_failure, dict):
+        health_failure = None
 
     # State derivation.
     last_error: ErrorInfo | None = None
@@ -256,6 +260,13 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         # suppresses the other.
         equipment_status = "degraded"
         message = "Controller connected but not fully alive."
+        if recovering:
+            message = "Controller recovery in progress; readiness not yet verified."
+        if health_failure:
+            message += (
+                f" {health_failure['operation']}: {health_failure['reason']}"
+                f" (code={health_failure['return_code']}, at {health_failure['timestamp']})."
+            )
 
     simulated = bool(getattr(controller, "is_simulated", False))
     if simulated:
@@ -382,6 +393,7 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         details["simulation_source"] = "+".join(sources) or "unknown"
     # Carry connection details for the local web UI's panel. Not contracted.
     details["connection_details"] = _build_connection_details(controller)
+    details["health_failure"] = dict(health_failure) if health_failure else None
     # Motion-graph state (Phase 1: introspection only; absent when no graph
     # is loaded so the field doesn't pollute /status for unmigrated configs).
     motion_graph_block = _build_motion_graph_details(controller)

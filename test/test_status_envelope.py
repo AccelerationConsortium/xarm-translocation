@@ -978,3 +978,23 @@ def test_build_status_emits_cached_force_torque_metric():
     assert metric.timestamp.isoformat() == '2026-09-25T03:40:00+00:00'
     assert envelope.components['force_torque'].message == (
         'service tare completed; compensation validation unknown')
+
+
+def test_degradation_reason_is_exposed_without_sdk_io():
+    failure = {"operation": "ft_enable", "return_code": 1,
+               "reason": "SDK operation failed", "timestamp": "2026-09-25T00:00:00+00:00",
+               "controller_state": 0, "controller_error_code": 0}
+    c = _fake_controller(alive=False, health_failure=failure)
+    status = build_status(c)
+    assert status.equipment_status == "degraded"
+    assert "ft_enable" in status.message
+    assert "code=1" in status.message
+    assert status.details["health_failure"] == failure
+    c.arm.get_state.assert_not_called()
+
+
+def test_recovery_cannot_report_ready_before_components_verified():
+    c = _fake_controller(alive=True, _recovering=True)
+    status = build_status(c)
+    assert status.equipment_status == "degraded"
+    assert "recovery in progress" in status.message

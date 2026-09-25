@@ -828,4 +828,21 @@ Establishes a WebSocket connection. Once connected, the server will push status 
         "linear_track": { "connected": true, "position": 500.1 }
     }
 }
-``` 
+```
+
+### Controller health and operator recovery
+
+`GET /status` includes `details.health_failure` (null when no failure is
+recorded). A latched failure contains `operation`, `return_code` (null for
+callbacks or exceptions), `reason`, UTC `timestamp`, `controller_state`, and
+`controller_error_code`. These are values observed at the first failure, not a
+fresh hardware query. The first failure is retained until successful recovery
+or a new connection initialization. A degraded status message includes this
+reason so dashboard clients can display it without interpreting SDK codes.
+
+`POST /clear/errors` and `/control/clear_errors` are operator recovery actions:
+they clear faults **and re-enable the arm**, then check command results and
+read back controller state and error/warning codes. Failure returns HTTP 500
+and preserves the health latch; success requires component recovery as well.
+This verifies controller readiness, not physical position, payload, or FT
+compensation. Neither status reads nor dashboard rendering invoke recovery.
