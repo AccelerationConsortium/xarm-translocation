@@ -390,3 +390,31 @@ class TestAgentDocs:
                      "/realsense/{camera_id}/status",
                      "/realsense/{camera_id}/captures/{capture_id}"):
             assert path in paths
+
+
+def test_diagnostic_returns_zip_without_starting_camera(client, fake_cam):
+    fake_cam.diagnostic_export = lambda: ('diagnostic-test', b'PK-test')
+    response = client.post(f'/control/realsense/{CAM}/diagnostic')
+    assert response.status_code == 200
+    assert response.content == b'PK-test'
+    assert response.headers['content-type'] == 'application/zip'
+    assert response.headers['x-capture-id'] == 'diagnostic-test'
+    assert fake_cam.calls == []
+
+
+def test_diagnostic_stopped_camera_is_conflict(client, fake_cam):
+    def stopped():
+        raise RealSenseNotStreaming('already streaming required')
+    fake_cam.diagnostic_export = stopped
+    response = client.post(f'/control/realsense/{CAM}/diagnostic')
+    assert response.status_code == 409
+    assert fake_cam.calls == []
+
+
+def test_diagnostic_optional_start_preserves_sensor_settings(client, fake_cam):
+    calls = []
+    fake_cam.start = lambda **kwargs: calls.append(kwargs)
+    fake_cam.diagnostic_export = lambda: ('diagnostic-test', b'PK-test')
+    response = client.post(f'/control/realsense/{CAM}/diagnostic?start_if_idle=true')
+    assert response.status_code == 200
+    assert calls == [{'preserve_sensor_settings': True}]

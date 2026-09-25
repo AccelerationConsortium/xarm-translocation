@@ -952,3 +952,24 @@ class TestThreadSafety:
         for t in threads:
             t.join(timeout=5.0)
         assert not errors and all(not t.is_alive() for t in threads)
+
+
+def test_diagnostic_start_preserves_settings(rs):
+    cam = RealSenseCamera(_config(), rs_module=rs, np_module=np)
+    try:
+        cam.start(preserve_sensor_settings=True)
+        assert cam.streaming
+        assert rs.options_set == []
+        assert rs.resets == 0
+    finally:
+        cam.stop()
+
+
+def test_diagnostic_start_never_resets_stuck_camera(rs, monkeypatch):
+    monkeypatch.setattr(rc.time, 'sleep', lambda seconds: None)
+    rs.stuck = True
+    cam = RealSenseCamera(_config(), rs_module=rs, np_module=np)
+    with pytest.raises(RealSenseError, match='forbids hardware reset'):
+        cam.start(preserve_sensor_settings=True)
+    assert rs.options_set == [] and rs.resets == 0
+    assert all(p.stopped for p in rs.started_pipelines)

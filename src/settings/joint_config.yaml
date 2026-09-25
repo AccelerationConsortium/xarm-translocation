@@ -1,68 +1,68 @@
 positions:
   # Generic Safe Positions, safe at all locations
-  robot_home: [180.0, -45.0, 0.0, 45.0, 90.0]
-  robot_home_back: [0.0, -45.0, 0.0, 45.0, 90.0]
-  robot_home_left: [90.0, -45.0, 0.0, 45.0, 90.0]
-  robot_home_right: [270.0, -45.0, 0.0, 45.0, 90.0]
+  robot_home: [0.0, -45.0, 0.0, 45.0, 90.0]
+  robot_home_back: [-180.0, -45.0, 0.0, 45.0, 90.0]
+  robot_home_left: [-90.0, -45.0, 0.0, 45.0, 90.0]
+  robot_home_right: [90.0, -45.0, 0.0, 45.0, 90.0]
 
   # The following happens when linear rail is at Home (0 mm)
-  opentrons_home: [-4.42, -67.82, 8.18, 59.11, -4.33]
-  opentrons_2_high: [-2.28, 7.22, -25.61, 17.89, -2.62]
-  opentrons_2_low: [-2.21, 33.11, -31.79, -1.83, -2.93]              # Gripper close to 120mm to grip from long side
-  opentrons_2_low_press: [-2.20, 33.82, -32.07, -2.26, -2.94]        # Press plate down
-  opentrons_4_high: [15.02, 22.82, -48.26, 25.01, 14.78]
-  opentrons_4_low: [15.06, 41.24, -53.53, 11.86, 14.57]
-  opentrons_4_low_top: [15.05, 35.06, -51.13, 15.64, 14.63]
-  opentrons_4_low_press: [15.05, 36.03, -51.59, 14.96, 14.49]        # todo get this real position  
-  opentrons_6_high: [-18.22, 33.43, -52.03, 17.92, -18.60]
-  opentrons_6_low: [-18.20, 41.26, -54.90, 12.96, -18.69]
-  opentrons_6_low_press: [-18.20, 41.63, -55.06, 12.75, -18.69]
+  opentrons_home: [-184.42, -67.82, 8.18, 59.11, -4.33]
+  opentrons_2_high: [-182.28, 7.22, -25.61, 17.89, -2.62]
+  opentrons_2_low: [-182.21, 33.11, -31.79, -1.83, -2.93]              # Gripper close to 120mm to grip from long side
+  opentrons_2_low_press: [-182.20, 33.82, -32.07, -2.26, -2.94]        # Press plate down
+  opentrons_4_high: [-164.98, 22.82, -48.26, 25.01, 14.78]
+  opentrons_4_low: [-164.94, 41.24, -53.53, 11.86, 14.57]
+  opentrons_4_low_top: [-164.95, 35.06, -51.13, 15.64, 14.63]
+  opentrons_4_low_press: [-164.95, 36.03, -51.59, 14.96, 14.49]        # todo get this real position  
+  opentrons_6_high: [-198.22, 33.43, -52.03, 17.92, -18.60]
+  opentrons_6_low: [-198.20, 41.26, -54.90, 12.96, -18.69]
+  opentrons_6_low_press: [-198.20, 41.63, -55.06, 12.75, -18.69]
   
   # The following happens when linear rail is at Home (0 mm)
-  uplc_home: [200.37, -37.85, -26.7, 64.85, 113.86]
+  uplc_home: [20.37, -37.85, -26.7, 64.85, 113.86]
   # The following are for opening/closing the uplc draw, no payload allowed
-  uplc_draw_home: [176.5, 8.1, -70.1, 62.1, 90.0]
-  uplc_draw_open_max: [174.5, 8.3, -70.4, 62.2, 88]                 # slight further from fully open to avoid collision with the arm
-  uplc_draw_open_min: [143.32, 29.4, -100.85, 71.28, 56.85]                 # slight short from fully close to avoid collision with the arm
-  uplc_draw_open_close: [142.73, 30.54, -102.61, 71.89, 56.26]           # You hear a "click" when the door is closed/opened
+  uplc_draw_home: [-3.5, 8.1, -70.1, 62.1, 90.0]
+  uplc_draw_open_max: [-5.5, 8.3, -70.4, 62.2, 88]                 # slight further from fully open to avoid collision with the arm
+  uplc_draw_open_min: [-36.68, 29.4, -100.85, 71.28, 56.85]                 # slight short from fully close to avoid collision with the arm
+  uplc_draw_open_close: [-37.27, 30.54, -102.61, 71.89, 56.26]           # You hear a "click" when the door is closed/opened
   # The following are for putting in/taking out the uplc plate, no payload allowed
-  uplc_plate_home: [90.05, -54.66, -40.29, 94.98, -89.63]
-  uplc_plate_high: [137.57, -5.67, -73.46, 78.39, -40.27]
-  uplc_plate_in: [137.54, -4.33, -61.66, 65.25, -40.36]              # Gripper close to 120mm open to only 125mm
+  uplc_plate_home: [-89.95, -54.66, -40.29, 94.98, -89.63]
+  uplc_plate_high: [-42.43, -5.67, -73.46, 78.39, -40.27]
+  uplc_plate_in: [-42.46, -4.33, -61.66, 65.25, -40.36]              # Gripper close to 120mm open to only 125mm
 
   # The following happens when linear rail is at Deck location (550mm)
-  deck_home: [90.0, -45.0, 0.0, 45, -90.0]
+  deck_home: [-90.0, -45.0, 0.0, 45, -90.0]
   # The Arm can reach the solid handler, the deck plates, and the fumehood positions
-  deck_high: [180, -45, 0, 45, 0]                                   # High position to avoid collision
-  deck_slot1_high: [202.88, 6.43, -20.05, 13.03, 22.50]             
-  deck_slot1_low: [203.08, 33.13, -27.07, -6.66, 22.31]             # Gripper close to 120mm to grip from long side
-  deck_slot1_low_press: [203.08, 33.63, -27.28, -6.95, 22.31]       # Press plate down
-  deck_slot2_high: [215.76, -31.78, 0.96, 31.04, 35.6]
-  deck_slot2_low: [215.83, 32.26, -9.61, -22.44, 34.75] 
-  deck_solid_high:  [141.51, -31.05, -16.86, 46.73, -38.38] 
-  deck_solid_low: [142.08, -6.86, -11.19, 16.88, -38.23]
-  deck_solid_low_press: [142.08, -6.26, -11.22, 16.3, -38.24]
-  deck_90_high: [215.5, 13.98, -48.88, 35.12, 125.41]
-  deck_90_slot1_high: [211.54, 32.6, -61.14, 28.74, 121.34]          # Gripper close to 80mm, open to 100mm 
-  deck_90_slot1_low: [211.54, 46.09, -65.71, 19.82, 121.16]          # Gripper close to 80mm, open to 100mm 
+  deck_high: [0, -45, 0, 45, 0]                                   # High position to avoid collision
+  deck_slot1_high: [22.88, 6.43, -20.05, 13.03, 22.50]             
+  deck_slot1_low: [23.08, 33.13, -27.07, -6.66, 22.31]             # Gripper close to 120mm to grip from long side
+  deck_slot1_low_press: [23.08, 33.63, -27.28, -6.95, 22.31]       # Press plate down
+  deck_slot2_high: [35.76, -31.78, 0.96, 31.04, 35.6]
+  deck_slot2_low: [35.83, 32.26, -9.61, -22.44, 34.75] 
+  deck_solid_high:  [-38.49, -31.05, -16.86, 46.73, -38.38] 
+  deck_solid_low: [-37.92, -6.86, -11.19, 16.88, -38.23]
+  deck_solid_low_press: [-37.92, -6.26, -11.22, 16.3, -38.24]
+  deck_90_high: [35.5, 13.98, -48.88, 35.12, 125.41]
+  deck_90_slot1_high: [31.54, 32.6, -61.14, 28.74, 121.34]          # Gripper close to 80mm, open to 100mm 
+  deck_90_slot1_low: [31.54, 46.09, -65.71, 19.82, 121.16]          # Gripper close to 80mm, open to 100mm 
 
   # The following happens when linear rail is at Hood location (same as Deck for now  )
   # The Arm can reach the shaker and filteration setup in the fumehoods
-  hood_home: [-4.42, -67.82, 8.18, 59.11, -4.33]
-  hood_shaker_high: [5.13, 28.61, -61.45, 32.40, 4.98]
-  hood_shaker_low: [4.92, 39.45, -63.74, 23.85, 4.62]               # Gripper close to 120mm to grip from long side
-  hood_shaker_low_press: [5.14, 39.80, -63.90, 23.68, 4.84]         # Press plate down
+  hood_home: [-184.42, -67.82, 8.18, 59.11, -4.33]
+  hood_shaker_high: [-174.87, 28.61, -61.45, 32.40, 4.98]
+  hood_shaker_low: [-175.08, 39.45, -63.74, 23.85, 4.62]               # Gripper close to 120mm to grip from long side
+  hood_shaker_low_press: [-174.86, 39.80, -63.90, 23.68, 4.84]         # Press plate down
 
-  hood_filter_home: [-46.10, -5.22, -32.69, 37.49, -46.08]      
-  hood_filter_high: [-28.3, 29.88, -81.07, 50.85, -28.15]     
-  hood_filter_low: [-28.39, 35.58, -79.92, 44, -28.33]              # Gripper close to 120mm to grip from long side  and away from filteration plate
-  hood_filter_top_plate: [-28.19, 32.05, -80.86, 48.42, -27.99]     # Position to grip top plate of filteration plate
+  hood_filter_home: [-226.10, -5.22, -32.69, 37.49, -46.08]      
+  hood_filter_high: [-208.3, 29.88, -81.07, 50.85, -28.15]     
+  hood_filter_low: [-208.39, 35.58, -79.92, 44, -28.33]              # Gripper close to 120mm to grip from long side  and away from filteration plate
+  hood_filter_top_plate: [-208.19, 32.05, -80.86, 48.42, -27.99]     # Position to grip top plate of filteration plate
 
   # The following happens when linear rail is at Cytation location (700mm)
-  cytation_home: [223.54, -43.36, -12.12, 55.2, -46.34]
-  cytation_high: [221.57, 77.13, -80.96, 3.54, -49.18]
-  cytation_high_pull: [218.38, 76, -76.27, 0, -52.43]
-  cytation_low:  [221.57, 79.67, -83.47, 3.51, -49.19]
-  plateloc_home: [223.68, -49.44, -29.29, 78.45, -46.07]
-  plateloc_high: [246.52, 2.98, -68.94, 66.07, -23.22]
-  plateloc_low:  [246.5, 4.97, -64.57, 59.71, -23.3]
+  cytation_home: [43.54, -43.36, -12.12, 55.2, -46.34]
+  cytation_high: [41.57, 77.13, -80.96, 3.54, -49.18]
+  cytation_high_pull: [38.38, 76, -76.27, 0, -52.43]
+  cytation_low:  [41.57, 79.67, -83.47, 3.51, -49.19]
+  plateloc_home: [43.68, -49.44, -29.29, 78.45, -46.07]
+  plateloc_high: [66.52, 2.98, -68.94, 66.07, -23.22]
+  plateloc_low:  [66.5, 4.97, -64.57, 59.71, -23.3]

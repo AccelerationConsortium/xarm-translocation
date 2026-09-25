@@ -20,6 +20,47 @@ the binding lab contract and SDK boundary.
 | GET | `/agent-docs/api-reference` | open | this document, Markdown |
 | GET | `/llms.txt` | open | discovery index |
 
+## Read-only controller configuration and kinematics
+
+These endpoints are open reads (including the two POST calculations), require
+an already connected controller, and never move, enable, clear errors, change
+mode, or write configuration. They do not acquire a claim. SDK calls run in a
+worker thread. Units are **mm and degrees**, pose order **XYZ, Roll, Pitch, Yaw**.
+
+| Method | Path | Body / result |
+|---|---|---|
+| GET | `/positions` | Existing joints/TCP/rail/gripper snapshot |
+| GET | `/kinematics/config` | Model, firmware, SDK version, report-cached TCP/world offsets and payload, raw DH parameters, reference-angle capability |
+| GET | `/kinematics/limits` | Live reduced mode and raw ranges; ordinary effective limits explicitly unavailable |
+| POST | `/kinematics/fk` | `{"joints":[0,-30,0,30,0]}` → controller TCP in `result.data` |
+| POST | `/kinematics/ik` | `{"pose":[300,0,300,180,0,0],"reference_angles":[0,-30,0,30,0],"limited":false}` → controller joints and separate limit check |
+
+Examples illustrate the schema, not validated motion targets. Arrays of joints
+must contain exactly the connected robot's axis count (five for xArm5).
+Omit `reference_angles` to sample current joints as the reference. `limited`
+controls SDK ±180-degree normalization, not safety or joint-limit enforcement.
+Reference IK requires firmware >=2.7.103 and a compatible SDK; **409** means
+unsupported, and the reference is never silently discarded. **422** means
+invalid dimensions/non-finite values; **400** means no controller instance;
+**503** means the controller is disconnected.
+
+SDK query results use `{available, code, data, reason}`. An HTTP 200 alone is
+not query success: require `available:true` and `code:0`. IK's independent
+`joint_limit_check.data` is `true` for exceeding limits, `false` for within
+limits, and null/unavailable on query failure. `violating_joints` remains null:
+the verified SDK query does not identify individual joints. Error codes are
+preserved with SDK symbolic reasons; no detailed controller reason is invented.
+A valid inverse solution is not collision checking or path approval.
+
+Configuration offsets/payload come from the SDK report cache; `sampled_at`
+records service read time, not controller measurement time. Reads are not an
+atomic controller snapshot. DH values are returned in the controller's raw
+7-slot order; parameter convention and calibration completeness are unverified.
+RPY axes are X/Y/Z, but transform composition is explicitly unverified.
+Ordinary-mode joint bounds are **not** replaced by SDK model defaults.
+Reduced joint ranges retain raw SDK slot order; the observed xArm5 J4/J5
+mapping discrepancy is unresolved, and disabled reduced limits are not active.
+
 ## Claims
 
 | Method | Path | Gate | Body | Notes |

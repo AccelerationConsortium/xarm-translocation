@@ -2559,11 +2559,14 @@ document.addEventListener('DOMContentLoaded', () => {
         apiRequest('/control/freehand/relative', 'POST', { dx: dx * step, dy: dy * step, dz: dz * step, speed });
     }
 
+    // Physical base remounted 180 degrees, rail unchanged (2026-09-24).
+    // Keep the panel's existing room directions: robot-frame X/Y reverse;
+    // Z, rail motion and the raw joint-angle inputs keep their meanings.
     const jogMap = {
-        'jog-x-plus':  [  1,  0,  0 ],
-        'jog-x-minus': [ -1,  0,  0 ],
-        'jog-y-plus':  [  0,  1,  0 ],
-        'jog-y-minus': [  0, -1,  0 ],
+        'jog-x-plus':  [ -1,  0,  0 ],
+        'jog-x-minus': [  1,  0,  0 ],
+        'jog-y-plus':  [  0, -1,  0 ],
+        'jog-y-minus': [  0,  1,  0 ],
         'jog-z-plus':  [  0,  0,  1 ],
         'jog-z-minus': [  0,  0, -1 ],
     };

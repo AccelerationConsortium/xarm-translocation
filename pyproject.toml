@@ -30,7 +30,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "xarm-python-sdk>=1.13.0",
+    "xarm-python-sdk>=1.18.4",
     "PyYAML>=6.0",
     "ruamel.yaml>=0.18",
     "fastapi>=0.104.1",
@@ -40,6 +40,7 @@ dependencies = [
     # OpenAI-compatible API. The feature degrades gracefully when the key is
     # unset, but the SDK ships by default.
     "openai>=1.0.0",
+    "httpx>=0.25.0",  # Standalone camera service client
     # Loads OPENROUTER_API_KEY from a local .env file (git-ignored).
     "python-dotenv>=1.0.0",
     "sdl-lab-contract",
@@ -49,6 +50,10 @@ dependencies = [
 sdl-lab-contract = { git = "https://github.com/AccelerationConsortium/sdl-lab-contract", tag = "v1.2.0" }
 
 [project.optional-dependencies]
+usb-camera = [
+    "opencv-python-headless>=4.10",
+    "cv2-enumerate-cameras>=1.3.0",
+]
 # Intel RealSense depth camera (D435i etc.) attached to this device PC over
 # USB 3. Optional: the service boots without it and /realsense/* reports
 # "pyrealsense2 not installed". Install with `uv sync --extra realsense`.
@@ -127,4 +132,3 @@ markers = [
 # For full setup, see README_DOCKER.md
 
 [tool.coverage.run]
-

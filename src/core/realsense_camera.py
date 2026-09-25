@@ -59,6 +59,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from .realsense_diagnostics import DiagnosticCapture
+
 logger = logging.getLogger("xarm.realsense")
 
 _DEVICE_LIST_TTL_S = 5.0     # enumeration is a USB round-trip; cache it
@@ -172,6 +174,8 @@ class RealSenseCamera:
         self._last_consumer_at = time.monotonic()
         self._last_error: Optional[str] = None
         self._started_at: Optional[float] = None
+        self._diagnostic = None
+        self._diagnostic_lock = threading.Lock()
 
         # Enumeration cache (see _DEVICE_LIST_TTL_S).
         self._devices_cache: Optional[List[Dict[str, Any]]] = None
@@ -285,7 +289,7 @@ class RealSenseCamera:
     # Lifecycle
     # ------------------------------------------------------------------
 
-    def start(self) -> Dict[str, Any]:
+    def start(self, *, preserve_sensor_settings: bool = False) -> Dict[str, Any]:
         """Open the pipeline and begin capturing. Idempotent while streaming.
 
         Raises :class:`RealSenseUnavailable` when the feature is disabled, the
@@ -308,6 +312,9 @@ class RealSenseCamera:
             rs = self._rs
             pipeline, profile = self._open_pipeline(device)
             if not self._first_frame_arrives(pipeline):
+                if preserve_sensor_settings:
+                    self._safe_stop(pipeline)
+                    raise RealSenseError("no frames; diagnostic startup forbids hardware reset")
                 # Seen on a D405 (2026-09-23): the pipeline opens but the
                 # device never delivers a frame at any profile until it is
                 # hardware-reset. Reset once and retry before giving up.
@@ -325,7 +332,7 @@ class RealSenseCamera:
                     )
 
             dev = profile.get_device()
-            if self.keep_frame_rate:
+            if self.keep_frame_rate and not preserve_sensor_settings:
                 self._disable_exposure_priority(dev)
             depth_scale = None
             if self.depth_profile["enabled"]:
@@ -451,6 +458,8 @@ class RealSenseCamera:
         """Stop capturing and release the device. Safe to call when stopped."""
         with self._lock:
             thread = self._thread
+            if self._diagnostic is not None and not self._diagnostic.done.is_set():
+                self._diagnostic.fail("camera stopped during diagnostic capture")
             pipeline = self._pipeline
             self._stop_event.set()
             self._thread = None
@@ -484,6 +493,31 @@ class RealSenseCamera:
     # Capture thread
     # ------------------------------------------------------------------
 
+    def diagnostic_export(self):
+        """Collect exactly 20 framesets on the existing pipeline; never start it."""
+        if not self._diagnostic_lock.acquire(blocking=False):
+            raise RealSenseError("a diagnostic export is already in progress")
+        try:
+            with self._lock:
+                if self._state != "streaming":
+                    raise RealSenseNotStreaming("diagnostics require an already streaming camera")
+                if self._align is None:
+                    raise RealSenseError("diagnostics require existing depth-to-color alignment")
+                request = DiagnosticCapture(self)
+                self._diagnostic = request
+                self._last_consumer_at = time.monotonic()
+            try:
+                if not request.done.wait(30):
+                    request.fail("diagnostic capture timed out after 30 seconds")
+                if request.error:
+                    raise RealSenseError(request.error)
+                return request.capture_id, request.archive()
+            finally:
+                with self._lock:
+                    self._diagnostic = None
+        finally:
+            self._diagnostic_lock.release()
+
     def _capture_loop(self) -> None:
         np = self._np
         failures = 0
@@ -495,10 +529,25 @@ class RealSenseCamera:
                 break
             try:
                 frames = pipeline.wait_for_frames(self.frame_timeout_ms)
+                with self._lock:
+                    diagnostic = self._diagnostic
+                    if diagnostic is not None:
+                        self._last_consumer_at = time.monotonic()
+                sample = None
+                if diagnostic is not None:
+                    try:
+                        sample = diagnostic.before_alignment(self, frames)
+                    except Exception as exc:
+                        diagnostic.fail(exc)
                 if align is not None:
                     frames = align.process(frames)
                 depth_frame = frames.get_depth_frame() if self.depth_profile["enabled"] else None
                 color_frame = frames.get_color_frame() if self.color_profile["enabled"] else None
+                if diagnostic is not None:
+                    try:
+                        diagnostic.after_alignment(self, sample, depth_frame)
+                    except Exception as exc:
+                        diagnostic.fail(exc)
                 if ((self.depth_profile["enabled"] and not depth_frame)
                         or (self.color_profile["enabled"] and not color_frame)):
                     continue  # partial frameset; librealsense delivers the next one shortly
@@ -538,6 +587,9 @@ class RealSenseCamera:
                     self.stop()
                     return
             except Exception as exc:  # noqa: BLE001 - a dropped frame is not fatal
+                with self._lock:
+                    if self._diagnostic is not None:
+                        self._diagnostic.fail(exc)
                 if self._stop_event.is_set():
                     break
                 failures += 1

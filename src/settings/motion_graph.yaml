@@ -63,8 +63,10 @@ enforce_return_to_home: true
 # sized for a single retreat out of the hood, this one for a person working.
 # Lower them if a shorter leash is wanted -- the endpoint clamps to the cap,
 # so a caller asking for more gets the cap rather than an error.
-mode_override_default_seconds: 300     # when the caller names no ttl_seconds
-mode_override_max_seconds: 900         # hard cap on a single grant
+# TEMPORARY (2026-09-22): raised from 300/900 to 5 h for an extended
+# non-strict session. Restore to 300 / 900 afterwards.
+mode_override_default_seconds: 18000   # when the caller names no ttl_seconds
+mode_override_max_seconds: 18000       # hard cap on a single grant
 
 # ── Gripper-state catalog ───────────────────────────────────────────────────
 gripper_states:

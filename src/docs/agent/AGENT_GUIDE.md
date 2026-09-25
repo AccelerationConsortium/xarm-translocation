@@ -67,6 +67,17 @@ own `components.realsense_<camera_id>` entry (for example
 motion does not depend on it. Two cameras are two components: they fail
 independently, and one merged entry would hide the working one.
 
+## Read-only kinematics
+
+`GET /kinematics/config` reads controller offsets, payload, version and DH
+parameters. `GET /kinematics/limits` reads reduced-mode settings and reports
+ordinary effective limits as unavailable. `POST /kinematics/fk` and
+`POST /kinematics/ik` calculate without motion or state changes; IK accepts
+`reference_angles` or reads current joints when omitted. These routes require
+an existing connection and no claim. Check SDK result codes and the separate
+limit check; a solution does not establish a safe path. See the
+[API reference](agent-docs/api-reference) for schemas and remaining limitations.
+
 ## Moving the arm
 
 Nodes are named positions; edges are whitelisted transitions. In `strict`
