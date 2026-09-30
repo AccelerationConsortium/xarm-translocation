@@ -360,7 +360,7 @@ class XArmController:
 
         # BIO gripper status/error register cache, surfaced on /status as a
         # plate-transfer verification signal (failed pickup / mid-move slip).
-        # Refreshed by refresh_gripper_status() after each Gen2 jaw move;
+        # Refreshed after each Gen2 jaw move and by the API background poll;
         # status_builder reads ONLY these cached values so it stays
         # side-effect-free (no live Modbus round-trip from /status).
         self.last_gripper_position_actual = None   # mm, read back from gripper
@@ -1768,8 +1768,8 @@ class XArmController:
         This round-trips to the gripper over Modbus, so it is NOT
         side-effect-free and MUST NOT be called from ``status_builder``
         (which only reads the cached ``last_gripper_*`` attributes set
-        here). Call it right after each Gen2 jaw move; the cached values
-        then describe that move for the next ``/status`` read.
+        here). Called after each Gen2 jaw move and by the API's 1 Hz
+        background poll, including when no WebSocket client is attached.
 
         No-op for non-BIO grippers, when disconnected, or when the SDK
         build lacks the status getter. Returns the decoded motion-state
@@ -3206,8 +3206,8 @@ class XArmController:
             self.last_gripper_position = position
             self.last_gripper_force = force
             self.last_gripper_speed = speed
-            # Capture the slip/detect register for /status now that the jaws
-            # have settled — this is the move whose outcome we verify.
+            # With wait=False this can still report moving. The API poll
+            # refreshes the snapshot as the jaws settle and while holding.
             self.refresh_gripper_status()
         return success
 

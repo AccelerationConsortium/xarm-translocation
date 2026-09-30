@@ -725,6 +725,7 @@ async def lifespan(app: FastAPI):
     # Start background tasks
     log_task = asyncio.create_task(broadcast_logs())
     telemetry_task = asyncio.create_task(telemetry_loop())
+    gripper_status_task = asyncio.create_task(gripper_status_loop())
 
     # RealSense depth cameras: open a pipeline at boot only for the cameras
     # whose YAML entry asks for it. A missing camera is logged, never fatal --
@@ -746,6 +747,8 @@ async def lifespan(app: FastAPI):
     # Shutdown
     log_task.cancel()
     telemetry_task.cancel()
+    gripper_status_task.cancel()
+    await asyncio.gather(gripper_status_task, return_exceptions=True)
     await asyncio.to_thread(usb_cameras.stop_all)
     if camera_service is not None:
         await asyncio.to_thread(camera_service.close)
@@ -1532,6 +1535,28 @@ async def telemetry_loop():
             logger.error(f"Telemetry loop error: {e}")
             # Back off so a persistent fault doesn't spin the loop hot.
             await asyncio.sleep(0.5)
+
+async def gripper_status_loop():
+    """Keep REST gripper feedback current even without WebSocket viewers.
+
+    Modbus reads run at 1 Hz independently of high-rate pose telemetry.
+    In particular, a wait=False command must not leave its initial
+    'moving' snapshot cached forever after the jaws have settled.
+    """
+    while True:
+        try:
+            await asyncio.sleep(1.0)
+            c = controller
+            # Faults can make is_alive false; keep reading diagnostics as
+            # long as the hardware connection itself remains available.
+            if c is None or c.arm is None or not c.arm.connected:
+                continue
+            await asyncio.to_thread(c.refresh_gripper_status)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning(f"Gripper status refresh failed: {exc}")
+
 
 # API Routes
 

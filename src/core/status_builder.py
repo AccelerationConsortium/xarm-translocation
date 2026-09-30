@@ -867,7 +867,7 @@ def _build_gripper_details(controller: XArmController) -> dict[str, Any] | None:
     ``refresh_gripper_status`` cache, so this reader is side-effect-free.
 
     Returns ``None`` when nothing concrete has been cached yet (non-BIO
-    gripper, or the gripper hasn't moved this session) so the field
+    gripper, or no status has been read this session) so the field
     doesn't pollute /status for arms that never grip.
 
     Field shape::
