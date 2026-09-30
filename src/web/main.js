@@ -52,10 +52,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const manualModeCheckbox = document.getElementById('manual-mode-checkbox');
     const moveToStrokeBtn = document.getElementById('move-to-stroke-btn');
     const gripperStrokeInput = document.getElementById('gripper-stroke');
-    const gripperStrokeRange = document.getElementById('gripper-stroke-range');
     const setGripperForceBtn = document.getElementById('set-gripper-force-btn');
     const gripperForceInput = document.getElementById('gripper-force');
-    const gripperForceRange = document.getElementById('gripper-force-range');
     
     // Linear movement controls
     const moveLinearBtn = document.getElementById('move-linear-btn');
@@ -87,6 +85,27 @@ document.addEventListener('DOMContentLoaded', () => {
         `xarm-web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     let claimToken = null;          // non-null while this browser holds the claim
     let claimHeartbeatTimer = null; // setInterval handle for the heartbeat
+
+    // One session owns drive, graph editing, heartbeat and release. The editor
+    // reads the current token at request time, never a copied/stale token.
+    let claimAcquisition = null;
+    window.xarmControl = {
+        get sessionId() { return claimSessionId; },
+        get token() { return claimToken; },
+        async ensureClaim() {
+            if (claimToken) return true;
+            if (!controllerConnected || loginRequiredButNotSignedIn()) {
+                showMessage('Connect and sign in before taking control.', 'error');
+                return false;
+            }
+            if (!claimAcquisition) {
+                claimAcquisition = takeControl().finally(() => { claimAcquisition = null; });
+            }
+            await claimAcquisition;
+            return claimToken !== null;
+        },
+        handleClaimLost,
+    };
 
     let socket;
     let statusRefreshInterval = null;
@@ -612,6 +631,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- UI Updates ---
     function updateStatusUI(data) {
+        document.dispatchEvent(new CustomEvent('xarm:status', { detail: data }));
         try {
             // Quick check: if basic elements don't exist, DOM might not be ready
             if (!document.getElementById('arm-state') || !document.getElementById('status-text')) {
@@ -713,11 +733,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             };
 
-            const setInputHelp = (element, text, disabled = false) => {
-                if (!element) return;
-                element.textContent = text;
-                element.classList.toggle('is-disabled', disabled);
-            };
 
             safeSetText('arm-state', componentStates.arm || 'N/A');
             
@@ -743,11 +758,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     
                     if (gripperStrokeInput) {
                         gripperStrokeInput.disabled = false;
-                        gripperStrokeInput.placeholder = `${minStroke}-${maxStroke}`;
+                        gripperStrokeInput.placeholder = "";
                         gripperStrokeInput.min = minStroke.toString();
                         gripperStrokeInput.max = maxStroke.toString();
                     }
-                    setInputHelp(gripperStrokeRange, `(${minStroke}–${maxStroke})`, false);
+
                     if (moveToStrokeBtn) {
                         moveToStrokeBtn.disabled = false;
                         moveToStrokeBtn.classList.remove('btn-secondary');
@@ -760,7 +775,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         gripperStrokeInput.placeholder = "";
                         gripperStrokeInput.value = "";
                     }
-                    setInputHelp(gripperStrokeRange, '', true);
+
                     if (moveToStrokeBtn) {
                         moveToStrokeBtn.disabled = true;
                         moveToStrokeBtn.classList.remove('btn-primary');
@@ -775,14 +790,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     if (gripperForceInput) {
                         gripperForceInput.disabled = false;
-                        gripperForceInput.placeholder = `${minForce}-${maxForce}`;
+                        gripperForceInput.placeholder = "";
                         gripperForceInput.min = minForce.toString();
                         gripperForceInput.max = maxForce.toString();
                         if (!gripperForceInput.value && gripperConfig.force) {
                             gripperForceInput.value = gripperConfig.force.toString();
                         }
                     }
-                    setInputHelp(gripperForceRange, `(${minForce}–${maxForce})`, false);
+
                     if (setGripperForceBtn) {
                         setGripperForceBtn.disabled = false;
                         setGripperForceBtn.classList.remove('btn-secondary');
@@ -794,7 +809,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         gripperForceInput.placeholder = "";
                         gripperForceInput.value = "";
                     }
-                    setInputHelp(gripperForceRange, '', true);
+
                     if (setGripperForceBtn) {
                         setGripperForceBtn.disabled = true;
                         setGripperForceBtn.classList.remove('btn-primary');
@@ -811,7 +826,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     gripperStrokeInput.placeholder = "";
                     gripperStrokeInput.value = "";
                 }
-                setInputHelp(gripperStrokeRange, '', true);
+
                 if (moveToStrokeBtn) {
                     moveToStrokeBtn.disabled = true;
                     moveToStrokeBtn.classList.remove('btn-primary');
@@ -822,7 +837,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     gripperForceInput.placeholder = "";
                     gripperForceInput.value = "";
                 }
-                setInputHelp(gripperForceRange, '', true);
+
                 if (setGripperForceBtn) {
                     setGripperForceBtn.disabled = true;
                     setGripperForceBtn.classList.remove('btn-primary');
@@ -2163,23 +2178,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // --- Control Modes tabs (Arm Control / Graph Control) ---
-    const modeTabs = [
-        { tab: document.getElementById('mode-tab-arm'), pane: document.getElementById('mode-pane-arm') },
-        { tab: document.getElementById('mode-tab-graph'), pane: document.getElementById('mode-pane-graph') },
-    ];
-    modeTabs.forEach(({ tab }) => {
-        if (!tab) return;
-        tab.addEventListener('click', () => {
-            modeTabs.forEach((m) => {
-                if (!m.tab || !m.pane) return;
-                const active = m.tab === tab;
-                m.tab.classList.toggle('active', active);
-                m.pane.hidden = !active;
-            });
-        });
-    });
-
     // --- WebSocket Handling ---
     function connectWebSocket() {
         if (socket && socket.readyState === WebSocket.OPEN) {
@@ -2396,31 +2394,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     initAdminGraphOff();
 
-    // Lab Camera folds on a click of its title, like the Stereo Camera card
-    // (realsense-card.js). Only the body hides; camera-player.js keeps
-    // managing the card itself. Remembered per browser.
-    (function initLabCameraFold() {
-        const card = document.getElementById('camera-card');
-        const head = document.getElementById('camera-card-head');
-        if (!card || !head) return;
-        const KEY = 'xarm.fold.labcam';
-        const apply = (folded) => {
-            card.classList.toggle('is-folded', folded);
-            head.setAttribute('aria-expanded', folded ? 'false' : 'true');
-        };
-        let folded = false;
-        try { folded = localStorage.getItem(KEY) === '1'; } catch { folded = false; }
-        apply(folded);
-        const toggle = () => {
-            folded = !folded;
-            try { localStorage.setItem(KEY, folded ? '1' : '0'); } catch { /* storage blocked */ }
-            apply(folded);
-        };
-        head.addEventListener('click', toggle);
-        head.addEventListener('keydown', (ev) => {
-            if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); }
-        });
-    })();
     const mgRecoverBtn = document.getElementById('mg-recover-btn');
     if (mgRecoverBtn) {
         mgRecoverBtn.addEventListener('click', openRecoverPanel);
@@ -2456,15 +2429,22 @@ document.addEventListener('DOMContentLoaded', () => {
         apiRequest('/component/enable', 'POST', { component: 'gripper' });
     });
     
+    // Blank/invalid fields use the same conservative default shown on reload.
+    // Units come from each control: rail/TCP mm/s, joints degrees/s.
+    function movementSpeed(input) {
+        const value = Number(input.value);
+        return Number.isFinite(value) && value > 0 ? value : Number(input.defaultValue);
+    }
+
     moveTrackLocBtn.addEventListener('click', () => {
         const location_name = trackLocationSelect.value;
-        const speed = parseFloat(trackSpeedInput.value) || null;
+        const speed = movementSpeed(trackSpeedInput);
         apiRequest('/track/move/location', 'POST', { location_name, speed });
     });
 
     movePredefinedBtn.addEventListener('click', () => {
         const location_name = predefinedPositionSelect.value;
-        const speed = jointSpeedInput ? parseInt(jointSpeedInput.value) || 20 : 20;
+        const speed = movementSpeed(jointSpeedInput);
         apiRequest('/move/location', 'POST', { 
             location_name, 
             speed 
@@ -2474,7 +2454,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Linear movement event listener
     moveLinearBtn.addEventListener('click', () => {
         const targetLocation = predefinedPositionSelect.value; // Use same dropdown as Move Joints
-        const speed = linearSpeedInput ? parseInt(linearSpeedInput.value) || 100 : 100;
+        const speed = movementSpeed(linearSpeedInput);
 
         if (!targetLocation) {
             showMessage('Please select a destination location.', 'error');
@@ -2544,7 +2524,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 showMessage('Enter all joint angles before moving.', 'error');
                 return;
             }
-            const speed = parseFloat(directJointSpeed?.value) || 10;
+            const speed = movementSpeed(directJointSpeed);
             apiRequest('/control/freehand/joints', 'POST', { angles, speed });
             // Target dispatched — let telemetry take the inputs back so they
             // animate toward the commanded angles.
@@ -2555,7 +2535,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- XYZ Jog handlers ---
     function jog(dx, dy, dz) {
         const step = parseFloat(jogStepInput?.value) || 10;
-        const speed = parseFloat(linearSpeedInput?.value) || 100;
+        const speed = movementSpeed(linearSpeedInput);
         apiRequest('/control/freehand/relative', 'POST', { dx: dx * step, dy: dy * step, dz: dz * step, speed });
     }
 

@@ -1,4 +1,4 @@
-Speed: 100   # mm/s — kept deliberately slow for all rail moves
+Speed: 20    # mm/s — default for rail moves without an explicit speed
 Acc: 1000
 Range:
   min: 0

@@ -46,7 +46,46 @@ Covered: `/move/{position,joints,relative,location,home,plate_linear}`, `/track/
 
 Not covered, deliberately: `/move/stop` and `/clear/errors` (the safety floor must always be reachable), `/control/graph/recover_to` (a bookkeeping re-pin, not a motion), and the gripper endpoints (`set_gripper_state` already refuses while the arm is moving, and gripper actuation is not primary operation).
 
+### Operator workspace
+
+`/xarm5/web/` (or `/web/` directly on the device) is the shared control
+interface. The Camera tile switches between Tapo Camera and Stereo Camera.
+The workspace below switches between Graph Drive, Direct Drive, and Edit
+Graph; gripper/rail controls sit above the drive controls, with the console
+alongside. Graph Drive defaults to Reachable Node; Travel to Node has its own tab.
+The legacy `graph.html` link redirects to `#edit-graph` in this workspace.
+
+All tabs use one control claim, heartbeat, and status connection. Switching
+views never acquires or releases control. The graph editor uses the main
+panel's current claim token, and graph viewing remains available during
+motion or while another operator holds control. The manual-mode switch
+retains its existing server-side motion guards.
+
+Manual motion defaults are 20 mm/s for rail and linear arm motion, and
+5 degrees/s for joints. Empty speed fields use the same defaults. These are
+defaults, not hard caps; graph moves retain their edge limits. Backend profile
+defaults are loaded when the controller connects.
+
+UI composition and responsive styles live in `workspace.js` / `workspace.css`;
+`main.js` owns robot controls and the shared claim, `graph.js` owns topology
+editing, and the existing camera modules own their players.
+
 ### Motion-graph enforcement, and the bounded way to leave it
+
+Explicit graph moves (`/control/graph/move_to`, `/control/graph/travel_to`,
+and assistant move steps) always enforce the edge's movement mode and speed
+cap, including during an OFF or ADVISORY override. Linear edge speeds are
+TCP translation speeds in **mm/s**; joint edge speeds are **degrees/s**.
+They are not percentages or interchangeable units. Cross-rail graph moves
+use the edge speed for the arm and the track configuration's **mm/s** speed
+for the rail. Linear acceleration is **mm/s²**, joint acceleration **degrees/s²**.
+
+Saving an edge in the graph editor updates the server's in-memory graph;
+the next move uses the saved settings. It does not retime a move already
+sent to the robot. Direct YAML edits require a server restart. `GET /graph`
+on the same server as the UI reports the loaded values; a different checkout's
+YAML may differ. Reload an already-open graph tab to fetch other clients' edits.
+
 
 **Administrator one-click OFF:** `POST /control/admin/graph/off` with an
 authenticated administrator session/API key; no body or claim is required.

@@ -456,7 +456,7 @@ class GraphMoveToRequest(BaseModel):
     can differ (e.g. node 'uplc_draw_approach' has arm 'uplc_draw_home').
     """
     node_id: str = Field(description="Graph node id to move to")
-    speed: Optional[float] = Field(default=None, description="Movement speed (may be capped by edge.speed in STRICT)")
+    speed: Optional[float] = Field(default=None, description="Arm speed: linear mm/s, joint deg/s; capped by edge.speed in every graph mode")
 
 
 class GraphTravelToRequest(BaseModel):
@@ -468,7 +468,7 @@ class GraphTravelToRequest(BaseModel):
     executes it hop-by-hop.
     """
     node_id: str = Field(description="Graph node id to travel to (any reachable node)")
-    speed: Optional[float] = Field(default=None, description="Per-hop movement speed (each hop may be capped by its edge.speed)")
+    speed: Optional[float] = Field(default=None, description="Per-hop arm speed: linear mm/s, joint deg/s; capped by each edge in every graph mode")
 
 
 class AssistantMessage(BaseModel):
@@ -2884,7 +2884,7 @@ async def graph_move_to(request: GraphMoveToRequest, background_tasks: Backgroun
     never touched here. Grip/release/narrow happens separately via
     POST /control/graph/gripper while parked at a node.
 
-    Returns 409 (edge_not_allowed) when STRICT mode refuses the transition
+    Returns 409 (edge_not_allowed) when the graph refuses the transition
     (including edges the current gripper state may not ride), 409
     (motion_in_progress) when a motion is already in flight, or 500 when
     the move fails.
@@ -2942,7 +2942,7 @@ async def graph_travel_to(request: GraphTravelToRequest, background_tasks: Backg
     matching the repo's blocking-move convention; live progress is
     visible on the /ws status stream.
 
-    Returns 409 for an unknown node, no path (no_path), a STRICT
+    Returns 409 for an unknown node, no path (no_path), a graph
     refusal (edge_not_allowed — e.g. off-grid), or a motion already in
     flight (motion_in_progress); 500 when a hop fails mid-journey (the arm
     is parked at the last completed node).
@@ -2994,13 +2994,14 @@ async def graph_travel_to(request: GraphTravelToRequest, background_tasks: Backg
     background_tasks.add_task(broadcast_status_update)
 
     # Surface edge speed-cap clamps: the requested max is only a ceiling of
-    # the caller's own, and STRICT clamps it per hop to edge.speed. Logging
+    # the caller's own, and graph travel clamps it per hop to edge.speed. Logging
     # through `logger` puts it on the panel's log stream (bare prints in the
     # controller never reach the browser).
     for clamp in result.get("speed_clamps") or []:
         logger.warning(
-            "speed clamped %s->%s: %s -> %s deg/s (graph edge limit)",
+            "speed clamped %s->%s: %s -> %s %s (graph edge limit)",
             clamp["from"], clamp["to"], clamp["requested"], clamp["applied"],
+            clamp.get("units", "(edge units)"),
         )
 
     if not result["success"]:

@@ -13,10 +13,9 @@
  * with one button per camera in realsense.yaml (named by `short_label`), and
  * the hidden cards drop their stream so an unseen camera costs no USB
  * bandwidth (its pipeline then idles out on the server's
- * idle_timeout_seconds). Clicking the title folds the card, which also drops
- * the stream. The choice and the fold are remembered per browser. Per card
- * the
- * behaviour is unchanged: the live preview is a plain <img> pointed at the
+ * idle_timeout_seconds). The workspace camera pills select the visible stream.
+ * The camera choice is remembered per browser. Stop detaches the preview
+ * before stopping capture and holds it off until Start is pressed. The live preview is a plain <img> pointed at the
  * camera's stream.mjpg (MJPEG, paced to 10 fps server-side), Color/Depth swap
  * the query string, and clicking the image asks that camera's /depth for the
  * metric distance under the cursor and pins a marker with the reading — the
@@ -46,7 +45,8 @@
         var activeId = null;     // the one camera whose card is visible
         var listTimer = null;
         var STORE_KEY = 'xarm.realsense.active';
-        var FOLD_KEY = 'xarm.fold.stereo';
+        var pane = document.getElementById('camera-pane-stereo');
+        var viewVisible = !pane || !pane.hidden;
 
         function loadActive() {
             try { return window.localStorage.getItem(STORE_KEY); } catch (e) { return null; }
@@ -55,15 +55,10 @@
             try { window.localStorage.setItem(STORE_KEY, id); } catch (e) { /* storage blocked */ }
         }
 
-        // Fold state is shared by every clone: only one is ever visible, and
-        // switching cameras should not unfold the card.
-        var folded = false;
-        try { folded = window.localStorage.getItem(FOLD_KEY) === '1'; } catch (e) { folded = false; }
-        function setFolded(on) {
-            folded = !!on;
-            try { window.localStorage.setItem(FOLD_KEY, folded ? '1' : '0'); } catch (e) { /* storage blocked */ }
-            order.forEach(function (cid) { cards[cid].applyFold(); });
-        }
+        document.addEventListener('xarm:camera-view', function (event) {
+            viewVisible = event.detail === 'stereo';
+            order.forEach(function (id) { cards[id].syncVisibility(); });
+        });
 
         function selectCamera(id) {
             if (!cards[id]) return;
@@ -118,7 +113,6 @@
             host.appendChild(root);
 
             function el(name) { return root.querySelector('[data-rs="' + name + '"]'); }
-            var headEl = el('head');
             var statusEl = el('status');
             var toggleBtn = el('toggle');
             var img = el('img');
@@ -141,6 +135,10 @@
             var busy = false;             // start/stop in flight
             var pollTimer = null;
             var disposed = false;
+            var userStopped = false;
+            var operationVersion = 0;
+            var lastStatus = null;
+            var controlError = null;
             var active = true;            // false: card hidden, no stream held
 
             root.setAttribute('data-camera-id', entry.id);
@@ -158,7 +156,8 @@
                     + '?stream=' + kind + '&fps=10&t=' + Date.now();
             }
             function attach() {
-                if (document.hidden || disposed || !active || folded) return;   // no point decoding unseen frames
+                if (document.hidden || disposed || !active || !viewVisible || userStopped || busy) return;   // no point decoding unseen frames
+                if (attached) return;
                 var next = streamUrl();
                 attached = next;
                 img.src = next;
@@ -181,14 +180,6 @@
                 if (document.hidden) { if (attached) detach(); }
                 else if (streaming && active) attach();
             });
-
-            function toggleFold() { setFolded(!folded); }
-            if (headEl) {
-                headEl.addEventListener('click', toggleFold);
-                headEl.addEventListener('keydown', function (ev) {
-                    if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggleFold(); }
-                });
-            }
 
             function clearMarker() {
                 if (marker) marker.hidden = true;
@@ -229,26 +220,47 @@
                         b.classList.toggle('is-on', b === btn);
                     });
                     clearMarker();
-                    if (streaming) attach();
+                    if (streaming) { detach(); attach(); }
                 });
             });
 
             toggleBtn.addEventListener('click', function () {
                 if (busy) return;
+                var stopping = streaming;
+                var previouslyStopped = userStopped;
                 busy = true;
+                operationVersion++;
+                clearTimeout(pollTimer);
+                controlError = null;
+                userStopped = stopping;
+                // Close MJPEG before /stop: an open/reconnecting on-demand
+                // stream can otherwise start capture again after it stops.
+                detach();
                 toggleBtn.disabled = true;
-                var path = streaming ? (base + '/stop') : (base + '/start');
-                showOverlay(streaming ? 'Stopping…' : 'Starting camera…');
-                request(path, { method: 'POST' })
-                    .then(function (d) { render(d); })
-                    .catch(function (e) { showOverlay(e.message); })
-                    .then(function () { busy = false; toggleBtn.disabled = false; poll(); });
+                showOverlay(stopping ? 'Stopping…' : 'Starting camera…');
+                request(url(stopping ? 'stop' : 'start', stopping ? '/stop' : '/start'), { method: 'POST' })
+                    .then(function (d) {
+                        busy = false;
+                        // The compatibility API may return cached telemetry.
+                        // Successful stop is authoritative for this preview.
+                        render(stopping ? Object.assign({}, d, { streaming: false }) : d);
+                    })
+                    .catch(function (e) {
+                        busy = false;
+                        userStopped = previouslyStopped;
+                        controlError = e.message;
+                        if (lastStatus) render(lastStatus);
+                        else toggleBtn.disabled = false;
+                        showOverlay(e.message);
+                    })
+                    .then(poll);
             });
 
             // --- Render from /realsense/<id>/status ----------------------
             function render(d) {
                 if (!d) return;
-                streaming = !!d.streaming;
+                lastStatus = d;
+                streaming = !!d.streaming && !userStopped;
                 toggleBtn.textContent = streaming ? 'Stop' : 'Start';
                 toggleBtn.disabled = busy || (!streaming && (!d.installed || d.present === false));
                 // `devices` is the whole bus; only trust it when this camera is on it.
@@ -266,7 +278,7 @@
 
                 if (streaming) {
                     if (!attached && !document.hidden && active) attach();
-                    if (attached) hideOverlay();
+                    if (attached && !controlError) hideOverlay();
                 } else {
                     if (attached) detach();
                     var why = (d.warnings && d.warnings[0]) || d.reason || 'Camera idle';
@@ -274,17 +286,19 @@
                     else if (d.devices && !d.devices.length) why = 'No RealSense detected — check the USB 3 cable';
                     else if (d.present === false) why = 'Not connected — ' + (d.reason || 'plug this camera in');
                     else if (d.state === 'error') why = d.reason || 'Camera error';
-                    showOverlay(why);
+                    showOverlay(userStopped ? 'Preview stopped — press Start to resume.' : why);
                 }
+                if (controlError) showOverlay(controlError);
             }
 
             function poll() {
                 clearTimeout(pollTimer);
-                if (disposed) return;
+                if (disposed || busy) return;
+                var version = operationVersion;
                 request(url('status', '/status'))
-                    .then(render)
+                    .then(function (d) { if (!disposed && !busy && version === operationVersion) render(d); })
                     .catch(function () { /* API down; leave the card as it was */ })
-                    .then(function () { if (!disposed) pollTimer = setTimeout(poll, POLL_MS); });
+                    .then(function () { if (!disposed && !busy && version === operationVersion) pollTimer = setTimeout(poll, POLL_MS); });
             }
 
             showOverlay('Connecting…');
@@ -292,11 +306,9 @@
 
             return {
                 pickerEl: pickerEl,
-                applyFold: function () {
-                    root.classList.toggle('is-folded', folded);
-                    if (headEl) headEl.setAttribute('aria-expanded', folded ? 'false' : 'true');
-                    if (folded && attached) detach();
-                    else if (!folded && active && streaming) attach();
+                syncVisibility: function () {
+                    if (!viewVisible && attached) detach();
+                    else if (viewVisible && active && streaming) attach();
                 },
                 setActive: function (on) {
                     active = !!on;
@@ -305,7 +317,7 @@
                     else if (active && streaming) attach();
                 },
                 refresh: poll,
-                setKind: function (k) { kind = k === 'depth' ? 'depth' : 'color'; if (streaming) attach(); },
+                setKind: function (k) { kind = k === 'depth' ? 'depth' : 'color'; if (streaming) { detach(); attach(); } },
                 dispose: function () {
                     disposed = true;
                     clearTimeout(pollTimer);
@@ -328,7 +340,7 @@
                 seen[entry.id] = true;
                 order.push(entry.id);
                 entries[entry.id] = entry;
-                if (!cards[entry.id]) { cards[entry.id] = makeCard(entry); cards[entry.id].applyFold(); }
+                if (!cards[entry.id]) { cards[entry.id] = makeCard(entry); }
             });
             Object.keys(cards).forEach(function (id) {
                 if (!seen[id]) { cards[id].dispose(); delete cards[id]; delete entries[id]; }

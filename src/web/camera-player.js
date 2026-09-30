@@ -46,6 +46,8 @@
         var connecting = false;
         var releaseSession = null;
         var pageHidden = false;
+        var cameraPane = document.getElementById('camera-pane-lab');
+        var viewHidden = !!(cameraPane && cameraPane.hidden);
         var toggling = false;        // suppress poll-driven state churn mid-toggle
 
         function showOverlay(text) {
@@ -122,7 +124,7 @@
 
         function scheduleReconnect() {
             stopStream();
-            if (!configured || !streamUrl || document.hidden || pageHidden) return;
+            if (!configured || !streamUrl || document.hidden || pageHidden || viewHidden) return;
             reconnectTimer = setTimeout(function () {
                 reconnectTimer = null;
                 if (configured && streamUrl) startStream(streamUrl);
@@ -172,7 +174,7 @@
                         method: 'DELETE', credentials: 'same-origin', keepalive: true,
                     }).catch(function () {});
                 }
-                if (attempt !== generation || document.hidden || pageHidden) { release(); return; }
+                if (attempt !== generation || document.hidden || pageHidden || viewHidden) { release(); return; }
                 releaseSession = release;
                 function fail(message) {
                     if (ended || attempt !== generation) return;
@@ -308,7 +310,7 @@
             if (url === streamUrl && (ws || connecting || reconnectTimer)) return;
             stopStream();
             streamUrl = url;
-            if (document.hidden || pageHidden) {
+            if (document.hidden || pageHidden || viewHidden) {
                 showOverlay('Video paused while this tab is hidden');
                 return;
             }
@@ -331,6 +333,11 @@
                 stopStream();
                 showOverlay('Video paused while this tab is hidden');
             } else refresh();
+        });
+        document.addEventListener('xarm:camera-view', function (event) {
+            viewHidden = event.detail !== 'lab';
+            if (viewHidden) stopStream();
+            else refresh();
         });
         window.addEventListener('pagehide', function () { pageHidden = true; stopStream(); });
         window.addEventListener('pageshow', function () { pageHidden = false; refresh(); });

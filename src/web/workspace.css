@@ -1,0 +1,244 @@
+/* Shared operator surfaces: the Opentrons slate palette, compact headings,
+   rounded cards and sky selection state. Layout stays independent of motion. */
+.workspace-page { --control-font-size: .95rem; --control-font-weight: 600; display: flex; flex-direction: column; gap: 16px; max-width: 1440px; }
+.workspace-page > * { min-width: 0; width: 100%; }
+.workspace-overview { display: grid; grid-template-columns: minmax(440px, 2fr) minmax(0, 3fr); gap: 16px; align-items: stretch; }
+.workspace-page .title-status-container { width: auto; min-width: 0; border-radius: 12px; padding: 16px; }
+.workspace-page .title-top { height: 100%; gap: 16px; }
+.workspace-page .title-status-main { flex: 1; min-width: 0; }
+.workspace-page h1 { font-size: 1.35rem; letter-spacing: -.025em; }
+.workspace-page .eyebrow, .workspace-tile-heading h2, .console-heading { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-subtle); }
+.workspace-page .card { border-radius: 12px; }
+.workspace-page .header-actions { min-width: 132px; max-width: 175px; }
+.workspace-page .header-actions .btn { white-space: normal; }
+.workspace-page .connection-inline { flex-wrap: wrap; }
+.workspace-page .connection-inline .form-group { min-width: 0; }
+.camera-tile { padding: 12px; min-width: 0; display: flex; flex-direction: column; }
+.workspace-tile-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+.workspace-tile-heading h2 { margin: 0; }
+.pill-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.pill { appearance: none; cursor: pointer; border: 1px solid transparent; border-radius: 999px; background: transparent; padding: 7px 14px; color: var(--ink-muted); font: 600 12px/1.35 ui-sans-serif, system-ui, sans-serif; transition: background .12s, color .12s; }
+.pill:hover { background: var(--surface-soft); color: var(--ink); }
+.pill.active { background: #e0f2fe; border-color: #bae6fd; color: #0369a1; }
+.pill:focus-visible { outline: 2px solid var(--primary); outline-offset: 3px; }
+.camera-page { flex: 1; min-height: 240px; min-width: 0; }
+.camera-page #camera-card, .camera-page .realsense-card { border: 0; box-shadow: none; border-radius: 0; padding: 0; margin: 0; height: 280px; }
+.camera-page #realsense-cards { margin: 0; }
+.camera-page .camera-head h2 { font-size: 12px; text-transform: none; letter-spacing: normal; }
+.camera-page .camera-stage { min-width: 0; }
+.camera-empty { display: none; padding: 60px 16px; text-align: center; color: var(--ink-subtle); font-size: 13px; }
+#camera-pane-lab:has(#camera-card[hidden]) > .camera-empty,
+#camera-pane-stereo:not(:has(.realsense-card:not([hidden]))) > .camera-empty { display: block; }
+.control-workspace { padding: 0; overflow: hidden; }
+.workspace-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.workspace-toolbar .manual-switch { margin: 0; }
+.workspace-drive-layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; padding: 16px; align-items: stretch; }
+.workspace-drive-controls { min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.workspace-drive-controls > .mode-pane { padding: 0; min-width: 0; }
+.workspace-page #motion-graph-card { padding: 0; border: 0; box-shadow: none; }
+.workspace-page #motion-graph-card h2 { font-size: 13px; margin: 0 0 12px; }
+.workspace-page #drive-arm-card { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 12px; }
+.workspace-page .drive-move-head { font-size: 13px; }
+.workspace-page .drive-move-head .panel-unit { display: none; }
+.workspace-page .drive-move-row { align-items: start; }
+.workspace-page .drive-move-fields { flex: 1; min-width: 0; }
+.workspace-page .mg-row { flex-wrap: wrap; }
+.workspace-page #drive-dest-speed { width: 110px; }
+.workspace-page .inline-unit { font-size: 11px; }
+.workspace-page .pane-arm-grid { grid-template-columns: minmax(0, 1fr) minmax(190px, .65fr); }
+.workspace-page .position-dropdown { width: 100%; min-width: 0; }
+.workspace-page #accessory-controls { padding: 14px; background: var(--surface-subtle); }
+.workspace-page .tile-sub-cols { gap: 16px; }
+.workspace-page .tile-sub { min-width: 0; }
+.workspace-page .tile-sub h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin-top: 0; }
+.workspace-console { flex-direction: column; width: 100%; min-width: 0; height: auto; position: static; border-radius: 12px; }
+.console-heading { margin: 0; padding: 12px 14px; color: #94a3b8; border-bottom: 1px solid #1e293b; }
+.workspace-console .log-stream { flex: 1 1 0; height: 0; max-height: none; min-height: 0; overflow: auto; }
+.integrated-graph { height: auto; min-height: 650px; padding: 16px; }
+.integrated-graph .graph-header { box-shadow: none; padding: 0 0 12px; border: 0; border-radius: 0; gap: 12px; }
+.integrated-graph .graph-header-status { margin-left: 0; }
+.integrated-graph .graph-main { min-height: 570px; }
+.integrated-graph .graph-canvas { min-height: 570px; }
+.integrated-graph .graph-side { width: 280px; max-height: 750px; }
+.integrated-graph .graph-side .card { padding: 12px; }
+.integrated-graph .graph-live { flex-wrap: wrap; white-space: normal; }
+html.dark .pill.active { background: #082f49; border-color: #075985; color: #7dd3fc; }
+@media (max-width: 1050px) {
+    .workspace-overview { grid-template-columns: minmax(0, 1fr); }
+    .workspace-drive-layout { grid-template-columns: minmax(0, 1fr); }
+    .workspace-console { position: static; height: 280px; }
+    .camera-page #camera-card, .camera-page .realsense-card { height: 300px; }
+}
+@media (max-width: 640px) {
+    .container { padding: 12px; }
+    .workspace-page .title-top { flex-direction: column; }
+    .workspace-page .header-actions { flex-direction: row; max-width: none; width: 100%; flex-wrap: wrap; }
+    .workspace-page .header-actions .btn { flex: 1; }
+    .workspace-page .pane-arm-grid { grid-template-columns: minmax(0, 1fr); }
+    .workspace-page .tile-sub-cols { grid-template-columns: minmax(0, 1fr); }
+    .workspace-toolbar, .workspace-drive-layout, .integrated-graph { padding: 12px; }
+    .integrated-graph .graph-main { flex-direction: column; }
+    .integrated-graph .graph-canvas { flex: none; height: 430px; min-height: 430px; }
+    .integrated-graph .graph-side { width: 100%; max-height: none; }
+    .integrated-graph .graph-header-status { margin-left: 0; }
+    .pill { padding: 7px 10px; }
+}
+/* Keep primary actions compact and readable alongside the camera tile. */
+.workspace-page .header-actions { flex: 0 0 160px; width: 160px; }
+.workspace-page .header-actions .btn { flex: 0 0 auto; min-height: 44px; padding: 10px; font-size: .85rem; border-radius: 8px; }
+.workspace-page .header-actions #stop-btn { min-height: 64px; font-size: 1.1rem; }
+.workspace-page .connection-inline .form-group { flex-direction: row; }
+@media (max-width: 640px) {
+    .workspace-page .header-actions { flex: none; width: 100%; }
+    .workspace-page .header-actions .btn { flex: 1; }
+    .workspace-page .header-actions #stop-btn { min-height: 44px; }
+}
+/* Primary actions span the bottom of the connection tile at every width. */
+.workspace-page #connection-tile .title-top { height: auto; }
+.workspace-page #connection-tile .header-actions {
+    display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+    flex: none; width: 100%; min-width: 0; max-width: none;
+    margin-top: auto; padding-top: 12px; gap: 8px;
+}
+.workspace-page #connection-tile .header-actions .btn,
+.workspace-page #connection-tile .header-actions #stop-btn {
+    min-width: 0; min-height: 96px; padding: 16px 4px;
+    font-size: 1.2rem; font-weight: 700; line-height: 1.25; text-wrap: balance;
+}
+.camera-tile .workspace-tile-heading { justify-content: flex-start; }
+.camera-tile .camera-head { cursor: default; min-height: 16px; }
+.camera-tile .camera-head:has(.camera-dot:only-child) { display: none; }
+
+/* Connection choices share a row; narrow screens keep their fields aligned. */
+.workspace-page .connection-settings {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;
+}
+.workspace-page .connection-settings .form-group { gap: 8px; }
+.workspace-page .connection-settings label { flex: none; letter-spacing: normal; }
+.workspace-page .connection-settings select { flex: 1; min-width: 0; width: 100%; }
+.workspace-page .studio-link.btn { display: inline-flex; color: white; text-decoration: none; }
+.workspace-page .studio-link.btn[hidden] { display: none; }
+@media (max-width: 640px) {
+    .workspace-page .connection-settings .form-group { flex-direction: column; align-items: stretch; }
+    .workspace-page .connection-settings select { flex: none; }
+    .workspace-page #connection-tile .header-actions { grid-template-columns: 1fr .8fr 1.3fr; }
+}
+
+.workspace-page #clear-errors-btn span { white-space: nowrap; }
+
+/* Manual Mode defines the shared button typography; icon controls retain their sizing. */
+.workspace-page .btn,
+.workspace-page .pill,
+.workspace-page .lens-btn,
+.workspace-page .manual-switch {
+    font-family: inherit;
+    font-size: var(--control-font-size);
+    font-weight: var(--control-font-weight);
+}
+
+/* One spacing rhythm: 8px within rows, 12px between rows, 16px between sections. */
+.workspace-page { --control-height: 32px; }
+.workspace-toolbar { margin-bottom: 0; }
+.workspace-page .btn { line-height: 1.25; }
+.workspace-page #accessory-controls { padding: 16px; }
+.workspace-page .tile-sub { display: flex; flex-direction: column; gap: 12px; }
+.workspace-page .tile-sub h3 {
+    display: flex; align-items: center; gap: 8px; min-height: 20px; margin: 0; line-height: 1.4;
+}
+.workspace-page .tile-sub > .gripper-controls,
+.workspace-page .tile-sub > .stroke-control-row,
+.workspace-page .tile-sub > .force-control-row,
+.workspace-page .tile-sub > .track-controls,
+.workspace-page .tile-sub > .track-location-control { margin: 0; gap: 8px; min-height: 32px; }
+.workspace-page .tile-sub .gripper-controls .btn { padding: 6px 12px; }
+.workspace-page .component-info { line-height: 1.4; }
+.workspace-page .drive-move-head { margin-bottom: 12px; line-height: 1.4; }
+.workspace-page .mg-row, .workspace-page .mg-node-tile { margin-bottom: 12px; }
+.workspace-page .mg-node-tile { gap: 4px; }
+.workspace-page .drive-move-fields { gap: 12px; }
+.workspace-page .drive-move-fields .mg-row { margin-bottom: 0; }
+.workspace-page .drive-move-row { gap: 12px; margin-bottom: 12px; }
+.workspace-page #drive-arm-card > .mg-row:last-child { margin-bottom: 0; }
+.workspace-page .pane-arm-left { display: flex; flex-direction: column; gap: 12px; }
+.workspace-page .pane-arm-left > .position-controls-row { margin: 0; }
+.workspace-page .pane-arm-left > .joint-move-row,
+.workspace-page .pane-arm-left > .linear-move-row { margin: 0; padding-top: 12px; gap: 8px; }
+.workspace-page .joints-subhead { margin-top: 16px; padding-top: 16px; margin-bottom: 12px; }
+.workspace-page .joint-action-row { gap: 8px; padding-top: 12px; flex-wrap: wrap; }
+.workspace-page .joint-action-row .btn { margin-left: 0; }
+.workspace-page .joint-col { gap: 8px; }
+@media (max-width: 640px) {
+    .workspace-page .tile-sub + .tile-sub {
+        border-left: 0; padding-left: 0; border-top: 1px solid var(--border); padding-top: 16px;
+    }
+}
+
+.integrated-graph .graph-side .graph-header-status { gap: 12px; }
+.integrated-graph .graph-side .graph-live {
+    display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 12px; align-items: baseline;
+}
+.integrated-graph .graph-side .graph-live strong { min-width: 0; overflow-wrap: anywhere; }
+.integrated-graph .graph-side .graph-header-status .claim-status { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+    .workspace-page #connection-tile .header-actions .btn,
+    .workspace-page #connection-tile .header-actions #stop-btn { font-size: 1rem; }
+}
+
+/* Inline accessory headings and consistent Graph Drive labels. */
+.workspace-page .tile-sub-cols { grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); }
+.workspace-page #accessory-controls h3 {
+    font-size: var(--control-font-size); font-weight: var(--control-font-weight);
+    text-transform: none; letter-spacing: normal; flex: none; gap: 4px;
+}
+.workspace-page .tile-sub .gripper-controls .btn { padding-inline: 8px; }
+.workspace-page .track-speed-group { min-width: 0; }
+.workspace-page #track-speed { min-width: 48px; width: 64px; flex: 1; }
+.workspace-page #motion-graph-card h2,
+.workspace-page #motion-graph-card .inline-label,
+.workspace-page #motion-graph-card .drive-move-head,
+.workspace-page #motion-graph-card .mg-node-tile__label {
+    font-size: var(--control-font-size); font-weight: var(--control-font-weight);
+    line-height: 1.4; text-transform: none; letter-spacing: normal;
+}
+.workspace-page #mode-pane-graph .inline-label { flex-basis: 150px; min-width: 150px; }
+.workspace-page .enforcement-row { gap: 8px 12px; }
+.workspace-page .mg-node-tile { flex-direction: row; align-items: baseline; gap: 12px; }
+.workspace-page .mg-node-tile__label { flex: none; }
+.workspace-page .mg-node-tile__value { font-size: var(--control-font-size); min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+    .workspace-page .tile-sub-cols { grid-template-columns: minmax(0, 1fr); }
+}
+
+.workspace-page .graph-drive-tabs { margin-bottom: 16px; gap: 8px; }
+.workspace-page .connection-inline-btns { flex-wrap: wrap; }
+.workspace-page #mg-recover-panel { margin: 0 0 16px; }
+.workspace-page #graph-drive-pane-reachable > .mg-row:last-child,
+.workspace-page #graph-drive-pane-travel > .drive-move-row:last-child { margin-bottom: 0; }
+
+.workspace-page #motion-graph-card .enforcement-row h2 { margin: 0; }
+
+/* Compact accessory fields leave space between the two control groups. */
+.workspace-page #accessory-controls .stroke-control-row input,
+.workspace-page #accessory-controls .force-control-row input {
+    flex: 0 0 80px; width: 80px; min-width: 0; max-width: 80px;
+}
+.workspace-page #accessory-controls #track-location-select {
+    flex: 0 1 112px; width: 112px; min-width: 0;
+}
+.workspace-page #accessory-controls #track-speed {
+    flex: 0 0 64px; width: 64px; min-width: 0;
+}
+.workspace-page #accessory-controls .move-button { min-width: 0; padding-inline: 8px; }
+
+.integrated-graph .graph-main { position: relative; }
+.integrated-graph .graph-canvas-action {
+    position: absolute; top: 12px; left: 12px; z-index: 2;
+    background: var(--surface); border-color: var(--border); box-shadow: var(--shadow-sm);
+}
+.integrated-graph .graph-canvas-action.active { background: #e0f2fe; border-color: #bae6fd; }
+html.dark .integrated-graph .graph-canvas-action.active { background: #082f49; border-color: #075985; }
+
+/* Joint readings follow the movement rows, alongside the XYZ jog pad. */
+.workspace-page .pane-arm-left .joints-subhead { margin: 4px 0 0; padding-top: 16px; }
+.workspace-page .pane-arm-left .joint-inputs-h { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; gap: 8px; }
+.workspace-page .pane-arm-left .joint-col { min-width: 56px; }

@@ -208,6 +208,7 @@ class XArmController:
         self.arm = XArmAPI(
             self.host,
             do_not_open=True,
+            is_radian=False,  # All configured joint angles/speeds use degrees.
             check_joint_limit=not disable_sdk_joint_check
         )
 
@@ -1350,7 +1351,8 @@ class XArmController:
 
         try:
             code = self.arm.set_position(x, y, z, roll, pitch, yaw,
-                                       speed=speed, wait=wait, motion_type=motion_type)
+                                       speed=speed, mvacc=self.tcp_acc, is_radian=False,
+                                       wait=wait, motion_type=motion_type)
             success = self.check_code(code, f'move_to_position({x}, {y}, {z})')
 
             if success:
@@ -1361,7 +1363,7 @@ class XArmController:
         finally:
             self.exit_motion()
 
-    def move_to_named_location(self, location_name, speed=None):
+    def move_to_named_location(self, location_name, speed=None, *, _graph_edge=None):
         """
         Move to a predefined location from the position config.
         Supports both joint-based and Cartesian-based location definitions.
@@ -1370,6 +1372,8 @@ class XArmController:
         node is consulted: edge.mode (linear vs joint) overrides the
         preset's storage format, edge.speed caps the caller's speed,
         and off-whitelist transitions raise EdgeNotAllowedError.
+        Internal _graph_edge carries an already-validated explicit graph
+        move; its mode and cap apply independently of the global mode.
         """
         # Check if positions are defined in config
         if 'positions' not in self.position_config:
@@ -1385,12 +1389,13 @@ class XArmController:
         # === Graph consultation (raises in STRICT mode on off-whitelist) ===
         from_node = self.current_node
         target_node_id = self._predict_target_node_for_arm_pose(location_name)
-        edge = self._consult_graph_for_move(target_node_id, location_name)
+        edge = _graph_edge or self._consult_graph_for_move(target_node_id, location_name)
 
-        # Apply edge.mode override + edge.speed cap (STRICT only).
-        speed = self._apply_edge_speed_cap(speed, edge)
+        # Explicit graph moves keep their mode and units even during a
+        # freehand override. Ordinary named moves retain the mode policy.
+        speed = self._apply_edge_speed_cap(speed, edge, enforce=_graph_edge is not None)
         mode_override: Optional[MoveMode] = None
-        if self.graph_mode == GraphMode.STRICT and edge is not None:
+        if edge is not None and (_graph_edge is not None or self.graph_mode == GraphMode.STRICT):
             mode_override = edge.mode
 
         # === Dispatch ===
@@ -1507,7 +1512,7 @@ class XArmController:
 
         try:
             # check=False mirrors the Docker simulator serial-number workaround
-            code = self.arm.set_servo_angle(angle=angles, speed=speed, mvacc=acceleration, wait=wait, check=False)
+            code = self.arm.set_servo_angle(angle=angles, speed=speed, mvacc=acceleration, is_radian=False, wait=wait, check=False)
             success = self.check_code(code, f'move_joints({angles})')
 
             if success:
@@ -2367,8 +2372,9 @@ class XArmController:
         rail-second with per-axis graph consultation suppressed (the
         state between the two sub-moves is a non-node by design).
 
+        Always enforces edge mode and speed, including in OFF/ADVISORY.
         Returns True on success, False on any sub-move failure. Raises
-        EdgeNotAllowedError in STRICT mode for disallowed moves
+        EdgeNotAllowedError for disallowed graph moves
         (including edges the current gripper state may not ride).
         """
         if self.motion_graph is None:
@@ -2376,27 +2382,24 @@ class XArmController:
             return False
 
         node = self.motion_graph.node(node_id)  # raises UnknownNodeError
+        edge = self._consult_graph_for_move(node_id, node_id, require_edge=True)
 
-        # Same-rail: a pure arm move reaches the node; keep per-axis
-        # consultation intact so STRICT still gates the edge as before.
+        # Same-rail: dispatch the validated edge with its mode and speed.
         if node.rail == self.last_rail_location_name:
-            ok = self.move_to_named_location(node.arm, speed=speed)
+            ok = self.move_to_named_location(node.arm, speed=speed, _graph_edge=edge)
             if ok:
                 self._notify_camera(node)
             return ok
 
-        # Cross-rail transit: validate the whole edge once (raises in
-        # STRICT if the edge is missing, we are off-grid, or the gripper
-        # state may not ride it), then dispatch the two axes.
+        # Cross-rail transit: the whole edge was validated above; dispatch
+        # arm and rail with separate speed units.
         from_node = self.current_node
-        edge = self._consult_graph_for_move(node_id, node_id)
-        capped = self._apply_edge_speed_cap(speed, edge)
+        capped = self._apply_edge_speed_cap(speed, edge, enforce=True)
 
         self._suppress_graph_consult = True
         try:
-            # Arm first: the transit gateway poses are joint-list presets,
-            # so the fallback dispatch is joint mode (matching edge.mode).
-            if not self.move_to_named_location(node.arm, speed=capped):
+            # Arm first, honoring edge.mode even for joint-list presets.
+            if not self.move_to_named_location(node.arm, speed=capped, _graph_edge=edge):
                 print(
                     f"[motion_graph] move_to_node: arm move to {node.arm!r} "
                     f"failed"
@@ -2963,10 +2966,11 @@ class XArmController:
         )
 
     def _consult_graph_for_move(
-        self, target_node_id: Optional[str], target_label: str,
+        self, target_node_id: Optional[str], target_label: str, *, require_edge: bool = False,
     ) -> Optional[Edge]:
         """Look up the edge from current_node to target_node_id.
 
+        Explicit graph moves set require_edge=True in every global mode.
         Returns the Edge when one exists, None otherwise. In STRICT mode
         raises EdgeNotAllowedError on any failure (target unknown,
         current off-grid, or no whitelisted edge). In ADVISORY mode logs
@@ -2993,7 +2997,8 @@ class XArmController:
         # only be as strong as the least careful operator holding a claim.
         self._gate_sash(target_node_id, target_node_id, action="graph.move_to")
 
-        if self.graph_mode == GraphMode.OFF:
+        mode = GraphMode.STRICT if require_edge else self.graph_mode
+        if mode == GraphMode.OFF:
             return None
 
         current_id = self.current_node
@@ -3003,7 +3008,7 @@ class XArmController:
                 f"target {target_label!r} does not resolve to a graph node "
                 f"(rail={self.last_rail_location_name!r})"
             )
-            if self.graph_mode == GraphMode.STRICT:
+            if mode == GraphMode.STRICT:
                 raise EdgeNotAllowedError(current_id, target_label, msg)
             print(f"[motion_graph] advisory: {msg}")
             return None
@@ -3014,7 +3019,7 @@ class XArmController:
                 f"{target_node_id!r}. Call a named move that matches "
                 f"actual position to re-pin."
             )
-            if self.graph_mode == GraphMode.STRICT:
+            if mode == GraphMode.STRICT:
                 raise EdgeNotAllowedError(None, target_node_id, msg)
             print(f"[motion_graph] advisory: {msg}")
             return None
@@ -3022,7 +3027,7 @@ class XArmController:
         edge = self.motion_graph.find_edge(current_id, target_node_id)
         if edge is None:
             msg = f"no whitelisted edge {current_id!r} -> {target_node_id!r}"
-            if self.graph_mode == GraphMode.STRICT:
+            if mode == GraphMode.STRICT:
                 raise EdgeNotAllowedError(current_id, target_node_id, msg)
             print(f"[motion_graph] advisory: {msg}")
             return None
@@ -3042,20 +3047,22 @@ class XArmController:
                     f"edge {current_id!r} -> {target_node_id!r} is not "
                     f"traversable with gripper state {gripper_state!r}"
                 )
-            if self.graph_mode == GraphMode.STRICT:
+            if mode == GraphMode.STRICT:
                 raise EdgeNotAllowedError(current_id, target_node_id, msg)
             print(f"[motion_graph] advisory: {msg}")
             # Advisory: the edge still informs mode/speed.
 
         return edge
 
-    def _apply_edge_speed_cap(self, requested: Optional[float], edge: Optional[Edge]) -> Optional[float]:
-        """Clamp the caller's speed to edge.speed in STRICT mode.
+    def _apply_edge_speed_cap(self, requested: Optional[float], edge: Optional[Edge], *, enforce: bool = False) -> Optional[float]:
+        """Clamp speed for explicit graph moves and STRICT named moves.
 
         edge.speed is the maximum permitted speed for this transition;
         callers can ask for slower (more cautious) but not faster.
+        Units follow edge.mode: linear mm/s, joint deg/s. This is an arm
+        speed cap, not a conversion between Cartesian and joint speeds.
         """
-        if (self.graph_mode != GraphMode.STRICT
+        if ((not enforce and self.graph_mode != GraphMode.STRICT)
                 or edge is None or edge.speed is None):
             return requested
         if requested is None or requested > edge.speed:
@@ -3069,6 +3076,7 @@ class XArmController:
                 self.last_speed_clamps.append({
                     "from": edge.from_node, "to": edge.to_node,
                     "requested": requested, "applied": edge.speed,
+                    "units": "mm/s" if edge.mode == MoveMode.LINEAR else "deg/s",
                 })
             return edge.speed
         return requested
@@ -3676,7 +3684,7 @@ class XArmController:
         
         Args:
             target_location (str): Name of target location from joint_config.yaml
-            speed (float): Movement speed (default: tcp_speed)
+            speed (float): TCP translation speed in mm/s (default: tcp_speed)
             
         Returns:
             bool: True if successful, False otherwise
@@ -3749,13 +3757,12 @@ class XArmController:
         
         Supported formats:
         1. Joint angles: [J1, J2, J3, J4, J5] or [J1, J2, J3, J4, J5, J6, J7]
-        2. Cartesian list: [x, y, z, roll, pitch, yaw]  
-        3. Cartesian dict: {x: 300, y: 0, z: 400, roll: 180, pitch: 0, yaw: 0}
+        2. Cartesian dict: {x: 300, y: 0, z: 400, roll: 180, pitch: 0, yaw: 0}
         
         Args:
             location_name (str): Name of the location (for logging)
             position_data: Position in any supported format
-            speed (float): Speed for temporary movements (if needed)
+            speed (float): Unused; conversion never moves the robot.
             
         Returns:
             list: [x, y, z, roll, pitch, yaw] or None if conversion failed
@@ -3769,48 +3776,24 @@ class XArmController:
             ]
             
         elif isinstance(position_data, list):
-            if len(position_data) == 6:
-                # Already Cartesian: [x, y, z, roll, pitch, yaw]
-                print(f"Using Cartesian list format for '{location_name}': {position_data}")
-                return position_data
-                
-            elif len(position_data) <= self.num_joints:
+            if len(position_data) <= self.num_joints:
                 # Joint angles: [J1, J2, J3, J4, J5] or [J1, ..., J7]
                 print(f"Converting joint angles to Cartesian for '{location_name}': {position_data}")
                 try:
                     if hasattr(self.arm, 'get_forward_kinematics'):
                         # Use forward kinematics (preferred - no robot movement)
-                        ret = self.arm.get_forward_kinematics(position_data)
+                        ret = self.arm.get_forward_kinematics(
+                            position_data, input_is_radian=False, return_is_radian=False
+                        )
                         if ret[0] == 0:
                             cartesian = ret[1][:6]  # [x, y, z, roll, pitch, yaw]
                             print(f"[OK] Forward kinematics result: {cartesian}")
                             return cartesian
-                        else:
-                            print("Forward kinematics failed, using position sampling")
-                    
-                    # Fallback: Move robot to get position (less efficient)
-                    print("Using position sampling method")
-                    temp_current = self.get_current_position()
-                    if not self.move_joints(position_data, speed=speed):
-                        print(f"Error: Could not move to joint position {position_data}")
-                        return None
-                    
-                    cartesian = self.get_current_position()
-                    if not cartesian:
-                        print("Error: Could not get Cartesian position after joint movement")
-                        return None
-                    
-                    # Restore to original position
-                    if temp_current and not self.move_to_position(
-                        x=temp_current[0], y=temp_current[1], z=temp_current[2],
-                        roll=temp_current[3], pitch=temp_current[4], yaw=temp_current[5],
-                        speed=speed, wait=True
-                    ):
-                        print("Warning: Could not restore to original position")
-                    
-                    print(f"[OK] Position sampling result: {cartesian}")
-                    return cartesian
-                    
+                    # Conversion must never actuate hardware or reinterpret a
+                    # linear speed (mm/s) as a joint speed (deg/s).
+                    print(f"Error: Forward kinematics unavailable or failed for '{location_name}'")
+                    return None
+
                 except Exception as e:
                     print(f"Error in joint-to-Cartesian conversion: {e}")
                     return None

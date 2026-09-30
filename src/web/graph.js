@@ -1,9 +1,5 @@
-/* Motion Graph viewer (Phase A: read-only render + live state).
- *
- * Fetches GET /graph (proxied through the web server to the API on :8000),
- * renders the node/edge topology with Cytoscape, and tracks where the arm
- * is live by subscribing to the same /ws status stream the control panel
- * uses. No claim and no writes in Phase A. */
+/* Motion graph editor. Topology comes from /graph; the workspace supplies
+ * the shared control claim and live status feed. */
 (function () {
     'use strict';
 
@@ -11,26 +7,12 @@
     // and /control to the API). Base-path prefix the page is served under:
     // "" direct (…/web/…), or "/xarm5" behind the single Caddy edge
     // (…/xarm5/web/…) — API + WS must carry it (docs/SINGLE_EDGE_SSO_PLAN.md).
-    // The WebSocket can't be proxied by the legacy :6001 http.server, so there
-    // it connects straight to the API on :8000 — mirroring main.js's logic.
     var _pathname = window.location.pathname;
     var _webIdx = _pathname.indexOf('/web');
     var BASE_PATH = _webIdx > 0 ? _pathname.slice(0, _webIdx) : '';
     var API_BASE = window.location.protocol + '//' + window.location.host + BASE_PATH;
-    var wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-    var wsHost = BASE_PATH
-        ? window.location.host
-        : (window.location.port === '8000'
-            ? window.location.host
-            : window.location.hostname + ':8000');
-    var WS_URL = wsProtocol + '://' + wsHost + BASE_PATH + '/ws';
-
-    // Live-push freshness: while WS pushes arrive the fallback HTTP poll for
-    // live state stays idle (it only fires when the socket goes quiet).
-    var PUSH_STALE_MS = 2000;
-    var lastPushAt = 0;
-
     var cy = null;
+    var loadStarted = false;
     var gripperCatalog = {};    // gripper_state name -> {stroke, intent} (from /graph)
 
     // Persisted layout — node positions, which stations are open, and the
@@ -47,7 +29,6 @@
     var dragHome = null, dragHomeStart = null, dragSiblings = null;
 
     var autoStation = null;     // station auto-expanded to follow the robot
-    var latestClaimedBy = null; // device claim holder from /status (for the lock)
     var currentNodeId = null;   // last applied live current_node
     var traverseTimer = null;
 
@@ -106,7 +87,7 @@
     var modeEl = document.getElementById('graph-mode');
     var currentEl = document.getElementById('graph-current');
     var gripperEl = document.getElementById('graph-gripper');
-    var claimEl = document.getElementById('claim-status');
+    var claimEl = document.getElementById('graph-claim-status');
     var messageEl = document.getElementById('graph-message');
 
     // Distinct, readable colours assigned to stations (a node's first tag) in
@@ -242,7 +223,7 @@
     // dot, e.g. "linear @ 15 · gripper_empty". Preconditions show on the
     // edge so they're visible at a glance (they're not editable here).
     function edgeLabel(mode, speed, precos) {
-        var label = mode + (speed != null ? ' @ ' + speed : '');
+        var label = mode + (speed != null ? ' @ ' + speed + (mode === 'linear' ? ' mm/s' : ' deg/s') : '');
         if (precos && precos.length) label += ' · ' + precos.join(', ');
         return label;
     }
@@ -564,14 +545,8 @@
 
     // ── Phase B: edge editing (mode/speed) behind a claim ────────────
 
-    var CLAIM_OWNER = 'human@xarm-graph';
-    var claimSessionId =
-        (window.crypto && crypto.randomUUID && crypto.randomUUID()) ||
-        ('xarm-graph-' + Date.now() + '-' + Math.random().toString(16).slice(2));
-    // updateClaimIndicator reads this to mark the holder "(you)".
-    window.__graphClaim = { sessionId: claimSessionId };
-    var claimToken = null;
-    var claimHeartbeatTimer = null;
+    // The workspace owns authentication, claim renewal and release.
+    function claimToken() { return window.xarmControl ? window.xarmControl.token : null; }
 
     var editingEdge = null;          // cytoscape edge currently in the panel
     var panel = document.getElementById('edge-panel');
@@ -689,16 +664,12 @@
         });
         // Tapping a station's home node fans its siblings out / collapses them
         // back to it. In draw mode any node (home or not) is an edge endpoint.
-        // Expand/collapse is locked while a workflow holds control.
+        // Viewing is always available, including while another page drives the arm.
         cyInstance.on('tap', 'node', function (evt) {
             var n = evt.target;
             if (drawMode) { pickDrawNode(n); return; }
             if (!n.data('isAnchor')) return;          // plain member: nothing to toggle
             if ((n.data('count') || 1) <= 1) return;  // lone node: no siblings to show
-            if (automationActive()) {
-                showMessage('Locked: a workflow holds control — expand/collapse is disabled while automation is running.');
-                return;
-            }
             clearMessage();
             var s = n.data('station');
             if (expanded[s]) delete expanded[s]; else expanded[s] = true;
@@ -722,11 +693,6 @@
         cyInstance.on('pan zoom drag', hideNodeTooltip);
         var cyContainer = cyInstance.container && cyInstance.container();
         if (cyContainer) cyContainer.addEventListener('mouseleave', hideNodeTooltip);
-    }
-
-    // "Automation" = the device claim is held by someone other than this page.
-    function automationActive() {
-        return !!(latestClaimedBy && latestClaimedBy.session_id !== claimSessionId);
     }
 
     function showEdgeError(text) {
@@ -761,78 +727,17 @@
         if (panel) panel.hidden = true;
     }
 
-    // Acquire a claim on first edit and keep it (heartbeated) for the
-    // session. Resolves to true when the claim is held, false otherwise
-    // (and surfaces the reason in the edit panel).
     function ensureClaim() {
-        if (claimToken) return Promise.resolve(true);
-        return fetch(API_BASE + '/control/claim', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ owner: CLAIM_OWNER, session_id: claimSessionId, ttl_s: 30 }),
-        }).then(function (resp) {
-            if (resp.status === 200) {
-                return resp.json().then(function (data) {
-                    claimToken = data.claim_token;
-                    startClaimHeartbeat(data.heartbeat_interval_s);
-                    updateClaimIndicator({ owner: CLAIM_OWNER, session_id: claimSessionId });
-                    return true;
-                });
-            }
-            if (resp.status === 409 || resp.status === 423) {
-                return resp.json().catch(function () { return {}; }).then(function (d) {
-                    var owner = (d.claimed_by && d.claimed_by.owner) ||
-                        (d.detail && d.detail.claimed_by && d.detail.claimed_by.owner);
-                    showEdgeError('Device is controlled by ' + (owner || 'another session') + '. Try again later.');
-                    return false;
-                });
-            }
-            // 400 "connect first" — the arm isn't connected, so no claim.
-            return resp.json().catch(function () { return {}; }).then(function (d) {
-                var msg = (d && (d.detail || d.error)) || ('HTTP ' + resp.status);
-                showEdgeError('Cannot take control: ' + msg);
-                return false;
-            });
-        }).catch(function (e) {
-            showEdgeError('Cannot take control: ' + e.message);
-            return false;
+        if (!window.xarmControl) return Promise.resolve(false);
+        return window.xarmControl.ensureClaim().then(function (held) {
+            if (!held) showEdgeError('Take control from the Control Interface tile before editing.');
+            return held;
         });
     }
 
-    function startClaimHeartbeat(intervalSeconds) {
-        stopClaimHeartbeat();
-        var everyMs = Math.max(2000, ((intervalSeconds || 10) * 1000) / 2);
-        claimHeartbeatTimer = setInterval(function () {
-            if (!claimToken) return;
-            fetch(API_BASE + '/control/heartbeat', {
-                method: 'POST', headers: { 'X-Claim-Token': claimToken },
-            }).then(function (r) {
-                if (r.status === 401 || r.status === 404) handleClaimLost();
-            }).catch(function () { /* transient; next beat retries */ });
-        }, everyMs);
-    }
-
-    function stopClaimHeartbeat() {
-        if (claimHeartbeatTimer) { clearInterval(claimHeartbeatTimer); claimHeartbeatTimer = null; }
-    }
-
     function handleClaimLost() {
-        if (claimToken === null) return;
-        claimToken = null;
-        stopClaimHeartbeat();
-        showEdgeError('Lost control — the claim is no longer held. Save again to re-acquire.');
-    }
-
-    function releaseClaim(viaUnload) {
-        var token = claimToken;
-        stopClaimHeartbeat();
-        claimToken = null;
-        if (!token) return;
-        try {
-            fetch(API_BASE + '/control/release', {
-                method: 'POST', headers: { 'X-Claim-Token': token }, keepalive: !!viaUnload,
-            });
-        } catch (e) { /* best-effort */ }
+        if (window.xarmControl) window.xarmControl.handleClaimLost();
+        showEdgeError('Control was lost. Take control again before saving.');
     }
 
     function saveEdge() {
@@ -855,7 +760,7 @@
             if (!held) { if (edgeSaveBtn) edgeSaveBtn.disabled = false; return; }
             return fetch(API_BASE + '/control/graph/edge', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-Claim-Token': claimToken },
+                headers: { 'Content-Type': 'application/json', 'X-Claim-Token': claimToken() },
                 body: JSON.stringify(body),
             }).then(function (resp) {
                 if (resp.status === 200) {
@@ -903,7 +808,7 @@
             if (!held) { if (edgeDeleteBtn) edgeDeleteBtn.disabled = false; return; }
             return fetch(API_BASE + '/control/graph/edge/delete', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-Claim-Token': claimToken },
+                headers: { 'Content-Type': 'application/json', 'X-Claim-Token': claimToken() },
                 body: JSON.stringify(body),
             }).then(function (resp) {
                 if (resp.status === 200) {
@@ -936,9 +841,6 @@
     if (edgeSaveBtn) edgeSaveBtn.addEventListener('click', saveEdge);
     if (edgeCancelBtn) edgeCancelBtn.addEventListener('click', closeEdgePanel);
     if (edgeDeleteBtn) edgeDeleteBtn.addEventListener('click', deleteEdge);
-    window.addEventListener('beforeunload', function () {
-        if (claimToken) releaseClaim(true);
-    });
 
     // ── Add node ─────────────────────────────────────────────────────
 
@@ -1048,7 +950,7 @@
             }
             return fetch(API_BASE + '/control/graph/node', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-Claim-Token': claimToken },
+                headers: { 'Content-Type': 'application/json', 'X-Claim-Token': claimToken() },
                 body: JSON.stringify(body),
             }).then(function (resp) {
                 if (resp.status === 200) {
@@ -1182,7 +1084,7 @@
             }
             return fetch(API_BASE + '/control/graph/edge/create', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-Claim-Token': claimToken },
+                headers: { 'Content-Type': 'application/json', 'X-Claim-Token': claimToken() },
                 body: JSON.stringify(body),
             }).then(function (resp) {
                 if (resp.status === 200) {
@@ -1244,16 +1146,15 @@
             ? state !== 'empty'
             : (stroke != null && stroke < 149.5));
 
-        // Auto-follow: expand the station the robot is in, collapse the one it
-        // left. Runs on station change only (not every tick).
+        // Auto-follow opens newly reached stations without closing the user's
+        // view. A null node during motion must not collapse the current station.
         var station = null;
         if (node) {
             var ne = cy.getElementById(node);
             if (ne && ne.nonempty()) station = ne.data('station');
         }
-        if (station !== autoStation) {
-            if (autoStation) delete expanded[autoStation];
-            if (station) expanded[station] = true;
+        if (station && station !== autoStation) {
+            expanded[station] = true;
             autoStation = station;
             applyGroupVisibility();
         }
@@ -1285,7 +1186,6 @@
     }
 
     function updateClaimIndicator(claimedBy) {
-        latestClaimedBy = claimedBy || null;  // drives automationActive()
         if (!claimEl) return;
         claimEl.classList.remove('claim-free', 'claim-mine', 'claim-other');
         if (!claimedBy) {
@@ -1294,7 +1194,7 @@
             return;
         }
         // Phase A holds no claim, so the holder is always "other" from here.
-        var mine = window.__graphClaim && claimedBy.session_id === window.__graphClaim.sessionId;
+        var mine = window.xarmControl && claimedBy.session_id === window.xarmControl.sessionId;
         claimEl.textContent = 'Control: ' + claimedBy.owner + (mine ? ' (you)' : '');
         claimEl.classList.add(mine ? 'claim-mine' : 'claim-other');
     }
@@ -1336,7 +1236,9 @@
             renderGraph(data);
             applyLiveState(data);
             populateAddNodeForm(data);
+            window.__graphViewer.resize();
         }).catch(function (err) {
+            loadStarted = false;
             if (err.message === 'no_graph') {
                 showMessage('No motion graph loaded (motion_graph.yaml missing or invalid).');
             } else {
@@ -1346,46 +1248,14 @@
     }
 
     // Fallback live-state poll — only runs when the WS push has gone stale.
-    function pollLiveState() {
-        if (Date.now() - lastPushAt < PUSH_STALE_MS) return;
-        if (!cy) return;
-        fetchGraph().then(function (data) {
-            applyLiveState(data);
-        }).catch(function () { /* transient; next tick retries */ });
-    }
-
-    // ── WebSocket ─────────────────────────────────────────────────────
-
-    function connectWebSocket() {
-        var socket;
-        try {
-            socket = new WebSocket(WS_URL);
-        } catch (e) {
-            return;
-        }
-        socket.onmessage = function (event) {
-            var message;
-            try { message = JSON.parse(event.data); } catch (e) { return; }
-            if (message.type !== 'status_update') return;
-            lastPushAt = Date.now();
-            var details = (message.data && message.data.details) || {};
-            var mg = details.motion_graph;
-            if (mg) {
-                applyLiveState({
-                    graph_mode: mg.graph_mode,
-                    current_node: mg.current_node,
-                    gripper_stroke: mg.gripper_stroke,
-                    gripper_state: mg.gripper_state,
-                });
-            }
-            updateClaimIndicator(details.claimed_by || null);
-        };
-        socket.onclose = function () {
-            // Reconnect with a short backoff; the fallback poll covers the gap.
-            setTimeout(connectWebSocket, 2000);
-        };
-        socket.onerror = function () { try { socket.close(); } catch (e) {} };
-    }
+    // Subscribe to the main controller's telemetry; do not open a second
+    // WebSocket or a separate polling loop for the editor.
+    document.addEventListener('xarm:status', function (event) {
+        var data = event.detail || {};
+        var graph = data.motion_graph || {};
+        applyLiveState(graph);
+        updateClaimIndicator(data.claimed_by || null);
+    });
 
     // ── Boot ──────────────────────────────────────────────────────────
 
@@ -1408,19 +1278,34 @@
         initCollapsibleCards();
         var fitBtn = document.getElementById('fit-btn');
         if (fitBtn) fitBtn.addEventListener('click', function () { if (cy) cy.fit(undefined, 30); });
-        initialLoad();
-        connectWebSocket();
-        setInterval(pollLiveState, 1500);
+        var canvas = document.getElementById('cy');
+        if (canvas && window.ResizeObserver) new ResizeObserver(function (entries) {
+            if (entries[0].contentRect.width && entries[0].contentRect.height && window.__graphViewer) {
+                window.__graphViewer.resize();
+            }
+        }).observe(canvas);
 
-        // Lab Camera card (shared with the control panel via camera-player.js):
-        // reads /camera/config, renders the MSE preview + "Follow arm" toggle.
-        // No-op unless camera tracking is configured.
-        if (window.setupCameraCard) window.setupCameraCard({ apiBase: API_BASE });
+
     });
 
     // Expose hooks so Phase B can extend without rewriting Phase A.
     window.__graphViewer = {
         getCy: function () { return cy; },
+        resize: function () {
+            var canvas = document.getElementById('cy');
+            if (!canvas || !canvas.clientWidth || !canvas.clientHeight) return;
+            // Never lay out or persist a graph inside a hidden tab.
+            if (!cy) {
+                if (!loadStarted) { loadStarted = true; initialLoad(); }
+                return;
+            }
+            var previousWidth = cy.scratch('workspaceWidth');
+            cy.resize();
+            if (previousWidth && Math.abs(previousWidth - cy.width()) > 1) {
+                cy.fit(cy.elements(':visible'), 35);
+            }
+            cy.scratch('workspaceWidth', cy.width());
+        },
         fetchGraph: fetchGraph,
         applyLiveState: applyLiveState,
         resetLayout: resetLayout,
