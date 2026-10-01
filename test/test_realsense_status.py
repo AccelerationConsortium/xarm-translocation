@@ -114,7 +114,8 @@ def test_capture_action_is_advertised_when_any_camera_qualifies(shared, tmp_path
     import src.core.realsense_captures as rcap
 
     previous_store = rcap.shared_store()
-    rcap.configure_shared({"enabled": True, "root": str(tmp_path)})
+    from types import SimpleNamespace
+    rcap.set_shared(SimpleNamespace(enabled=True, summary=lambda *args: {}))
     try:
         cold = _camera(camera_id="overhead", start_on_demand=False, streaming=False,
                        component=STREAMING_COMPONENT, block=STREAMING_BLOCK)
@@ -126,7 +127,7 @@ def test_capture_action_is_advertised_when_any_camera_qualifies(shared, tmp_path
         shared(cold, warm)
         assert "realsense.capture" in build_status(_fake_controller()).allowed_actions
 
-        rcap.set_shared(rcap.CaptureStore({"enabled": False}))
+        rcap.set_shared(SimpleNamespace(enabled=False, summary=lambda *args: {}))
         assert "realsense.capture" not in build_status(_fake_controller()).allowed_actions
     finally:
         rcap.set_shared(previous_store)
@@ -170,24 +171,22 @@ def test_status_is_side_effect_free_for_the_camera(shared):
     assert not cam.start.called and not cam.stop.called and not cam.ensure_started.called
 
 
-def test_real_camera_class_integrates(shared):
-    """End to end with the real class (no backend): configured but the extra
-    'missing' -> a driver_missing component, an envelope that still builds."""
-    class NoRS:  # noqa: D401 - a backend whose import fails
-        pass
+def test_remote_camera_outage_does_not_degrade_arm(shared):
+    """An unavailable camera service is reported without opening hardware."""
+    from src.core.remote_realsense import RemoteCamera, RemoteService
 
-    cam = rc.RealSenseCamera({"enabled": True, "label": "bench cam"},
-                             camera_id="rs435i", rs_module=None, np_module=None)
-    cam.installed = False
-    cam.install_error = "ModuleNotFoundError: No module named 'pyrealsense2'"
-    shared(cam)
-    env = build_status(_fake_controller())
-    comp = env.components[CAM]
-    assert comp.state == "driver_missing" and comp.connected is False
-    block = env.details["realsense"]["cameras"]["rs435i"]
-    assert "uv sync --extra realsense" in block["reason"]
-    assert block["camera_id"] == "rs435i"
-    assert env.equipment_status == "ready"
+    service = RemoteService({"url": "http://camera.invalid", "token": "test",
+                             "cameras": ["rs435i"]})
+    try:
+        service.reason = "camera service offline"
+        shared(RemoteCamera("rs435i", {"label": "bench cam"}, service))
+        env = build_status(_fake_controller())
+        comp = env.components[CAM]
+        assert comp.state == "unavailable" and comp.connected is False
+        assert env.details["realsense"]["cameras"]["rs435i"]["reason"] == "camera service offline"
+        assert env.equipment_status == "ready"
+    finally:
+        service.close()
 
 
 def test_present_before_connect(shared):

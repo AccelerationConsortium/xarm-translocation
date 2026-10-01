@@ -19,7 +19,7 @@ from typing import Dict, List, Optional, Any, Literal, Union
 from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, HTTPException, BackgroundTasks, Header, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse, Response as RawResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response as RawResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, FiniteFloat
 import uvicorn
@@ -49,8 +49,6 @@ try:
     from .claims import ClaimConflict, InvalidClaimToken
     from .camera_tracker import CameraTracker
     from . import realsense_camera, realsense_captures
-    from .usb_camera import CameraManager
-    from .usb_camera_api import create_router as create_usb_router, listing as usb_listing
     from .realsense_camera import RealSenseError, RealSenseNotStreaming, RealSenseUnavailable
     from .sash_interlock import SashInterlock, SashInterlockError
     from . import kinematics
@@ -81,8 +79,6 @@ except ImportError:
     from core.claims import ClaimConflict, InvalidClaimToken
     from core.camera_tracker import CameraTracker
     from core import realsense_camera, realsense_captures
-    from core.usb_camera import CameraManager
-    from core.usb_camera_api import create_router as create_usb_router, listing as usb_listing
     from core.realsense_camera import RealSenseError, RealSenseNotStreaming, RealSenseUnavailable
     from core.sash_interlock import SashInterlock, SashInterlockError
     from core import kinematics
@@ -727,20 +723,10 @@ async def lifespan(app: FastAPI):
     telemetry_task = asyncio.create_task(telemetry_loop())
     gripper_status_task = asyncio.create_task(gripper_status_loop())
 
-    # RealSense depth cameras: open a pipeline at boot only for the cameras
-    # whose YAML entry asks for it. A missing camera is logged, never fatal --
-    # the arm must come up regardless, and one camera's failure must not stop
-    # the next one from starting.
+    # Camera capture belongs to the standalone camera service. Poll its cached
+    # status without opening a camera or delaying robot status requests.
     if camera_service is not None:
         camera_service.start_polling()
-    rs_cameras = realsense_camera.cameras()
-    for rs_id, rs_cam in rs_cameras.items():
-        if not (rs_cam.configured and rs_cam.autostart):
-            continue
-        try:
-            await asyncio.to_thread(rs_cam.start)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"RealSense autostart skipped for {rs_id}: {exc}")
 
     yield
 
@@ -749,19 +735,12 @@ async def lifespan(app: FastAPI):
     telemetry_task.cancel()
     gripper_status_task.cancel()
     await asyncio.gather(gripper_status_task, return_exceptions=True)
-    await asyncio.to_thread(usb_cameras.stop_all)
     if camera_service is not None:
         await asyncio.to_thread(camera_service.close)
     global controller
     if controller:
         logger.info("Disconnecting from robot...")
         controller.disconnect()
-    for rs_id, rs_cam in rs_cameras.items():
-        try:
-            if not getattr(rs_cam, "remote", False):
-                rs_cam.stop()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(f"RealSense stop failed for {rs_id} (ignored): {exc}")
     logger.info("xArm API Server shutdown complete")
 
 # Create FastAPI app.
@@ -782,10 +761,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Lazy discovery: no camera opens and no optional driver imports at startup.
-usb_cameras = CameraManager()
-if not os.environ.get("XARM_CAMERA_SERVICE_CONFIG"):
-    app.include_router(create_usb_router(usb_cameras, require_login))
+# USB and RealSense hardware are owned by the standalone camera service.
 
 # Add CORS middleware
 app.add_middleware(
@@ -3288,12 +3264,11 @@ async def camera_ptz(body: dict):
 
 
 # =============================================================================
-# REALSENSE DEPTH CAMERAS (local USB cameras on this device PC)
+# REALSENSE DEPTH CAMERAS (compatibility routes backed by camera service)
 #
 # Distinct from /camera/* above, which drives the *network* PTZ camera through
-# the dashboard. These are librealsense hardware owned by this process -- see
-# core/realsense_camera.py. The cameras outlive arm connections (they live in a
-# process-wide registry, not on the controller), so every endpoint here answers
+# the dashboard. These routes forward to the standalone camera service. They
+# outlive arm connections (the client lives in a process-wide registry), so they answer
 # before /connect. Reads (/status, /depth, /intrinsics) are open like
 # GET /status; anything that turns a camera on or ships video is login-gated,
 # matching the authenticated viewing sessions the PTZ preview moved to. Nothing
@@ -3307,10 +3282,9 @@ async def camera_ptz(body: dict):
 # so nothing downstream has to build paths by string concatenation.
 # =============================================================================
 
-# Built once at import from src/settings/realsense.yaml. Construction never
-# raises: a missing file / extra / camera, or an entry that cannot be trusted,
-# yields an empty-or-smaller registry whose reason GET /realsense/cameras
-# reports. Anchored to the package layout, not the CWD (NSSM launch).
+# Built once at import from src/settings/realsense.yaml and the local service
+# credential file. Without a service configuration the registry stays empty;
+# xArm never falls back to a direct hardware driver.
 camera_service = None
 remote_camera_store = None
 if os.environ.get("XARM_CAMERA_SERVICE_CONFIG"):
@@ -3322,7 +3296,7 @@ if os.environ.get("XARM_CAMERA_SERVICE_CONFIG"):
         os.environ["XARM_CAMERA_SERVICE_CONFIG"], config)
     realsense_camera.set_cameras(remote_cameras)
 else:
-    realsense_camera.configure_cameras(realsense_camera.default_config_path())
+    realsense_camera.set_cameras({}, reason="XARM_CAMERA_SERVICE_CONFIG is required; cameras are owned by the standalone camera service")
 
 
 def _realsense_registry() -> Dict[str, Any]:
@@ -3433,14 +3407,13 @@ async def realsense_cameras():
 
 @app.get("/cameras", tags=["cameras"])
 async def all_cameras():
-    """Discover color USB cameras and configured RealSense cameras by capability.
+    """Discover configured RealSense cameras by capability.
 
     Existing RealSense URLs and payloads are unchanged. Follow each camera's
     URLs; color cameras do not advertise depth or calibrated intrinsics.
     """
     rs = await realsense_cameras()
-    usb = ({"cameras": [], "available": False, "reason": "USB cameras are owned by the standalone camera service"}
-           if camera_service is not None else await usb_listing(usb_cameras))
+    usb = {"cameras": [], "available": False, "reason": "USB cameras are owned by the standalone camera service"}
     cameras = [dict(camera, kind="realsense",
                     capabilities=["color", "depth", "intrinsics", "snapshot", "mjpeg"])
                for camera in rs["cameras"]]
@@ -3599,11 +3572,7 @@ async def realsense_intrinsics(camera_id: str):
 # login-gated like every other frame this service ships.
 # -----------------------------------------------------------------------------
 
-realsense_captures.configure_shared(
-    realsense_captures.load_captures_config(realsense_camera.default_config_path())
-)
-if remote_camera_store is not None:
-    realsense_captures.set_shared(remote_camera_store)
+realsense_captures.set_shared(remote_camera_store)
 
 
 class RealSenseCaptureRequest(BaseModel):
@@ -3747,75 +3716,20 @@ async def _realsense_capture(request: Request, camera: Any,
     """
     store = _capture_store()
     camera_id = camera.camera_id
-    if getattr(camera, "remote", False):
-        arm = _capture_arm_state()
-        if body.node_id is not None:
-            arm["node_id"] = body.node_id
-        from datetime import datetime, timezone
-        context = {"arm": arm, "requested_by": _capture_requester(request),
-                   "context_sampled_at": datetime.now(timezone.utc).isoformat(),
-                   "synchronization": "cached robot telemetry, not hardware synchronized"}
-        try:
-            result = await asyncio.to_thread(camera.capture_remote, label=body.label,
-                tags=list(body.tags or []), protected=body.protected, context=context)
-        except Exception as exc:
-            raise _realsense_http_error(exc)
-        result["urls"] = _capture_urls(camera_id, result["capture_id"], result["meta"])
-        return result
-
-    def _grab():
-        if camera.start_on_demand:
-            camera.ensure_started()
-        bundle = camera.latest()
-        color = camera.encode_jpeg(bundle, "color") if bundle.color is not None else None
-        depth = camera.encode_depth_png(bundle) if bundle.depth is not None else None
-        return bundle, color, depth
-
-    try:
-        bundle, color_jpeg, depth_png = await asyncio.to_thread(_grab)
-    except Exception as exc:  # noqa: BLE001
-        raise _realsense_http_error(exc)
-
     arm = _capture_arm_state()
     if body.node_id is not None:
         arm["node_id"] = body.node_id
-    described = await asyncio.to_thread(camera.describe)
-    meta: Dict[str, Any] = {
-        "camera_id": camera_id,
-        "label": body.label,
-        "tags": list(body.tags or []),
-        "protected": bool(body.protected),
-        "arm": arm,
-        "requested_by": _capture_requester(request),
-        "camera": {
-            "id": camera_id,
-            "label": getattr(camera, "label", None),
-            "mount": dict(getattr(camera, "mount", None) or {}),
-            "device": described.get("device"),
-            "library_version": described.get("library_version"),
-            "streams": described.get("streams"),
-        },
-        "frame": {
-            "frame_number": bundle.frame_number,
-            "timestamp_ms": bundle.timestamp_ms,
-            "depth_scale_m": bundle.depth_scale,
-            "aligned_depth_to_color": bool(getattr(camera, "align_depth_to_color", False)),
-        },
-        "intrinsics": bundle.intrinsics,
-    }
-
+    from datetime import datetime, timezone
+    context = {"arm": arm, "requested_by": _capture_requester(request),
+               "context_sampled_at": datetime.now(timezone.utc).isoformat(),
+               "synchronization": "cached robot telemetry, not hardware synchronized"}
     try:
-        record = await asyncio.to_thread(
-            store.write, camera_id=camera_id, color_jpeg=color_jpeg,
-            depth_png=depth_png, meta=meta,
-        )
-    except realsense_captures.CaptureStoreError as exc:
-        raise HTTPException(status_code=500, detail={"error": "capture_write_failed",
-                                                     "reason": str(exc)})
-
-    capture_id = record["capture_id"]
-    return {"capture_id": capture_id, "camera_id": camera_id,
-            "urls": _capture_urls(camera_id, capture_id, record), "meta": record}
+        result = await asyncio.to_thread(camera.capture_remote, label=body.label,
+            tags=list(body.tags or []), protected=body.protected, context=context)
+    except Exception as exc:
+        raise _realsense_http_error(exc)
+    result["urls"] = _capture_urls(camera_id, result["capture_id"], result["meta"])
+    return result
 
 
 @app.post("/control/realsense/{camera_id}/capture", dependencies=[Depends(require_claim)])
@@ -3949,18 +3863,14 @@ async def realsense_capture_file(camera_id: str, capture_id: str, filename: str)
     camera = _realsense(camera_id)
     store = _capture_store()
     try:
-        if getattr(store, "remote", False):
-            data = await asyncio.to_thread(store.get_file, camera.camera_id, capture_id, filename)
-            return RawResponse(data, media_type="image/jpeg" if filename.endswith(".jpg") else "image/png",
-                               headers={"Cache-Control": "no-store"})
-        path = await asyncio.to_thread(store.file_path, camera.camera_id, capture_id, filename)
+        data = await asyncio.to_thread(store.get_file, camera.camera_id, capture_id, filename)
     except realsense_captures.CaptureNotFound:
         raise HTTPException(status_code=404, detail={"error": "capture_file_not_found",
                                                      "camera_id": camera_id,
                                                      "capture_id": capture_id,
                                                      "filename": filename})
     media = "image/jpeg" if filename.endswith(".jpg") else "image/png"
-    return FileResponse(path, media_type=media, headers={"Cache-Control": "no-store"})
+    return RawResponse(data, media_type=media, headers={"Cache-Control": "no-store"})
 
 
 @app.delete("/control/realsense/{camera_id}/captures/{capture_id}",
@@ -4019,12 +3929,14 @@ async def llms_txt():
         content=(
             "# xArm translocation service (STATUS_SPEC v1.1 device service)\n\n"
             "## Documentation\n\n"
-            "- [Agent guide](agent-docs): claims, motion-graph moves, the RealSense\n"
-            "  depth cameras and capture records, refusal codes.\n"
+            "- [Agent guide](agent-docs): claims, motion-graph moves, camera-service\n"
+            "  ownership, RealSense compatibility routes and capture records.\n"
             "- [API reference](agent-docs/api-reference): every route with bodies and\n"
             "  refusal codes.\n"
             "- [OpenAPI](openapi.json): request/response schemas.\n\n"
             "## Depth cameras\n\n"
+            "The standalone camera service owns capture and serves /v1/cameras.\n"
+            "This xArm service keeps /realsense/* compatibility routes.\n"
             "Cameras are addressed by a device-local id. GET /realsense/cameras lists\n"
             "them with a ready-made URL per route, so no client builds paths by hand;\n"
             "everything else lives under /realsense/{camera_id}/. Captures are written\n"

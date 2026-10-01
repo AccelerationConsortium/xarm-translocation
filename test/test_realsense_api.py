@@ -431,12 +431,12 @@ def test_numeric_reads_are_open(path):
     assert "require_login" not in deps and "require_claim" not in deps
 
 
-def test_lifespan_autostart_and_shutdown(monkeypatch, fake_cam):
+def test_lifespan_never_starts_or_stops_camera_hardware(monkeypatch, fake_cam):
     fake_cam.autostart = True
     monkeypatch.setattr('src.core.xarm_api_server.controller', None)
     with TestClient(app):
-        assert fake_cam.streaming and "start" in fake_cam.calls
-    assert not fake_cam.streaming and fake_cam.calls[-1] == "stop"
+        assert not fake_cam.streaming and "start" not in fake_cam.calls
+    assert "stop" not in fake_cam.calls
 
 
 def test_lifespan_autostart_failure_is_not_fatal(monkeypatch, fake_cam):

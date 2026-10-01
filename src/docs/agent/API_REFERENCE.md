@@ -225,7 +225,17 @@ and [status and holding-current registers](https://docs.accessories.ufactory.cc/
 
 ## RealSense — discovering the cameras
 
-Every camera on this device PC has a device-local id (`rs435i`, the D435i
+The standalone SDL camera service owns USB and RealSense capture. xArm keeps
+the `/realsense/*` routes below as compatibility proxies with their existing
+login and claim gates; it never opens a camera itself. New camera-only clients
+should use `GET /v1/cameras` on the camera service with a camera-scoped Bearer
+token, then follow the returned URLs for snapshots, MJPEG, depth and captures.
+The camera service listens on the device PC's loopback interface, so remote
+clients need the approved gateway or tunnel. The xArm `/cameras` listing still
+describes its RealSense compatibility routes; the overhead USB camera appears
+in the standalone service's `/v1/cameras` listing.
+
+Each RealSense camera has a device-local id (`rs435i`, the D435i
 eye-in-hand, and `rs405`, the D405 facing down) and every route for it is
 nested under that id. Each entry carries a descriptive `mount`
 (`{location, facing}`, either may be null) that is also recorded under
@@ -370,26 +380,25 @@ Response:
 Refusals: **400** `camera_required` on the alias with several cameras ·
 **404** captures disabled, no camera configured, or an unknown camera id ·
 **409** camera stopped and `start_on_demand` is false · **423** no claim ·
-**500** the store could not write · **503** extra or hardware missing.
+**500** the store could not write · **503** camera service or hardware unavailable.
 
 ### Storage and retention
 
-Captures live outside the repo at
-`C:\SDL_Data\xarm\realsense\<camera_id>\<YYYY-MM-DD>\<capture_id>\`.
+Captures live outside the repo under the standalone camera service's configured
+capture root, at `<root>/<camera_id>/<YYYY-MM-DD>/<capture_id>/`.
 The camera is the top level, then the UTC day, then the capture.
 
 | Bound | Value |
 |---|---|
 | `keep_days` | 30 |
-| `keep_max_gb` | 20 |
+| `keep_max_gb` | 10 on the current Cytation configuration |
 
 Both are enforced after every write, oldest first, age before size — and
 across **all** cameras together, not per camera: one root, one budget, because
 the bound that matters is the disk's. A capture is roughly 175-255 KB at the
 configured 1280x720 (colour JPEG 55-110 KB + 16-bit depth PNG 119-145 KB,
 measured 2026-09-19 and re-measured 2026-09-20; strongly scene-dependent, a
-dim or flat scene compresses smaller), so 20 GB holds on the order of 100k
-captures. Both streams run at 1280x720 by design, not by limitation: depth
+dim or flat scene compresses smaller). Both streams run at 1280x720: depth
 is at its hardware maximum there, while colour could reach 1920x1080 but is
 matched to depth so the two images stay pixel-for-pixel comparable and the
 aligned depth map is not inflated with interpolated pixels — see the

@@ -1,7 +1,8 @@
 # xArm translocation — agent guide
 
-This service drives a UFactory xArm5 on a linear rail with a BioGripper Gen2,
-plus Intel RealSense depth cameras: `rs435i` (D435i, eye-in-hand on that
+This service drives a UFactory xArm5 on a linear rail with a BioGripper Gen2.
+The standalone SDL camera service owns the Intel RealSense depth cameras:
+`rs435i` (D435i, eye-in-hand on that
 gripper) and `rs405` (D405 close-range, mounted **facing down**). Either may be
 unplugged at a given time; `GET /realsense/cameras` lists both, and because two
 are configured every capture must name its `camera`. It
@@ -166,17 +167,21 @@ must be connected by an authenticated operator; the SDK does not auto-connect.
 
 ## The depth cameras
 
-These are local USB cameras owned by this process, unlike the lab PTZ cameras
-which are network devices driven through the dashboard. A camera idles by
-default and starts on the first request, then stops itself after an idle
-timeout.
+The standalone SDL camera service owns the USB and RealSense devices, their
+streams, and saved captures. This xArm service retains `/realsense/*` routes as
+compatibility proxies with its existing login and claim gates. Camera clients
+may instead use `GET /v1/cameras` and the returned URLs on the camera service
+with a camera-scoped Bearer token. That service is bound to the device PC's
+loopback interface; remote clients need the approved gateway or tunnel.
+If the camera service is unavailable, xArm reports camera unavailability while
+its robot status remains independent. xArm does not open a local camera.
 
-### Stream profiles, and why both are 1280x720
+### Stream profiles
 
-`rs435i` runs **colour and depth both at 1280x720 @ 30**, with depth aligned
-to colour. Read the live values from `GET /realsense/{id}/status` rather than
-assuming them; this section explains the choice so you can reason about the
-data you get.
+The camera service defaults to **1280x720** for colour and depth. The current
+Cytation RealSense profiles are configured at **15 fps**. Read live values
+from `GET /realsense/{id}/status` or the camera service's
+`GET /v1/cameras/{id}/status` before using a profile.
 
 The D435i's ceilings are not the same on each sensor:
 
@@ -270,7 +275,8 @@ One store holds every camera's captures, under
 lists all cameras newest first (each record carries its `camera_id`);
 `GET /realsense/{id}/captures` narrows it to one.
 
-Retention is enforced after every write: 30 days and 20 GB, oldest first, age
+Retention is enforced by the camera service after every write: 30 days and
+10 GB on the current Cytation configuration, oldest first, age
 before size, and shared across all cameras rather than split between them. Do
 not build anything that assumes a capture from last quarter is still there
 unless you marked it protected.
@@ -290,7 +296,7 @@ Fetching the image bytes is login-gated at
 | 412 | a safety gate refused: sash not parked, vision rejected | fix the physical precondition; do not retry blindly |
 | 422 | the target is not on the whitelist from here | re-read `allowed_actions` |
 | 423 | claim required or held by someone else | take the claim, or wait for the holder |
-| 503 | camera extra or hardware missing | check `details.realsense`; this is not retryable |
+| 503 | camera service or hardware unavailable | check `details.realsense` and camera service health; retry only after recovery |
 
 ## Where to go next
 

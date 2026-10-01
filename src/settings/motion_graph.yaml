@@ -262,13 +262,13 @@ edges:
 - from: uplc_draw_home
   to: uplc_draw_open_max
   mode: linear
-  speed: 20
+  speed: 15.0
   comment: "Approach fully-open drawer position."
 
 - from: uplc_draw_open_max
   to: uplc_draw_open_min
   mode: linear
-  speed: 15
+  speed: 50.0
   comment: "Close drawer to almost-shut position (slow)."
 
 - from: uplc_draw_open_min
@@ -286,7 +286,7 @@ edges:
 - from: uplc_draw_open_min
   to: uplc_draw_open_max
   mode: linear
-  speed: 15
+  speed: 15.0
   comment: "Open drawer fully."
 - from: uplc_home
   to: uplc_draw_home
@@ -445,13 +445,7 @@ edges:
 - from: uplc_draw_open_max
   to: uplc_draw_home
   mode: linear
-  speed: 20.0
-- from: robot_home
-  to: cytation_home
-  mode: joint
-- from: cytation_home
-  to: robot_home
-  mode: joint
+  speed: 15.0
 - from: cytation_high
   to: cytation_high_pull
   mode: linear
@@ -463,12 +457,6 @@ edges:
   mode: joint
 - from: cytation_home
   to: cytation_high_pull
-  mode: joint
-- from: robot_home
-  to: plateloc_home
-  mode: joint
-- from: plateloc_home
-  to: robot_home
   mode: joint
 - from: plateloc_home
   to: plateloc_high
@@ -518,3 +506,19 @@ edges:
 - from: cytation_low
   to: cytation_high
   mode: linear
+- from: deck_home
+  to: plateloc_home
+  mode: joint
+  speed: 20.0
+- from: plateloc_home
+  to: deck_home
+  mode: joint
+  speed: 20.0
+- from: deck_home
+  to: cytation_home
+  mode: joint
+  speed: 20.0
+- from: cytation_home
+  to: deck_home
+  mode: joint
+  speed: 20.0
