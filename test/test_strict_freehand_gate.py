@@ -85,15 +85,33 @@ def claim_headers(client):
     return {"X-Claim-Token": resp.json()["claim_token"]}
 
 
+# (canonical, legacy, body, action). Each freehand route answers at both
+# spellings via stacked decorators on one handler, so every test below runs
+# against both: an alias that did not carry strict_graph_guard or the sash
+# guard would be a hole in exactly the family these suites exist to fence.
+FREEHAND_SPECS = [
+    ("/control/freehand/position", "/move/position",
+     {"x": 100, "y": 0, "z": 200}, "move.position"),
+    ("/control/freehand/joints", "/move/joints",
+     {"angles": [0, 0, 0, 0, 0]}, "move.joints"),
+    ("/control/freehand/relative", "/move/relative",
+     {"dx": 5}, "move.relative"),
+    ("/control/freehand/plate_linear", "/move/plate_linear",
+     {"target_location": "pickup"}, "move.plate_linear"),
+    ("/control/freehand/velocity", "/velocity/cartesian",
+     {"vx": 10}, "velocity.cartesian"),
+    ("/control/freehand/track", "/track/move",
+     {"position": 100}, "track.move"),
+    ("/control/freehand/gripper/stroke", "/gripper/move/stroke",
+     {"stroke": 42}, "gripper.move_stroke"),
+    ("/control/freehand/gripper/force", "/gripper/force",
+     {"force": 30}, "gripper.force"),
+]
+
 FREEHAND_CALLS = [
-    ("/move/position", {"x": 100, "y": 0, "z": 200}, "move.position"),
-    ("/move/joints", {"angles": [0, 0, 0, 0, 0]}, "move.joints"),
-    ("/move/relative", {"dx": 5}, "move.relative"),
-    ("/move/plate_linear", {"target_location": "pickup"}, "move.plate_linear"),
-    ("/velocity/cartesian", {"vx": 10}, "velocity.cartesian"),
-    ("/track/move", {"position": 100}, "track.move"),
-    ("/gripper/move/stroke", {"stroke": 42}, "gripper.move_stroke"),
-    ("/gripper/force", {"force": 30}, "gripper.force"),
+    (path, body, action)
+    for canonical, legacy, body, action in FREEHAND_SPECS
+    for path in (canonical, legacy)
 ]
 
 
@@ -110,8 +128,9 @@ def test_strict_refuses_freehand(client, claim_headers, path, body, action):
 
 
 @pytest.mark.parametrize("path,body,action", FREEHAND_CALLS)
-def test_advisory_allows_freehand(client, claim_headers, mock_controller, path, body, action):
-    mock_controller.graph_mode = GraphMode.ADVISORY
+@pytest.mark.parametrize("mode", [GraphMode.ADVISORY, GraphMode.OFF])
+def test_lowered_mode_allows_freehand(client, claim_headers, mock_controller, path, body, action, mode):
+    mock_controller.graph_mode = mode
     resp = client.post(path, json=body, headers=claim_headers)
     assert resp.status_code == 200, resp.text
 

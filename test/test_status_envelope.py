@@ -41,6 +41,12 @@ from src.core.xarm_controller import ComponentState  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def no_physical_cameras(monkeypatch):
+    """Status unit tests must not inherit the bench's camera configuration."""
+    monkeypatch.setattr('src.core.status_builder.realsense_camera.cameras', lambda: {})
+
+
 def _fake_controller(**overrides):
     """Return a MagicMock that mimics the surface ``status_builder`` reads.
 
@@ -78,8 +84,8 @@ def _fake_controller(**overrides):
     mc.last_position = [300, 0, 300, 180, 0, 0]
     mc.last_joints = [0, 0, 0, 0, 0]
     mc.last_track_position = 0.0
-    mc.last_force_torque = [0.0] * 6
-    mc.force_torque_calibrated = False
+    mc.last_force_torque_sample = None
+    mc._ft_tare = {'completed': False}
     mc.gripper_type = 'bio'
     mc.model = 5
     mc.model_name = 'xArm5'
@@ -481,6 +487,45 @@ def test_graph_family_names_listed_in_advisory_mode(client_with_controller):
     # Per-target names stay STRICT-only.
     assert not [a for a in envelope.allowed_actions if a.startswith('move.')]
     assert not [a for a in envelope.allowed_actions if a.startswith('gripper.')]
+
+
+@pytest.mark.parametrize('mode', ['off', 'advisory', 'strict'])
+@pytest.mark.parametrize('graph_loaded', [True, False])
+def test_freehand_actions_follow_graph_mode(mode, graph_loaded):
+    controller = _fake_controller(graph_mode=MagicMock(value=mode))
+    if not graph_loaded:
+        controller.motion_graph = None
+    actions = set(build_status(controller).allowed_actions)
+    freehand = {'freehand.position', 'freehand.relative', 'freehand.joints'}
+    if mode == 'strict':
+        assert actions.isdisjoint(freehand)
+    else:
+        assert freehand <= actions
+
+
+@pytest.mark.parametrize('overrides', [
+    {'_motion_in_progress': True},
+    {'is_real_box_simulating': True},
+    {'last_error_code': 1},
+])
+def test_freehand_actions_withheld_when_not_available(overrides):
+    controller = _fake_controller(graph_mode=MagicMock(value='off'), **overrides)
+    assert not any(
+        action.startswith('freehand.')
+        for action in build_status(controller).allowed_actions
+    )
+
+
+def test_admin_off_advertises_freehand_but_withholds_ordinary_mode_switch():
+    controller = _fake_controller(graph_mode=MagicMock(value='off'))
+    controller.graph_mode_override_snapshot.return_value = {
+        'active': True, 'scope': 'admin', 'mode': 'off', 'persistent': True,
+        'claim_bound': False, 'remaining_seconds': None, 'expires_at': None,
+    }
+    status = build_status(controller)
+    assert {'freehand.position', 'freehand.relative', 'freehand.joints'} <= set(status.allowed_actions)
+    assert 'graph.mode' not in status.allowed_actions
+    assert status.details['motion_graph']['mode_override']['scope'] == 'admin'
 
 
 def test_graph_gripper_family_withheld_without_a_gripper(client_with_controller):
@@ -917,15 +962,39 @@ def test_status_omits_gripper_block_when_uncached():
     assert envelope.components["gripper"].message == "bio_gen2"
 
 
-def test_build_status_emits_force_torque_metric_when_calibrated():
+def test_build_status_emits_cached_force_torque_metric():
     controller = _fake_controller()
     controller.has_force_torque_sensor.return_value = True
     controller.states['force_torque'] = ComponentState.ENABLED
-    controller.last_force_torque = [3.0, 4.0, 0.0, 0.0, 0.0, 0.0]
-    controller.force_torque_calibrated = True
+    controller.last_force_torque_sample = {
+        'force_magnitude': 5.0, 'service_received_at': '2026-09-25T03:40:00Z'}
+    controller._ft_tare = {'completed': True}
 
     envelope = build_status(controller)
     metric = envelope.metrics.get('force_magnitude')
     assert metric is not None
     assert metric.unit == 'N'
     assert metric.value == pytest.approx(5.0)
+    assert metric.timestamp.isoformat() == '2026-09-25T03:40:00+00:00'
+    assert envelope.components['force_torque'].message == (
+        'service tare completed; compensation validation unknown')
+
+
+def test_degradation_reason_is_exposed_without_sdk_io():
+    failure = {"operation": "ft_enable", "return_code": 1,
+               "reason": "SDK operation failed", "timestamp": "2026-09-25T00:00:00+00:00",
+               "controller_state": 0, "controller_error_code": 0}
+    c = _fake_controller(alive=False, health_failure=failure)
+    status = build_status(c)
+    assert status.equipment_status == "degraded"
+    assert "ft_enable" in status.message
+    assert "code=1" in status.message
+    assert status.details["health_failure"] == failure
+    c.arm.get_state.assert_not_called()
+
+
+def test_recovery_cannot_report_ready_before_components_verified():
+    c = _fake_controller(alive=True, _recovering=True)
+    status = build_status(c)
+    assert status.equipment_status == "degraded"
+    assert "recovery in progress" in status.message

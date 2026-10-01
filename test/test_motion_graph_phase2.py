@@ -100,7 +100,7 @@ def test_set_graph_mode_changes_mode(graph_controller):
     c = graph_controller
     c.set_graph_mode(GraphMode.STRICT)
     assert c.graph_mode == GraphMode.STRICT
-    c.set_graph_mode(GraphMode.ADVISORY)
+    c.set_graph_mode(GraphMode.ADVISORY, reason="unit test")
     assert c.graph_mode == GraphMode.ADVISORY
 
 
@@ -123,7 +123,7 @@ def test_advisory_mode_preserves_preset_dispatch(graph_controller):
     format (dict in this fixture) still drives dispatch (Cartesian
     move_to_position), and the caller's speed is honored."""
     c = graph_controller
-    c.set_graph_mode(GraphMode.ADVISORY)
+    c.set_graph_mode(GraphMode.ADVISORY, reason="unit test")
     c.last_arm_pose_name = "home"  # pin starting node
     assert c.current_node == "n_home"
 
@@ -301,7 +301,7 @@ def test_strict_mode_honors_slower_speed(graph_controller):
 
 def test_successful_named_move_records_transition(graph_controller):
     c = graph_controller
-    c.set_graph_mode(GraphMode.ADVISORY)
+    c.set_graph_mode(GraphMode.ADVISORY, reason="unit test")
     c.last_arm_pose_name = "home"
     assert c.last_transition is None
     assert c.move_to_named_location("pickup") is True
@@ -312,7 +312,7 @@ def test_successful_named_move_records_transition(graph_controller):
 
 def test_off_grid_named_move_does_not_record(graph_controller):
     c = graph_controller
-    c.set_graph_mode(GraphMode.ADVISORY)
+    c.set_graph_mode(GraphMode.ADVISORY, reason="unit test")
     c.last_arm_pose_name = None  # off-grid start
     assert c.last_transition is None
     # Move succeeds in ADVISORY mode but starting node was None, so no
@@ -326,7 +326,7 @@ def test_off_grid_named_move_does_not_record(graph_controller):
 
 def test_off_mode_is_fully_permissive(graph_controller):
     c = graph_controller
-    c.set_graph_mode(GraphMode.OFF)
+    c.set_graph_mode(GraphMode.OFF, reason="unit test")
     c.last_arm_pose_name = None  # off-grid would refuse in STRICT
     # Add an orphan target that has no node.
     c.position_config["positions"]["orphan"] = {
@@ -457,3 +457,114 @@ def test_travel_to_node_result_shape_is_uniform(travel_controller):
                          ("already_there", already_there),
                          ("no_graph", no_graph)]:
         assert set(result) == TRAVEL_RESULT_KEYS, f"{name} path differs"
+
+
+@pytest.mark.parametrize("mode", list(GraphMode))
+@pytest.mark.parametrize("requested,expected", [(None, 25), (100, 25), (5, 5)])
+def test_graph_move_preserves_linear_units_in_every_mode(graph_controller, mode, requested, expected):
+    """A joint-list preset must still reach the SDK as a capped linear move."""
+    c = graph_controller
+    c.set_graph_mode(mode, reason="unit test")
+    c.last_arm_pose_name = "home"
+    c.position_config["positions"]["pickup"] = [0] * c.num_joints
+    c.arm.get_forward_kinematics = MagicMock(return_value=(0, [310, 0, 300, 180, 0, 0]))
+    c.arm.set_position.reset_mock()
+    c.arm.set_servo_angle.reset_mock()
+    assert c.move_to_node("n_pickup", speed=requested)
+    c.arm.set_servo_angle.assert_not_called()
+    c.arm.set_position.assert_called_once()
+    args = c.arm.set_position.call_args
+    assert args.args == (310, 0, 300, 180, 0, 0)
+    assert args.kwargs["speed"] == expected
+    assert args.kwargs["mvacc"] == c.tcp_acc
+    assert args.kwargs["is_radian"] is False
+    assert args.kwargs["motion_type"] == 0
+    assert c.graph_mode == mode
+    if requested == 100:
+        assert c.last_speed_clamps[-1]["units"] == "mm/s"
+
+
+@pytest.mark.parametrize("mode", list(GraphMode))
+def test_graph_joint_move_uses_degrees_in_every_mode(graph_controller, mode):
+    c = graph_controller
+    c.set_graph_mode(mode, reason="unit test")
+    c.last_arm_pose_name = "pickup"
+    c.position_config["positions"]["home"] = [0] * c.num_joints
+    c.arm.set_servo_angle.reset_mock()
+    assert c.move_to_node("n_home", speed=100)
+    args = c.arm.set_servo_angle.call_args.kwargs
+    assert args["speed"] == 40
+    assert args["mvacc"] == c.angle_acc
+    assert args["is_radian"] is False
+    assert c.last_speed_clamps[-1]["units"] == "deg/s"
+
+
+@pytest.mark.parametrize("mode", [GraphMode.OFF, GraphMode.ADVISORY])
+def test_explicit_graph_move_refuses_missing_edge_even_when_relaxed(graph_controller, mode):
+    c = graph_controller
+    c.set_graph_mode(mode, reason="unit test")
+    c.last_arm_pose_name = None
+    with pytest.raises(EdgeNotAllowedError):
+        c.move_to_node("n_pickup")
+
+
+def test_failed_fk_never_moves_to_sample_position(graph_controller):
+    c = graph_controller
+    c.last_arm_pose_name = "home"
+    c.position_config["positions"]["pickup"] = [0] * c.num_joints
+    c.arm.get_forward_kinematics = MagicMock(return_value=(-1, []))
+    c.arm.set_position.reset_mock()
+    c.arm.set_servo_angle.reset_mock()
+    assert c.move_to_node("n_pickup", speed=5) is False
+    c.arm.set_position.assert_not_called()
+    c.arm.set_servo_angle.assert_not_called()
+    assert c.current_node == "n_home"
+
+
+def test_six_joint_preset_uses_fk_not_cartesian_list(graph_controller):
+    c = graph_controller
+    c.num_joints = 6
+    joints = [10, 20, 30, 40, 50, 60]
+    pose = [310, 0, 300, 180, 0, 0]
+    c.arm.get_forward_kinematics = MagicMock(return_value=(0, pose))
+    assert c._position_to_cartesian("six_joint_pose", joints) == pose
+    c.arm.get_forward_kinematics.assert_called_once_with(
+        joints, input_is_radian=False, return_is_radian=False,
+    )
+
+
+def test_new_graph_cap_is_used_by_next_hop(graph_controller):
+    c = graph_controller
+    c.set_graph_mode(GraphMode.OFF, reason="unit test")
+    c.last_arm_pose_name = "home"
+    data = _test_graph_dict()
+    data["edges"][0]["speed"] = 2
+    c.motion_graph = MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+    with patch.object(c, "move_plate_linear", return_value=True) as move:
+        assert c.move_to_node("n_pickup", speed=100)
+        move.assert_called_once_with("pickup", speed=2)
+
+
+@pytest.mark.parametrize("edge_mode", ["joint", "linear"])
+def test_cross_rail_graph_move_keeps_arm_and_rail_speed_units_separate(graph_controller, edge_mode):
+    c = graph_controller
+    data = _test_graph_dict()
+    for node in data["nodes"]:
+        node["tags"] = ["transit_home"]
+    data["nodes"][1]["rail"] = "Away"
+    data["edges"][0].update(mode=edge_mode, speed=5)
+    c.motion_graph = MotionGraph.from_dict(data, preconditions=DEFAULT_PRECONDITIONS)
+    c.set_graph_mode(GraphMode.OFF, reason="unit test")
+    c.last_arm_pose_name = "home"
+    c.position_config["positions"]["pickup"] = [0] * c.num_joints
+    c.arm.get_forward_kinematics = MagicMock(return_value=(0, [310, 0, 300, 180, 0, 0]))
+    assert c.enable_track_component()
+    c.track_config["locations"] = {"Away": {"position": 10, "speed": 12}}
+    c.arm.set_position.reset_mock()
+    c.arm.set_servo_angle.reset_mock()
+    c.arm.set_linear_track_pos.reset_mock()
+    assert c.move_to_node("n_pickup", speed=100)
+    arm_call = c.arm.set_position if edge_mode == "linear" else c.arm.set_servo_angle
+    assert arm_call.call_args.kwargs["speed"] == 5
+    c.arm.set_linear_track_pos.assert_called_once_with(speed=12, pos=10, wait=True)
+    assert not c._suppress_graph_consult

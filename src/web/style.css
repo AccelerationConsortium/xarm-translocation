@@ -239,8 +239,8 @@ header {
 .title-status-container {
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    padding: 20px;
+    gap: 10px;
+    padding: 16px 18px;
     /* Constant tile width; height flows with content. */
     width: 600px;
     box-sizing: border-box;
@@ -259,22 +259,23 @@ header {
    pulled out of the Arm Control card so they sit at the top of the page.
    `order: 1` places it after the title block (which stays first in the DOM
    for reading/tab order) so it renders on the right of the tile. */
-/* Action row: Take Control / STOP / Clear Errors on one line above the
-   Gripper | Linear Track columns. */
+/* Action stack: Take Control / STOP / Clear Errors stacked on the right
+   of the title tile, together as tall as the title block beside them. */
 .header-actions {
     display: flex;
-    flex-direction: row;
+    flex-direction: column;
     gap: 8px;
+    flex: 0 0 190px;
+    width: 190px;
 }
 
 .header-actions .btn {
     flex: 1 1 0;
-    height: 64px;
-    min-height: 0;
+    min-height: 44px;
     padding: 0;
     box-sizing: border-box;
     border-radius: 12px;
-    font-size: 1.4rem;
+    font-size: 1.15rem;
     font-weight: 700;
 }
 
@@ -290,7 +291,7 @@ header {
 }
 
 .header-actions #stop-btn {
-    font-size: 1.8rem;
+    font-size: 1.5rem;
     font-weight: 800;
     letter-spacing: 0.06em;
 }
@@ -301,7 +302,7 @@ header {
     /* Uniform 14px rhythm between every block (space-between produced
        uneven gaps that grew with the tile). */
     justify-content: flex-start;
-    gap: 14px;
+    gap: 8px;
     min-width: 0;
     flex: 1 1 auto;
 }
@@ -312,7 +313,7 @@ header {
 }
 
 .eyebrow {
-    margin: 0 0 4px;
+    margin: 0;
     color: var(--ink-subtle);
     font-size: var(--control-font-size);
     font-weight: var(--control-font-weight);
@@ -408,6 +409,57 @@ h3 {
     flex: 1 1 auto;
     aspect-ratio: auto;
     min-height: 0;
+}
+
+/* Stereo Camera matches the Lab Camera card's frame exactly. */
+.realsense-card {
+    height: 320px;
+    display: flex;
+    flex-direction: column;
+}
+
+.realsense-card .camera-stage {
+    flex: 1 1 auto;
+    aspect-ratio: auto;
+    min-height: 0;
+}
+
+/* Foldable camera cards: click the title row. Folded, only the title
+   row remains and the card drops its fixed height. */
+.card-fold-head {
+    cursor: pointer;
+    user-select: none;
+}
+
+.card-fold-head:focus-visible {
+    outline: 2px solid var(--primary-active);
+    outline-offset: 4px;
+    border-radius: 4px;
+}
+
+.card-fold-caret::before {
+    content: "\25BE";               /* ▾ */
+    display: inline-block;
+    color: var(--ink-subtle);
+    font-size: 1rem;
+    transition: transform 0.15s ease;
+}
+
+.card.is-folded .card-fold-caret::before {
+    transform: rotate(-90deg);
+}
+
+#camera-card.is-folded,
+.realsense-card.is-folded {
+    height: auto;
+}
+
+.card.is-folded .camera-head {
+    margin-bottom: 0;
+}
+
+.card.is-folded .camera-row {
+    display: none;
 }
 
 .page-right .log-stream {
@@ -886,7 +938,8 @@ input#linear-speed {
     transition: background 0.2s ease, box-shadow 0.2s ease;
 }
 
-#camera-card.camera-live .camera-dot {
+#camera-card.camera-live .camera-dot,
+.realsense-card.camera-live .camera-dot {
     background: var(--emerald);
     box-shadow: 0 0 6px rgba(16, 185, 129, 0.7);
 }
@@ -995,7 +1048,8 @@ input#linear-speed {
     color: var(--ink);
 }
 
-.lens-btn.active {
+.lens-btn.active,
+.lens-btn.is-on {
     background: var(--primary);
     border-color: var(--primary);
     color: #ffffff;
@@ -1327,36 +1381,22 @@ input#linear-speed {
     justify-content: center;
 }
 
-/* Graph mode: three equal buttons, the live mode lit. */
-.mg-mode-btns {
-    display: flex;
-    gap: 6px;
-}
-
-.mg-mode-btn {
-    width: 90px;
-    height: var(--control-height);
-    padding: 0;
-    border: 1px solid var(--border-strong);
-    border-radius: var(--control-radius);
-    background: var(--surface-soft);
-    color: var(--ink-muted);
-    font: inherit;
+/* Enforcement readout (read-only; lowering is administrator-only).
+   STRICT reads as the safe normal, anything lower as a warning. */
+.mg-mode-value {
     font-size: var(--control-font-size);
-    font-weight: var(--control-font-weight);
-    cursor: pointer;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--ink-muted);
 }
 
-.mg-mode-btn:hover {
-    color: var(--ink);
-    border-color: var(--primary-active);
-}
+.mg-mode-value[data-mode="strict"] { color: #15803d; }      /* green-700 */
+.mg-mode-value[data-mode="advisory"],
+.mg-mode-value[data-mode="off"]    { color: #b45309; }      /* amber-700 */
 
-.mg-mode-btn.active {
-    background: var(--primary);
-    border-color: var(--primary);
-    color: #ffffff;
-}
+:root.dark .mg-mode-value[data-mode="strict"] { color: #4ade80; }   /* green-400 */
+:root.dark .mg-mode-value[data-mode="advisory"],
+:root.dark .mg-mode-value[data-mode="off"]    { color: #fbbf24; }   /* amber-400 */
 
 .drive-move-head {
     margin-bottom: 10px;
@@ -1528,7 +1568,7 @@ input#linear-speed {
 /* Form typography: sentence-case labels ("Connect to"), compact
    `text-xs` controls. */
 .connection-inline .form-group label {
-    flex: 0 0 132px;
+    flex: 0 0 96px;
     margin-bottom: 0;
     white-space: nowrap;
     font-size: 12px;
@@ -2055,6 +2095,34 @@ input#linear-speed {
     min-width: 72px;
 }
 
+/* Current Node as a tile: the one fact every graph action starts from,
+   so it gets its own box rather than a row among the controls. */
+.mg-node-tile {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-bottom: 10px;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-soft);
+}
+
+.mg-node-tile__label {
+    color: var(--ink-subtle);
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.mg-node-tile__value {
+    color: var(--ink);
+    font-size: 1.35rem;
+    font-weight: 700;
+    overflow-wrap: anywhere;
+}
+
 .mg-reachable {
     display: flex;
     flex-wrap: wrap;
@@ -2513,35 +2581,6 @@ input#linear-speed {
 :root.dark .camera-stage,
 :root.dark .camera-video { background: #020617; }     /* slate-950 */
 
-/* ── Simulator 3D view (UFACTORY Studio iframe, cropped) ───────────────
-   Cross-origin, so Studio's DOM is untouchable — isolation is a visual
-   crop: the iframe is pinned to a FIXED 1300x900 viewport (Studio lays
-   itself out in vw units, so a fixed viewport makes the geometry
-   deterministic), and the wrapper clips to the arm panel's rectangle,
-   then scales for display. Offsets measured on Studio v2.4.0 at
-   1300x900; if a Studio update moves the panel, retune the four
-   geometry vars below. */
-/* Compact preview in the title tile's right-hand slot — bare, no card
-   chrome (it sits inside the tile that already has a border). */
-#sim-3d-card {
-    order: 1;                 /* right of the title block (DOM order first) */
-    flex: 0 0 200px;
-    width: 200px;
-    /* Height follows content (label + 250px preview + link row); a fixed
-       height clipped the links into the action row below. */
-    padding: 0;
-    border: 0;
-    border-radius: 0;
-    background: none;
-    box-shadow: none;
-    box-sizing: border-box;
-}
-
-#sim-3d-card h2 {
-    margin-bottom: 8px;
-    font-size: 0.9rem;
-}
-
 /* Link row (Motion Graph + Open Studio), one line under the
    Safety level control in the title tile. */
 .preview-links {
@@ -2563,42 +2602,6 @@ input#linear-speed {
 .studio-link:hover {
     text-decoration: underline;
 }
-
-/* The frame window itself carries no border either. */
-#sim-3d-card .sim-3d-crop {
-    /* Window = a square slice of Studio's .arm3d model canvas, centred on
-       the arm. Measured on Studio v2.4.0 / 2.6.0 at the fixed 1300x900
-       viewport: the canvas region runs x 910-1240, y 85-505 — STOP sits
-       above it and the Real/Sim toggle below (y~515), so neither is in
-       frame. 330 source * 0.758 = 250px displayed. */
-    --sim3d-x: 910px;      /* crop origin inside the Studio viewport */
-    --sim3d-y: 130px;      /* square slice centred on the arm */
-    --sim3d-w: 330px;
-    --sim3d-h: 330px;
-    --sim3d-scale: 0.606;  /* 330 * 0.606 = 200px square */
-    position: relative;
-    overflow: hidden;
-    width: calc(var(--sim3d-w) * var(--sim3d-scale));
-    height: calc(var(--sim3d-h) * var(--sim3d-scale));
-    max-width: 100%;
-    margin: 0 auto;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: #17191d;   /* Studio's dark surface, avoids a load flash */
-}
-
-.sim-3d-frame {
-    position: absolute;
-    top: 0;
-    left: 0;
-    width: 1300px;         /* fixed Studio viewport — do not make fluid */
-    height: 900px;
-    border: 0;
-    transform: scale(var(--sim3d-scale))
-        translate(calc(-1 * var(--sim3d-x)), calc(-1 * var(--sim3d-y)));
-    transform-origin: top left;
-}
-
 
 /* ── Top banner stack (auth bar + simulation banner) ───────────────────
    One sticky wrapper so the auth bar and the sim banner pin together
@@ -2759,3 +2762,77 @@ input#linear-speed {
 :root.dark .mg-sash--bad      { color: #f87171; }   /* red-400 */
 :root.dark .mg-sash--warn     { color: #fbbf24; }   /* amber-400 */
 :root.dark .mg-sash--override { color: #60a5fa; }   /* blue-400 */
+
+/* Stereo Camera card (RealSense). Reuses the Lab Camera side column,
+   stage and overlay rules; these cover the camera toggle, the
+   click-to-measure marker and readout. */
+.realsense-btn {
+    width: 100%;
+}
+
+.realsense-kinds {
+    display: flex;
+    gap: 4px;
+}
+
+.realsense-kinds .lens-btn {
+    flex: 1 1 0;
+}
+
+/* Camera toggle: stacked full-width, one button per camera in
+   realsense.yaml ("RS D405", "RS 435i"). */
+.realsense-cams {
+    flex-direction: column;
+}
+
+.realsense-cams .lens-btn {
+    flex: 0 0 auto;
+    width: 100%;
+    white-space: nowrap;
+}
+
+/* Status sits in the title row above the feed, between the title and
+   the fold caret. */
+.realsense-card .camera-head .camera-status {
+    flex: 1 1 auto;
+    text-align: right;
+}
+
+.realsense-hint {
+    font-size: 0.7rem;
+    line-height: 1.3;
+    text-align: center;
+}
+
+.realsense-img {
+    cursor: crosshair;
+}
+
+.realsense-marker {
+    position: absolute;
+    width: 12px;
+    height: 12px;
+    margin: -6px 0 0 -6px;
+    border: 2px solid var(--emerald);
+    border-radius: 50%;
+    box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.8);
+    pointer-events: none;
+}
+
+.realsense-readout {
+    position: absolute;
+    left: 8px;
+    bottom: 6px;
+    padding: 2px 6px;
+    border-radius: 6px;
+    background: rgba(15, 23, 42, 0.7);
+    color: #e2e8f0;                  /* slate-200 */
+    font-size: 0.72rem;
+    font-variant-numeric: tabular-nums;
+    pointer-events: none;
+}
+
+.realsense-readout:empty {
+    display: none;
+}
+

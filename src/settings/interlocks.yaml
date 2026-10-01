@@ -18,7 +18,23 @@
 
 # Master switch. When false (or this file is missing) every interlock below is
 # an inert no-op and the arm behaves exactly as it did before they existed.
-enabled: true
+#
+# DISABLED 2026-09-21, deliberately, and this is a real reduction in safety:
+# with it false the arm will drive into the hood against a closed sash and
+# nothing here will stop it, on entry or mid-move. It is off because the
+# guard's own open question (below: is `metrics.sash_position` a readback or
+# the last commanded preset?) is still unanswered, so what it enforced was
+# never known to be a collision guard, while it did reliably refuse bench
+# work. The replacement is an explicit xyz safe/danger volume owned by this
+# device, which needs no second device to be up and no assumption about
+# another firmware's fields.
+#
+# Until that lands, the sash is an OPERATOR responsibility. Re-enable by
+# setting this true and restoring `tags: [hood, ...]` on the hood_* nodes in
+# motion_graph.yaml (see the note there) — `gated_rails: [Hood]` below still
+# catches all of them meanwhile, so a half-restore over-blocks rather than
+# silently under-blocks.
+enabled: false
 
 fume_hood_sash:
   # The fume hood device, per ac-organic-lab/equipment.yaml (`fume_hood_actuator`).
@@ -96,6 +112,50 @@ fume_hood_sash:
   # rename, say). Failing closed keeps that from silently disabling the guard
   # forever, indistinguishably from the Pi being down.
   malformed_fails_closed: true
+
+  # --- Geometric danger volume (DEFINED 2026-09-21, NOT ENFORCED) --------
+  # The replacement for the node-membership clauses below, and the reason the
+  # interlock is currently `enabled: false`.
+  #
+  # Membership by graph node could never gate a freehand move: a raw cartesian
+  # or joint move carries no node id, so `interlock_freehand_guard` could only
+  # refuse an arm ALREADY inside the region, never one heading in. A volume is
+  # testable against a TARGET, which is what makes entry gating possible at
+  # all. It also needs no second device's tags to be correct and no assumption
+  # about another firmware's fields.
+  #
+  # Measured at the bench 2026-09-21: the hood begins at base-frame
+  # x = +200 mm. Anything with x greater than this is inside, and requires the
+  # sash at `required_position` (5, fully open) to be entered or moved within.
+  # Half-space, not a box: y and z are unbounded because the hood spans the
+  # full reach in both and a bound there would be invented, not measured.
+  #
+  # `enforce: false` means exactly that -- NOTHING reads this, for gating or
+  # for reporting. It is recorded here so the measured threshold is reviewable
+  # and version-controlled before any code depends on it.
+  #
+  # NOTE this is therefore currently dead config, the same shape of thing as
+  # `collision_zones` in safety.yaml -- which has looked like a guard since it
+  # was written and is read by nothing. Validating the 200 mm figure needs a
+  # shadow read-out (is the TCP inside right now?) that does not exist yet;
+  # without one, the number can only be confirmed by jogging and reading
+  # `details.current_position` by hand.
+  #
+  # Before flipping enforce to true, settle these:
+  #   1. Does 200 mm hold for the whole hood mouth, or only where it was
+  #      measured? A single jog found it; a sweep across y would confirm it.
+  #   2. Does the TCP position alone suffice, or does an elbow/link intrude
+  #      past x=200 while the TCP is still short of it? The controller checks
+  #      the TCP; the arm is not a point.
+  #   3. Is `metrics.sash_position` on the hood Pi a real readback or the last
+  #      commanded preset? Unanswered since this interlock shipped, and the
+  #      reason it was disabled. A volume does not fix that -- whatever gates
+  #      on the sash still trusts that field.
+  danger_volume:
+    enforce: false
+    frame: base
+    x_min: 200          # mm; TCP x greater than this is inside the hood
+    required_position: 5
 
   # --- What is gated ------------------------------------------------------
   # Membership is (gated_tags OR gated_rails OR gated_nodes) minus exempt_nodes.

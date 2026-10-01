@@ -58,8 +58,9 @@ def demo_safety_monitoring(controller):
             print("🚨 Safety violation detected!")
         
         # Display current readings
-        data = controller.get_force_torque_data()
-        if data:
+        sample = controller.get_force_torque_data()
+        if sample:
+            data = sample['wrench']
             print(f"📈 Current readings: F[{data[0]:6.2f}, {data[1]:6.2f}, {data[2]:6.2f}] "
                   f"T[{data[3]:6.2f}, {data[4]:6.2f}, {data[5]:6.2f}]")
         
@@ -166,23 +167,22 @@ def demo_force_torque_data_analysis(controller):
     start_time = time.time()
     while time.time() - start_time < 20:
         # Get comprehensive data
-        data = controller.get_force_torque_data()
-        magnitude = controller.get_force_torque_magnitude()
-        direction = controller.get_force_torque_direction()
-        
-        if data and magnitude and direction:
+        sample = controller.get_force_torque_data()
+
+        if sample:
+            data = sample['wrench']
             print(f"\n📊 Force: [{data[0]:6.2f}, {data[1]:6.2f}, {data[2]:6.2f}] N "
-                  f"(mag: {magnitude['force_magnitude']:6.2f} N)")
+                  f"(mag: {sample['force_magnitude']:6.2f} N)")
             print(f"📊 Torque: [{data[3]:6.2f}, {data[4]:6.2f}, {data[5]:6.2f}] Nm "
-                  f"(mag: {magnitude['torque_magnitude']:6.2f} Nm)")
+                  f"(mag: {sample['torque_magnitude']:6.2f} Nm)")
             
-            if direction['force_direction']:
-                print(f"🧭 Force direction: [{direction['force_direction'][0]:.2f}, "
-                      f"{direction['force_direction'][1]:.2f}, {direction['force_direction'][2]:.2f}]")
+            if sample['force_direction']:
+                print(f"🧭 Force direction: [{sample['force_direction'][0]:.2f}, "
+                      f"{sample['force_direction'][1]:.2f}, {sample['force_direction'][2]:.2f}]")
             
-            if direction['torque_direction']:
-                print(f"🧭 Torque direction: [{direction['torque_direction'][0]:.2f}, "
-                      f"{direction['torque_direction'][1]:.2f}, {direction['torque_direction'][2]:.2f}]")
+            if sample['torque_direction']:
+                print(f"🧭 Torque direction: [{sample['torque_direction'][0]:.2f}, "
+                      f"{sample['torque_direction'][1]:.2f}, {sample['torque_direction'][2]:.2f}]")
         
         time.sleep(2)
     

@@ -300,12 +300,23 @@ def test_plate_linear_to_a_non_gated_pose_is_accepted_while_closed(closed_client
 
 # ── Freehand coverage ────────────────────────────────────────────────
 
+# The five ARM-MOVING freehand routes (the gripper pair moves no arm in space,
+# so interlock_freehand_guard does not cover them). Each is listed at both its
+# canonical /control/freehand/* spelling and its legacy path: the sash guard
+# runs in every graph mode, so an alias that skipped it would reopen the hole
+# this suite exists to close.
 FREEHAND_CALLS = [
-    ("/move/position", {"x": 100, "y": 0, "z": 200}),
-    ("/move/joints", {"angles": [0, 0, 0, 0, 0]}),
-    ("/move/relative", {"dx": 5}),
-    ("/velocity/cartesian", {"vx": 5}),
-    ("/track/move", {"position": 100}),
+    (path, body)
+    for canonical, legacy, body in [
+        ("/control/freehand/position", "/move/position",
+         {"x": 100, "y": 0, "z": 200}),
+        ("/control/freehand/joints", "/move/joints",
+         {"angles": [0, 0, 0, 0, 0]}),
+        ("/control/freehand/relative", "/move/relative", {"dx": 5}),
+        ("/control/freehand/velocity", "/velocity/cartesian", {"vx": 5}),
+        ("/control/freehand/track", "/track/move", {"position": 100}),
+    ]
+    for path in (canonical, legacy)
 ]
 
 

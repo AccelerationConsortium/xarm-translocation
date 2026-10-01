@@ -7,6 +7,254 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — lowering motion-graph enforcement is now bounded and self-reverting (2026-09-21)
+
+`POST /control/graph/mode` set process-wide state with no expiry. Lowering to
+ADVISORY to do Cartesian work relaxed the motion whitelist for every client of
+the arm until somebody remembered to put it back — and a forgotten switch was
+inherited by the next client, workflow or agent with no trace. That is Step 1
+of `src/docs/FREEHAND_CARTESIAN_PLAN.md`, now shipped.
+
+- **A reason is required to lower**, and only to lower: raising to STRICT
+  stays free. 422 `reason_required` without one, with the retry shape in the
+  hint. The reason is logged at WARNING and written to the history DB.
+- **The lowering runs on a clamped window** — `ttl_seconds`, defaulting to
+  `mode_override_default_seconds: 300` and capped at
+  `mode_override_max_seconds: 900` (both new in `motion_graph.yaml`; the
+  server clamps rather than erroring). The response carries
+  `granted_seconds`, `expires_at` and `reverts_to`. Re-issuing while lowered
+  grants a fresh full window, so an expiry cannot strand a half-finished
+  survey.
+- **It reverts on its own** under any of: the window lapsing; the session that
+  lowered it releasing *or* silently losing its claim; `/disconnect`; an
+  explicit STRICT. `XArmController.graph_mode` became a property whose getter
+  runs that check, so every guard, every move path and every status poll
+  inherits the expiry — there is no code path that can observe a lapsed
+  window as still in force, and no timer thread. The claim trigger is skipped
+  when no claim was held at grant time, or a deployment with claims
+  unenforced would revert on the first read.
+- **New:** `POST /control/graph/mode/restore` — "put the guard back" as a
+  distinct intent from "set the mode to this value", mirroring the sash
+  interlock's `override/clear`, so a one-button control needs no knowledge of
+  which value to send.
+- **Surfaces.** `message` takes a `[GRAPH-ADVISORY]` / `[GRAPH-OFF]` prefix
+  while a window is open (keyed on the window, not the mode: a deployment
+  with no graph sits at OFF permanently and prefixing every poll there would
+  be noise). `details.motion_graph.mode_override` carries the countdown,
+  reason, owner and `restores_to`. Both clear themselves. Each grant and
+  revert emits `graph_mode_override` / `graph_mode_restored`, the revert
+  tagged with its trigger. The `/web/` panel prompts for the reason and shows
+  the countdown with a "Restore strict now" button.
+- `OFF` stays reachable and ungated (plan decision D-2): raw `/track/move`
+  and genuinely unguarded work need it, and gating it would only push people
+  toward `enabled: false`, which disables far more and says nothing. It is
+  logged more loudly and carries the same window.
+
+### Changed — the fume hood sash interlock is disabled, and the `hood` tag is gone (2026-09-21)
+
+**This is a real reduction in safety and is intended as a temporary state.**
+With `enabled: false` in `src/settings/interlocks.yaml` the arm will drive
+into the hood against a closed sash and nothing in this repo will stop it, on
+entry or mid-move. The sash is an operator responsibility until the
+replacement lands.
+
+The reason is the open question the interlock shipped with and never had
+answered: whether the fume hood device's `metrics.sash_position` is a true
+readback or the last *commanded* preset. Unanswered, what the guard enforced
+was not known to be a collision guard — while it did reliably refuse bench
+work, and refusing the wrong thing is how a guard teaches people to reach for
+`mode: off`. The replacement is an explicit xyz safe/danger volume owned by
+this device, which needs no second device to be reachable and no assumption
+about another firmware's field semantics.
+
+- The `hood` tag was removed from the seven `hood_*` motion-graph nodes. It
+  was the interlock's primary membership clause (`gated_tags`) and a tag whose
+  only consumer is switched off is a tag that silently means nothing.
+- **`hood` was quietly a second consumer's station tag.** `assistant_actions`
+  grouped all seven nodes into places through it, so removing it would have
+  dropped the shaker and the filtration setup out of the assistant's catalog
+  entirely — "I don't know that place" for two stations that are still there.
+  `_STATION_TAGS` now carries `shaker` and `filter` instead, which is the
+  right grain anyway (they are separately reachable, and
+  `camera_tracking.yaml` already aimed on them rather than on `hood`). New
+  `test/test_place_catalog.py` pins this so the next tag edit fails a test
+  rather than an operator. The one place lost is `hood` itself, built solely
+  from `hood_home` — a transit gateway, not a destination; paths still route
+  through it.
+- Re-enabling means restoring **both** the master switch and `tags: [hood, …]`
+  on the nodes. `gated_rails: [Hood]` still covers all seven on its own, so a
+  half-restore over-blocks rather than silently under-blocking. Both files
+  carry the note.
+
+### Documented — why both RealSense streams stay at 1280x720 (2026-09-20)
+
+Stream ceilings were enumerated from the hardware rather than assumed:
+colour reaches 1920x1080 @ 30, depth reaches 1280x720 @ 30 and is
+ASIC-upsampled above 848x480. Colour at 1920x1080 was tried and reverted.
+With `align_depth_to_color` on, the depth map is resampled to the colour
+resolution, so the higher colour profile roughly doubles the bytes per
+capture to carry interpolated depth pixels and no extra measurement, and it
+breaks the pixel-for-pixel correspondence `/realsense/<id>/depth?x=&y=`
+relies on. Configuration unchanged; the reasoning is now in
+`settings/realsense.yaml`, the agent guide and the API reference so it is
+not rediscovered by experiment.
+
+### Changed — RealSense cameras are addressed by id (2026-09-20)
+
+The camera layer was a process-wide singleton: one camera, one set of
+`/realsense/*` routes, one `components.realsense_camera`. It now holds a
+registry of cameras keyed by a **device-local id**, and the first camera is
+`rs435i`. This is a breaking change to every `/realsense/*` path; there is one
+deployment and it is updated with this commit, so no compatibility shim was
+added — a permanent alias for a one-off migration is a cost that never ends.
+
+- **Config.** `realsense.yaml` grows a `cameras:` list. Each entry carries an
+  `id` matching `^[a-z0-9][a-z0-9_-]{0,31}$` (it lands in URLs and in capture
+  paths, so it is validated at load time rather than sanitised at every use)
+  and a `serial`, which is **required** once more than one camera is
+  configured: "the first device librealsense enumerates" is not stable across
+  reboots. A malformed, duplicate or serial-less entry is logged and skipped;
+  nothing here can stop the service from booting.
+- **Routes.** `GET /realsense/cameras` is the discovery endpoint — it never
+  404s and returns an empty list plus a `reason` when nothing is configured —
+  and everything else nests under the id: `/realsense/{camera_id}/status`,
+  `…/snapshot.jpg`, `…/depth.png`, `…/stream.mjpg`, `…/depth`, `…/intrinsics`,
+  `…/captures`, `POST /control/realsense/{camera_id}/capture`,
+  `DELETE /control/realsense/{camera_id}/captures/{capture_id}`. Gating is
+  unchanged. An unknown id answers **404** `camera_not_found` listing the ids
+  that do exist, which is a different fact from **404**
+  `realsense_not_configured`.
+- **The skill-facing alias stays a fixed path.** `POST
+  /control/realsense/capture` now takes an optional `camera` in the body. A
+  SkillDef carries one fixed `endpoint` string that `lab_skills.plan.execute_plan`
+  and the dashboard passthrough send verbatim — there is no path templating in
+  that chain, so an agent plan cannot express a camera id as a path segment.
+  Omitted `camera` resolves to the sole camera; with two or more it is
+  **400** `camera_required` rather than a guess that files evidence under the
+  wrong lens. The alias only resolves a name and delegates to the nested route.
+- **Capture store.** Layout becomes
+  `<root>/<camera_id>/<YYYY-MM-DD>/<capture_id>/` and `meta.json` records
+  `camera_id`; `_scan` derives it from the directory, so the two captures
+  written before this change describe themselves correctly once moved under
+  `rs435i/`. Retention stays **one** budget across all cameras, oldest first
+  regardless of camera — the bound that matters is the disk's, not any one
+  lens's. `tools/replicate_captures.py` walks and lands the same three levels.
+- **Status.** One `components.realsense_<camera_id>` per camera (they fail
+  independently, and a merged entry would hide the working one), and
+  `details.realsense` becomes `{default, cameras: {id: block}, captures}`.
+  `realsense.capture` is advertised when *any* configured camera qualifies.
+
+### Changed — RealSense streams to 1280×720 (2026-09-19)
+
+Both stream profiles in `src/settings/realsense.yaml` move from 640×480 @ 30
+to **1280×720 @ 30**. Resolution was the request; frame rate was allowed to
+fall to 15 or 6 if the link refused, and it did not need to: librealsense
+accepted 1280×720 @ 30 for depth + colour on the first attempt on this
+machine's USB 3.2 link (D435i serial 050422071813, firmware 5.11.1.100), no
+warnings, `fps_measured` 30.0–31.4 over 76 frames.
+
+- **Depth is upsampled, not sharper.** The D435i depth module's native
+  best-accuracy mode is 848×480; 1280×720 depth is produced by the ASIC and
+  adds pixels, not information. It is requested so the aligned `depth.png`
+  matches the colour frame pixel for pixel. Bench fill on the current scene
+  was **70.1 % valid pixels** (min 69.8 %, max 70.4 % over 10 frames), range
+  0.30–19.2 m, median 0.38 m — the gripper's own view of the bench.
+- **Per-capture size ~253 KB** measured through the real `CaptureStore`
+  (colour JPEG 111.9 KB at quality 80 + 16-bit depth PNG 145.1 KB + meta):
+  about **4.6×** the 55 KB the 640×480 profile wrote, not the ~3× a pixel
+  count would predict, because the PNG grows with depth texture. Retention
+  bounds (`keep_days: 30`, `keep_max_gb: 20`) are unchanged; at this size
+  20 GB is ~80k captures, so `keep_max_gb` binds before `keep_days` only
+  above ~2,600 captures a day.
+- Comments and docs that stated the old resolution or the "~0.5 MB per
+  capture" figure as current fact were updated (`realsense.yaml`,
+  `realsense_captures.py`, `docs/agent/API_REFERENCE.md`,
+  `docs/REALSENSE_API_PLAN.md`). Earlier CHANGELOG entries are left as
+  written: they record what was verified at the time.
+
+### Added — Intel RealSense depth camera (`/realsense/*`)
+
+The service can now own an Intel RealSense depth camera (D435i and any other
+librealsense model) plugged into the device PC over USB 3. New module
+`src/core/realsense_camera.py`, new config `src/settings/realsense.yaml`,
+new optional extra `realsense` (`uv sync --extra realsense` →
+`pyrealsense2`, `numpy`, `Pillow`), a **Depth Camera** panel card
+(`src/web/realsense-card.js`), 93 new tests, and a reference doc at
+`src/docs/REALSENSE_CAMERA.md`.
+
+- **A second, unrelated camera.** The existing "Lab Camera" is a network
+  PTZ camera driven through the dashboard; this one is local USB hardware
+  the service talks to directly. It supplies what the PTZ cannot: **metric
+  depth per pixel** in a known camera frame — the primitive an arrival
+  check, a plate locator, or a hood obstacle check will build on. This
+  release deliberately ships only the foundation: capture, health, images,
+  and pixel → metres. No motion decision consults it yet.
+- **Endpoints.** `GET /realsense/status` (enumeration + pipeline state, open,
+  answers before `/connect` and reports `installed: false` instead of
+  404ing when the extra is missing); `POST /realsense/{start,stop}`;
+  `GET /realsense/snapshot.jpg?stream=color|depth`; `GET /realsense/depth.png`
+  (raw 16-bit, `X-Depth-Scale-M` header); `GET /realsense/stream.mjpg` (MJPEG
+  for an `<img>`, paced server-side); `GET /realsense/depth?x=&y=&window=5`
+  (median-filtered distance + pinhole-deprojected `[X, Y, Z]`);
+  `GET /realsense/intrinsics`. Failure bodies are
+  `{"detail": {"error", "reason"}}` with `realsense_not_configured` 404,
+  `realsense_unavailable` 503, `realsense_not_streaming` 409,
+  `realsense_error` 502.
+- **Gating.** Reads that cannot switch the camera on are open like
+  `GET /status`; anything that starts the pipeline or ships video is
+  login-gated, matching the authenticated viewing sessions the PTZ preview
+  moved to. Nothing is claim-gated — looking is not arm actuation. The
+  numeric `/realsense/depth` read is *not* allowed to start the pipeline
+  (409 when stopped) precisely so an open read cannot turn the camera on.
+- **`/status`.** `components.realsense_camera` (`connected`, `state` ∈
+  `streaming | idle | disconnected | driver_missing | error`, one-line
+  `message`) and its machine-readable twin `details.realsense`. Both are
+  **absent** when `enabled: false`, so unmigrated deployments see an
+  unchanged envelope, and both are present on the pre-`/connect`
+  `requires_init` envelope too — the camera does not wait for the arm. **The camera never changes `equipment_status`**: arm
+  motion does not depend on it, so an unplugged camera is a component fact,
+  not a `degraded` arm — the same §2.2 reasoning as the sash interlock
+  being blind. A feature that later makes a move depend on a reading owns
+  that gate (412 + `allowed_actions` mirroring), not this layer.
+- **Optional at every layer, by construction.** Missing extra,
+  `enabled: false`, and no camera on the bus each yield a camera object
+  whose `describe()` carries a `reason`; nothing raises into the control
+  path and the service always boots. `pyrealsense2` is imported lazily and
+  the backend is injectable (`rs_module` / `np_module`), so the whole
+  lifecycle — enumeration, start/stop, the capture thread, encoding, depth
+  lookup, camera-lost recovery, idle timeout — is unit-tested against a
+  fake `pyrealsense2` with no hardware.
+- **Process-wide, not per-connection.** The camera outlives `/connect` /
+  `/disconnect` (operators want the bench view before the arm is up), so
+  it is a shared instance the API server configures at import and
+  `status_builder` reads through `realsense_camera.shared_camera()` — the
+  two surfaces cannot disagree. Lifespan handles `autostart` and shutdown.
+- **A daemon capture thread owns the pipeline.** `wait_for_frames` blocks,
+  so handlers only read the latest frame bundle under a lock; the MJPEG
+  generator waits on a condition variable rather than polling. Five
+  consecutive frame failures (`max_consecutive_frame_failures`) mark the
+  camera lost and release it; `idle_timeout_seconds` (default 120) stops it
+  when nobody is watching. USB 2 links are surfaced as a `warning`.
+- **No OpenCV.** Pillow encodes JPEG/PNG and librealsense's own colorizer
+  renders the depth map, keeping the extra to three wheels.
+
+**Operational notes.**
+
+- `pyrealsense2` 2.58.4 installs and imports on the service venv's
+  Python 3.14. Syncing the extra while the `xarm` service runs hits the
+  DEVICE_PC_SETUP "own-service `.exe` lock" — use
+  `uv sync --inexact --no-install-project --extra realsense` (the project is
+  editable; nothing about it needed reinstalling) or stop the service
+  first, and verify the three packages landed.
+- The legacy `:6001` proxy (`src/web/server.py`) buffers whole response
+  bodies, so `/realsense/stream.mjpg` never renders through it; snapshots
+  do. Use the panel on the API port (`:8000/web/`). `/realsense` was added
+  to its proxied prefixes anyway so JSON and snapshots work.
+- The bench PC's D435i was **not enumerating** at the time of writing (no
+  Intel VID on the USB bus — cable/port, not driver). The layer reports
+  exactly that (`state: disconnected`, `reason: no RealSense device
+  connected`); nothing here has been exercised against live frames yet.
+
 ### Added — fume hood sash interlock
 
 Refuses arm motion into the fume hood / Opentrons region unless the **separate**
