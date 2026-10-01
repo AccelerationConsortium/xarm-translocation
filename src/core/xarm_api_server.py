@@ -240,20 +240,20 @@ class TrackLocationRequest(BaseModel):
 
 class GripperRequest(BaseModel):
     """Request model for gripper operations."""
-    speed: Optional[float] = Field(default=None, description="Gripper speed (1-5000)")
-    force: Optional[float] = Field(default=None, description="Gripper force, when supported")
-    wait: bool = Field(default=True, description="Wait for operation to complete.")
+    speed: Optional[float] = Field(default=None, description="BioGripper Gen2 motor-speed setting (SDK units, not mm/s); default 1000, effective SDK range 500-4000. Ignored in STRICT graph mode.")
+    force: Optional[float] = Field(default=None, description="BioGripper Gen2 force setting, 1-100 percent, not N or measured contact force; default 50. Ignored in STRICT graph mode.")
+    wait: bool = Field(default=True, description="Wait for SDK jaw-motion completion (stopped or object detected); does not verify a grasp. Ignored in STRICT graph mode.")
 
 class GripperStrokeRequest(BaseModel):
     """Request model for gripper stroke/position control."""
-    stroke: float = Field(description="Target gripper stroke/position")
-    speed: Optional[float] = Field(default=None, description="Gripper movement speed")
-    force: Optional[float] = Field(default=None, description="Gripper force, when supported")
-    wait: bool = Field(default=True, description="Wait for operation to complete.")
+    stroke: float = Field(description="Absolute BioGripper Gen2 jaw opening in mm: 71 closed to 150 open. Raw stroke does not verify a grasp.")
+    speed: Optional[float] = Field(default=None, description="BioGripper Gen2 motor-speed setting (SDK units, not mm/s); default 1000, effective SDK range 500-4000.")
+    force: Optional[float] = Field(default=None, description="BioGripper Gen2 force setting, 1-100 percent, not N or measured contact force; default 50.")
+    wait: bool = Field(default=True, description="Wait for SDK jaw-motion completion (stopped or object detected), up to configured 5 s timeout; does not verify target position or grasp.")
 
 class GripperForceRequest(BaseModel):
     """Request model for setting gripper force."""
-    force: float = Field(description="Target gripper force")
+    force: float = Field(description="BioGripper Gen2 force setting, 1-100 percent, not N or measured contact force. Changes setting only; does not close jaws.")
 
 class VelocityRequest(BaseModel):
     """Request model for Cartesian velocity control."""

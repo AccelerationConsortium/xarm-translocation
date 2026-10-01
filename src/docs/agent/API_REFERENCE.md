@@ -10,6 +10,21 @@ OpenAPI is authoritative for request and response schemas. Transport
 documentation does not authorize hardware execution; see the agent guide for
 the binding lab contract and SDK boundary.
 
+## Units used by this device
+
+| Quantity | Unit / meaning |
+|---|---|
+| Arm TCP position, Cartesian displacement, rail position | millimetres (mm) |
+| Joint and TCP orientation angles | degrees (°) |
+| Cartesian speed; joint speed | mm/s; °/s, respectively |
+| BioGripper Gen2 `stroke` and position readback | jaw opening in mm; 71 is closed, 150 is open |
+| BioGripper Gen2 `force` | vendor setting from 1 to 100 **percent**; not newtons (N), not a measured contact force |
+| BioGripper Gen2 `speed` | vendor motor-speed setting, not jaw speed in mm/s; the installed SDK clamps it to 500–4000 and this service defaults to 1000 |
+| Wrist force/torque sensor | newtons (N) and newton-metres (N·m); separate from gripper `force` |
+
+The `force` on `/control/graph/recover_to` is a Boolean override, not a force
+measurement. See the gripper section below for how a stroke command stops.
+
 ## Status and discovery
 
 | Method | Path | Gate | Returns |
@@ -155,6 +170,58 @@ guards can return 412; invalid claims return 423. Existing workspace and
 collision checks still apply. A successful HTTP response means accepted,
 not completed: poll status for completion/errors. Raw moves clear the node
 pin; recover to a verified node before resuming graph motion.
+
+## BioGripper Gen2: raw stroke and force
+
+The installed gripper is a BioGripper Gen2. A stroke command supplies an
+absolute **jaw opening in mm**, a vendor **force percentage setting**, and
+optionally a vendor speed setting. `force: 50` means 50 on the gripper's
+1–100 percentage scale; it does **not** mean 50 N, and the API does not
+measure whether 50% of any physical force was achieved. The configured
+defaults are `force: 50` and `speed: 1000`. UFACTORY documents this as
+position mode with position, speed, and force control; its status has separate
+stopped, moving, object-detected, and fault states.
+
+| Method | Path | Gate | Input / result |
+|---|---|---|---|
+| POST | `/control/freehand/gripper/stroke` | claim; graph OFF or ADVISORY | `{"stroke":120,"force":50,"wait":true}`; alias: `/gripper/move/stroke` |
+| POST | `/control/freehand/gripper/force` | claim; graph OFF or ADVISORY | `{"force":50}`; changes the force setting only, **does not close the jaws**; alias: `/gripper/force` |
+| POST | `/gripper/open`, `/gripper/close` | claim | Optional `speed`, `force`, `wait`; in STRICT these route through graph states and ignore all three supplied fields |
+| GET | `/gripper/position` | open | `{"position":120}`: live jaw opening in **mm**, or 404 if unavailable |
+
+The path is `/gripper/move/stroke`, **not** `/gripper/stroke`. For the Gen2,
+`stroke` must be within 71–150 mm; larger numbers are more open. The service
+converts the requested stroke, speed, and force to integer SDK values. The
+installed SDK clamps speed to 500–4000 and force to 1–100; stay within those
+ranges rather than relying on clamping. `wait` defaults to `true`; the
+configured SDK wait timeout is 5 seconds. A 200 response to raw stroke means
+the SDK reported the jaw move complete. It does **not** verify that a plate
+was gripped. A completion can mean the jaws reached the target or stopped
+early after object detection. A timeout, fault, or failed SDK call returns
+an error; reconcile the physical result before another command. With
+`wait:false`, the call can return before jaw motion finishes; agents should
+use `wait:true` and still inspect the outcome.
+
+After a close, read the **live** `/gripper/position` and compare it with the
+commanded opening. An opening above the closing target may mean something
+blocked the jaws; reaching the target may mean they closed on empty space.
+Neither result identifies the object or measures grip force. `GET /status`
+reports `details.gripper.motion_state`, `object_detected`, `position_mm`, and
+error data **cached after the last successful jaw move**; it is not a live
+holding-force monitor. The gripper may remain clamped after travel stops, but
+the API does not confirm sustained holding force or rule out a later slip.
+Inspect the plate before lifting. Gripper force is unrelated to the wrist
+force/torque values used for pressing.
+
+In STRICT graph mode, raw stroke and force return **409** `graph_mode_strict`;
+use `/control/graph/gripper` and an allowed catalog state instead. The
+graph route performs its own position-based intent check; that check is
+**not** performed by the raw stroke route.
+The current `lab-skills` robot-arm catalog does not expose a raw-stroke skill;
+these endpoints describe the device transport, not an agent execution grant.
+
+Vendor references: [BIO Gripper G2 position/force control](https://docs.accessories.ufactory.cc/Bio_Gripper_G2/3.control.html)
+and [status and holding-current registers](https://docs.accessories.ufactory.cc/Bio_Gripper_G2/4.modbus_rtu_control.html).
 
 ## RealSense — discovering the cameras
 

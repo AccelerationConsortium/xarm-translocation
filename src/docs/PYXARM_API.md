@@ -39,7 +39,7 @@ The API server runs on `http://127.0.0.1:6001` by default.
 - [Components](#components)
   - [Gripper](#gripper)
     - [Open / Close](#post-gripperopen)
-    - [Stroke control (Gen2)](#post-gripperstroke)
+    - [Stroke control (Gen2)](#post-grippermovestroke)
     - [Force control (Gen2)](#post-gripperforce)
     - [Position readback (Gen2)](#get-gripperposition)
   - [Linear Track](#linear-track)
@@ -305,11 +305,20 @@ These endpoints control attached components like the gripper and linear track.
 
 ### Gripper
 
-All gripper endpoints accept an optional JSON body. Omitting the body uses config defaults.
+Open and close accept an optional JSON body and use configured defaults when
+it is omitted. Stroke and force-setting requests require the JSON fields
+shown below; position readback is a GET without a body.
+The installed BioGripper Gen2 uses **mm** for jaw opening and a **1–100%
+setting** for gripping force; the latter is neither N nor measured contact
+force. Gripper force is separate from the wrist force/torque sensor. All
+write endpoints require a claim. Raw stroke and force changes require graph
+mode OFF or ADVISORY.
 
 #### `POST /gripper/open`
 
 Opens the gripper to its fully open position.
+In STRICT graph mode, this routes through a graph state and ignores supplied
+`speed`, `force`, and `wait` fields.
 
 **Request Body** (optional)
 ```json
@@ -319,9 +328,12 @@ Opens the gripper to its fully open position.
     "wait": true
 }
 ```
-*   `speed` (optional): Movement speed. BioGripper Gen2 range: 0–4000. Default: 1000.
-*   `force` (optional): Gripping force %. BioGripper Gen2 range: 1–100. Default: 50.
-*   `wait` (optional, default `true`): Wait for motion to complete before returning.
+*   `speed` (optional): BioGripper Gen2 vendor motor-speed setting, **not mm/s**.
+    Default: 1000; the installed SDK clamps to 500–4000.
+*   `force` (optional): BioGripper Gen2 force setting, **1–100%**, not N or
+    measured contact force. Default: 50.
+*   `wait` (optional, default `true`): Wait for SDK jaw-motion completion.
+    This does not verify a grasp.
 
 **Response `200 OK`**
 ```json
@@ -339,6 +351,9 @@ curl -X POST "http://127.0.0.1:6001/gripper/open" -H "Content-Type: application/
 #### `POST /gripper/close`
 
 Closes the gripper to its fully closed position.
+In STRICT graph mode, this routes through a graph state and ignores supplied
+`speed`, `force`, and `wait` fields. For a plate grip with a calibrated jaw
+opening, use the raw stroke endpoint while graph mode is OFF or ADVISORY.
 
 **Request Body** (optional) — same fields as `/gripper/open`.
 
@@ -351,11 +366,13 @@ Closes the gripper to its fully closed position.
 curl -X POST "http://127.0.0.1:6001/gripper/close"
 ```
 
-#### `POST /gripper/stroke`
+#### `POST /gripper/move/stroke`
 
-*BioGripper Gen2 / Standard / RobotIQ only.* Moves the gripper to a specific absolute stroke position.
+Alias: `POST /control/freehand/gripper/stroke`. Both require a claim and
+graph mode OFF or ADVISORY; STRICT returns 409. *BioGripper Gen2 / Standard /
+RobotIQ only.* Moves the gripper to a specific absolute stroke position.
 
-**BioGripper Gen2 position range: 71 (fully closed) – 150 (fully open).**
+**BioGripper Gen2 jaw opening: 71 mm (fully closed) – 150 mm (fully open).**
 
 **Request Body**
 ```json
@@ -366,8 +383,17 @@ curl -X POST "http://127.0.0.1:6001/gripper/close"
     "wait": true
 }
 ```
-*   `stroke` (required): Target position in SDK units.
-*   `speed`, `force`, `wait`: same as open/close.
+*   `stroke` (required): Target jaw opening in mm for BioGripper Gen2.
+*   `force` (optional): 1–100 percentage setting, not N or measured force;
+    default 50. It limits the gripper's force during the position move.
+*   `speed` (optional): vendor motor-speed setting, not mm/s; default 1000.
+    The installed SDK clamps Gen2 values to 500–4000.
+*   `wait` (optional, default `true`): Wait for the SDK to report that jaw
+    travel stopped or an object was detected, up to the configured 5 s timeout.
+
+Success means the SDK reported completion, **not** that the target opening was
+reached or that a plate is held. Read `GET /gripper/position` afterward; the
+raw stroke endpoint does not perform the graph route's grasp verification.
 
 **Response `200 OK`**
 ```json
@@ -375,14 +401,16 @@ curl -X POST "http://127.0.0.1:6001/gripper/close"
 ```
 **Example**
 ```bash
-curl -X POST "http://127.0.0.1:6001/gripper/stroke" -H "Content-Type: application/json" -d '{
+curl -X POST "http://127.0.0.1:6001/gripper/move/stroke" -H "Content-Type: application/json" -d '{
     "stroke": 110
 }'
 ```
 
 #### `POST /gripper/force`
 
-*BioGripper Gen2 only.* Sets the gripping force independently of any position command.
+*BioGripper Gen2 only.* Sets the 1–100 percentage force setting independently
+of any position command. It does not close the jaws or report achieved force.
+Requires a claim and graph mode OFF or ADVISORY; STRICT returns 409.
 
 **Request Body**
 ```json
@@ -401,7 +429,8 @@ curl -X POST "http://127.0.0.1:6001/gripper/force" -H "Content-Type: application
 
 #### `GET /gripper/position`
 
-*BioGripper Gen2 / Standard only.* Returns the current gripper stroke position without moving.
+*BioGripper Gen2 / Standard only.* Returns the current gripper stroke position
+without moving. For BioGripper Gen2, `position` is the live jaw opening in mm.
 
 **Response `200 OK`**
 ```json

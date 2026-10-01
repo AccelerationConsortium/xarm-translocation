@@ -123,6 +123,34 @@ The dashboard API Reference lists `freehand.position` (absolute TCP pose),
 Coordinates and displacements are in mm; angles are in degrees. The live
 OpenAPI document supplies the request schemas.
 
+### Raw BioGripper Gen2 stroke when the graph is OFF
+
+When an administrator has enabled graph OFF, use the claimed
+`POST /control/freehand/gripper/stroke` route (also exposed as
+`/gripper/move/stroke`) for an absolute jaw opening. For example,
+`{"stroke":120,"force":50,"wait":true}` requests 120 **mm** and a force
+**setting of 50%**, not 50 N. The gripper's range is 71 mm closed to
+150 mm open. Choose the target from a calibrated plate grip; the example
+does not establish that 120 mm is appropriate for a particular plate.
+`POST /control/freehand/gripper/force` changes only the force setting and
+does not move the jaws. The gripper force setting is separate from the wrist
+force/torque sensor used when pressing on a surface.
+
+`wait:true` waits for the SDK to report a stopped or object-detected jaw
+move, up to the configured 5-second timeout. A successful raw stroke call
+does **not** confirm a grasp or a measured force. Read the live opening from
+`GET /gripper/position` after the move. If the jaws stop before the target,
+there may be an object between them; if they reach the target, they may
+have closed on empty space. Neither observation proves the plate is held.
+The gripper status in `GET /status` is cached after the last successful jaw
+move, not a live grip-force measurement. Inspect the plate before lifting;
+after timeout or fault, reconcile the physical outcome before another move.
+The detailed [API reference](agent-docs/api-reference#biogripper-gen2-raw-stroke-and-force)
+gives the routes, units, and refusal codes.
+This is a device API route, not a `lab-skills` catalog action: the current
+robot-arm catalog has no raw-stroke skill. An agent workflow needs an approved
+SDK binding before it can use this route under the lab contract above.
+
 Freehand is available only while an administrator has turned enforcement
 OFF (`details.motion_graph.mode_override.scope == "admin"`). Agents and
 other claim holders cannot lower enforcement: `graph.mode` below `strict`
