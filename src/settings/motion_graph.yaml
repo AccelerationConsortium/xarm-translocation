@@ -225,8 +225,8 @@ nodes:
       empty, grip_120], [grip_120, empty]], tags: [filter]}
 
   # ── Cytation 5 reader (rail Cytation=700). cytation_high/cytation_low are
-  #    manually-taught, hardware-verified joint angles (edges below use
-  #    mode: joint, not linear, between them). cytation_home is still an
+  #    manually-taught, hardware-verified joint angles (the high<->low
+  #    descent is mode: linear, the approach edges mode: joint). cytation_home is still an
   #    untuned placeholder — see the TODO on it in joint_config.yaml.
 - {id: cytation_home, arm: cytation_home, rail: Cytation, gripper_states: [empty,
     grip_120, reach_90, grip_80], tags: [cytation, transit_home]}
