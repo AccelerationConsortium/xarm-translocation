@@ -7,8 +7,8 @@ positions:
 
   # The following happens when linear rail is at Home (0 mm)
   opentrons_home: [-184.42, -67.82, 8.18, 59.11, -4.33]
-  opentrons_2_high: [-182.28, 7.22, -25.61, 17.89, -2.62]
-  opentrons_2_low: [-182.21, 33.11, -31.79, -1.83, -2.93]              # Gripper close to 120mm to grip from long side
+  opentrons_2_high: [-182.91, 16.22, -27.26, 10.55, -3.39]
+  opentrons_2_low: [-182.9, 33.69, -32.46, -1.72, -3.62]            # Gripper close to 120mm to grip from long side
   opentrons_2_low_press: [-182.20, 33.82, -32.07, -2.26, -2.94]        # Press plate down
   opentrons_4_high: [-164.98, 22.82, -48.26, 25.01, 14.78]
   opentrons_4_low: [-164.94, 41.24, -53.53, 11.86, 14.57]
@@ -34,17 +34,17 @@ positions:
   deck_home: [-90.0, -45.0, 0.0, 45, -90.0]
   # The Arm can reach the solid handler, the deck plates, and the fumehood positions
   deck_high: [0, -45, 0, 45, 0]                                   # High position to avoid collision
-  deck_slot1_high: [22.88, 6.43, -20.05, 13.03, 22.50]             
-  deck_slot1_low: [23.08, 33.13, -27.07, -6.66, 22.31]             # Gripper close to 120mm to grip from long side
-  deck_slot1_low_press: [23.08, 33.63, -27.28, -6.95, 22.31]       # Press plate down
-  deck_slot2_high: [35.76, -31.78, 0.96, 31.04, 35.6]
-  deck_slot2_low: [35.83, 32.26, -9.61, -22.44, 34.75] 
+  deck_slot1_high: [30.87, 26.4, -59.47, 32.56, 120.79]            
+  deck_slot1_low: [30.92, 46.59, -65.15, 18.05, 120.56]           # Gripper close to 120mm to grip from long side
+  # deck_slot1_low_press: [23.08, 33.63, -27.28, -6.95, 22.31]       # Press plate down
+  deck_slot2_high: [48.14, 6.76, -25.48, 18.24, 137.86]
+  deck_slot2_low: [48.24, 34.96, -32.48, -2.97, 137.54] 
   deck_solid_high:  [-38.49, -31.05, -16.86, 46.73, -38.38] 
   deck_solid_low: [-37.92, -6.86, -11.19, 16.88, -38.23]
   deck_solid_low_press: [-37.92, -6.26, -11.22, 16.3, -38.24]
-  deck_90_high: [35.5, 13.98, -48.88, 35.12, 125.41]
-  deck_90_slot1_high: [31.54, 32.6, -61.14, 28.74, 121.34]          # Gripper close to 80mm, open to 100mm 
-  deck_90_slot1_low: [31.54, 46.09, -65.71, 19.82, 121.16]          # Gripper close to 80mm, open to 100mm 
+  # deck_90_high: [35.5, 13.98, -48.88, 35.12, 125.41]
+  deck_90_slot1_high: [22.47, 4.26, -21.34, 16.57, 22.16]          # Gripper close to 80mm, open to 100mm 
+  deck_90_slot1_low: [22.57, 34.61, -28.88, -6.24, 21.82]          # Gripper close to 80mm, open to 100mm 
 
   # The following happens when linear rail is at Hood location (same as Deck for now  )
   # The Arm can reach the shaker and filteration setup in the fumehoods
@@ -60,9 +60,9 @@ positions:
 
   # The following happens when linear rail is at Cytation location (700mm)
   cytation_home: [43.54, -43.36, -12.12, 55.2, -46.34]
-  cytation_high: [41.57, 77.13, -80.96, 3.54, -49.18]
-  cytation_high_pull: [38.38, 76, -76.27, 0, -52.43]
-  cytation_low:  [41.57, 79.67, -83.47, 3.51, -49.19]
+  cytation_high: [45.53, 76.49, -81.19, 4.43, -45.21]
+  cytation_high_pull: [40.92, 74.78, -73.72, -1.37, -49.92]
+  cytation_low:  [45.54, 79.44, -84.08, 4.37, -45.21]
   plateloc_home: [43.68, -49.44, -29.29, 78.45, -46.07]
   plateloc_high: [66.52, 2.98, -68.94, 66.07, -23.22]
   plateloc_low:  [66.5, 4.97, -64.57, 59.71, -23.3]
