@@ -6,7 +6,7 @@ Hardware paths are exercised against a mocked ``XArmAPI`` via the
 
 import sys
 import os
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -284,7 +284,8 @@ class TestStateManagement:
 
     def test_clear_errors(self, initialized_controller):
         initialized_controller.arm.error_code = 1
-        initialized_controller.clear_errors()
+        initialized_controller.arm.clean_error.side_effect = lambda: setattr(initialized_controller.arm, 'error_code', 0) or 0
+        assert initialized_controller.clear_errors() is True
         assert initialized_controller.last_error_code == 0
 
     def test_clear_errors_after_stop_reenables_arm(
@@ -485,3 +486,195 @@ class TestGripperStatusRegister:
         assert controller.close_gripper() is True
         assert controller.last_gripper_motion_state == 'object_detected'
         assert controller.last_gripper_object_detected is True
+
+
+class TestForceTorqueAutoEnable:
+    """force_torque_config.yaml auto_enable_on_connect: F/T comes up with the arm."""
+
+    def _controller(self, mock_config_files, mock_xarm_api, monkeypatch, ft_config):
+        monkeypatch.setattr('src.core.xarm_controller.XArmAPI', lambda *a, **k: mock_xarm_api)
+        # auto_enable=True would connect inside the constructor, before the
+        # config below is in place; switch it on afterwards instead.
+        controller = XArmController(profile_name='test_profile', auto_enable=False,
+                                    gripper_type='none', enable_track=False)
+        controller.auto_enable = True
+        controller.force_torque_config = ft_config
+        controller.enable_force_torque_sensor = MagicMock(return_value=True)
+        return controller
+
+    def test_enabled_on_connect_when_configured(self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._controller(mock_config_files, mock_xarm_api, monkeypatch,
+                             {'enable': True, 'auto_enable_on_connect': True})
+        assert c.initialize() is True
+        c.enable_force_torque_sensor.assert_called_once_with()
+
+    @pytest.mark.parametrize("ft_config", [
+        {'enable': True},                                      # opt-in, default off
+        {'enable': True, 'auto_enable_on_connect': False},
+        {'enable': False, 'auto_enable_on_connect': True},     # no sensor
+    ])
+    def test_not_enabled_otherwise(self, mock_config_files, mock_xarm_api, monkeypatch, ft_config):
+        c = self._controller(mock_config_files, mock_xarm_api, monkeypatch, ft_config)
+        assert c.initialize() is True
+        c.enable_force_torque_sensor.assert_not_called()
+
+    def test_sensor_failure_never_blocks_connect(self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._controller(mock_config_files, mock_xarm_api, monkeypatch,
+                             {'enable': True, 'auto_enable_on_connect': True})
+        c.enable_force_torque_sensor.side_effect = RuntimeError("ft bus fault")
+        assert c.initialize() is True
+        assert c.states['connection'] == ComponentState.ENABLED
+
+
+class TestHealthRecovery:
+    def test_success_code_cannot_override_unhealthy_controller(self, initialized_controller):
+        c = initialized_controller
+        c.arm.state = 4
+        assert c.check_code(0, "ft_enable") is False
+        assert c.alive is False
+        assert c.health_failure["operation"] == "ft_enable"
+        assert c.health_failure["controller_state"] == 4
+        first = dict(c.health_failure)
+        assert c.check_code(0, "later") is False
+        assert c.health_failure == first
+
+    @pytest.mark.parametrize("operation", ["clean_error", "clean_warn", "clean_bio_gripper_error", "motion_enable", "set_mode", "set_state"])
+    def test_recovery_command_failure_stays_unhealthy(self, initialized_controller, operation):
+        c = initialized_controller
+        c.arm.__getattr__(operation).return_value = 1
+        c._emit_state_transition = Mock()
+        assert c.clear_errors() is False
+        assert c.alive is False
+        assert c.health_failure["return_code"] == 1
+        c._emit_state_transition.assert_not_called()
+
+    @pytest.mark.parametrize("state,error,warn", [(4, 0, 0), (5, 0, 0), (0, 12, 0), (0, 0, 1)])
+    def test_recovery_requires_healthy_readback(self, initialized_controller, state, error, warn):
+        c = initialized_controller
+        c.arm.state, c.arm.error_code, c.arm.warn_code = state, error, warn
+        assert c.clear_errors() is False
+        assert c.alive is False
+        assert c.health_failure["operation"] == "recovery_readback"
+
+    def test_readback_failure_preserves_fault(self, initialized_controller):
+        c = initialized_controller
+        c._error_warn_callback({"error_code": 12})
+        original = dict(c.health_failure)
+        c.arm.get_state.side_effect = lambda: (1, 0)
+        assert c.clear_errors() is False
+        assert c.last_error_code == 12
+        assert c.health_failure == original
+
+    def test_verified_recovery_clears_latch(self, initialized_controller):
+        c = initialized_controller
+        assert c.check_code(1, "earlier_failure") is False
+        assert c.clear_errors() is True
+        assert c.alive is True
+        assert c.health_failure is None
+        c.arm.get_state.assert_called_once()
+        c.arm.get_err_warn_code.assert_called_once()
+
+    def test_component_recovery_failure_does_not_report_ready(self, initialized_controller):
+        c = initialized_controller
+        c.arm.set_bio_gripper_enable.return_value = 1
+        assert c.clear_errors() is False
+        assert c.alive is False
+
+    def test_connect_can_initialize_before_motion_ready(self, initialized_controller):
+        controller = initialized_controller
+        controller.states['connection'] = ComponentState.DISABLED
+        controller.alive = False
+        controller.arm.state = 4
+        controller.arm.set_state.side_effect = lambda state: setattr(controller.arm, "state", state) or 0
+        assert controller.initialize() is True
+        assert controller.alive is True
+
+
+    def test_stop_success_is_independent_of_motion_readiness(self, initialized_controller):
+        c = initialized_controller
+        c.arm.emergency_stop.side_effect = lambda: setattr(c.arm, "state", 4) or 0
+        assert c.stop_motion() is True
+        assert c.alive is False
+        assert c.health_failure["operation"] == "emergency_stop"
+
+
+class TestStopReachesTheRail:
+    """``stop_motion`` must halt the rail too: arm state 4 does not reach the
+    Modbus servo, so a rail move in flight would otherwise run to target."""
+
+    @staticmethod
+    def _stop_calls(mock_arm):
+        return [c[0] for c in mock_arm.mock_calls
+                if c[0] in ("emergency_stop", "set_linear_track_stop")]
+
+    def test_arm_then_rail(self, initialized_controller, mock_xarm_api):
+        mock_xarm_api.reset_mock()
+        assert initialized_controller.stop_motion() is True
+        assert self._stop_calls(mock_xarm_api) == ["emergency_stop", "set_linear_track_stop"]
+
+    def test_rail_stop_failure_is_reported_after_the_arm_stopped(self, initialized_controller, mock_xarm_api):
+        mock_xarm_api.set_linear_track_stop.return_value = 1
+        assert initialized_controller.stop_motion() is False
+        mock_xarm_api.emergency_stop.assert_called_once()
+
+    def test_rail_stop_exception_never_escapes(self, initialized_controller, mock_xarm_api):
+        mock_xarm_api.set_linear_track_stop.side_effect = OSError("rs485 timeout")
+        assert initialized_controller.stop_motion() is False
+        mock_xarm_api.emergency_stop.assert_called_once()
+
+    def test_simulation_tuple_return_counts_as_stopped(self, initialized_controller, mock_xarm_api):
+        # @xarm_is_not_simulation_mode returns (0, []) instead of an int.
+        mock_xarm_api.set_linear_track_stop.return_value = (0, [])
+        assert initialized_controller.stop_motion() is True
+
+    def test_no_rail_configured_skips_the_rail(self, initialized_controller, mock_xarm_api):
+        initialized_controller.enable_track = False
+        assert initialized_controller.stop_motion() is True
+        mock_xarm_api.set_linear_track_stop.assert_not_called()
+
+
+class TestTrajectoryValidation:
+    def _traj(self, c, rail0=0.0):
+        zero = [0.0] * c.num_joints
+        moved = [5.0] + [0.0] * (c.num_joints - 1)
+        return [
+            {"t": 0.0, "rail_mm": rail0, "joints_deg": zero},
+            {"t": 1.0, "rail_mm": rail0 + 20.0, "joints_deg": moved},
+        ]
+
+    def test_valid_from_measured_start(self, initialized_controller, mock_xarm_api):
+        c = initialized_controller
+        mock_xarm_api.get_servo_angle.return_value = (0, [0.0] * c.num_joints)
+        mock_xarm_api.get_linear_track_pos.return_value = (0, 0.0)
+        report = c.validate_trajectory(self._traj(c))
+        assert report["valid"] is True, report["errors"]
+        assert report["summary"]["num_joints"] == c.num_joints
+        assert report["summary"]["limits"]["max_joint_speed_deg_s"] == float(c.max_joint_speed)
+        assert report["summary"]["limits"]["rail_limits_mm"] == [0.0, 700.0]
+        # Validation reads; it never moves or touches the motion slot.
+        mock_xarm_api.set_servo_angle.assert_not_called()
+        mock_xarm_api.set_linear_track_pos.assert_not_called()
+        assert c._motion_in_progress is False
+
+    def test_start_mismatch_and_tolerance(self, initialized_controller, mock_xarm_api):
+        c = initialized_controller
+        mock_xarm_api.get_servo_angle.return_value = (0, [0.0] * c.num_joints)
+        mock_xarm_api.get_linear_track_pos.return_value = (0, 5.0)
+        report = c.validate_trajectory(self._traj(c))
+        assert [e["code"] for e in report["errors"]] == ["start_rail_mismatch"]
+        report = c.validate_trajectory(self._traj(c), {"joint_deg": 1.0, "rail_mm": 10.0})
+        assert report["valid"] is True
+
+    def test_unreadable_rail_refuses(self, initialized_controller, mock_xarm_api):
+        c = initialized_controller
+        mock_xarm_api.get_linear_track_pos.return_value = (1, 0.0)
+        report = c.validate_trajectory(self._traj(c))
+        assert "start_state_unavailable" in [e["code"] for e in report["errors"]]
+
+    def test_no_rail_configured_cannot_validate_rail_start(self, initialized_controller, mock_xarm_api):
+        c = initialized_controller
+        c.enable_track = False
+        mock_xarm_api.get_linear_track_pos.reset_mock()
+        report = c.validate_trajectory(self._traj(c))
+        assert "start_state_unavailable" in [e["code"] for e in report["errors"]]
+        mock_xarm_api.get_linear_track_pos.assert_not_called()

@@ -51,6 +51,23 @@
 schema_version: "0.2"
 enforce_return_to_home: true
 
+# ── Enforcement-mode override window ────────────────────────────────────────
+# POST /control/graph/mode may only hold enforcement BELOW strict for a
+# bounded time; it then reverts on its own (also on claim release/expiry and
+# on /disconnect). Before this, ADVISORY was process-wide state with no
+# expiry -- a forgotten switch was inherited by the next client, workflow or
+# agent, and only operator discipline put it back.
+#
+# Sized for a calibration or camera-survey session, which is minutes. That is
+# deliberately much longer than the sash interlock's 120s cap: that one is
+# sized for a single retreat out of the hood, this one for a person working.
+# Lower them if a shorter leash is wanted -- the endpoint clamps to the cap,
+# so a caller asking for more gets the cap rather than an error.
+# TEMPORARY (2026-09-22): raised from 300/900 to 5 h for an extended
+# non-strict session. Restore to 300 / 900 afterwards.
+mode_override_default_seconds: 18000   # when the caller names no ttl_seconds
+mode_override_max_seconds: 18000       # hard cap on a single grant
+
 # ── Gripper-state catalog ───────────────────────────────────────────────────
 gripper_states:
   empty: {stroke: 150, intent: none}         # fully open, holding nothing
@@ -147,6 +164,13 @@ nodes:
 # - {id: deck_slot1_low_press, arm: deck_slot1_low_press, rail: Deck, 
 #     gripper_states: [grip_120], tags: [deck, slot1]}
 
+  # Short-side (80 mm) grip variant of slot 1.
+- {id: deck_90_slot1_high, arm: deck_90_slot1_high, rail: Deck, gripper_states: [
+      empty, grip_80], tags: [deck, slot1]}
+- {id: deck_90_slot1_low, arm: deck_90_slot1_low, rail: Deck, gripper_states: [
+      empty, grip_80], gripper_transitions: [[empty, grip_80], [grip_80, empty]],
+  tags: [deck, slot1]}
+
 - {id: deck_slot2_high, arm: deck_slot2_high, rail: Deck, gripper_states: [empty,
     grip_120, reach_90, grip_80], tags: [deck, slot2]}
 - {id: deck_slot2_low, arm: deck_slot2_low, rail: Deck, gripper_states: [empty, 
@@ -163,32 +187,46 @@ nodes:
 #     gripper_states: [grip_120], tags: [deck, solid]}
 
   # ── Hood (rail Hood=550). shaker + filtration sub-stations. ──
+  #
+  # These nodes carried a `hood` tag until 2026-09-21. It was the fume-hood
+  # sash interlock's primary membership clause (`gated_tags` in
+  # interlocks.yaml) and nothing else keyed off it — the camera tracker aims
+  # on `shaker`/`filter`, and the assistant's place catalog now groups on
+  # those two as well (assistant_actions._STATION_TAGS). The tag is gone
+  # because the interlock it fed is disabled: a tag whose only consumer is
+  # switched off is a tag that silently means nothing. The replacement is an
+  # explicit xyz safe/danger volume, which does not need a tag to be correct.
+  #
+  # Putting the interlock back means restoring BOTH: `enabled: true` in
+  # interlocks.yaml and `tags: [hood, ...]` here. The `gated_rails: [Hood]`
+  # clause alone still covers every node below (they are all rail Hood), so
+  # a restore that forgets the tags is gated but over-broad, not silent.
 - {id: hood_home, arm: hood_home, rail: Hood, gripper_states: [empty, grip_120, 
-      reach_90, grip_80], tags: [hood, transit_home]}
+      reach_90, grip_80], tags: [transit_home]}
 
 - {id: hood_shaker_high, arm: hood_shaker_high, rail: Hood, gripper_states: [
-      empty, grip_120, reach_90, grip_80], tags: [hood, shaker]}
+      empty, grip_120, reach_90, grip_80], tags: [shaker]}
 - {id: hood_shaker_low, arm: hood_shaker_low, rail: Hood, gripper_states: [empty,
     grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120], [
-        grip_120, empty]], tags: [hood, shaker]}
+        grip_120, empty]], tags: [shaker]}
 # Disconnected (no edges) — commented out during graph cleanup.
 # - {id: hood_shaker_low_press, arm: hood_shaker_low_press, rail: Hood, 
-#     gripper_states: [grip_120], tags: [hood, shaker]}
+#     gripper_states: [grip_120], tags: [shaker]}
 
 - {id: hood_filter_home, arm: hood_filter_home, rail: Hood, gripper_states: [
-      empty, grip_120, reach_90, grip_80], tags: [hood, filter]}
+      empty, grip_120, reach_90, grip_80], tags: [filter]}
 - {id: hood_filter_high, arm: hood_filter_high, rail: Hood, gripper_states: [
-      empty, grip_120, reach_90, grip_80], tags: [hood, filter]}
+      empty, grip_120, reach_90, grip_80], tags: [filter]}
 - {id: hood_filter_low, arm: hood_filter_low, rail: Hood, gripper_states: [empty,
     grip_120, reach_90, grip_80], gripper_transitions: [[empty, grip_120], [
-        grip_120, empty]], tags: [hood, filter]}
+        grip_120, empty]], tags: [filter]}
 - {id: hood_filter_top_plate, arm: hood_filter_top_plate, rail: Hood, 
     gripper_states: [empty, grip_120, reach_90, grip_80], gripper_transitions: [[
-      empty, grip_120], [grip_120, empty]], tags: [hood, filter]}
+      empty, grip_120], [grip_120, empty]], tags: [filter]}
 
   # ── Cytation 5 reader (rail Cytation=700). cytation_high/cytation_low are
-  #    manually-taught, hardware-verified joint angles (edges below use
-  #    mode: joint, not linear, between them). cytation_home is still an
+  #    manually-taught, hardware-verified joint angles (the high<->low
+  #    descent is mode: linear, the approach edges mode: joint). cytation_home is still an
   #    untuned placeholder — see the TODO on it in joint_config.yaml.
 - {id: cytation_home, arm: cytation_home, rail: Cytation, gripper_states: [empty,
     grip_120, reach_90, grip_80], tags: [cytation, transit_home]}
@@ -231,13 +269,13 @@ edges:
 - from: uplc_draw_home
   to: uplc_draw_open_max
   mode: linear
-  speed: 20
+  speed: 15.0
   comment: "Approach fully-open drawer position."
 
 - from: uplc_draw_open_max
   to: uplc_draw_open_min
   mode: linear
-  speed: 15
+  speed: 50.0
   comment: "Close drawer to almost-shut position (slow)."
 
 - from: uplc_draw_open_min
@@ -255,7 +293,7 @@ edges:
 - from: uplc_draw_open_min
   to: uplc_draw_open_max
   mode: linear
-  speed: 15
+  speed: 15.0
   comment: "Open drawer fully."
 - from: uplc_home
   to: uplc_draw_home
@@ -289,6 +327,22 @@ edges:
   to: deck_high
   mode: joint
   speed: 20.0
+- from: deck_high
+  to: deck_90_slot1_high
+  mode: joint
+  speed: 20.0
+- from: deck_90_slot1_high
+  to: deck_high
+  mode: joint
+  speed: 20.0
+- from: deck_90_slot1_high
+  to: deck_90_slot1_low
+  mode: linear
+  speed: 10.0
+- from: deck_90_slot1_low
+  to: deck_90_slot1_high
+  mode: linear
+  speed: 15.0
 - from: robot_home
   to: opentrons_home
   mode: joint
@@ -414,30 +468,18 @@ edges:
 - from: uplc_draw_open_max
   to: uplc_draw_home
   mode: linear
-  speed: 20.0
-- from: robot_home
-  to: cytation_home
-  mode: joint
-- from: cytation_home
-  to: robot_home
-  mode: joint
+  speed: 15.0
 - from: cytation_high
   to: cytation_high_pull
-  mode: linear
+  mode: joint
 - from: cytation_high_pull
   to: cytation_high
-  mode: linear
+  mode: joint
 - from: cytation_high_pull
   to: cytation_home
   mode: joint
 - from: cytation_home
   to: cytation_high_pull
-  mode: joint
-- from: robot_home
-  to: plateloc_home
-  mode: joint
-- from: plateloc_home
-  to: robot_home
   mode: joint
 - from: plateloc_home
   to: plateloc_high
@@ -487,3 +529,19 @@ edges:
 - from: cytation_low
   to: cytation_high
   mode: linear
+- from: deck_home
+  to: plateloc_home
+  mode: joint
+  speed: 20.0
+- from: plateloc_home
+  to: deck_home
+  mode: joint
+  speed: 20.0
+- from: deck_home
+  to: cytation_home
+  mode: joint
+  speed: 20.0
+- from: cytation_home
+  to: deck_home
+  mode: joint
+  speed: 20.0

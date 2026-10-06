@@ -203,7 +203,12 @@ def test_move_to_node_moves_arm_only(move_ctrl):
          patch.object(c, 'open_gripper') as m_open:
         result = c.move_to_node('target')
     assert result is True
-    m_arm.assert_called_once_with('pickup', speed=None)
+    m_arm.assert_called_once()
+    args, kwargs = m_arm.call_args
+    assert args == ('pickup',)
+    assert kwargs['speed'] is None
+    edge = kwargs['_graph_edge']
+    assert (edge.from_node, edge.to_node) == ('start', 'target')
     m_grip.assert_not_called()
     m_open.assert_not_called()
 

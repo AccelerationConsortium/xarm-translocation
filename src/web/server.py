@@ -28,8 +28,13 @@ class XArmWebHandler(http.server.SimpleHTTPRequestHandler):
             '/api', '/status', '/locations', '/track',
             '/connect', '/disconnect', '/move', '/clear', '/gripper', '/ws',
             '/graph', '/control', '/auth', '/camera', '/interlocks',
+            # NOTE: /realsense/<id>/stream.mjpg is an endless multipart response;
+            # this proxy buffers the whole body, so open the panel on the API
+            # port (:8000/web/) for the live preview. Snapshots proxy fine.
+            '/realsense',
         ]
-        if any(parsed_path.path.startswith(path) for path in api_paths):
+        if any(parsed_path.path == path or parsed_path.path.startswith(path + '/')
+               for path in api_paths):
             self.proxy_to_api_server()
         # Serve index.html for root path
         elif parsed_path.path == '/':
@@ -141,4 +146,4 @@ if __name__ == "__main__":
         except ValueError:
             print("Invalid port number. Using default port 6001.")
     
-    start_web_server(port) 
+    start_web_server(port)

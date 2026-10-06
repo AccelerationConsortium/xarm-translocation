@@ -1,6 +1,13 @@
 import time
 import os
+import json
+import hashlib
+import tempfile
 import threading
+import math
+from copy import deepcopy
+from importlib.metadata import version, PackageNotFoundError
+from uuid import uuid4
 from collections import deque
 from datetime import datetime, timezone
 from enum import Enum
@@ -23,8 +30,10 @@ from core.xarm_utils import (
 try:
     from .motion_graph import (
         DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
-        GraphMode, GripIntent, GripperTransitionError, MotionGraph, MoveMode,
-        NodeMatch, RecoveryMismatch, find_nearest_node,
+        GraphMode, GripIntent, GripperTransitionError,
+        MODE_OVERRIDE_DEFAULT_SECONDS, MODE_OVERRIDE_MAX_SECONDS,
+        MotionGraph, MoveMode, NodeMatch, RecoveryMismatch,
+        find_nearest_node,
     )
     from .claims import ClaimManager
     from .events_exporter import EventsExporter
@@ -33,8 +42,10 @@ try:
 except ImportError:
     from core.motion_graph import (
         DEFAULT_PRECONDITIONS, Edge, EdgeNotAllowedError, GraphError,
-        GraphMode, GripIntent, GripperTransitionError, MotionGraph, MoveMode,
-        NodeMatch, RecoveryMismatch, find_nearest_node,
+        GraphMode, GripIntent, GripperTransitionError,
+        MODE_OVERRIDE_DEFAULT_SECONDS, MODE_OVERRIDE_MAX_SECONDS,
+        MotionGraph, MoveMode, NodeMatch, RecoveryMismatch,
+        find_nearest_node,
     )
     from core.claims import ClaimManager
     from core.events_exporter import EventsExporter
@@ -64,6 +75,32 @@ class ComponentState(Enum):
     ENABLED = "enabled"
     ERROR = "error"
     MAINTENANCE = "maintenance"  # State for maintenance mode
+
+
+def _ft_vector(values):
+    """Validate SDK values without accepting strings, booleans or non-finite data."""
+    if not isinstance(values, (list, tuple)) or len(values) != 6:
+        raise ValueError("Expected six finite force/torque values")
+    if any(isinstance(v, bool) or not isinstance(v, (int, float))
+           or not math.isfinite(v) for v in values):
+        raise ValueError("Expected six finite force/torque values")
+    return [float(v) for v in values]
+
+
+def force_torque_derived(wrench, force_deadband_n, torque_deadband_nm):
+    """Pure calculation: both directions and norms belong to this one wrench."""
+    force = math.hypot(*wrench[:3])
+    torque = math.hypot(*wrench[3:])
+    if not math.isfinite(force) or not math.isfinite(torque):
+        raise ValueError("Non-finite force/torque magnitude")
+    return {
+        'force_magnitude': force,
+        'torque_magnitude': torque,
+        'force_direction': ([v / force for v in wrench[:3]]
+                            if force > 0 and force >= force_deadband_n else None),
+        'torque_direction': ([v / torque for v in wrench[3:]]
+                             if torque > 0 and torque >= torque_deadband_nm else None),
+    }
 
 class XArmController:
     """
@@ -134,6 +171,7 @@ class XArmController:
         # 2. Host from the selected profile
         # 3. Default to '127.0.0.1'
         self.host = host or self.xarm_config.get('host', '127.0.0.1')
+        self._load_admin_graph_off()
 
         # Determine model
         # 1. Direct `model` parameter
@@ -170,6 +208,7 @@ class XArmController:
         self.arm = XArmAPI(
             self.host,
             do_not_open=True,
+            is_radian=False,  # All configured joint angles/speeds use degrees.
             check_joint_limit=not disable_sdk_joint_check
         )
 
@@ -229,7 +268,12 @@ class XArmController:
         # configs. Downgrade at runtime via set_graph_mode / the
         # /control/graph/mode endpoint if the graph is being reworked.
         self.motion_graph: Optional[MotionGraph] = None
-        self.graph_mode: GraphMode = GraphMode.OFF
+        # Override bookkeeping must exist before the first `graph_mode`
+        # write: that attribute is a property whose getter consults it.
+        self._graph_mode_lock = threading.RLock()
+        self._graph_mode_override: Optional[dict] = None
+        self._admin_graph_off: Optional[dict] = None
+        self._graph_mode: GraphMode = GraphMode.OFF
         graph_path = os.path.join('src', 'settings', 'motion_graph.yaml')
         try:
             self.motion_graph = MotionGraph.from_yaml(
@@ -317,7 +361,7 @@ class XArmController:
 
         # BIO gripper status/error register cache, surfaced on /status as a
         # plate-transfer verification signal (failed pickup / mid-move slip).
-        # Refreshed by refresh_gripper_status() after each Gen2 jaw move;
+        # Refreshed after each Gen2 jaw move and by the API background poll;
         # status_builder reads ONLY these cached values so it stays
         # side-effect-free (no live Modbus round-trip from /status).
         self.last_gripper_position_actual = None   # mm, read back from gripper
@@ -326,13 +370,23 @@ class XArmController:
         self.last_gripper_error_code = 0           # BIO register 0x0F; 0 == OK, 12 == object slipped
         self.last_gripper_error_text = None         # human-readable mapping of the code
 
-        # Force torque sensor tracking
+        # FT snapshots and their interpretation are published under one lock.
+        self._ft_lock = threading.RLock()
+        self._ft_session = uuid4().hex
+        try:
+            self._ft_sdk_version = version('xarm-python-sdk')
+        except PackageNotFoundError:
+            self._ft_sdk_version = None
+        self._ft_sequence = 0
+        self._ft_config_sequence = 0
+        self._ft_configs = {}
+        self._ft_current_revision = None
+        self._ft_tare = {'completed': False, 'offset': None, 'completed_at': None}
         self.force_torque_history = deque(maxlen=1000)
-        self.last_force_torque = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # [fx, fy, fz, tx, ty, tz]
-        self.force_torque_zero = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]  # Calibrated zero point
-        self.force_torque_calibrated = False
+        self.last_force_torque_sample = None
         self.force_torque_alerts_active = False
         self.last_alert_time = 0
+        self._ft_deadbands()  # Reject obsolete/invalid configuration before connecting.
 
         # Motion state tracking. A depth counter rather than a bool so a
         # composite move (a cross-rail edge is two sub-moves; a travel is N
@@ -468,6 +522,8 @@ class XArmController:
 
         # State tracking
         self.alive = True
+        self.health_failure = None
+        self._recovering = False
         self._ignore_exit_state = False
 
         # Joint limits for different models (degrees)
@@ -535,7 +591,7 @@ class XArmController:
             try:
                 # Connect to the arm
                 code = self.arm.connect()
-                if self.check_code(code, "connect"):
+                if check_operation_result(code, "connect") and self.arm.connected:
                     # Connection successful, proceed with initialization
                     # Enable motion and set mode/state
                     enable_code = self.arm.motion_enable(enable=True)
@@ -564,6 +620,7 @@ class XArmController:
                     # Reset alive state to True after successful initialization
                     # This ensures minor errors during init don't permanently disable the controller
                     self.alive = True
+                    self.health_failure = None
 
                     # Start the sash watchdog only once there is a live arm to
                     # stop. It doubles as the cache warmer, so from here on the
@@ -580,6 +637,17 @@ class XArmController:
 
                         if self.enable_track:
                             self.enable_track_component()
+
+                        # Opt-in via force_torque_config.yaml. Enabling also
+                        # zeroes the sensor (auto_calibrate, ~10 s), so the
+                        # gripper must be free of contact at connect. Never
+                        # fatal: a sensor fault must not block the arm.
+                        if (self.has_force_torque_sensor()
+                                and self.force_torque_config.get('auto_enable_on_connect', False)):
+                            try:
+                                self.enable_force_torque_sensor()
+                            except Exception as e:  # noqa: BLE001
+                                print(f"Force torque auto-enable failed: {e}")
 
                     print("xArm Controller Initialized")
                     self._emit_event("startup", message="Controller connected and enabled")
@@ -813,7 +881,7 @@ class XArmController:
                 'warn_code': data.get('warn_code', 0)
             })
 
-            self.alive = False
+            self._record_health_failure("error_callback", None, f"Controller error {error_code}")
             self.states['arm'] = ComponentState.ERROR
             print(f'Error {error_code} detected')
             self._emit_event(
@@ -843,7 +911,7 @@ class XArmController:
             return
         state = data['state']
         if not self._ignore_exit_state and state == 4:
-            self.alive = False
+            self._record_health_failure("state_callback", None, "Controller entered state 4")
             self.states['arm'] = ComponentState.ERROR
             print('State 4 detected, stopping operations')
         self._emit_state_transition(
@@ -852,15 +920,30 @@ class XArmController:
             xarm_state=state,
         )
 
-    def check_code(self, code, operation_name):
-        """Check if an SDK operation was successful (None or 0)."""
-        is_success = (code is None or code == 0)
+    def _record_health_failure(self, operation, return_code, reason):
+        """Latch the first failure until verified recovery; never perform I/O."""
+        self.alive = False
+        if getattr(self, "health_failure", None) is None:
+            self.health_failure = {
+                "operation": operation,
+                "return_code": return_code,
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "controller_state": getattr(self.arm, "state", None),
+                "controller_error_code": getattr(self.arm, "error_code", None),
+            }
+            print(f"Controller degraded: {self.health_failure}")
 
-        if not self.is_alive or not is_success:
-            self.alive = False
-            state = self.arm.state if self.arm else None
-            error = self.arm.error_code if self.arm else None
-            return check_operation_result(code, operation_name, state, error)
+    def check_code(self, code, operation_name):
+        """An operation succeeds only when its result AND controller are healthy."""
+        if code not in (None, 0):
+            self._record_health_failure(operation_name, code, "SDK operation failed")
+            return False
+        if not self.is_alive:
+            self._record_health_failure(
+                operation_name, code, "Controller health check failed"
+            )
+            return False
         return True
 
     @property
@@ -1101,9 +1184,7 @@ class XArmController:
             'force_torque': {
                 'state': self.states['force_torque'].value,
                 'has_sensor': self.has_force_torque_sensor(),
-                'calibrated': self.force_torque_calibrated,
-                'last_reading': self.last_force_torque,
-                'magnitude': self.get_force_torque_magnitude()
+                **self.get_force_torque_status(),
             },
             'errors': {
                 'last_error': self.last_error_code,
@@ -1133,66 +1214,73 @@ class XArmController:
             print("Cannot clear errors: No arm connection")
             return False
 
+        self._recovering = True
+
+        def checked(operation, call):
+            # Recovery must work while alive is latched false. Check command
+            # results here, then explicitly read back health before unlatching.
+            code = call()
+            if code not in (None, 0):
+                self._record_health_failure(operation, code, "Recovery command failed")
+                return False
+            return True
+
         try:
-            print("Clearing robot errors and warnings...")
+            for operation, call in (
+                ("clean_error", self.arm.clean_error),
+                ("clean_warn", self.arm.clean_warn),
+            ):
+                if not checked(operation, call):
+                    return False
+            if self.gripper_type in ('bio', 'bio_gen2'):
+                if not checked("clean_bio_gripper_error", self.arm.clean_bio_gripper_error):
+                    return False
+            for operation, call in (
+                ("motion_enable", lambda: self.arm.motion_enable(enable=True)),
+                ("set_mode(0)", lambda: self.arm.set_mode(0)),
+                ("set_state(0)", lambda: self.arm.set_state(0)),
+            ):
+                if not checked(operation, call):
+                    return False
 
-            # Clear errors and warnings
-            error_clear_code = self.arm.clean_error()
-            warn_clear_code = self.arm.clean_warn()
+            state_code, state = self.arm.get_state()
+            error_code, errors = self.arm.get_err_warn_code()
+            if (state_code != 0 or error_code != 0 or not self.arm.connected
+                    or state not in (0, 1, 2) or errors != [0, 0]):
+                self._record_health_failure(
+                    "recovery_readback", state_code or error_code,
+                    f"Recovery not verified: state={state}, error/warn={errors}",
+                )
+                return False
 
-            # BIO Gripper hardware errors (e.g. code 12 "object slipped") live
-            # in the gripper's own register; clean_error() doesn't touch them.
-            # An unresolved gripper fault can pin the arm in state 4, so clear
-            # it here too.
-            if self.gripper_type in ('bio', 'bio_gen2') and hasattr(self.arm, 'clean_bio_gripper_error'):
-                self.arm.clean_bio_gripper_error()
+            self.alive = True
+            # Keep the original failure until component recovery also succeeds.
+            if self.gripper_type in ('bio', 'bio_gen2') or (
+                self.has_gripper() and self.states['gripper'] == ComponentState.ERROR
+            ):
+                if not self.enable_gripper_component():
+                    self._record_health_failure("recover_gripper", None, "Gripper recovery failed")
+                    return False
+            if self.has_track() and self.states['track'] == ComponentState.ERROR:
+                if not self.enable_track_component():
+                    self._record_health_failure("recover_track", None, "Track recovery failed")
+                    return False
+            if not self.is_alive:
+                self._record_health_failure("recovery_health", None, "Controller remains unhealthy")
+                return False
 
-            # Reset error tracking
             self.error_history.clear()
             self.last_error_code = 0
             self.last_warn_code = 0
-
-            # Reset alive state if errors were cleared successfully
-            if error_clear_code == 0 and warn_clear_code == 0:
-                self.alive = True
-                print("[OK] All errors and warnings cleared successfully")
-                self._emit_state_transition("ready", message="Errors cleared")
-
-                # Always re-arm the arm. This is the single recovery button
-                # (it replaced the separate "Enable"), so it must re-energize
-                # the servos unconditionally — NOT just when auto_enable is on
-                # or the arm is flagged ERROR. The SDK parks the arm in state 4
-                # after emergency_stop and refuses motion until mode/state are
-                # re-asserted; a merely-disabled arm must also come back live.
-                print("Re-enabling arm and components...")
-                if hasattr(self.arm, 'motion_enable'):
-                    self.arm.motion_enable(enable=True)
-                if hasattr(self.arm, 'set_mode'):
-                    self.arm.set_mode(0)
-                if hasattr(self.arm, 'set_state'):
-                    self.arm.set_state(0)
-                self.states['arm'] = ComponentState.ENABLED
-
-                # BIO gripper faults live in the gripper's own register;
-                # re-enable unconditionally so clean_bio_gripper_error +
-                # set_bio_gripper_enable(True) actually take effect on the
-                # hardware after a slip/overcurrent. Other grippers/track:
-                # re-enable when they were in error.
-                if self.gripper_type in ('bio', 'bio_gen2'):
-                    self.enable_gripper_component()
-                elif self.has_gripper() and self.states['gripper'] == ComponentState.ERROR:
-                    self.enable_gripper_component()
-                if self.has_track() and self.states['track'] == ComponentState.ERROR:
-                    self.enable_track_component()
-
-                return True
-            else:
-                print(f"[WARN] Error clearing partially failed: error_clear={error_clear_code}, warn_clear={warn_clear_code}")
-                return False
-
+            self.health_failure = None
+            self.states['arm'] = ComponentState.ENABLED
+            self._emit_state_transition("ready", message="Errors cleared; controller recovery verified")
+            return True
         except Exception as e:
-            print(f"[ERROR] Failed to clear errors: {e}")
+            self._record_health_failure("clear_errors", None, f"Recovery exception: {e}")
             return False
+        finally:
+            self._recovering = False
 
     # =============================================================================
     # LINEAR/CARTESIAN MOVEMENTS
@@ -1263,7 +1351,8 @@ class XArmController:
 
         try:
             code = self.arm.set_position(x, y, z, roll, pitch, yaw,
-                                       speed=speed, wait=wait, motion_type=motion_type)
+                                       speed=speed, mvacc=self.tcp_acc, is_radian=False,
+                                       wait=wait, motion_type=motion_type)
             success = self.check_code(code, f'move_to_position({x}, {y}, {z})')
 
             if success:
@@ -1274,7 +1363,7 @@ class XArmController:
         finally:
             self.exit_motion()
 
-    def move_to_named_location(self, location_name, speed=None):
+    def move_to_named_location(self, location_name, speed=None, *, _graph_edge=None):
         """
         Move to a predefined location from the position config.
         Supports both joint-based and Cartesian-based location definitions.
@@ -1283,6 +1372,8 @@ class XArmController:
         node is consulted: edge.mode (linear vs joint) overrides the
         preset's storage format, edge.speed caps the caller's speed,
         and off-whitelist transitions raise EdgeNotAllowedError.
+        Internal _graph_edge carries an already-validated explicit graph
+        move; its mode and cap apply independently of the global mode.
         """
         # Check if positions are defined in config
         if 'positions' not in self.position_config:
@@ -1298,12 +1389,13 @@ class XArmController:
         # === Graph consultation (raises in STRICT mode on off-whitelist) ===
         from_node = self.current_node
         target_node_id = self._predict_target_node_for_arm_pose(location_name)
-        edge = self._consult_graph_for_move(target_node_id, location_name)
+        edge = _graph_edge or self._consult_graph_for_move(target_node_id, location_name)
 
-        # Apply edge.mode override + edge.speed cap (STRICT only).
-        speed = self._apply_edge_speed_cap(speed, edge)
+        # Explicit graph moves keep their mode and units even during a
+        # freehand override. Ordinary named moves retain the mode policy.
+        speed = self._apply_edge_speed_cap(speed, edge, enforce=_graph_edge is not None)
         mode_override: Optional[MoveMode] = None
-        if self.graph_mode == GraphMode.STRICT and edge is not None:
+        if edge is not None and (_graph_edge is not None or self.graph_mode == GraphMode.STRICT):
             mode_override = edge.mode
 
         # === Dispatch ===
@@ -1420,7 +1512,7 @@ class XArmController:
 
         try:
             # check=False mirrors the Docker simulator serial-number workaround
-            code = self.arm.set_servo_angle(angle=angles, speed=speed, mvacc=acceleration, wait=wait, check=False)
+            code = self.arm.set_servo_angle(angle=angles, speed=speed, mvacc=acceleration, is_radian=False, wait=wait, check=False)
             success = self.check_code(code, f'move_joints({angles})')
 
             if success:
@@ -1489,7 +1581,37 @@ class XArmController:
         self.last_arm_pose_name = None
         self.last_rail_location_name = None
         code = self.arm.emergency_stop()
-        return self.check_code(code, 'emergency_stop')
+        # Stopping deliberately leaves the arm unready. Report whether the
+        # stop command succeeded without treating that state as stop failure.
+        self._record_health_failure("emergency_stop", code, "Stop requested; recovery required")
+        arm_stopped = check_operation_result(code, 'emergency_stop')
+        # The rail is a separate Modbus servo: ``emergency_stop`` (arm state
+        # 4) does not reach it, so a rail move in flight would otherwise run
+        # to its target. Arm first (one TCP command, highest consequence),
+        # rail second; a rail failure is reported, never allowed to mask
+        # whether the arm stopped.
+        rail_stopped = self._stop_track()
+        return arm_stopped and rail_stopped
+
+    def _stop_track(self):
+        """Halt the linear rail; True when stopped or no rail is configured.
+
+        Not gated on the track being motion-ENABLED: a stop must reach a
+        rail that was commanded before the state bookkeeping caught up.
+        Never raises -- the caller is the stop path.
+        """
+        if not self.arm or not self.enable_track:
+            return True
+        try:
+            ret = self.arm.set_linear_track_stop()
+        except Exception as exc:  # noqa: BLE001 - stop path must not raise
+            print(f"Warning: linear track stop raised: {exc}")
+            return False
+        code = ret[0] if isinstance(ret, (tuple, list)) else ret
+        if code not in (None, 0):
+            print(f"Warning: linear track stop returned code {code}")
+            return False
+        return True
 
     def set_manual_mode(self, enable):
         """Enable or disable manual (drag/teach) mode.
@@ -1678,8 +1800,8 @@ class XArmController:
         This round-trips to the gripper over Modbus, so it is NOT
         side-effect-free and MUST NOT be called from ``status_builder``
         (which only reads the cached ``last_gripper_*`` attributes set
-        here). Call it right after each Gen2 jaw move; the cached values
-        then describe that move for the next ``/status`` read.
+        here). Called after each Gen2 jaw move and by the API's 1 Hz
+        background poll, including when no WebSocket client is attached.
 
         No-op for non-BIO grippers, when disconnected, or when the SDK
         build lacks the status getter. Returns the decoded motion-state
@@ -1952,6 +2074,37 @@ class XArmController:
             self.last_joints = joints
             return joints
         return None
+
+    def validate_trajectory(self, waypoints, start_tolerance=None):
+        """Validate a coordinated rail + arm trajectory without moving.
+
+        Read-only: it samples the arm's joint angles and the rail encoder
+        for the start-state check and applies the same bounds the move
+        paths use (model joint limits, safety-scaled joint speed, the
+        0-700 mm rail stroke, configured danger zones). See
+        ``core.trajectory`` for the report shape and
+        ``src/docs/TRAJECTORY_PLAN.md`` for the execution model.
+
+        ``waypoints`` are mappings with ``t``, ``rail_mm`` and
+        ``joints_deg``; ``start_tolerance`` is an optional mapping with
+        ``joint_deg`` and ``rail_mm``.
+        """
+        from core.trajectory import (
+            StartState, StartTolerance, TrajectoryLimits, Waypoint, validate_trajectory,
+        )
+        if not self.arm:
+            raise RuntimeError("Cannot validate a trajectory: no arm connection")
+
+        parsed = [Waypoint.from_mapping(wp) for wp in waypoints]
+        limits = TrajectoryLimits(
+            joint_limits_deg=list(self.joint_limits),
+            max_joint_speed_deg_s=float(self.max_joint_speed),
+            rail_danger_zones=list((self.track_config or {}).get('danger_zones', [])),
+        )
+        joints = self.get_current_joints()
+        rail = self.get_track_position() if self.enable_track else None
+        tol = StartTolerance(**start_tolerance) if start_tolerance else StartTolerance()
+        return validate_trajectory(parsed, limits, StartState(joints_deg=joints, rail_mm=rail), tol)
 
     def go_home(self, speed=None, mvacc=None, wait=True):
         """Move the robot to the named ``robot_home`` preset.
@@ -2277,8 +2430,9 @@ class XArmController:
         rail-second with per-axis graph consultation suppressed (the
         state between the two sub-moves is a non-node by design).
 
+        Always enforces edge mode and speed, including in OFF/ADVISORY.
         Returns True on success, False on any sub-move failure. Raises
-        EdgeNotAllowedError in STRICT mode for disallowed moves
+        EdgeNotAllowedError for disallowed graph moves
         (including edges the current gripper state may not ride).
         """
         if self.motion_graph is None:
@@ -2286,27 +2440,24 @@ class XArmController:
             return False
 
         node = self.motion_graph.node(node_id)  # raises UnknownNodeError
+        edge = self._consult_graph_for_move(node_id, node_id, require_edge=True)
 
-        # Same-rail: a pure arm move reaches the node; keep per-axis
-        # consultation intact so STRICT still gates the edge as before.
+        # Same-rail: dispatch the validated edge with its mode and speed.
         if node.rail == self.last_rail_location_name:
-            ok = self.move_to_named_location(node.arm, speed=speed)
+            ok = self.move_to_named_location(node.arm, speed=speed, _graph_edge=edge)
             if ok:
                 self._notify_camera(node)
             return ok
 
-        # Cross-rail transit: validate the whole edge once (raises in
-        # STRICT if the edge is missing, we are off-grid, or the gripper
-        # state may not ride it), then dispatch the two axes.
+        # Cross-rail transit: the whole edge was validated above; dispatch
+        # arm and rail with separate speed units.
         from_node = self.current_node
-        edge = self._consult_graph_for_move(node_id, node_id)
-        capped = self._apply_edge_speed_cap(speed, edge)
+        capped = self._apply_edge_speed_cap(speed, edge, enforce=True)
 
         self._suppress_graph_consult = True
         try:
-            # Arm first: the transit gateway poses are joint-list presets,
-            # so the fallback dispatch is joint mode (matching edge.mode).
-            if not self.move_to_named_location(node.arm, speed=capped):
+            # Arm first, honoring edge.mode even for joint-list presets.
+            if not self.move_to_named_location(node.arm, speed=capped, _graph_edge=edge):
                 print(
                     f"[motion_graph] move_to_node: arm move to {node.arm!r} "
                     f"failed"
@@ -2508,14 +2659,310 @@ class XArmController:
         # ── Verification ──────────────────────────────────────────────
         return self._verify_gripper(target.stroke, target.intent)
 
-    def set_graph_mode(self, mode: GraphMode) -> None:
-        """Set the motion-graph enforcement mode. Safe at any time."""
+    # ── Motion-graph enforcement mode ────────────────────────────────
+    #
+    # `graph_mode` is a property rather than a plain attribute so that a
+    # lowered mode cannot outlive its window no matter who reads it. Every
+    # consumer -- the STRICT guards in the API layer, the controller's own
+    # move paths, the /status builder -- goes through this getter, so the
+    # lazy expiry below runs on all of them without any of them having to
+    # remember to ask. That is the same trick ClaimManager plays with
+    # `_expire_if_due`, and it is what makes "reverting is automatic and
+    # unconditional" true rather than aspirational: there is no code path
+    # that can observe an expired override as still in force.
+
+    @property
+    def graph_mode(self) -> GraphMode:
+        if getattr(self, "_admin_graph_off", None) is not None:
+            return GraphMode.OFF
+        self._revert_graph_mode_if_due()
+        return self._graph_mode
+
+    @graph_mode.setter
+    def graph_mode(self, mode: GraphMode) -> None:
+        self._graph_mode = mode
+
+    def _claim_session_id(self) -> Optional[str]:
+        """Session id of the live claim holder, or None. Never raises."""
+        manager = getattr(self, "claim_manager", None)
+        if manager is None:
+            return None
+        try:
+            holder = manager.claimed_by()
+        except Exception:  # noqa: BLE001 - a mode read must not fail on this
+            return None
+        return (holder or {}).get("session_id")
+
+    def _admin_graph_state_path(self) -> str:
+        # Separate device/profile state so a simulator cannot inherit the
+        # physical arm's override. Local runtime data, never graph topology.
+        key = json.dumps([self.host, self.profile_name], separators=(",", ":"))
+        suffix = hashlib.sha256(key.encode()).hexdigest()[:16]
+        directory = os.environ.get("XARM_GRAPH_ADMIN_STATE_DIR", os.path.join("src", "settings"))
+        return os.path.join(directory, f"graph_admin_override_{suffix}.json")
+
+    def _load_admin_graph_off(self) -> None:
+        try:
+            with open(self._admin_graph_state_path(), encoding="utf-8") as handle:
+                record = json.load(handle)
+        except FileNotFoundError:
+            return
+        # Invalid state must not silently enable freehand operation.
+        if (not isinstance(record, dict) or record.get("schema_version") != 1
+                or record.get("mode") != "off"
+                or not all(isinstance(record.get(k), str) and record[k].strip()
+                           for k in ("owner", "reason", "created_at"))):
+            raise ValueError("Invalid administrator graph override state")
+        self._admin_graph_off = record
+
+    def set_admin_graph_off(self, *, owner: str, reason: str) -> dict:
+        """Persist an admin-authorized OFF latch until explicit admin restore."""
+        if not owner.strip() or not reason.strip():
+            raise ValueError("Admin owner and reason must be nonempty")
+        record = {"schema_version": 1, "mode": "off", "owner": owner,
+                  "reason": reason.strip(),
+                  "created_at": datetime.now(timezone.utc).isoformat()}
+        with self._graph_mode_lock:
+            path = self._admin_graph_state_path()
+            directory = os.path.dirname(path)
+            os.makedirs(directory, exist_ok=True)
+            fd, temporary = tempfile.mkstemp(prefix="graph_admin_override_", suffix=".tmp", dir=directory)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(record, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, path)
+            finally:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            previous = self.graph_mode.value
+            self._graph_mode_override = None
+            self._admin_graph_off = record
+            self._emit_event("graph_mode_override", from_state=previous,
+                             to_state="off", message=record["reason"], owner=owner,
+                             scope="admin", persistent=True)
+            return self.graph_mode_override_snapshot()
+
+    def restore_admin_graph_mode(self, *, owner: str) -> bool:
+        with self._graph_mode_lock:
+            was_active = self._admin_graph_off is not None
+            try:
+                os.unlink(self._admin_graph_state_path())
+            except FileNotFoundError:
+                pass
+            previous = self.graph_mode.value
+            self._admin_graph_off = None
+            self._graph_mode_override = None
+            self._graph_mode = GraphMode.STRICT if self.motion_graph is not None else GraphMode.OFF
+            self._emit_event("graph_mode_restored", from_state=previous,
+                             to_state=self._graph_mode.value, owner=owner,
+                             trigger="admin_restore")
+            return was_active
+
+    def _revert_graph_mode_if_due(self) -> Optional[str]:
+        """Restore the pre-override mode if the window has closed.
+
+        Two triggers, both checked here so neither depends on an endpoint
+        remembering to call anything:
+
+        * ``ttl_expired`` -- the granted window elapsed.
+        * ``claim_released`` -- the session that lowered the mode no longer
+          holds the claim (released it, or let it expire). A relaxation is
+          granted to an operator, not to the device; when they walk away it
+          goes with them rather than waiting out the clock for whoever
+          claims next.
+
+        Returns the trigger that fired, or None.
+        """
+        override = getattr(self, "_graph_mode_override", None)
+        if override is None:
+            return None
+        with self._graph_mode_lock:
+            override = self._graph_mode_override
+            if override is None:
+                return None
+            if time.monotonic() >= override["until"]:
+                trigger = "ttl_expired"
+            elif (override["session_id"] is not None
+                    and self._claim_session_id() != override["session_id"]):
+                # Only for claim-bound overrides. Admin overrides deliberately
+                # have no session_id and survive changes of claim ownership.
+                trigger = "claim_released"
+            else:
+                return None
+            self._restore_graph_mode(trigger)
+            return trigger
+
+    def _restore_graph_mode(self, trigger: str) -> None:
+        """Put the mode back and emit the audit row. Caller holds the lock."""
+        override = self._graph_mode_override
+        if override is None:
+            return
+        # Clear FIRST: _emit_event reads graph state, which reads this
+        # property, and an override still in place would recurse.
+        self._graph_mode_override = None
+        restored: GraphMode = override["previous"]
+        self._graph_mode = restored
+        print(
+            f"[motion_graph] mode override ended ({trigger}) — restored "
+            f"{restored.value} from {override['mode'].value}"
+        )
+        self._emit_event(
+            "graph_mode_restored",
+            from_state=override["mode"].value,
+            to_state=restored.value,
+            message=override["reason"],
+            trigger=trigger,
+            owner=override["owner"],
+        )
+
+    def _clamp_mode_override_ttl(self, ttl_seconds: Optional[float]) -> float:
+        graph = self.motion_graph
+        default = getattr(graph, "mode_override_default_seconds", MODE_OVERRIDE_DEFAULT_SECONDS)
+        cap = getattr(graph, "mode_override_max_seconds", MODE_OVERRIDE_MAX_SECONDS)
+        requested = float(default if ttl_seconds is None else ttl_seconds)
+        return max(1.0, min(requested, float(cap)))
+
+    def set_graph_mode(
+        self,
+        mode: GraphMode,
+        *,
+        reason: Optional[str] = None,
+        ttl_seconds: Optional[float] = None,
+        owner: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> Optional[float]:
+        """Set the motion-graph enforcement mode. Safe at any time.
+
+        Lowering below STRICT is a **bounded, audited, self-reverting**
+        relaxation: it requires a ``reason``, runs for at most
+        ``mode_override_max_seconds`` (motion_graph.yaml), and snaps back to
+        STRICT on its own. Before this, ADVISORY was process-wide state with
+        no expiry — a forgotten switch was inherited by the next client,
+        workflow or agent, and the only thing restoring it was operator
+        discipline.
+
+        Re-issuing while lowered grants a fresh full window rather than
+        erroring, the way the sash override does: an expiry part-way through
+        a calibration should be extendable without first going back to
+        STRICT and losing the arm's position.
+
+        Returns the seconds granted, or None when no window was needed
+        (raising to STRICT, or a graph that was not enforcing to begin with).
+
+        Raises ``ValueError`` when a lowering carries no reason, and
+        ``RuntimeError`` when there is no graph to enforce.
+        """
         if self.motion_graph is None and mode != GraphMode.OFF:
             raise RuntimeError(
                 "cannot enable graph mode: motion_graph.yaml is not loaded"
             )
-        self.graph_mode = mode
-        print(f"[motion_graph] mode set to {mode.value}")
+
+        with self._graph_mode_lock:
+            if getattr(self, "_admin_graph_off", None) is not None:
+                raise RuntimeError("Administrator graph OFF is active; only an administrator can restore it")
+            self._revert_graph_mode_if_due()
+            override = self._graph_mode_override
+
+            if mode == GraphMode.STRICT:
+                # Raising needs no reason and no window; it *is* the restore
+                # the window existed to guarantee, so it clears one early
+                # (and emits the audit row, with trigger "explicit").
+                if override is not None:
+                    self._restore_graph_mode("explicit")
+                self._graph_mode = mode
+                print(f"[motion_graph] mode set to {mode.value}")
+                return None
+
+            # What a revert would go back to. While an override is live that
+            # is the mode it captured, not the lowered mode showing now —
+            # otherwise advisory -> off would re-baseline to advisory and the
+            # arm would never find its way back to STRICT.
+            baseline: GraphMode = (
+                override["previous"] if override is not None else self._graph_mode
+            )
+            if baseline != GraphMode.STRICT:
+                # Nothing was being enforced (no graph, or a deployment that
+                # boots below STRICT), so there is nothing to revert to and a
+                # reason would be theatre.
+                self._graph_mode = mode
+                print(f"[motion_graph] mode set to {mode.value}")
+                return None
+
+            text = str(reason or "").strip()
+            if not text:
+                raise ValueError(
+                    "lowering the motion-graph mode below strict requires a "
+                    "reason: it relaxes the motion whitelist for every client "
+                    "of this device, and the next reader will want it explained"
+                )
+
+            granted = self._clamp_mode_override_ttl(ttl_seconds)
+            self._graph_mode = mode
+            self._graph_mode_override = {
+                "mode": mode,
+                "previous": baseline,
+                "reason": text,
+                "owner": owner,
+                "session_id": session_id,
+                "until": time.monotonic() + granted,
+                "granted": granted,
+                "expires_at": time.time() + granted,
+            }
+            # OFF is louder than ADVISORY on purpose: ADVISORY still logs
+            # every off-whitelist move, OFF does not consult the graph at all.
+            level = "OFF (graph not consulted)" if mode == GraphMode.OFF else mode.value
+            print(
+                f"[motion_graph] mode LOWERED to {level} for {granted:.0f}s by "
+                f"{owner or 'unknown'}: {text}"
+            )
+            self._emit_event(
+                "graph_mode_override",
+                from_state=baseline.value,
+                to_state=mode.value,
+                message=text,
+                ttl_s=granted,
+                owner=owner,
+            )
+            return granted
+
+    def restore_graph_mode(self, trigger: str) -> Optional[str]:
+        """Drop any active override now. Returns the mode restored to."""
+        with self._graph_mode_lock:
+            override = self._graph_mode_override
+            if override is None:
+                return None
+            self._restore_graph_mode(trigger)
+            return self._graph_mode.value
+
+    def graph_mode_override_snapshot(self) -> Optional[dict]:
+        """``details.motion_graph.mode_override``, or None when not lowered."""
+        admin = getattr(self, "_admin_graph_off", None)
+        if admin is not None:
+            return {"active": True, "mode": "off", "restores_to": "strict",
+                    "scope": "admin", "persistent": True, "claim_bound": False,
+                    "owner": admin["owner"], "reason": admin["reason"],
+                    "created_at": admin["created_at"], "granted_seconds": None,
+                    "remaining_seconds": None, "expires_at": None}
+        self._revert_graph_mode_if_due()
+        override = self._graph_mode_override
+        if override is None:
+            return None
+        remaining = max(0.0, override["until"] - time.monotonic())
+        return {
+            "active": True,
+            "mode": override["mode"].value,
+            "restores_to": override["previous"].value,
+            "reason": override["reason"],
+            "owner": override["owner"],
+            "claim_bound": override["session_id"] is not None,
+            "granted_seconds": round(override["granted"], 1),
+            "remaining_seconds": round(remaining, 1),
+            "expires_at": datetime.fromtimestamp(
+                override["expires_at"], tz=timezone.utc
+            ).isoformat().replace("+00:00", "Z"),
+        }
 
     def _predict_target_node_for_arm_pose(self, arm_pose_name: str) -> Optional[str]:
         """Predict the node id we'd land on after move_to_named_location.
@@ -2577,10 +3024,11 @@ class XArmController:
         )
 
     def _consult_graph_for_move(
-        self, target_node_id: Optional[str], target_label: str,
+        self, target_node_id: Optional[str], target_label: str, *, require_edge: bool = False,
     ) -> Optional[Edge]:
         """Look up the edge from current_node to target_node_id.
 
+        Explicit graph moves set require_edge=True in every global mode.
         Returns the Edge when one exists, None otherwise. In STRICT mode
         raises EdgeNotAllowedError on any failure (target unknown,
         current off-grid, or no whitelisted edge). In ADVISORY mode logs
@@ -2607,7 +3055,8 @@ class XArmController:
         # only be as strong as the least careful operator holding a claim.
         self._gate_sash(target_node_id, target_node_id, action="graph.move_to")
 
-        if self.graph_mode == GraphMode.OFF:
+        mode = GraphMode.STRICT if require_edge else self.graph_mode
+        if mode == GraphMode.OFF:
             return None
 
         current_id = self.current_node
@@ -2617,7 +3066,7 @@ class XArmController:
                 f"target {target_label!r} does not resolve to a graph node "
                 f"(rail={self.last_rail_location_name!r})"
             )
-            if self.graph_mode == GraphMode.STRICT:
+            if mode == GraphMode.STRICT:
                 raise EdgeNotAllowedError(current_id, target_label, msg)
             print(f"[motion_graph] advisory: {msg}")
             return None
@@ -2628,7 +3077,7 @@ class XArmController:
                 f"{target_node_id!r}. Call a named move that matches "
                 f"actual position to re-pin."
             )
-            if self.graph_mode == GraphMode.STRICT:
+            if mode == GraphMode.STRICT:
                 raise EdgeNotAllowedError(None, target_node_id, msg)
             print(f"[motion_graph] advisory: {msg}")
             return None
@@ -2636,7 +3085,7 @@ class XArmController:
         edge = self.motion_graph.find_edge(current_id, target_node_id)
         if edge is None:
             msg = f"no whitelisted edge {current_id!r} -> {target_node_id!r}"
-            if self.graph_mode == GraphMode.STRICT:
+            if mode == GraphMode.STRICT:
                 raise EdgeNotAllowedError(current_id, target_node_id, msg)
             print(f"[motion_graph] advisory: {msg}")
             return None
@@ -2656,20 +3105,22 @@ class XArmController:
                     f"edge {current_id!r} -> {target_node_id!r} is not "
                     f"traversable with gripper state {gripper_state!r}"
                 )
-            if self.graph_mode == GraphMode.STRICT:
+            if mode == GraphMode.STRICT:
                 raise EdgeNotAllowedError(current_id, target_node_id, msg)
             print(f"[motion_graph] advisory: {msg}")
             # Advisory: the edge still informs mode/speed.
 
         return edge
 
-    def _apply_edge_speed_cap(self, requested: Optional[float], edge: Optional[Edge]) -> Optional[float]:
-        """Clamp the caller's speed to edge.speed in STRICT mode.
+    def _apply_edge_speed_cap(self, requested: Optional[float], edge: Optional[Edge], *, enforce: bool = False) -> Optional[float]:
+        """Clamp speed for explicit graph moves and STRICT named moves.
 
         edge.speed is the maximum permitted speed for this transition;
         callers can ask for slower (more cautious) but not faster.
+        Units follow edge.mode: linear mm/s, joint deg/s. This is an arm
+        speed cap, not a conversion between Cartesian and joint speeds.
         """
-        if (self.graph_mode != GraphMode.STRICT
+        if ((not enforce and self.graph_mode != GraphMode.STRICT)
                 or edge is None or edge.speed is None):
             return requested
         if requested is None or requested > edge.speed:
@@ -2683,6 +3134,7 @@ class XArmController:
                 self.last_speed_clamps.append({
                     "from": edge.from_node, "to": edge.to_node,
                     "requested": requested, "applied": edge.speed,
+                    "units": "mm/s" if edge.mode == MoveMode.LINEAR else "deg/s",
                 })
             return edge.speed
         return requested
@@ -2735,6 +3187,9 @@ class XArmController:
     def disconnect(self):
         """Disconnects from the robot arm."""
         print("Disconnecting Robot Arm...")
+        # End ordinary claim-bound windows. The separate persistent admin
+        # latch deliberately survives disconnect and is restored only by admin.
+        self.restore_graph_mode("disconnect")
         self._emit_event("shutdown", message="Controller disconnecting")
         self._emit_state_transition("requires_init", message="Controller disconnected")
         # Stop the sash watchdog before the arm goes away: with no arm there is
@@ -2745,6 +3200,9 @@ class XArmController:
         self.alive = False
         self.states['connection'] = ComponentState.DISABLED
         self.states['arm'] = ComponentState.DISABLED
+        with self._ft_lock:
+            self.states['force_torque'] = ComponentState.DISABLED
+            self._ft_tare = {'completed': False, 'offset': None, 'completed_at': None}
         if self.arm:
             try:
                 self.arm.disconnect()
@@ -2814,8 +3272,8 @@ class XArmController:
             self.last_gripper_position = position
             self.last_gripper_force = force
             self.last_gripper_speed = speed
-            # Capture the slip/detect register for /status now that the jaws
-            # have settled — this is the move whose outcome we verify.
+            # With wait=False this can still report moving. The API poll
+            # refreshes the snapshot as the jaws settle and while holding.
             self.refresh_gripper_status()
         return success
 
@@ -2861,176 +3319,185 @@ class XArmController:
 
     def enable_force_torque_sensor(self):
         """Enable the 6-axis force torque sensor."""
-        if not self.force_torque_config.get('enable', True):
-            print("Force torque sensor is disabled in configuration")
-            return False
+        with self._ft_lock:
+            if not self.force_torque_config.get('enable', True):
+                print("Force torque sensor is disabled in configuration")
+                return False
 
-        try:
-            # Enable force torque sensor on the arm
-            code = self.arm.ft_sensor_enable(True)
-            if self.check_code(code, 'enable_force_torque_sensor'):
-                self.states['force_torque'] = ComponentState.ENABLED
-                print("Force torque sensor enabled")
+            try:
+                # Enable force torque sensor on the arm
+                code = self.arm.ft_sensor_enable(True)
+                if self.check_code(code, 'enable_force_torque_sensor'):
+                    self.states['force_torque'] = ComponentState.ENABLED
+                    print("Force torque sensor enabled")
                 
-                # Auto-calibrate if configured
-                if self.force_torque_config.get('calibration', {}).get('auto_calibrate', True):
-                    self.calibrate_force_torque_sensor()
+                    # Auto-calibrate if configured
+                    if self.force_torque_config.get('calibration', {}).get('auto_calibrate', True):
+                        self.calibrate_force_torque_sensor()
                 
-                return True
-            return False
-        except Exception as e:
-            print(f"Failed to enable force torque sensor: {e}")
-            self.states['force_torque'] = ComponentState.ERROR
-            return False
+                    return True
+                return False
+            except Exception as e:
+                print(f"Failed to enable force torque sensor: {e}")
+                self.states['force_torque'] = ComponentState.ERROR
+                return False
 
     def disable_force_torque_sensor(self):
         """Disable the 6-axis force torque sensor."""
-        try:
-            code = self.arm.ft_sensor_enable(False)
-            if self.check_code(code, 'disable_force_torque_sensor'):
-                self.states['force_torque'] = ComponentState.DISABLED
-                print("Force torque sensor disabled")
-                return True
-            return False
-        except Exception as e:
-            print(f"Failed to disable force torque sensor: {e}")
-            return False
-
-    def calibrate_force_torque_sensor(self, samples=None, delay=None):
-        """Calibrate the force torque sensor to zero."""
-        if not self.is_component_enabled('force_torque'):
-            print("Force torque sensor must be enabled before calibration")
-            return False
-
-        config = self.force_torque_config.get('calibration', {})
-        samples = samples or config.get('calibration_samples', 100)
-        delay = delay or config.get('calibration_delay', 0.1)
-        zero_threshold = config.get('zero_threshold', 0.5)
-
-        print(f"Calibrating force torque sensor with {samples} samples...")
-
-        try:
-            # Collect samples for calibration
-            readings = []
-            for i in range(samples):
-                ret = self.arm.get_ft_sensor_data()
-                if ret[0] == 0:
-                    # Get the actual list of 6 values [fx, fy, fz, tx, ty, tz]
-                    raw_data = ret[1]  # ret[1] is the list, not ret[1:]
-                    if len(raw_data) == 6:
-                        readings.append(raw_data)  # Take the 6 values
-                    else:
-                        print(f"Warning: Expected 6 values, got {len(raw_data)}: {raw_data}")
-                time.sleep(delay)
-
-            if len(readings) < samples // 2:
-                print("Insufficient readings for calibration")
+        with self._ft_lock:
+            try:
+                code = self.arm.ft_sensor_enable(False)
+                if self.check_code(code, 'disable_force_torque_sensor'):
+                    self.states['force_torque'] = ComponentState.DISABLED
+                    print("Force torque sensor disabled")
+                    return True
+                return False
+            except Exception as e:
+                print(f"Failed to disable force torque sensor: {e}")
                 return False
 
-            # Calculate average zero point
-            self.force_torque_zero = [
-                sum(reading[i] for reading in readings) / len(readings)
-                for i in range(6)
-            ]
-            
-            self.force_torque_calibrated = True
-            print("Force torque sensor calibrated successfully")
-            return True
+    def _ft_deadbands(self):
+        config = self.force_torque_config.get('direction_detection', {})
+        if 'dead_zone' in config:
+            raise ValueError("Replace dead_zone with force_direction_deadband_n and torque_direction_deadband_nm")
+        values = [config.get('force_direction_deadband_n', 2.0),
+                  config.get('torque_direction_deadband_nm', 2.0)]
+        if any(isinstance(v, bool) or not isinstance(v, (int, float))
+               or not math.isfinite(v) or v < 0 for v in values):
+            raise ValueError("FT direction deadbands must be finite and nonnegative")
+        return values
 
-        except Exception as e:
-            print(f"Calibration failed: {e}")
-            return False
+    def _ft_configuration(self):
+        """Called under _ft_lock. No SDK getters, including lazy version getters."""
+        force_deadband, torque_deadband = self._ft_deadbands()
+        # SDK 1.18.4's public version property may query hardware. Inspect only
+        # its populated cache; unknown versions remain null until connected.
+        sdk_arm = vars(self.arm).get('_arm') if self.arm is not None else None
+        firmware = vars(sdk_arm).get('_version') if sdk_arm is not None else None
+        if not isinstance(firmware, str) or not firmware:
+            firmware = None
+        body = {
+            'device': {'sdk_version': self._ft_sdk_version, 'controller_firmware': firmware,
+                       'controller_firmware_source': 'sdk_cache' if firmware else 'unknown',
+                       'ft_sensor_firmware': None},
+            'source': {'method': 'get_ft_sensor_data', 'is_raw': False,
+                       'channel': 'controller_compensated_filtered'},
+            'wrench_order': ['Fx', 'Fy', 'Fz', 'Tx', 'Ty', 'Tz'],
+            'units': {'force': 'N', 'torque': 'N*m'},
+            'geometry': {'status': 'unknown', 'frame_id': None,
+                         'axis_convention': None, 'torque_reference_point': None,
+                         'interaction_sign': None},
+            'controller_compensation': {
+                'configuration_status': 'unknown', 'reason': 'ft_parameters_not_read',
+                'payload_coverage': 'unknown', 'validation_status': 'unknown'},
+            'service_tare': deepcopy(self._ft_tare),
+            'direction_deadband': {'force_n': force_deadband, 'torque_nm': torque_deadband},
+        }
+        current = self._ft_configs.get(self._ft_current_revision)
+        if current is None or body != {k: v for k, v in current.items() if k != 'revision'}:
+            self._ft_config_sequence += 1
+            self._ft_current_revision = f'{self._ft_session}:{self._ft_config_sequence}'
+            self._ft_configs[self._ft_current_revision] = {
+                'revision': self._ft_current_revision, **body}
+            self._ft_prune_configs()
+        return self._ft_configs[self._ft_current_revision]
+
+    def _ft_prune_configs(self):
+        keep = {sample['config_revision'] for sample in self.force_torque_history}
+        keep.add(self._ft_current_revision)
+        if self.last_force_torque_sample is not None:
+            keep.add(self.last_force_torque_sample['config_revision'])
+        self._ft_configs = {key: val for key, val in self._ft_configs.items() if key in keep}
+
+    def get_force_torque_config(self, revision=None):
+        """Return a defensive copy; a missing revision is never the current one."""
+        with self._ft_lock:
+            config = (self._ft_configuration() if revision is None
+                      else self._ft_configs.get(revision))
+            return deepcopy(config)
+
+    def calibrate_force_torque_sensor(self, samples=None, delay=None):
+        """Existing explicit action: compute a service tare, not gravity calibration."""
+        with self._ft_lock:
+            if self.arm is None or not self.arm.connected or not self.is_component_enabled('force_torque'):
+                return False
+            config = self.force_torque_config.get('calibration', {})
+            samples = config.get('calibration_samples', 100) if samples is None else samples
+            delay = config.get('calibration_delay', 0.1) if delay is None else delay
+            if (isinstance(samples, bool) or not isinstance(samples, int) or samples < 1
+                    or isinstance(delay, bool) or not isinstance(delay, (int, float))
+                    or not math.isfinite(delay) or delay < 0):
+                return False
+            previous_tare = self._ft_tare
+            try:
+                self._ft_deadbands()
+                readings = []
+                for _ in range(samples):
+                    code, values = self.arm.get_ft_sensor_data(is_raw=False)
+                    if code == 0:
+                        try:
+                            readings.append(_ft_vector(values))
+                        except ValueError:
+                            pass
+                    time.sleep(delay)
+                if len(readings) < max(1, (samples + 1) // 2):
+                    return False
+                offset = _ft_vector([math.fsum(row[i] / len(readings) for row in readings)
+                                     for i in range(6)])
+                self._ft_tare = {'completed': True, 'offset': offset,
+                                 'completed_at': datetime.now(timezone.utc).isoformat()}
+                self._ft_configuration()
+                return True
+            except Exception as exc:
+                self._ft_tare = previous_tare
+                print(f"Service FT tare failed: {exc}")
+                return False
 
     def get_force_torque_data(self):
-        """Get current force torque sensor data."""
-        if not self.is_component_enabled('force_torque'):
-            return None
-
-        try:
-            ret = self.arm.get_ft_sensor_data()
-            if ret[0] == 0:
-                raw_data = ret[1]  # ret[1] is the list of 6 values
-                
-                # Apply calibration if available
-                if self.force_torque_calibrated:
-                    calibrated_data = [
-                        raw_data[i] - self.force_torque_zero[i]
-                        for i in range(6)
-                    ]
-                else:
-                    calibrated_data = raw_data
-
-                # Update last reading and history
-                self.last_force_torque = calibrated_data
-                self.force_torque_history.append({
-                    'timestamp': time.time(),
-                    'data': calibrated_data.copy()
-                })
-
-                return calibrated_data
-            return None
-        except Exception as e:
-            print(f"Failed to get force torque data: {e}")
-            return None
-
-    def get_force_torque_magnitude(self):
-        """Get the magnitude of force and torque vectors."""
-        data = self.get_force_torque_data()
-        if data is None:
-            return None
-
-        # Calculate force magnitude (first 3 values)
-        force_magnitude = (data[0]**2 + data[1]**2 + data[2]**2)**0.5
-        
-        # Calculate torque magnitude (last 3 values)
-        torque_magnitude = (data[3]**2 + data[4]**2 + data[5]**2)**0.5
-
-        return {
-            'force_magnitude': force_magnitude,
-            'torque_magnitude': torque_magnitude,
-            'total_magnitude': (force_magnitude**2 + torque_magnitude**2)**0.5
-        }
-
-    def get_force_torque_direction(self):
-        """Get the direction of force and torque vectors."""
-        data = self.get_force_torque_data()
-        if data is None:
-            return None
-
-        config = self.force_torque_config.get('direction_detection', {})
-        dead_zone = config.get('dead_zone', 2.0)
-
-        # Check if force is above dead zone
-        force_magnitude = (data[0]**2 + data[1]**2 + data[2]**2)**0.5
-        if force_magnitude < dead_zone:
-            force_direction = None
-        else:
-            # Normalize force vector
-            force_direction = [data[i] / force_magnitude for i in range(3)]
-
-        # Check if torque is above dead zone
-        torque_magnitude = (data[3]**2 + data[4]**2 + data[5]**2)**0.5
-        if torque_magnitude < dead_zone:
-            torque_direction = None
-        else:
-            # Normalize torque vector
-            torque_direction = [data[i+3] / torque_magnitude for i in range(3)]
-
-        return {
-            'force_direction': force_direction,
-            'torque_direction': torque_direction,
-            'force_magnitude': force_magnitude,
-            'torque_magnitude': torque_magnitude
-        }
+        """One controller read, one configuration revision, one complete snapshot."""
+        with self._ft_lock:
+            if self.arm is None or not self.arm.connected or not self.is_component_enabled('force_torque'):
+                return None
+            try:
+                config = self._ft_configuration()
+                code, values = self.arm.get_ft_sensor_data(is_raw=False)
+                received_at = datetime.now(timezone.utc).isoformat()
+                if code != 0:
+                    return None
+                wrench = _ft_vector(values)
+                tare = config['service_tare']
+                if tare['completed']:
+                    wrench = _ft_vector([v - zero for v, zero in zip(wrench, tare['offset'])])
+                derived = force_torque_derived(
+                    wrench, config['direction_deadband']['force_n'],
+                    config['direction_deadband']['torque_nm'])
+                self._ft_sequence += 1
+                sample = {
+                    'sample_id': f'{self._ft_session}:{self._ft_sequence}',
+                    'config_revision': config['revision'],
+                    'sensor_sampled_at': None,
+                    'service_received_at': received_at,
+                    'wrench': wrench,
+                    'service_tare_applied': tare['completed'],
+                    **derived,
+                }
+                self.last_force_torque_sample = sample
+                self.force_torque_history.append(sample)
+                self._ft_prune_configs()
+                return deepcopy(sample)
+            except Exception as exc:
+                print(f"Failed to get force torque data: {exc}")
+                return None
 
     def check_force_torque_safety(self):
         """Check if force/torque exceeds safety thresholds and trigger alerts."""
         if not self.is_component_enabled('force_torque'):
             return False
 
-        data = self.get_force_torque_data()
-        if data is None:
+        sample = self.get_force_torque_data()
+        if sample is None:
             return False
+        data = sample['wrench']
 
         thresholds = self.force_torque_config.get('safety_thresholds', {})
         force_thresholds = thresholds.get('force', {})
@@ -3050,14 +3517,10 @@ class XArmController:
             if abs(data[i+3]) > threshold:
                 torque_violations.append(f"{axis}: {data[i+3]:.2f}Nm > {threshold}Nm")
 
-        # Check total magnitudes
-        magnitudes = self.get_force_torque_magnitude()
-        if magnitudes:
-            if magnitudes['force_magnitude'] > force_thresholds.get('magnitude', float('inf')):
-                force_violations.append(f"total: {magnitudes['force_magnitude']:.2f}N > {force_thresholds.get('magnitude')}N")
-            
-            if magnitudes['torque_magnitude'] > torque_thresholds.get('magnitude', float('inf')):
-                torque_violations.append(f"total: {magnitudes['torque_magnitude']:.2f}Nm > {torque_thresholds.get('magnitude')}Nm")
+        if sample['force_magnitude'] > force_thresholds.get('magnitude', float('inf')):
+            force_violations.append(f"total: {sample['force_magnitude']:.2f}N > {force_thresholds.get('magnitude')}N")
+        if sample['torque_magnitude'] > torque_thresholds.get('magnitude', float('inf')):
+            torque_violations.append(f"total: {sample['torque_magnitude']:.2f}Nm > {torque_thresholds.get('magnitude')}Nm")
 
         # Trigger alerts if violations detected
         if force_violations or torque_violations:
@@ -3134,9 +3597,10 @@ class XArmController:
 
             # Monitor force until threshold is reached
             while time.time() - start_time < timeout:
-                data = self.get_force_torque_data()
-                if data is None:
+                sample = self.get_force_torque_data()
+                if sample is None:
                     continue
+                data = sample['wrench']
 
                 # Check if force threshold is exceeded
                 if abs(data[0 if axis == 'x' else 1 if axis == 'y' else 2]) > force_threshold:
@@ -3217,9 +3681,10 @@ class XArmController:
 
             # Monitor torque until threshold is reached
             while time.time() - start_time < timeout:
-                data = self.get_force_torque_data()
-                if data is None:
+                sample = self.get_force_torque_data()
+                if sample is None:
                     continue
+                data = sample['wrench']
 
                 # Check if torque threshold is exceeded
                 # Map joint to torque axis (simplified mapping)
@@ -3254,17 +3719,17 @@ class XArmController:
             return False
 
     def get_force_torque_status(self):
-        """Get comprehensive force torque sensor status."""
-        return {
-            'enabled': self.is_component_enabled('force_torque'),
-            'calibrated': self.force_torque_calibrated,
-            'last_reading': self.last_force_torque,
-            'zero_point': self.force_torque_zero,
-            'history_length': len(self.force_torque_history),
-            'alerts_active': self.force_torque_alerts_active,
-            'magnitude': self.get_force_torque_magnitude(),
-            'direction': self.get_force_torque_direction()
-        }
+        """Return the last complete sample without reading hardware."""
+        with self._ft_lock:
+            config = self._ft_configuration()
+            return {
+                'enabled': self.is_component_enabled('force_torque'),
+                'config_revision': config['revision'],
+                'service_tare_completed': self._ft_tare['completed'],
+                'last_sample': deepcopy(self.last_force_torque_sample),
+                'history_length': len(self.force_torque_history),
+                'alerts_active': self.force_torque_alerts_active,
+            }
 
     def has_force_torque_sensor(self):
         """Check if force torque sensor is available and enabled."""
@@ -3277,7 +3742,7 @@ class XArmController:
         
         Args:
             target_location (str): Name of target location from joint_config.yaml
-            speed (float): Movement speed (default: tcp_speed)
+            speed (float): TCP translation speed in mm/s (default: tcp_speed)
             
         Returns:
             bool: True if successful, False otherwise
@@ -3350,13 +3815,12 @@ class XArmController:
         
         Supported formats:
         1. Joint angles: [J1, J2, J3, J4, J5] or [J1, J2, J3, J4, J5, J6, J7]
-        2. Cartesian list: [x, y, z, roll, pitch, yaw]  
-        3. Cartesian dict: {x: 300, y: 0, z: 400, roll: 180, pitch: 0, yaw: 0}
+        2. Cartesian dict: {x: 300, y: 0, z: 400, roll: 180, pitch: 0, yaw: 0}
         
         Args:
             location_name (str): Name of the location (for logging)
             position_data: Position in any supported format
-            speed (float): Speed for temporary movements (if needed)
+            speed (float): Unused; conversion never moves the robot.
             
         Returns:
             list: [x, y, z, roll, pitch, yaw] or None if conversion failed
@@ -3370,48 +3834,24 @@ class XArmController:
             ]
             
         elif isinstance(position_data, list):
-            if len(position_data) == 6:
-                # Already Cartesian: [x, y, z, roll, pitch, yaw]
-                print(f"Using Cartesian list format for '{location_name}': {position_data}")
-                return position_data
-                
-            elif len(position_data) <= self.num_joints:
+            if len(position_data) <= self.num_joints:
                 # Joint angles: [J1, J2, J3, J4, J5] or [J1, ..., J7]
                 print(f"Converting joint angles to Cartesian for '{location_name}': {position_data}")
                 try:
                     if hasattr(self.arm, 'get_forward_kinematics'):
                         # Use forward kinematics (preferred - no robot movement)
-                        ret = self.arm.get_forward_kinematics(position_data)
+                        ret = self.arm.get_forward_kinematics(
+                            position_data, input_is_radian=False, return_is_radian=False
+                        )
                         if ret[0] == 0:
                             cartesian = ret[1][:6]  # [x, y, z, roll, pitch, yaw]
                             print(f"[OK] Forward kinematics result: {cartesian}")
                             return cartesian
-                        else:
-                            print("Forward kinematics failed, using position sampling")
-                    
-                    # Fallback: Move robot to get position (less efficient)
-                    print("Using position sampling method")
-                    temp_current = self.get_current_position()
-                    if not self.move_joints(position_data, speed=speed):
-                        print(f"Error: Could not move to joint position {position_data}")
-                        return None
-                    
-                    cartesian = self.get_current_position()
-                    if not cartesian:
-                        print("Error: Could not get Cartesian position after joint movement")
-                        return None
-                    
-                    # Restore to original position
-                    if temp_current and not self.move_to_position(
-                        x=temp_current[0], y=temp_current[1], z=temp_current[2],
-                        roll=temp_current[3], pitch=temp_current[4], yaw=temp_current[5],
-                        speed=speed, wait=True
-                    ):
-                        print("Warning: Could not restore to original position")
-                    
-                    print(f"[OK] Position sampling result: {cartesian}")
-                    return cartesian
-                    
+                    # Conversion must never actuate hardware or reinterpret a
+                    # linear speed (mm/s) as a joint speed (deg/s).
+                    print(f"Error: Forward kinematics unavailable or failed for '{location_name}'")
+                    return None
+
                 except Exception as e:
                     print(f"Error in joint-to-Cartesian conversion: {e}")
                     return None
@@ -3421,4 +3861,3 @@ class XArmController:
         else:
             print(f"Error: Unsupported position format for '{location_name}': {type(position_data)}")
             return None
-

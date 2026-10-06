@@ -44,10 +44,14 @@ def mock_xarm_api():
     mock_arm.disconnect.return_value = 0
     mock_arm.clean_warn.return_value = 0
     mock_arm.clean_error.return_value = 0
+    mock_arm.clean_bio_gripper_error.return_value = 0
+    mock_arm.get_state.side_effect = lambda: (0, mock_arm.state)
+    mock_arm.get_err_warn_code.side_effect = lambda: (0, [mock_arm.error_code, mock_arm.warn_code])
     mock_arm.motion_enable.return_value = 0
     mock_arm.set_mode.return_value = 0
     mock_arm.set_state.return_value = 0
     mock_arm.emergency_stop.return_value = 0
+    mock_arm.set_linear_track_stop.return_value = 0
     mock_arm.register_error_warn_changed_callback.return_value = 0
     mock_arm.register_state_changed_callback.return_value = 0
     

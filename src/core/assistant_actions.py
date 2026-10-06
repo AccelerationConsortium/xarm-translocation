@@ -33,7 +33,16 @@ HOME_NODE = "robot_home"
 
 # Tags that group nodes into stations. A node without one of these (and
 # without a home/safe tag) isn't part of any place and is skipped.
-_STATION_TAGS = {"deck", "opentrons", "uplc", "hood", "cytation", "plateloc"}
+#
+# `shaker` and `filter` replaced `hood` here on 2026-09-21, when the `hood`
+# tag came off the graph's hood_* nodes. They are the right grain anyway:
+# the two sub-stations inside the hood are separately reachable places, and
+# camera_tracking.yaml already aimed on them rather than on `hood`. The one
+# place lost in the swap is `hood` itself (built solely from `hood_home`,
+# whose only remaining tag is the `transit_home` gateway marker) — that was
+# a front door, not a destination, and find_path still routes through it.
+_STATION_TAGS = {"deck", "opentrons", "uplc", "shaker", "filter",
+                 "cytation", "plateloc"}
 _HOME_TAGS = {"safe", "global_home", "home"}
 # Tags describing *how* a node behaves (gateway/pass-through), not *where*
 # it is — never part of a place's identity. ``transit_home`` marks a

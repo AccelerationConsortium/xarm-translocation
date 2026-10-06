@@ -24,6 +24,8 @@ from .models import (
     MetricValue,
 )
 
+from . import realsense_camera, realsense_captures
+
 if TYPE_CHECKING:  # pragma: no cover - import-time only for type hints
     from .xarm_controller import XArmController
 
@@ -109,7 +111,22 @@ def _disconnected_envelope() -> EquipmentStatus:
     instantiated, so the only honest answer is ``requires_init`` with
     ``required_actions: ["connect"]`` (matching the SDK's pre-migration
     ``LegacyXArmAdapter`` mapping).
+
+    The RealSense cameras are process-wide and do not wait for the arm, so
+    their component/details blocks appear here too when any is configured --
+    an operator can see the bench cameras' health before /connect.
     """
+    components: dict[str, ComponentStatus] = {
+        "arm": ComponentStatus(connected=False, state="disabled"),
+        "gripper": ComponentStatus(connected=False, state="disabled"),
+        "track": ComponentStatus(connected=False, state="disabled"),
+        "force_torque": ComponentStatus(connected=False, state="disabled"),
+    }
+    details: dict[str, Any] = {}
+    components.update(_build_realsense_components())
+    realsense_block = _build_realsense_details()
+    if realsense_block is not None:
+        details["realsense"] = realsense_block
     return EquipmentStatus(
         protocol_version=PROTOCOL_VERSION,
         equipment_id=EQUIPMENT_ID,
@@ -132,12 +149,8 @@ def _disconnected_envelope() -> EquipmentStatus:
         allowed_actions=["connect"],
         device_time=datetime.now(timezone.utc),
         uptime_seconds=time.time() - _PROCESS_START_TIME,
-        components={
-            "arm": ComponentStatus(connected=False, state="disabled"),
-            "gripper": ComponentStatus(connected=False, state="disabled"),
-            "track": ComponentStatus(connected=False, state="disabled"),
-            "force_torque": ComponentStatus(connected=False, state="disabled"),
-        },
+        components=components,
+        details=details,
     )
 
 
@@ -198,7 +211,11 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         last_error_text = None
 
     activity, activity_since = _observe_activity(controller)
-    alive = bool(getattr(controller, "alive", False))
+    recovering = getattr(controller, "_recovering", False) is True
+    alive = bool(getattr(controller, "alive", False)) and not recovering
+    health_failure = getattr(controller, "health_failure", None)
+    if not isinstance(health_failure, dict):
+        health_failure = None
 
     # State derivation.
     last_error: ErrorInfo | None = None
@@ -243,6 +260,13 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         # suppresses the other.
         equipment_status = "degraded"
         message = "Controller connected but not fully alive."
+        if recovering:
+            message = "Controller recovery in progress; readiness not yet verified."
+        if health_failure:
+            message += (
+                f" {health_failure['operation']}: {health_failure['reason']}"
+                f" (code={health_failure['return_code']}, at {health_failure['timestamp']})."
+            )
 
     simulated = bool(getattr(controller, "is_simulated", False))
     if simulated:
@@ -264,6 +288,16 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     sash_prefix = _sash_status_prefix(controller)
     if sash_prefix:
         message = f"{sash_prefix} {message}"
+
+    # Same reasoning for a lowered motion-graph mode: the whitelist is not
+    # being enforced right now, which is a fact about supervision rather than
+    # about this arm's health, so it rides on `message` (and, machine-readably,
+    # on details.motion_graph.mode_override) instead of pushing `degraded`.
+    # Worth the tile space because the mode is process-wide: a client that
+    # never touched it still inherits the relaxation.
+    graph_prefix = _graph_mode_prefix(controller)
+    if graph_prefix:
+        message = f"{graph_prefix} {message}"
 
     # Components.
     components: dict[str, ComponentStatus] = {
@@ -293,11 +327,21 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
             connected=arm_connected,
             state=force_torque_state,
             message=(
-                "calibrated"
-                if getattr(controller, "force_torque_calibrated", False)
-                else "uncalibrated"
+                "service tare completed; compensation validation unknown"
+                if getattr(controller, "_ft_tare", {}).get("completed") is True
+                else "service tare not completed; compensation validation unknown"
             ),
         )
+
+    # RealSense depth cameras, when src/settings/realsense.yaml enables them.
+    # One component per camera, keyed realsense_<camera_id>, because a
+    # component is a thing that can be healthy or not and two cameras fail
+    # independently -- a single merged entry would hide the working one.
+    # Components, not state inputs: arm motion does not depend on a camera,
+    # so an unplugged one never pushes equipment_status (§2.2 scopes degraded
+    # to subsystems a normal run needs). Absent when unconfigured so
+    # unmigrated deployments see an unchanged envelope.
+    components.update(_build_realsense_components())
 
     # Metrics (numeric values with units).
     metrics: dict[str, MetricValue] = {}
@@ -306,18 +350,12 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         if isinstance(track_pos, (int, float)):
             metrics["track_position"] = MetricValue(value=float(track_pos), unit="mm")
 
-    last_ft = getattr(controller, "last_force_torque", None)
-    if (
-        controller.has_force_torque_sensor()
-        and isinstance(last_ft, (list, tuple))
-        and len(last_ft) >= 3
-    ):
-        try:
-            fx, fy, fz = (float(last_ft[0]), float(last_ft[1]), float(last_ft[2]))
-            magnitude = (fx * fx + fy * fy + fz * fz) ** 0.5
-            metrics["force_magnitude"] = MetricValue(value=magnitude, unit="N")
-        except (TypeError, ValueError):
-            pass
+    last_ft = getattr(controller, "last_force_torque_sample", None)
+    if controller.has_force_torque_sensor() and isinstance(last_ft, dict):
+        magnitude = last_ft.get("force_magnitude")
+        if isinstance(magnitude, (int, float)):
+            metrics["force_magnitude"] = MetricValue(
+                value=magnitude, unit="N", timestamp=last_ft.get("service_received_at"))
 
     tcp_speed = getattr(controller, "tcp_speed", None)
     if isinstance(tcp_speed, (int, float)):
@@ -355,6 +393,7 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         details["simulation_source"] = "+".join(sources) or "unknown"
     # Carry connection details for the local web UI's panel. Not contracted.
     details["connection_details"] = _build_connection_details(controller)
+    details["health_failure"] = dict(health_failure) if health_failure else None
     # Motion-graph state (Phase 1: introspection only; absent when no graph
     # is loaded so the field doesn't pollute /status for unmigrated configs).
     motion_graph_block = _build_motion_graph_details(controller)
@@ -368,6 +407,12 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     interlocks_block = _build_sash_interlock_details(controller)
     if interlocks_block is not None:
         details["interlocks"] = interlocks_block
+
+    # Machine-readable twin of the components.realsense_<id> entries: device
+    # list, stream config, measured fps, and the reason when not streaming.
+    realsense_block = _build_realsense_details()
+    if realsense_block is not None:
+        details["realsense"] = realsense_block
 
     # BIO gripper slip/detect register snapshot (plate-transfer
     # verification aid). Absent for non-BIO grippers and before the first
@@ -486,6 +531,109 @@ def _build_sash_interlock_details(controller: XArmController) -> dict[str, Any] 
     return {"fume_hood_sash": snapshot} if isinstance(snapshot, dict) else None
 
 
+def _build_realsense_components() -> dict[str, ComponentStatus]:
+    """``components.realsense_<camera_id>`` for every configured camera.
+
+    Reads the process-wide registry (``realsense_camera.cameras()``) -- the
+    cameras outlive arm connections, so they are not controller attributes.
+    ``describe()`` only touches cached state plus a TTL-cached USB
+    enumeration, keeping ``build_status`` cheap and side-effect-free. A camera
+    whose reporting raises is dropped from the envelope rather than allowed to
+    break ``/status`` for the arm.
+    """
+    out: dict[str, ComponentStatus] = {}
+    try:
+        registry = realsense_camera.cameras()
+    except Exception:  # noqa: BLE001 - observability must not break /status
+        return out
+    for camera_id, camera in registry.items():
+        if not getattr(camera, "configured", False):
+            continue
+        try:
+            block = camera.component_status()
+        except Exception:  # noqa: BLE001 - observability must not break /status
+            continue
+        if not isinstance(block, dict):
+            continue
+        out[f"realsense_{camera_id}"] = ComponentStatus(
+            connected=bool(block.get("connected")),
+            state=str(block.get("state") or "unknown"),
+            message=block.get("message"),
+        )
+    return out
+
+
+def _realsense_capture_allowed() -> bool:
+    """Whether a ``POST /control/realsense/<id>/capture`` would be honoured.
+
+    Mirrors exactly what the endpoint checks before it touches a camera: a
+    configured camera that is either already streaming or allowed to start on
+    demand, and an enabled capture store. ``realsense.capture`` is one action
+    name for a family of routes, so ANY qualifying camera advertises it --
+    the list says the verb is available, and ``details.realsense.cameras``
+    says which lens can serve it. Argument-dependent refusals (a disabled
+    colour stream, a full disk) are 4xx/5xx that a flat action list cannot
+    predict, which is the same line ``graph.move_to`` draws.
+    """
+    try:
+        registry = realsense_camera.cameras()
+    except Exception:  # noqa: BLE001
+        return False
+    ready = any(
+        getattr(camera, "configured", False)
+        and (getattr(camera, "streaming", False) or getattr(camera, "start_on_demand", False))
+        for camera in registry.values()
+    )
+    if not ready:
+        return False
+    try:
+        store = realsense_captures.shared_store()
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(store is not None and store.enabled)
+
+
+def _build_realsense_details() -> dict[str, Any] | None:
+    """The ``details.realsense`` block, or None when nothing is configured.
+
+    ``cameras`` is a map keyed by camera id rather than a list, because every
+    other surface (routes, component names, capture directories) addresses a
+    camera by that id and a client should never have to search a list to find
+    one. ``default`` repeats what ``GET /realsense/cameras`` says: the id a
+    caller may omit naming, null once there is more than one. The per-camera
+    blocks are extended with one shared ``captures`` summary so a client can
+    see the store's occupancy without a second request -- the same reasoning
+    that puts ``motion_graph`` in details rather than behind ``GET /graph``.
+    """
+    try:
+        registry = realsense_camera.cameras()
+    except Exception:  # noqa: BLE001 - observability must not break /status
+        return None
+    blocks: dict[str, Any] = {}
+    for camera_id, camera in registry.items():
+        if not getattr(camera, "configured", False):
+            continue
+        try:
+            block = camera.status_block()
+        except Exception:  # noqa: BLE001 - observability must not break /status
+            continue
+        if isinstance(block, dict):
+            blocks[camera_id] = block
+    if not blocks:
+        return None
+    details: dict[str, Any] = {
+        "default": realsense_camera.default_camera_id(),
+        "cameras": blocks,
+    }
+    try:
+        store = realsense_captures.shared_store()
+        if store is not None and store.enabled:
+            details["captures"] = store.summary()
+    except Exception:  # noqa: BLE001 - observability must not break /status
+        pass
+    return details
+
+
 def _sash_status_prefix(controller: XArmController) -> str | None:
     """A ``[SASH-*]`` message prefix, or None when the sash is parked.
 
@@ -600,6 +748,15 @@ def _build_allowed_actions(
             # list must not offer it either.
             return actions
 
+        # RealSense capture records. Advertised below the motion-in-flight
+        # gate above on purpose: a frameset grabbed mid-move pairs a blurred
+        # image with a pose that has already changed, which is not a
+        # measurement. Deliberately *above* the Studio-Sim gate that follows,
+        # because the camera is real hardware even when the box simulates and
+        # POST /control/realsense/capture has no simulator guard to mirror.
+        if _realsense_capture_allowed():
+            actions.append("realsense.capture")
+
         if getattr(controller, "is_real_box_simulating", False):
             # The real box is in Studio-Sim: every motion and gripper
             # endpoint returns 412 (box_sim_guard), because the SDK would
@@ -617,6 +774,19 @@ def _build_allowed_actions(
         # Compare on .value to avoid having to import GraphMode here
         # (which would risk a second module load under test conditions).
         graph_mode_value = getattr(graph_mode, "value", graph_mode)
+
+        # Freehand (graph-bypassing) Cartesian/joint moves. strict_graph_guard
+        # refuses them with 409 only in STRICT, so they are advertised in every
+        # other mode — including with no graph loaded — to keep §6.2's "listed
+        # means honored" true. Without this, clients that gate on this list
+        # (the lab-skills catalog, agents) never see them even after a
+        # deliberate mode lowering. The sash interlock's freehand guard is
+        # position-dependent, the same class of refusal the node gate is.
+        if graph_mode_value != "strict":
+            actions.extend(
+                ["freehand.position", "freehand.relative", "freehand.joints"]
+            )
+
         if graph is not None:
             strict = graph_mode_value == "strict"
             has_gripper = bool(controller.has_gripper())
@@ -651,7 +821,9 @@ def _build_allowed_actions(
             if has_gripper and (not strict or gripper_targets):
                 actions.append("graph.gripper")
             actions.append("graph.recover_to")
-            actions.append("graph.mode")
+            override = _graph_mode_override(controller)
+            if not (override and override.get("scope") == "admin"):
+                actions.append("graph.mode")
             if (
                 not getattr(controller, "is_simulated", False)
                 and getattr(controller, "last_transition", None) is not None
@@ -695,7 +867,7 @@ def _build_gripper_details(controller: XArmController) -> dict[str, Any] | None:
     ``refresh_gripper_status`` cache, so this reader is side-effect-free.
 
     Returns ``None`` when nothing concrete has been cached yet (non-BIO
-    gripper, or the gripper hasn't moved this session) so the field
+    gripper, or no status has been read this session) so the field
     doesn't pollute /status for arms that never grip.
 
     Field shape::
@@ -776,7 +948,48 @@ def _build_motion_graph_details(controller: XArmController) -> dict[str, Any] | 
         "allowed_gripper_targets": controller.allowed_gripper_targets(),
         "arm_pose_name": getattr(controller, "last_arm_pose_name", None),
         "rail_location_name": getattr(controller, "last_rail_location_name", None),
+        # Bounded overrides carry a countdown; persistent administrator OFF
+        # carries scope=admin and null expiry, until explicit admin restore.
+        "mode_override": _graph_mode_override(controller),
     }
+
+
+def _graph_mode_override(controller: XArmController) -> dict[str, Any] | None:
+    """The controller's mode-override snapshot, or None. Never raises.
+
+    Defensive about the shape for the same reason ``_sash_status_prefix`` is:
+    /status must not be the thing that breaks when a controller stand-in (a
+    test double, an older build) has no such method.
+    """
+    snapshot = getattr(controller, "graph_mode_override_snapshot", None)
+    if not callable(snapshot):
+        return None
+    try:
+        result = snapshot()
+    except Exception:  # noqa: BLE001 - a status read must not fail on this
+        return None
+    return result if isinstance(result, dict) else None
+
+
+def _graph_mode_prefix(controller: XArmController) -> str | None:
+    """A ``[GRAPH-ADVISORY]`` / ``[GRAPH-OFF]`` prefix, or None when enforcing.
+
+    Keyed on an *active override* rather than on the mode alone. Since every
+    lowering from STRICT opens one, the two coincide wherever it matters —
+    but a deployment with no graph to enforce sits at OFF permanently, and
+    prefixing every poll there would be noise, not a warning. The prefix
+    means "someone lowered the guard and it is coming back", which is
+    exactly what an override is.
+    """
+    override = _graph_mode_override(controller)
+    if not override:
+        return None
+    mode = override.get("mode")
+    if mode == "advisory":
+        return "[GRAPH-ADVISORY]"
+    if mode == "off":
+        return "[GRAPH-OFF]"
+    return None
 
 
 def _build_connection_details(controller: XArmController) -> dict[str, Any] | None:

@@ -40,6 +40,7 @@ dependencies = [
     # OpenAI-compatible API. The feature degrades gracefully when the key is
     # unset, but the SDK ships by default.
     "openai>=2.46,<3",
+    "httpx>=0.25.0",  # Standalone camera service client
     # Loads OPENROUTER_API_KEY from a local .env file (git-ignored).
     "python-dotenv>=1.0.0",
     "sdl-lab-contract",

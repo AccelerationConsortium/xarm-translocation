@@ -39,7 +39,9 @@
         if (embedded) setInterval(applyTheme, 1000);
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260813a">
+    <link rel="stylesheet" href="style.css?v=20260930-camera-controls">
+    <link rel="stylesheet" href="graph.css?v=20260930-camera-controls">
+    <link rel="stylesheet" href="workspace.css?v=20260930-joint-readings">
 </head>
 <body>
     <!-- Sticky top-banner stack. banner.js prefers a page-provided
@@ -81,49 +83,12 @@
              ac_auth, one asset for every lab UI). It renders the login/logout
              bar and populates window.labAuth for the claim wiring in main.js.
              Included near the end of <body>, before main.js. -->
-        <!-- Two top-level columns so nothing reserves dead space:
-             LEFT — title tile, then camera | gripper+track flowing right
-             below it; RIGHT — Control Modes with the log window beneath.
-             (The old header/main split put the 380px title tile and the
-             taller Control Modes card in one grid row, leaving a gap
-             under the title.) -->
-        <main class="page-grid">
-            <!-- LEFT: title tile, then the Control Modes card.
-                 RIGHT: camera, Gripper | Linear Track, log window. -->
-            <div class="page-left">
-                <div class="title-status-container">
+        <!-- Shared workspace: connection and camera tiles above the drive/editor
+             tabs. All views use main.js's single control claim. -->
+        <main class="page-grid workspace-page"><div class="workspace-overview"><div id="connection-tile" class="title-status-container">
                     <div class="title-top">
-                    <!-- 3D preview, in the action stack's old right-hand slot.
-                         The Studio arm canvas for WHICHEVER target is
-                         connected: the simulator's Studio (central server), or the
-                         REAL arm's Studio via this PC's 18333 portproxy — embedded
-                         at the operator's explicit request. The crop shows only
-                         the model canvas (Studio's buttons sit outside it; drag
-                         orbits the camera). Loads/unloads with the connection and
-                         switches URL with the target (main.js). -->
-                    <div class="card" id="sim-3d-card" hidden>
-                        <h2>3D View</h2>
-                        <!-- The crop isolates Studio's arm panel (.xarm-container:
-                             STOP, 3D canvas, Real/Sim switch, pose + joints) — the
-                             right column of /control, x 896-1300 at a 1300x900
-                             viewport (measured on Studio v2.4.0, headless-Edge
-                             screenshot 2026-08-02). The iframe is held at that
-                             fixed viewport so Studio's vw-scaled layout is
-                             deterministic; geometry + display scale live in the
-                             .sim-3d-crop CSS variables. Cross-origin, so a crop
-                             is the only isolation available — the canvas stays
-                             fully interactive (drag to orbit). -->
-                        <div id="sim-3d-stage" class="sim-3d-stage">
-                            <div class="sim-3d-crop">
-                                <iframe id="sim-3d-frame" class="sim-3d-frame"
-                                        title="UFACTORY Studio — live arm view"
-                                        data-src-sim="http://100.64.254.6:18333/control"
-                                        data-src-hw="http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:18333/control"></iframe>
-                            </div>
-                        </div>
-                    </div>
                     <div class="title-status-main">
-                        <p class="eyebrow">xArm Translocation</p>
+                        <p class="eyebrow">xArm 5</p>
                         <h1>Control Interface</h1>
                         <div id="status-container">
                             <!-- Per-target connection lines: the service holds ONE
@@ -162,7 +127,9 @@
                             <div class="connection-inline-btns">
                                 <button id="connect-btn" class="btn">Connect</button>
                                 <button id="disconnect-btn" class="btn btn-danger" disabled>Disconnect</button>
+                                <a id="sim-studio-link" class="btn studio-link" hidden href="http://100.64.254.6:18333/control" target="_blank" rel="noopener" data-src-sim="http://100.64.254.6:18333/control" data-src-hw="http://sdl2-pc-03-cytation.tail6a1dd7.ts.net:18333/control" title="Open the full UFACTORY Studio control interface for the connected target">Open Studio ↗</a>
                             </div>
+                            <div class="connection-settings">
                             <div class="form-group">
                                 <label for="config-select">Connect to</label>
                                 <select id="config-select"></select>
@@ -175,129 +142,176 @@
                                     <option value="HIGH">High</option>
                                 </select>
                             </div>
-                            <div class="preview-links">
-                                <a href="graph.html" class="studio-link" target="_blank" rel="noopener"
-                                   title="Open the motion-graph view (interlock topology, live node)">Motion Graph &#8599;</a>
-                                <a id="sim-studio-link" class="studio-link" hidden
-                                   href="http://100.64.254.6:18333/control" target="_blank" rel="noopener"
-                                   title="Open the full UFACTORY Studio control interface for the connected target">Open Studio &#8599;</a>
                             </div>
                         </div>
                     </div>
+                    <!-- Primary arm actions share the bottom row of this tile. -->
+
                     </div><!-- /title-top -->
-                    <!-- Primary arm actions: one row spanning the tile, just
-                         above the Gripper / Linear Track columns (the 3D preview
-                         took their old right-hand slot). IDs unchanged. -->
-                    <div class="header-actions">
+
+                <div class="header-actions">
                         <button id="take-control-btn" class="btn btn-claim" title="Acquire the device claim so you can drive the arm. While you hold it, workflows are locked out (HTTP 423) and see you as the claim holder.">Take Control</button>
                         <button id="stop-btn" class="btn btn-danger">STOP</button>
-                        <button id="clear-errors-btn" class="btn btn-warning" title="Clear arm + gripper faults and re-energize the servos (replaces the old separate Enable). Works without taking control.">Clear Errors</button>
+                        <button id="clear-errors-btn" class="btn btn-warning" title="Clear arm + gripper faults and re-energize the servos (replaces the old separate Enable). Works without taking control."><span>Clear errors<br>&amp; re-enable</span></button>
+                    </div></div><section aria-label="Camera streams" class="card camera-tile"><header class="workspace-tile-heading"><div class="pill-tabs camera-tabs" role="tablist" aria-label="Camera view"><button id="camera-tab-stereo" type="button" role="tab" aria-controls="camera-pane-stereo" aria-selected="false" tabindex="-1" class="pill">Stereo Camera</button><button id="camera-tab-lab" type="button" role="tab" aria-controls="camera-pane-lab" aria-selected="true" class="pill active">Tapo Camera</button></div></header><section class="camera-page" aria-labelledby="camera-tab-lab" role="tabpanel" id="camera-pane-lab"><div class="card" id="camera-card" hidden>
+                    <div class="camera-head" id="camera-card-head"><span class="camera-dot" id="camera-dot" aria-hidden="true"></span>
+
+
                     </div>
-
-                </div>
-
-                <!-- Control Modes card: two selectable panes — direct
-                     Arm Control, and Graph Control (Motion Graph + Drive Arm).
-                     Tab switching in main.js; the sub-cards inside the graph
-                     pane keep their own JS-managed hidden attributes. -->
-                <div class="card" id="control-modes-card">
-                    <div class="mode-tabs" role="tablist">
-                        <button id="mode-tab-arm" class="mode-tab" type="button">Direct Drive</button>
-                        <button id="mode-tab-graph" class="mode-tab active" type="button">Graph Control</button>
-                        <label id="manual-mode-switch" class="manual-switch is-disabled mode-tabs-switch" title="Release the joint brakes for hand-guiding. While on, XYZ and joint commands are locked out; joint angles keep updating live.">
+                    <!-- PTZ pad, mirroring the dashboard's CameraTile
+                         (ac-organic-lab web/src/components/PtzPad.tsx):
+                         8 directions + a centre Stop. Press-and-hold moves
+                         continuously; POSTs go to /camera/ptz, which forwards
+                         to the dashboard's audited control passthrough. -->
+                    <div class="camera-row">
+                    <div class="camera-side">
+                    <div class="camera-controls">
+                        <span id="camera-status" class="muted camera-status"></span>
+                        <!-- Follow-arm reads as a lit button rather than a
+                             switch. The checkbox stays (hidden) because
+                             camera-player.js drives it; .is-on on the label
+                             is what lights the button. -->
+                        <label id="camera-follow-switch" class="follow-btn is-disabled" title="When on, the camera pans to the arm's station as it moves across the motion graph.">
+                            <input type="checkbox" id="camera-follow-checkbox" disabled>
+                            <span class="manual-switch-text">Follow arm</span>
+                        </label>
+                    </div>
+                    <!-- Lens switch. The wide lens is fixed on the C245D
+                         (ptz_capable: false), so selecting it disables the
+                         pad — the device would refuse the move anyway. -->
+                    <div class="lens-btns" id="lens-btns" hidden></div>
+                    <div class="ptz-pad" id="ptz-pad">
+                        <button type="button" class="ptz-btn" data-dir="up_left" style="grid-area:ul" aria-label="Pan up-left">↖</button>
+                        <button type="button" class="ptz-btn" data-dir="up" style="grid-area:u" aria-label="Tilt up">↑</button>
+                        <button type="button" class="ptz-btn" data-dir="up_right" style="grid-area:ur" aria-label="Pan up-right">↗</button>
+                        <button type="button" class="ptz-btn" data-dir="left" style="grid-area:l" aria-label="Pan left">←</button>
+                        <button type="button" class="ptz-btn ptz-stop" data-dir="stop" style="grid-area:c" aria-label="Stop pan/tilt">Stop</button>
+                        <button type="button" class="ptz-btn" data-dir="right" style="grid-area:r" aria-label="Pan right">→</button>
+                        <button type="button" class="ptz-btn" data-dir="down_left" style="grid-area:dl" aria-label="Pan down-left">↙</button>
+                        <button type="button" class="ptz-btn" data-dir="down" style="grid-area:d" aria-label="Tilt down">↓</button>
+                        <button type="button" class="ptz-btn" data-dir="down_right" style="grid-area:dr" aria-label="Pan down-right">↘</button>
+                    </div>
+                    <!-- Saved views, recalled through the same audited
+                         passthrough as the pad (POST /camera/preset). The
+                         list comes from the camera's details.presets via
+                         GET /camera/config. -->
+                    <div class="ptz-presets" id="ptz-presets" hidden>
+                        <select id="ptz-preset-select" class="ptz-preset-select" title="Saved camera views"></select>
+                        <button type="button" id="ptz-preset-go" class="ptz-preset-btn">Go</button>
+                    </div>
+                    </div><!-- /camera-side -->
+                    <div class="camera-stage">
+                        <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
+                        <div id="camera-overlay" class="camera-overlay">
+                            <span id="camera-overlay-text">Connecting…</span>
+                        </div>
+                    </div>
+                    </div><!-- /camera-row -->
+                </div><p class="camera-empty">Tapo camera is not available.</p></section><section hidden class="camera-page" aria-labelledby="camera-tab-stereo" role="tabpanel" id="camera-pane-stereo"><div id="realsense-cards"></div><template id="realsense-card-template">
+                    <div class="card realsense-card" hidden>
+                        <div class="camera-head card-fold-head" data-rs="head" role="button" tabindex="0" aria-expanded="true">
+                            <h2><span class="camera-dot" aria-hidden="true"></span>Stereo Camera</h2>
+                            <!-- Link + mount, above the feed (right of the title). -->
+                            <span data-rs="status" class="muted camera-status"></span>
+                            <span class="card-fold-caret" aria-hidden="true"></span>
+                        </div>
+                        <div class="camera-row">
+                        <div class="camera-side">
+                            <!-- Camera toggle: one stacked button per camera
+                                 in the YAML. Filled by realsense-card.js. -->
+                            <div class="lens-btns realsense-cams" data-rs="cams" role="radiogroup" aria-label="Stereo camera"></div>
+                            <button type="button" data-rs="toggle" class="btn btn-secondary realsense-btn" disabled>Start</button>
+                            <div class="lens-btns realsense-kinds">
+                                <button type="button" class="lens-btn is-on" data-rs-kind="color">Color</button>
+                                <button type="button" class="lens-btn" data-rs-kind="depth">Depth</button>
+                            </div>
+                            <span class="muted realsense-hint">Click the image to measure distance.</span>
+                        </div>
+                        <div class="camera-stage realsense-stage">
+                            <img data-rs="img" class="camera-video realsense-img" alt="Stereo camera live preview" hidden>
+                            <div data-rs="marker" class="realsense-marker" hidden aria-hidden="true"></div>
+                            <div data-rs="overlay" class="camera-overlay">
+                                <span data-rs="overlay-text">Connecting…</span>
+                            </div>
+                            <span data-rs="readout" class="realsense-readout"></span>
+                        </div>
+                        </div><!-- /camera-row -->
+                    </div>
+                </template><p class="camera-empty">No stereo camera is available.</p></section></section></div><section aria-label="Robot controls" class="card control-workspace" id="control-workspace"><header class="workspace-toolbar"><div aria-label="Control mode" role="tablist" class="pill-tabs"><button tabindex="0" class="pill active" aria-selected="true" aria-controls="mode-pane-graph" role="tab" type="button" id="mode-tab-graph">Graph Drive</button><button tabindex="-1" class="pill" aria-selected="false" aria-controls="mode-pane-arm" role="tab" type="button" id="mode-tab-arm">Direct Drive</button><button tabindex="-1" class="pill" aria-selected="false" aria-controls="mode-pane-edit" role="tab" type="button" id="mode-tab-edit">Edit Graph</button></div><label id="manual-mode-switch" class="manual-switch is-disabled" title="Release the joint brakes for hand-guiding. While on, XYZ and joint commands are locked out; joint angles keep updating live.">
                             <input type="checkbox" id="manual-mode-checkbox" disabled>
                             <span class="manual-switch-track"><span class="manual-switch-thumb"></span></span>
                             <span class="manual-switch-text">Manual Mode</span>
-                        </label>
+                        </label></header><div id="drive-layout" class="workspace-drive-layout"><div class="workspace-drive-controls"><div id="accessory-controls" class="card">
+                    <!-- Gripper + Linear Track, two columns spanning the FULL
+                         tile width. IDs unchanged (main.js). -->
+                    <div class="tile-sub-cols">
+                            <div class="tile-sub">
+
+                    <div class="gripper-controls"><h3>Gripper
+
+                                </h3>
+                        <button id="open-gripper-btn" class="btn">Open</button>
+                        <button id="close-gripper-btn" class="btn">Close</button>
+                        <button id="enable-gripper-btn" class="btn btn-success">Enable</button>
                     </div>
-
-                    <div id="mode-pane-arm" class="mode-pane" hidden>
-                    <!-- Two-column body: xArm controls (left) + XYZ jog (right) -->
-                    <div class="pane-arm-grid">
-                        <div class="pane-arm-left">
-
-                            <div class="position-controls-row">
-                                <select id="predefined-position-select" class="position-dropdown"></select>
+                    <div class="stroke-control-row">
+                        <label for="gripper-stroke">Stroke:</label>
+                        <input type="number" id="gripper-stroke" placeholder="" disabled>
+                        <button id="move-to-stroke-btn" class="btn move-button" disabled>Move</button>
+                    </div>
+                    <div class="force-control-row">
+                        <label for="gripper-force">Force:</label>
+                        <input type="number" id="gripper-force" placeholder="" disabled>
+                        <button id="set-gripper-force-btn" class="btn move-button" disabled>Set</button>
+                    </div>
                             </div>
-                            <div class="joint-move-row">
-                                <button id="move-predefined-btn" class="btn move-position-button">Joint Move</button>
-                                <span class="inline-label">Speed:</span>
-                                <input type="number" id="joint-speed" placeholder="10" min="1" max="200" value="10" class="inline-input">
-                                <span class="inline-unit">°/s</span>
-                            </div>
-                            <div class="linear-move-row">
-                                <button id="move-linear-btn" class="btn btn-primary move-linear-button">Linear Move</button>
-                                <span class="inline-label">Speed:</span>
-                                <input type="number" id="linear-speed" placeholder="50" min="1" max="1000" value="50" class="inline-input">
-                                <span class="inline-unit">mm/s</span>
-                            </div>
+                            <div class="tile-sub">
 
+                    <div class="track-controls"><h3>Rail
+
+                                </h3>
+                        <div class="track-speed-group">
+                            <label for="track-speed">Speed (mm/s):</label>
+                            <input type="number" id="track-speed" placeholder="1-1000" min="1" max="1000" value="20">
                         </div>
-
-                        <!-- XYZ jog column: full height of the pane, divider left -->
-                        <div class="pane-arm-right">
-                            <div class="jog-panel">
-                                <!-- Z buttons -->
-                                <div class="jog-z-row">
-                                    <button id="jog-z-minus" class="btn jog-btn" disabled>Z−</button>
-                                    <button id="jog-z-plus"  class="btn jog-btn" disabled>Z+</button>
-                                </div>
-                                <!-- XY circular pad -->
-                                <div class="jog-xy-pad">
-                                    <button class="jog-btn-xy" id="jog-x-plus"  disabled>X+</button>
-                                    <button class="jog-btn-xy" id="jog-y-plus"  disabled>Y+</button>
-                                    <span class="jog-center">XYZ</span>
-                                    <button class="jog-btn-xy" id="jog-y-minus" disabled>Y−</button>
-                                    <button class="jog-btn-xy" id="jog-x-minus" disabled>X−</button>
-                                </div>
-                                <!-- Step size -->
-                                <div class="jog-step-row">
-                                    <span class="inline-label">Step</span>
-                                    <input type="number" id="jog-step" value="10" min="1" max="500" class="inline-input" disabled>
-                                    <span class="inline-unit">mm</span>
-                                </div>
-                            </div>
+                    </div>
+                    <div class="track-location-control">
+                        <select id="track-location-select"></select>
+                        <button id="move-track-loc-btn" class="btn move-button">Move</button>
+                    </div>
+                    <div id="track-info" class="component-info">
+                        <div class="info-left">Range: <span id="track-range-display">0-700 mm</span></div>
+                        <div class="info-right">Current: <span id="track-position-display">N/A</span></div>
+                    </div>
                         </div>
-                    </div><!-- /pane-arm-grid -->
-
-                    <!-- Joint Angles — full pane width -->
-                    <h3 class="joints-subhead">Joint Angles <span class="panel-unit">live · direct control</span></h3>
-                    <div class="joint-inputs-h">
-                        <div class="joint-col"><label>J1</label><input type="number" id="j1-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J2</label><input type="number" id="j2-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J3</label><input type="number" id="j3-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J4</label><input type="number" id="j4-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col"><label>J5</label><input type="number" id="j5-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col" id="j6-col" style="display:none"><label>J6</label><input type="number" id="j6-input" step="0.1" placeholder="—"></div>
-                        <div class="joint-col" id="j7-col" style="display:none"><label>J7</label><input type="number" id="j7-input" step="0.1" placeholder="—"></div>
-                    </div>
-                    <div class="joint-action-row">
-                        <span class="inline-label">Speed</span>
-                        <input type="number" id="direct-joint-speed" value="10" min="1" max="200" class="inline-input" disabled>
-                        <span class="inline-unit">°/s</span>
-                        <button id="copy-joints-btn" class="btn" title="Copy the current joint angles to the clipboard">Copy Joints</button>
-                        <button id="move-joints-btn" class="btn btn-primary" disabled>Move Joints</button>
-                    </div>
-                    </div><!-- /mode-pane-arm -->
-
-                    <div id="mode-pane-graph" class="mode-pane">
+                    </div><!-- /tile-sub-cols -->
+                </div><div aria-labelledby="mode-tab-graph" role="tabpanel" id="mode-pane-graph" class="mode-pane">
                     <!-- Motion Graph card — Phase 4: shows current node + reachable destinations -->
                     <div class="card" id="motion-graph-card" hidden>
-                        <h2>Motion Graph
-                            <span class="panel-unit">interlock layer</span>
-                        </h2>
-                        <div class="mg-row">
-                            <span class="inline-label">Enforcement</span>
-                            <div class="mg-mode-btns" role="radiogroup" aria-label="Graph mode">
-                                <button type="button" class="mg-mode-btn" data-mode="off">off</button>
-                                <button type="button" class="mg-mode-btn" data-mode="advisory">advisory</button>
-                                <button type="button" class="mg-mode-btn" data-mode="strict">strict</button>
-                            </div>
-                            <button id="mg-recover-btn" class="btn btn-secondary" style="margin-left:auto;">Recover…</button>
+                        <div class="mg-row enforcement-row">
+                            <h2>Motion Graph</h2>
+                            <strong id="mg-mode-value" class="mg-mode-value">—</strong>
+                            <span id="mg-admin-off-row" hidden>
+                                <button id="mg-admin-off-btn" class="btn btn-danger">Turn enforcement OFF</button>
+                            </span>
                         </div>
-                        <div class="mg-row">
-                            <span class="inline-label">Current Node</span>
-                            <strong id="mg-current-node">—</strong>
+                        <!-- Countdown for a lowered enforcement mode. Hidden
+                             while STRICT, which is the normal state, so the
+                             row's presence IS the warning. Enforcement comes
+                             back on its own when this reaches zero (and when
+                             the claim is released, or on disconnect) -- the
+                             button is only for coming back early. An admin
+                             OFF shows one line and no button here: only an
+                             administrator can end it (the Administrator row).
+                             Rendered by renderGraphModeOverride in main.js. -->
+                        <div class="mg-row mg-mode-override" id="mg-mode-override-row" hidden>
+                            <span class="inline-label" id="mg-mode-override-label">Enforcement lowered</span>
+                            <strong id="mg-mode-override-text">—</strong>
+                            <button id="mg-mode-restore-btn" class="btn btn-secondary" style="margin-left:auto;">Restore strict now</button>
+                        </div>
+                        <div class="mg-node-tile">
+                            <span class="mg-node-tile__label">Current node</span>
+                            <strong id="mg-current-node" class="mg-node-tile__value">—</strong>
                         </div>
                         <!-- Fume hood sash readout. Persistent, unlike the
                              #sash-banner above, which only appears when the
@@ -310,16 +324,16 @@
                              Rendered by renderSashRow in main.js. -->
                         <div class="mg-row" id="mg-sash-row" hidden>
                             <span class="inline-label">Fume Hood Sash</span>
-                            <strong id="mg-sash-position">&mdash;</strong>
+                            <strong id="mg-sash-position">—</strong>
                             <span class="muted" id="mg-sash-note"></span>
                         </div>
+                        <!-- Recover to node: re-pins an off-grid arm to its
+                             nearest graph node (GET /graph/nearest, then
+                             graph/recover_to). Opens #mg-recover-panel. -->
                         <div class="mg-row">
-                            <span class="inline-label">Reachable Node</span>
-                            <div id="mg-reachable" class="mg-reachable">
-                                <span class="muted">(no graph node pinned)</span>
-                            </div>
-                        </div>
-                        <div id="mg-recover-panel" class="mg-recover-panel" hidden>
+                            <span class="inline-label">Recover to Node</span>
+                            <button id="mg-recover-btn" class="btn btn-secondary">Recover…</button>
+                        </div><div id="mg-recover-panel" class="mg-recover-panel" hidden>
                             <div class="mg-row">
                                 <span class="inline-label">Nearest</span>
                                 <strong id="mg-suggested-node">—</strong>
@@ -343,6 +357,8 @@
                             </div>
                         </div>
 
+
+
                         <!-- Drive rows, merged from the former Drive Arm card
                              (its "graph-gated · strict" heading was static —
                              wrong in advisory mode — and one tile suffices).
@@ -351,31 +367,12 @@
                              Destination/Send and the Current readout were
                              already removed as duplicates; Travel covers
                              one-hop too (travel_targets ⊇ reachable_nodes). -->
-                        <div id="drive-arm-card" hidden>
-                            <h3 class="drive-move-head">Multi-node Hop
-                                <span class="panel-unit">plans a legal path, drives it hop by hop</span>
-                                <span class="hint-wrap sub-lock-hint">
-                                    <button type="button" class="hint-toggle" aria-label="Why is this unavailable?">i</button>
-                                    <span class="hint-text" id="drive-dest-hint">(connect and pin to a graph node to enable)</span>
-                                </span>
-                            </h3>
-                            <div class="drive-move-row">
-                                <button id="drive-travel-btn" class="btn btn-primary drive-move-btn" disabled title="Plan a multi-hop path and drive it hop-by-hop">Move</button>
-                                <div class="drive-move-fields">
-                                    <div class="mg-row">
-                                        <span class="inline-label">Target Node</span>
-                                        <select id="drive-travel-select" class="inline-input"></select>
-                                    </div>
-                                    <div class="mg-row">
-                                        <span class="inline-label">Max speed</span>
-                                        <input type="number" id="drive-dest-speed" value="13" min="1" max="200" class="inline-input"
-                                               title="Your own ceiling. Each hop is additionally clamped to that edge's speed limit from the motion graph; clamps are reported in the log.">
-                                        <span class="inline-unit">°/s</span>
-                                    </div>
-                                </div>
+                        <div id="drive-arm-card" hidden><div aria-label="Graph drive destination" role="tablist" class="pill-tabs graph-drive-tabs"><button tabindex="0" aria-selected="true" aria-controls="graph-drive-pane-reachable" role="tab" type="button" class="pill active" id="graph-drive-tab-reachable">Reachable Node</button><button tabindex="-1" aria-selected="false" aria-controls="graph-drive-pane-travel" role="tab" type="button" class="pill" id="graph-drive-tab-travel">Travel to Node</button></div><section aria-labelledby="graph-drive-tab-reachable" role="tabpanel" id="graph-drive-pane-reachable"><div class="mg-row">
+
+                            <div id="mg-reachable" class="mg-reachable">
+                                <span class="muted">None, off-grid</span>
                             </div>
-                            <!-- Gripper leaf: state readout + whitelisted transitions at the current node -->
-                            <div class="mg-row">
+                        </div><div class="mg-row">
                                 <span class="inline-label">Gripper</span>
                                 <strong id="drive-gripper-state">—</strong>
                                 <select id="drive-gripper-select" class="inline-input"></select>
@@ -384,144 +381,244 @@
                                     <button type="button" class="hint-toggle" aria-label="Why is this unavailable?">i</button>
                                     <span class="hint-text" id="drive-gripper-hint">(gripper changes only while parked at a node)</span>
                                 </span>
+                            </div></section><section aria-labelledby="graph-drive-tab-travel" role="tabpanel" hidden id="graph-drive-pane-travel"><h3 class="drive-move-head">Travel to node <span class="panel-unit">plans a legal path, drives it hop by hop</span>
+                                <span class="hint-wrap sub-lock-hint">
+                                    <button type="button" class="hint-toggle" aria-label="Why is this unavailable?">i</button>
+                                    <span class="hint-text" id="drive-dest-hint">(connect and pin to a graph node to enable)</span>
+                                </span>
+                            </h3><div class="drive-move-row">
+                                <button id="drive-travel-btn" class="btn btn-primary drive-move-btn" disabled title="Plan a multi-hop path and drive it hop-by-hop">Move</button>
+                                <div class="drive-move-fields">
+                                    <div class="mg-row">
+                                        <span class="inline-label">Target Node</span>
+                                        <select id="drive-travel-select" class="inline-input"></select>
+                                    </div>
+                                    <div class="mg-row">
+                                        <span class="inline-label">Max speed</span>
+                                        <input placeholder="Edge limit" step="any" type="number" id="drive-dest-speed" min="0.1" class="inline-input" title="Leave blank to use each edge limit. A supplied value can only slow a move. Linear edges: mm/s; joint edges: deg/s.">
+                                        <span class="inline-unit">mm/s linear · °/s joint</span>
+                                    </div>
+                                </div>
+                            </div></section></div>
+                    </div>
+                    </div><div aria-labelledby="mode-tab-arm" role="tabpanel" id="mode-pane-arm" class="mode-pane" hidden>
+                    <!-- Two-column body: xArm controls (left) + XYZ jog (right) -->
+                    <div class="pane-arm-grid">
+                        <div class="pane-arm-left">
+
+                            <div class="position-controls-row">
+                                <select id="predefined-position-select" class="position-dropdown"></select>
+                            </div>
+                            <div class="joint-move-row">
+                                <button id="move-predefined-btn" class="btn move-position-button">Joint Move</button>
+                                <span class="inline-label">Speed:</span>
+                                <input type="number" id="joint-speed" placeholder="5" min="1" max="200" value="5" class="inline-input">
+                                <span class="inline-unit">°/s</span>
+                            </div>
+                            <div class="linear-move-row">
+                                <button id="move-linear-btn" class="btn btn-primary move-linear-button">Linear Move</button>
+                                <span class="inline-label">Speed:</span>
+                                <input type="number" id="linear-speed" placeholder="20" min="1" max="1000" value="20" class="inline-input">
+                                <span class="inline-unit">mm/s</span>
+                            </div>
+
+                    <!-- Joint readings and targets below the direct movement controls. -->
+                    <h3 class="joints-subhead">Joint Angles <span class="panel-unit">live · direct control</span></h3>
+                    <div class="joint-inputs-h">
+                        <div class="joint-col"><label>J1</label><input type="number" id="j1-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J2</label><input type="number" id="j2-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J3</label><input type="number" id="j3-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J4</label><input type="number" id="j4-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col"><label>J5</label><input type="number" id="j5-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col" id="j6-col" style="display:none"><label>J6</label><input type="number" id="j6-input" step="0.1" placeholder="—"></div>
+                        <div class="joint-col" id="j7-col" style="display:none"><label>J7</label><input type="number" id="j7-input" step="0.1" placeholder="—"></div>
+                    </div>
+                    <div class="joint-action-row">
+                        <span class="inline-label">Speed</span>
+                        <input type="number" id="direct-joint-speed" value="5" min="1" max="200" class="inline-input" disabled>
+                        <span class="inline-unit">°/s</span>
+                        <button id="copy-joints-btn" class="btn" title="Copy the current joint angles to the clipboard">Copy Joints</button>
+                        <button id="move-joints-btn" class="btn btn-primary" disabled>Move Joints</button>
+                    </div>
+
+                        </div>
+
+                        <!-- XYZ jog column: full height of the pane, divider left -->
+                        <div class="pane-arm-right">
+                            <div class="jog-panel">
+                                <!-- Z buttons -->
+                                <div class="jog-z-row">
+                                    <button id="jog-z-minus" class="btn jog-btn" disabled>Z−</button>
+                                    <button id="jog-z-plus" class="btn jog-btn" disabled>Z+</button>
+                                </div>
+                                <!-- XY circular pad -->
+                                <div class="jog-xy-pad">
+                                    <button class="jog-btn-xy" id="jog-x-plus" disabled>X+</button>
+                                    <button class="jog-btn-xy" id="jog-y-plus" disabled>Y+</button>
+                                    <span class="jog-center">XYZ</span>
+                                    <button class="jog-btn-xy" id="jog-y-minus" disabled>Y−</button>
+                                    <button class="jog-btn-xy" id="jog-x-minus" disabled>X−</button>
+                                </div>
+                                <!-- Step size -->
+                                <div class="jog-step-row">
+                                    <span class="inline-label">Step</span>
+                                    <input type="number" id="jog-step" value="10" min="1" max="500" class="inline-input" disabled>
+                                    <span class="inline-unit">mm</span>
+                                </div>
                             </div>
                         </div>
-                    </div>
-                    </div><!-- /mode-pane-graph -->
-                </div>
-            </div>
+                    </div><!-- /pane-arm-grid -->
 
-            <div class="page-right">
-                <!-- Lab Camera — pans to follow the arm across the motion graph.
-                     Hidden unless src/settings/camera_tracking.yaml is configured
-                     (GET /camera/config decides). The live preview is a go2rtc MSE
-                     stream; the "Follow arm" toggle hits POST /camera/follow. Wiring
-                     is shared with graph.html via camera-player.js. See
-                     core/camera_tracker.py. -->
-                <div class="card" id="camera-card" hidden>
-                    <div class="camera-head">
-                        <h2><span class="camera-dot" id="camera-dot" aria-hidden="true"></span>Lab Camera</h2>
-                    </div>
-                    <!-- PTZ pad, mirroring the dashboard's CameraTile
-                         (ac-organic-lab web/src/components/PtzPad.tsx):
-                         8 directions + a centre Stop. Press-and-hold moves
-                         continuously; POSTs go to /camera/ptz, which forwards
-                         to the dashboard's audited control passthrough. -->
-                    <div class="camera-row">
-                    <div class="camera-side">
-                    <div class="camera-controls">
-                        <span id="camera-status" class="muted camera-status"></span>
-                        <!-- Follow-arm reads as a lit button rather than a
-                             switch. The checkbox stays (hidden) because
-                             camera-player.js drives it; .is-on on the label
-                             is what lights the button. -->
-                        <label id="camera-follow-switch" class="follow-btn is-disabled"
-                               title="When on, the camera pans to the arm's station as it moves across the motion graph.">
-                            <input type="checkbox" id="camera-follow-checkbox" disabled>
-                            <span class="manual-switch-text">Follow arm</span>
-                        </label>
-                    </div>
-                    <!-- Lens switch. The wide lens is fixed on the C245D
-                         (ptz_capable: false), so selecting it disables the
-                         pad — the device would refuse the move anyway. -->
-                    <div class="lens-btns" id="lens-btns" hidden></div>
-                    <div class="ptz-pad" id="ptz-pad">
-                        <button type="button" class="ptz-btn" data-dir="up_left" style="grid-area:ul" aria-label="Pan up-left">&#8598;</button>
-                        <button type="button" class="ptz-btn" data-dir="up" style="grid-area:u" aria-label="Tilt up">&#8593;</button>
-                        <button type="button" class="ptz-btn" data-dir="up_right" style="grid-area:ur" aria-label="Pan up-right">&#8599;</button>
-                        <button type="button" class="ptz-btn" data-dir="left" style="grid-area:l" aria-label="Pan left">&#8592;</button>
-                        <button type="button" class="ptz-btn ptz-stop" data-dir="stop" style="grid-area:c" aria-label="Stop pan/tilt">Stop</button>
-                        <button type="button" class="ptz-btn" data-dir="right" style="grid-area:r" aria-label="Pan right">&#8594;</button>
-                        <button type="button" class="ptz-btn" data-dir="down_left" style="grid-area:dl" aria-label="Pan down-left">&#8601;</button>
-                        <button type="button" class="ptz-btn" data-dir="down" style="grid-area:d" aria-label="Tilt down">&#8595;</button>
-                        <button type="button" class="ptz-btn" data-dir="down_right" style="grid-area:dr" aria-label="Pan down-right">&#8600;</button>
-                    </div>
-                    <!-- Saved views, recalled through the same audited
-                         passthrough as the pad (POST /camera/preset). The
-                         list comes from the camera's details.presets via
-                         GET /camera/config. -->
-                    <div class="ptz-presets" id="ptz-presets" hidden>
-                        <select id="ptz-preset-select" class="ptz-preset-select" title="Saved camera views"></select>
-                        <button type="button" id="ptz-preset-go" class="ptz-preset-btn">Go</button>
-                    </div>
-                    </div><!-- /camera-side -->
-                    <div class="camera-stage">
-                        <video id="camera-video" class="camera-video" muted autoplay playsinline></video>
-                        <div id="camera-overlay" class="camera-overlay">
-                            <span id="camera-overlay-text">Connecting…</span>
-                        </div>
-                    </div>
-                    </div><!-- /camera-row -->
-                </div>
-
-                <!-- Gripper | Linear Track, moved out of the title tile into
-                     the right column beside the log. IDs unchanged. -->
-                <div class="card">
-                    <!-- Gripper + Linear Track, two columns spanning the FULL
-                         tile width. IDs unchanged (main.js). -->
-                    <div class="tile-sub-cols">
-                            <div class="tile-sub">
-                                <h3>Gripper
-                                    <span class="hint-wrap sub-lock-hint">
-                                        <button type="button" class="hint-toggle" aria-label="Why are these controls locked?">i</button>
-                                        <span class="hint-text" id="gripper-lock-hint">Gripper controls unlock once the arm is connected and you hold control (Take Control). They also lock while the arm is moving or in Manual Mode.</span>
-                                    </span>
-                                </h3>
-                    <div class="gripper-controls">
-                        <button id="open-gripper-btn" class="btn">Open</button>
-                        <button id="close-gripper-btn" class="btn">Close</button>
-                        <button id="enable-gripper-btn" class="btn btn-success">Enable</button>
-                    </div>
-                    <div class="stroke-control-row">
-                        <label for="gripper-stroke">Stroke:<br><span id="gripper-stroke-range" class="label-range"></span></label>
-                        <input type="number" id="gripper-stroke" placeholder="" disabled>
-                        <button id="move-to-stroke-btn" class="btn move-button" disabled>Move</button>
-                    </div>
-                    <div class="force-control-row">
-                        <label for="gripper-force">Force:<br><span id="gripper-force-range" class="label-range"></span></label>
-                        <input type="number" id="gripper-force" placeholder="" disabled>
-                        <button id="set-gripper-force-btn" class="btn move-button" disabled>Set</button>
-                    </div>
-                            </div>
-                            <div class="tile-sub">
-                                <h3>Linear Track
-                                    <span class="hint-wrap sub-lock-hint">
-                                        <button type="button" class="hint-toggle" aria-label="Why are these controls locked?">i</button>
-                                        <span class="hint-text" id="track-lock-hint">Track controls unlock once the arm is connected and you hold control (Take Control). In STRICT graph mode the raw track move is disabled — use Graph Control instead.</span>
-                                    </span>
-                                </h3>
-                    <div class="track-controls">
-                        <div class="track-speed-group">
-                            <label for="track-speed">Speed (mm/s):</label>
-                            <input type="number" id="track-speed" placeholder="1-1000" min="1" max="1000" value="200">
-                        </div>
-                    </div>
-                    <div class="track-location-control">
-                        <select id="track-location-select"></select>
-                        <button id="move-track-loc-btn" class="btn move-button">Move</button>
-                    </div>
-                    <div id="track-info" class="component-info">
-                        <div class="info-left">Range: <span id="track-range-display">0-700 mm</span></div>
-                        <div class="info-right">Current: <span id="track-position-display">N/A</span></div>
-                    </div>
-                        </div>
-                    </div><!-- /tile-sub-cols -->
-                </div>
-
-                <!-- Log window (swapped with the camera, which now sits atop
-                     Control Modes in the right column) -->
-                <div class="log-container">
+                    </div></div><div aria-label="Robot console" class="log-container workspace-console"><h2 class="console-heading">Console</h2>
                     <div id="log-stream" class="log-stream"></div>
+                </div></div><section hidden class="mode-pane" aria-labelledby="mode-tab-edit" role="tabpanel" id="mode-pane-edit"><div class="graph-page integrated-graph">
+
+
+        <div class="graph-main">
+            <button id="graph-add-node-toggle" class="pill graph-canvas-action" type="button" aria-controls="add-node-panel" aria-expanded="false" aria-pressed="false">Add node</button>
+            <div id="cy" class="graph-canvas"></div>
+
+            <aside class="graph-side">
+                <div id="add-node-panel" class="card add-node-panel" hidden>
+                    <h2>Add node</h2>
+                    <div class="card-body">
+                    <div class="form-group">
+                        <label for="node-arm">Pose (arm) — from joint_config</label>
+                        <select id="node-arm"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="node-rail">Rail location</label>
+                        <select id="node-rail"></select>
+                    </div>
+                    <div class="form-group">
+                        <label>Gripper states (leaves)</label>
+                        <div id="node-gripper-states" class="checkbox-row"></div>
+                    </div>
+                    <div class="form-group">
+                        <label for="node-gripper-transitions">Gripper transitions (optional)</label>
+                        <input type="text" id="node-gripper-transitions" placeholder="e.g. empty->grip_120, grip_120->empty">
+                    </div>
+                    <div class="form-group">
+                        <label for="node-id">Node id</label>
+                        <input type="text" id="node-id" placeholder="e.g. deck_solid_high">
+                    </div>
+                    <div class="form-group">
+                        <label for="node-tags">Tags (comma-separated, optional)</label>
+                        <input type="text" id="node-tags" placeholder="deck, solid">
+                        <p class="field-hint">The first tag is the station this node groups under (e.g. "opentrons"). Leave blank and the node renders as a standalone node instead of joining that station's cluster — the view centers on it after adding either way.</p>
+                    </div>
+                    <div class="edge-panel-actions">
+                        <button id="node-add-btn" class="btn btn-primary">Add node</button>
+                    </div>
+                    <div id="add-node-error" class="edge-panel-error" hidden></div>
+                    </div><!-- /card-body -->
                 </div>
+            <div class="card graph-header-status">
+                <div class="graph-live">
+                    <span class="inline-label">Mode</span>
+                    <strong id="graph-mode">—</strong>
+                    <span class="inline-label">Current</span>
+                    <strong id="graph-current">—</strong>
+                    <span class="inline-label">Gripper</span>
+                    <strong id="graph-gripper">—</strong>
+                </div>
+                <div id="graph-claim-status" class="claim-status claim-free">Control: nobody (open)</div>
             </div>
 
-            <!-- System Status — visually retired (hidden), but the elements
-                 MUST stay in the DOM: updateStatusUI refuses to render AT ALL if
-                 arm-state / gripper-state / track-state / robot-mode /
-                 last-error are missing, so removing this card silently
-                 freezes every status readout on the page (this happened in
-                 the 2026-08-03 page-grid rebuild). -->
-            <div class="card status-bar-card" hidden>
+                <div id="graph-message" class="graph-message" hidden></div>
+
+                <!-- Lab Camera — pans to follow the arm across the motion graph.
+                     Shared card + wiring with the control panel; hidden unless
+                     src/settings/camera_tracking.yaml is configured. See
+                     camera-player.js and core/camera_tracker.py. -->
+
+
+                <div class="card graph-legend">
+                    <h2>Legend</h2>
+                    <ul class="legend-list">
+                        <li><span class="legend-swatch swatch-current"></span> current node (live)</li>
+                        <li><span class="legend-swatch swatch-holding"></span> holding labware</li>
+                        <li><span class="legend-glyph">▢</span> empty leaf&#160;·&#160;<span class="legend-glyph">▣</span> grip leaf&#160;·&#160;<span class="legend-glyph">◇</span> reach leaf</li>
+                        <li><span class="legend-glyph">⇄</span> grip/release allowed here</li>
+                        <li><span class="legend-line line-plain"></span> move edge (gripper unchanged)</li>
+                    </ul>
+                    <div class="legend-actions">
+                        <button id="fit-btn" class="btn btn-secondary">Fit view</button>
+                    </div>
+                </div>
+
+                <!-- Add node: writes a new state to motion_graph.yaml (claim-gated). -->
+                <!-- Draw edge: pick a source node then a target node, set
+                     mode/speed, create. Edges never change the gripper. -->
+                <div id="edge-draw-panel" class="card edge-draw-panel">
+                    <h2 class="card-toggle">Draw edge <span class="card-caret">▸</span></h2>
+                    <div class="card-body" hidden>
+                    <button id="edge-draw-toggle" class="btn">Pick source…</button>
+                    <p class="muted legend-note" id="edge-draw-hint">Click to start, then tap a source node and a target node on the canvas.</p>
+                    <div class="edge-panel-route">
+                        <strong id="draw-from">—</strong>
+                        <span class="edge-arrow">→</span>
+                        <strong id="draw-to">—</strong>
+                    </div>
+                    <div id="edge-draw-form" hidden>
+                        <div class="form-group">
+                            <label for="draw-mode">Mode</label>
+                            <select id="draw-mode">
+                                <option value="joint">joint</option>
+                                <option value="linear">linear</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="draw-speed">Speed cap (optional)</label>
+                            <input type="number" id="draw-speed" min="0.1" step="1" placeholder="—">
+                            <small>Linear: mm/s. Joint: deg/s. Rail speed is configured separately.</small>
+                        </div>
+                        <div class="edge-panel-actions">
+                            <button id="draw-create-btn" class="btn btn-primary">Create edge</button>
+                            <button id="draw-cancel-btn" class="btn btn-secondary">Clear</button>
+                        </div>
+                    </div>
+                    <div id="edge-draw-error" class="edge-panel-error" hidden></div>
+                    </div><!-- /card-body -->
+                </div>
+
+                <!-- Edge edit panel — Phase B wires this up. Inert in Phase A. -->
+                <div id="edge-panel" class="card edge-panel" hidden>
+                    <h2>Edit edge</h2>
+                    <div class="edge-panel-route">
+                        <strong id="edge-from">—</strong>
+                        <span class="edge-arrow">→</span>
+                        <strong id="edge-to">—</strong>
+                    </div>
+                    <div class="edge-panel-precos">
+                        <span class="inline-label">Preconditions</span>
+                        <span id="edge-preconditions" class="muted">—</span>
+                        <span class="muted edge-precos-note">(read-only here)</span>
+                    </div>
+                    <div class="form-group">
+                        <label for="edge-mode">Mode</label>
+                        <select id="edge-mode">
+                            <option value="joint">joint</option>
+                            <option value="linear">linear</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="edge-speed">Speed cap</label>
+                        <input type="number" id="edge-speed" min="0.1" step="1" placeholder="—">
+                        <small>Linear: mm/s. Joint: deg/s. Save applies to the next move, in every graph mode.</small>
+                    </div>
+                    <div class="edge-panel-actions">
+                        <button id="edge-save-btn" class="btn btn-primary">Save</button>
+                        <button id="edge-cancel-btn" class="btn btn-secondary">Cancel</button>
+                    </div>
+                    <div class="edge-panel-actions">
+                        <button id="edge-delete-btn" class="btn btn-danger">Delete edge</button>
+                    </div>
+                    <div id="edge-panel-error" class="edge-panel-error" hidden></div>
+                </div>
+            </aside>
+        </div>
+    </div><div id="node-tooltip" class="node-tooltip" role="tooltip" hidden></div></section></section><div class="card status-bar-card" hidden>
                 <h2>System Status</h2>
                 <div class="status-bar-line">
                     <span>Arm: <strong id="arm-state">N/A</strong></span>
@@ -534,8 +631,7 @@
                     <span class="sep">|</span>
                     <span>Error: <strong id="last-error">None</strong></span>
                 </div>
-            </div>
-        </main>
+            </div></main>
     </div>
 
     <!-- ── Lab Assistant (corner chat widget) ─────────────────────────────
@@ -616,7 +712,11 @@
         document.body.appendChild(_b);
       }
     </script>
-    <script src="camera-player.js?v=20260805b"></script>
-    <script src="main.js?v=20260813a"></script>
+    <script src="camera-player.js?v=20260930-camera-controls"></script>
+    <script src="realsense-card.js?v=20260930-camera-controls"></script>
+    <script src="main.js?v=20260930-clean-labels"></script>
+    <script src="cytoscape.min.js"></script>
+    <script src="graph.js?v=20260930-camera-controls"></script>
+    <script src="workspace.js?v=20260930-node-pill"></script>
 </body>
 </html>

@@ -41,6 +41,9 @@ lens: "tele"                                   # HTE camera tele lens
 # derive the stream origin from dashboard_base_url. The camera's /status
 # reports a relative mse_url (e.g. /streams/api/ws?src=...); this is the
 # host it gets anchored to when building the absolute ws(s):// stream URL.
+# The browser uses the URL's source name with the dashboard's authenticated
+# /api/camera-streams viewing API on the shared page origin. Open the panel
+# through the lab dashboard and sign in to view video; /streams/* is retired.
 stream_base_url: ""                            # TODO: set only if the stream host differs
 
 # Whether the arm follows automatically as soon as the feature is configured
@@ -53,9 +56,9 @@ follow_by_default: true
 # REQUIRED at the lab. The dashboard's /control/* write surface is auth-gated
 # (Caddy forward_auth -> ac_auth); confirmed live -> a POST with no credential
 # gets HTTP 401 "Sign in to control equipment.". Reads (/api/equipment, used
-# by the availability probe + live preview) are open, so the camera CARD and
-# STREAM work without a key -- but the camera will NOT actually pan until this
-# is set. Because the tracker is best-effort/swallowing, a missing key fails
+# by the availability probe) are open. Video uses the signed-in viewer's
+# dashboard session; this key only authorizes PTZ. The camera will not pan
+# until this is set. Because the tracker is best-effort/swallowing, a missing key fails
 # SILENTLY: follow appears on, the arm moves, the camera never turns.
 #
 # Provision a machine principal in ac_auth with control rights on the camera,

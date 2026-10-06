@@ -1,0 +1,15 @@
+# xArm metadata for the camera-service compatibility routes.
+# Hardware serials, stream profiles and capture storage belong in the standalone
+# camera service configuration outside this repository.
+enabled: true
+cameras:
+- id: rs435i
+  label: xArm depth camera (D435i, eye-in-hand)
+  short_label: RS 435i
+  mount:
+    location: gripper (eye-in-hand)
+- id: rs405
+  label: xArm close-range depth camera (D405, facing down)
+  short_label: RS D405
+  mount:
+    facing: down

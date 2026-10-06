@@ -39,7 +39,7 @@ The API server runs on `http://127.0.0.1:6001` by default.
 - [Components](#components)
   - [Gripper](#gripper)
     - [Open / Close](#post-gripperopen)
-    - [Stroke control (Gen2)](#post-gripperstroke)
+    - [Stroke control (Gen2)](#post-grippermovestroke)
     - [Force control (Gen2)](#post-gripperforce)
     - [Position readback (Gen2)](#get-gripperposition)
   - [Linear Track](#linear-track)
@@ -305,11 +305,20 @@ These endpoints control attached components like the gripper and linear track.
 
 ### Gripper
 
-All gripper endpoints accept an optional JSON body. Omitting the body uses config defaults.
+Open and close accept an optional JSON body and use configured defaults when
+it is omitted. Stroke and force-setting requests require the JSON fields
+shown below; position readback is a GET without a body.
+The installed BioGripper Gen2 uses **mm** for jaw opening and a **1–100%
+setting** for gripping force; the latter is neither N nor measured contact
+force. Gripper force is separate from the wrist force/torque sensor. All
+write endpoints require a claim. Raw stroke and force changes require graph
+mode OFF or ADVISORY.
 
 #### `POST /gripper/open`
 
 Opens the gripper to its fully open position.
+In STRICT graph mode, this routes through a graph state and ignores supplied
+`speed`, `force`, and `wait` fields.
 
 **Request Body** (optional)
 ```json
@@ -319,9 +328,12 @@ Opens the gripper to its fully open position.
     "wait": true
 }
 ```
-*   `speed` (optional): Movement speed. BioGripper Gen2 range: 0–4000. Default: 1000.
-*   `force` (optional): Gripping force %. BioGripper Gen2 range: 1–100. Default: 50.
-*   `wait` (optional, default `true`): Wait for motion to complete before returning.
+*   `speed` (optional): BioGripper Gen2 vendor motor-speed setting, **not mm/s**.
+    Default: 1000; the installed SDK clamps to 500–4000.
+*   `force` (optional): BioGripper Gen2 force setting, **1–100%**, not N or
+    measured contact force. Default: 50.
+*   `wait` (optional, default `true`): Wait for SDK jaw-motion completion.
+    This does not verify a grasp.
 
 **Response `200 OK`**
 ```json
@@ -339,6 +351,9 @@ curl -X POST "http://127.0.0.1:6001/gripper/open" -H "Content-Type: application/
 #### `POST /gripper/close`
 
 Closes the gripper to its fully closed position.
+In STRICT graph mode, this routes through a graph state and ignores supplied
+`speed`, `force`, and `wait` fields. For a plate grip with a calibrated jaw
+opening, use the raw stroke endpoint while graph mode is OFF or ADVISORY.
 
 **Request Body** (optional) — same fields as `/gripper/open`.
 
@@ -351,11 +366,13 @@ Closes the gripper to its fully closed position.
 curl -X POST "http://127.0.0.1:6001/gripper/close"
 ```
 
-#### `POST /gripper/stroke`
+#### `POST /gripper/move/stroke`
 
-*BioGripper Gen2 / Standard / RobotIQ only.* Moves the gripper to a specific absolute stroke position.
+Alias: `POST /control/freehand/gripper/stroke`. Both require a claim and
+graph mode OFF or ADVISORY; STRICT returns 409. *BioGripper Gen2 / Standard /
+RobotIQ only.* Moves the gripper to a specific absolute stroke position.
 
-**BioGripper Gen2 position range: 71 (fully closed) – 150 (fully open).**
+**BioGripper Gen2 jaw opening: 71 mm (fully closed) – 150 mm (fully open).**
 
 **Request Body**
 ```json
@@ -366,8 +383,17 @@ curl -X POST "http://127.0.0.1:6001/gripper/close"
     "wait": true
 }
 ```
-*   `stroke` (required): Target position in SDK units.
-*   `speed`, `force`, `wait`: same as open/close.
+*   `stroke` (required): Target jaw opening in mm for BioGripper Gen2.
+*   `force` (optional): 1–100 percentage setting, not N or measured force;
+    default 50. It limits the gripper's force during the position move.
+*   `speed` (optional): vendor motor-speed setting, not mm/s; default 1000.
+    The installed SDK clamps Gen2 values to 500–4000.
+*   `wait` (optional, default `true`): Wait for the SDK to report that jaw
+    travel stopped or an object was detected, up to the configured 5 s timeout.
+
+Success means the SDK reported completion, **not** that the target opening was
+reached or that a plate is held. Read `GET /gripper/position` afterward; the
+raw stroke endpoint does not perform the graph route's grasp verification.
 
 **Response `200 OK`**
 ```json
@@ -375,14 +401,16 @@ curl -X POST "http://127.0.0.1:6001/gripper/close"
 ```
 **Example**
 ```bash
-curl -X POST "http://127.0.0.1:6001/gripper/stroke" -H "Content-Type: application/json" -d '{
+curl -X POST "http://127.0.0.1:6001/gripper/move/stroke" -H "Content-Type: application/json" -d '{
     "stroke": 110
 }'
 ```
 
 #### `POST /gripper/force`
 
-*BioGripper Gen2 only.* Sets the gripping force independently of any position command.
+*BioGripper Gen2 only.* Sets the 1–100 percentage force setting independently
+of any position command. It does not close the jaws or report achieved force.
+Requires a claim and graph mode OFF or ADVISORY; STRICT returns 409.
 
 **Request Body**
 ```json
@@ -401,7 +429,8 @@ curl -X POST "http://127.0.0.1:6001/gripper/force" -H "Content-Type: application
 
 #### `GET /gripper/position`
 
-*BioGripper Gen2 / Standard only.* Returns the current gripper stroke position without moving.
+*BioGripper Gen2 / Standard only.* Returns the current gripper stroke position
+without moving. For BioGripper Gen2, `position` is the live jaw opening in mm.
 
 **Response `200 OK`**
 ```json
@@ -510,7 +539,10 @@ curl -X POST "http://127.0.0.1:6001/force-torque/disable"
 
 #### `POST /force-torque/calibrate`
 
-Calibrates the force torque sensor to zero.
+Computes a fixed six-axis **service tare** from the controller compensated/filtered
+channel. This existing explicit action does not identify a payload or verify gravity
+compensation. Data acquisition and tare updates are serialized. A failed tare leaves
+the previous tare intact; a successful tare publishes a new configuration revision.
 
 **Request Body**
 ```json
@@ -524,7 +556,7 @@ Calibrates the force torque sensor to zero.
 
 **Response `200 OK`**
 ```json
-{ "message": "Force torque sensor calibration started." }
+{ "message": "Force torque service tare started." }
 ```
 
 **Example**
@@ -537,67 +569,137 @@ curl -X POST "http://127.0.0.1:6001/force-torque/calibrate" -H "Content-Type: ap
 
 #### `GET /force-torque/data`
 
-Gets current force torque sensor data.
+Reads `get_ft_sensor_data(is_raw=False)` exactly once and returns one complete
+snapshot. Both norms and both directions are computed from its `wrench`, after
+applying the service tare, if completed. No raw channel or coordinate conversion
+is offered. An unavailable/invalid SDK reading returns HTTP 500 and does not
+replace the last successful sample. Reads never connect or enable the device.
 
-**Response `200 OK`**
+Example response (illustrative values, **not** a physical measurement):
+
 ```json
 {
-    "data": [1.2, -0.5, 15.3, 0.1, 0.2, -0.3],
-    "magnitude": {
-        "force_magnitude": 15.4,
-        "torque_magnitude": 0.37,
-        "total_magnitude": 15.4
-    },
-    "direction": {
-        "force_direction": [0.078, -0.032, 0.994],
-        "torque_direction": [0.270, 0.541, -0.811],
-        "force_magnitude": 15.4,
-        "torque_magnitude": 0.37
-    },
-    "calibrated": true
+  "sample_id": "session-a:42",
+  "config_revision": "session-a:3",
+  "sensor_sampled_at": null,
+  "service_received_at": "2026-09-25T03:40:00.123+00:00",
+  "wrench": [3, 4, 0, 0, 0, 0.5],
+  "service_tare_applied": false,
+  "force_magnitude": 5,
+  "torque_magnitude": 0.5,
+  "force_direction": [0.6, 0.8, 0],
+  "torque_direction": null
 }
 ```
-*   `data`: [fx, fy, fz, tx, ty, tz] in Newtons and Nm
-*   `magnitude`: Magnitude of force and torque vectors
-*   `direction`: Normalized direction vectors (if above dead zone)
-*   `calibrated`: Whether sensor has been calibrated
 
-**Example**
-```bash
-curl -X GET "http://127.0.0.1:6001/force-torque/data"
+`sample_id` identifies a service acquisition, not a unique hardware sample.
+`sensor_sampled_at` is unknown: this SDK method supplies no sample timestamp.
+`service_received_at` is UTC recorded immediately after the SDK call returns;
+it must not be interpreted as sensor acquisition time or filter latency.
+Direction vectors are dimensionless components along the **unverified source
+axes**, not directions in robot base or TCP coordinates.
+
+Breaking change: the old `data`, nested `magnitude`/`direction`, and `calibrated`
+response fields are replaced, with no compatibility aliases. `total_magnitude`
+is removed because it mixed N and N*m. Python callers of
+`get_force_torque_data()` now receive this snapshot; the independently reading
+`get_force_torque_magnitude()` and `get_force_torque_direction()` methods are removed.
+
+#### `GET /force-torque/config?revision=<config_revision>`
+
+Returns the interpretation of a sample. Without `revision`, returns the current
+service configuration. This endpoint reads no device registers, including version
+getters that could implicitly query hardware. SDK version comes from installed
+package metadata; controller firmware is only exposed if already in the SDK cache.
+Never substitute ordinary TCP payload for FT payload.
+
+Example configuration (abbreviated device identity):
+
+```json
+{
+  "revision": "session-a:3",
+  "device": {
+    "sdk_version": "1.18.4",
+    "controller_firmware": null,
+    "controller_firmware_source": "unknown",
+    "ft_sensor_firmware": null
+  },
+  "source": {
+    "method": "get_ft_sensor_data",
+    "is_raw": false,
+    "channel": "controller_compensated_filtered"
+  },
+  "wrench_order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+  "units": {"force": "N", "torque": "N*m"},
+  "geometry": {
+    "status": "unknown",
+    "frame_id": null,
+    "axis_convention": null,
+    "torque_reference_point": null,
+    "interaction_sign": null
+  },
+  "controller_compensation": {
+    "configuration_status": "unknown",
+    "reason": "ft_parameters_not_read",
+    "payload_coverage": "unknown",
+    "validation_status": "unknown"
+  },
+  "service_tare": {
+    "completed": false,
+    "offset": null,
+    "completed_at": null
+  },
+  "direction_deadband": {"force_n": 2.0, "torque_nm": 2.0}
+}
 ```
+
+The channel name describes the manufacturer's compensated/filtered channel,
+**not** proof that its payload parameters are correct. Reading frame, physical
+axes, torque origin, action/reaction sign and compensation validation remain
+explicitly unknown. Force-control base/tool settings do not establish the reading
+frame. Neither service tare nor a near-zero reading verifies gravity compensation.
+FT configuration getters and physical validation are outside this change.
+
+A completed tare records a six-value `offset` in the same order/units/channel as
+the wrench, plus a service completion time. Each tare/interpretation change creates
+a new revision. Historical sample/config objects are not rewritten. The service
+retains revisions referenced by its 1,000-sample history, the last sample, and the
+current revision. Unknown, expired, or previous-process revisions return HTTP 404
+with `ft_config_revision_unavailable`. Archive the configuration with saved samples.
+A revision describes service knowledge; it does not attest that another client
+has not changed the controller. Disconnect clears the service tare; cached older
+samples retain their original revision and receipt time.
+
+`direction_detection` in `force_torque_config.yaml` now uses
+`force_direction_deadband_n` and `torque_direction_deadband_nm` independently.
+Both default to 2.0 to preserve previous numeric behavior; these values have not
+been physically validated as noise thresholds. Norms below the relevant threshold
+produce `null` direction; at the threshold a nonzero vector is normalized. Zero
+vectors always have `null` direction, including with a zero threshold. Negative,
+non-finite or obsolete `dead_zone` configuration is rejected, not silently mapped.
+The existing filter/smoothing configuration fields do not establish implemented
+service filtering or controller filter settings.
 
 #### `GET /force-torque/status`
 
-Gets comprehensive force torque sensor status.
+Returns cached state without any sensor acquisition:
 
-**Response `200 OK`**
 ```json
 {
-    "enabled": true,
-    "calibrated": true,
-    "last_reading": [1.2, -0.5, 15.3, 0.1, 0.2, -0.3],
-    "zero_point": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    "history_length": 150,
-    "alerts_active": false,
-    "magnitude": {
-        "force_magnitude": 15.4,
-        "torque_magnitude": 0.37,
-        "total_magnitude": 15.4
-    },
-    "direction": {
-        "force_direction": [0.078, -0.032, 0.994],
-        "torque_direction": [0.270, 0.541, -0.811],
-        "force_magnitude": 15.4,
-        "torque_magnitude": 0.37
-    }
+  "enabled": true,
+  "config_revision": "session-a:3",
+  "service_tare_completed": false,
+  "last_sample": null,
+  "history_length": 0,
+  "alerts_active": false
 }
 ```
 
-**Example**
-```bash
-curl -X GET "http://127.0.0.1:6001/force-torque/status"
-```
+`last_sample` is null until a successful read, then contains the entire `/data`
+snapshot. It may be older than the current configuration; use **its own** revision
+and receipt time to interpret it. A failed read preserves this historical sample,
+without representing it as a new successful read. The general `/status` force
+metric also comes from this snapshot and uses its service receipt timestamp.
 
 #### `POST /force-torque/check-safety`
 
@@ -755,4 +857,21 @@ Establishes a WebSocket connection. Once connected, the server will push status 
         "linear_track": { "connected": true, "position": 500.1 }
     }
 }
-``` 
+```
+
+### Controller health and operator recovery
+
+`GET /status` includes `details.health_failure` (null when no failure is
+recorded). A latched failure contains `operation`, `return_code` (null for
+callbacks or exceptions), `reason`, UTC `timestamp`, `controller_state`, and
+`controller_error_code`. These are values observed at the first failure, not a
+fresh hardware query. The first failure is retained until successful recovery
+or a new connection initialization. A degraded status message includes this
+reason so dashboard clients can display it without interpreting SDK codes.
+
+`POST /clear/errors` and `/control/clear_errors` are operator recovery actions:
+they clear faults **and re-enable the arm**, then check command results and
+read back controller state and error/warning codes. Failure returns HTTP 500
+and preserves the health latch; success requires component recovery as well.
+This verifies controller readiness, not physical position, payload, or FT
+compensation. Neither status reads nor dashboard rendering invoke recovery.

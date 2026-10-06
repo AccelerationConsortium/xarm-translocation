@@ -52,10 +52,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const manualModeCheckbox = document.getElementById('manual-mode-checkbox');
     const moveToStrokeBtn = document.getElementById('move-to-stroke-btn');
     const gripperStrokeInput = document.getElementById('gripper-stroke');
-    const gripperStrokeRange = document.getElementById('gripper-stroke-range');
     const setGripperForceBtn = document.getElementById('set-gripper-force-btn');
     const gripperForceInput = document.getElementById('gripper-force');
-    const gripperForceRange = document.getElementById('gripper-force-range');
     
     // Linear movement controls
     const moveLinearBtn = document.getElementById('move-linear-btn');
@@ -87,6 +85,27 @@ document.addEventListener('DOMContentLoaded', () => {
         `xarm-web-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     let claimToken = null;          // non-null while this browser holds the claim
     let claimHeartbeatTimer = null; // setInterval handle for the heartbeat
+
+    // One session owns drive, graph editing, heartbeat and release. The editor
+    // reads the current token at request time, never a copied/stale token.
+    let claimAcquisition = null;
+    window.xarmControl = {
+        get sessionId() { return claimSessionId; },
+        get token() { return claimToken; },
+        async ensureClaim() {
+            if (claimToken) return true;
+            if (!controllerConnected || loginRequiredButNotSignedIn()) {
+                showMessage('Connect and sign in before taking control.', 'error');
+                return false;
+            }
+            if (!claimAcquisition) {
+                claimAcquisition = takeControl().finally(() => { claimAcquisition = null; });
+            }
+            await claimAcquisition;
+            return claimToken !== null;
+        },
+        handleClaimLost,
+    };
 
     let socket;
     let statusRefreshInterval = null;
@@ -612,6 +631,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- UI Updates ---
     function updateStatusUI(data) {
+        document.dispatchEvent(new CustomEvent('xarm:status', { detail: data }));
         try {
             // Quick check: if basic elements don't exist, DOM might not be ready
             if (!document.getElementById('arm-state') || !document.getElementById('status-text')) {
@@ -658,35 +678,14 @@ document.addEventListener('DOMContentLoaded', () => {
             // state (including the normal one, where the banner is absent).
             renderSashRow(data.sash_interlock);
 
-            // 3D-view card shows for BOTH connection targets: the iframe
-            // points at the simulator's Studio or the real arm's Studio
-            // (via the device PC's 18333 portproxy) to match the session,
-            // and unloads when the connection ends.
-            const sim3dCard = document.getElementById('sim-3d-card');
-            if (sim3dCard) {
-                const fr = document.getElementById('sim-3d-frame');
-                const studioUrl = fr && (data.simulated === true
-                    ? fr.dataset.srcSim : fr.dataset.srcHw);
-                if (isConnected) {
-                    sim3dCard.hidden = false;
-                    if (fr && fr.getAttribute('src') !== studioUrl) {
-                        fr.src = studioUrl;
-                    }
-                } else if (!sim3dCard.hidden) {
-                    sim3dCard.hidden = true;
-                    if (fr) fr.removeAttribute('src');
-                }
-            }
-
-            // Header "Open Studio" quick-link follows the same target.
+            // Header "Open Studio" quick-link: the simulator's Studio or the
+            // real arm's (via the device PC's 18333 portproxy), matching the
+            // session; hidden while disconnected.
             const simStudioLink = document.getElementById('sim-studio-link');
             if (simStudioLink) {
                 simStudioLink.hidden = !isConnected;
-                const fr = document.getElementById('sim-3d-frame');
-                if (fr) {
-                    simStudioLink.href = data.simulated === true
-                        ? fr.dataset.srcSim : fr.dataset.srcHw;
-                }
+                simStudioLink.href = data.simulated === true
+                    ? simStudioLink.dataset.srcSim : simStudioLink.dataset.srcHw;
             }
 
             // Per-target connection lines (Hardware / Docker).
@@ -734,11 +733,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             };
 
-            const setInputHelp = (element, text, disabled = false) => {
-                if (!element) return;
-                element.textContent = text;
-                element.classList.toggle('is-disabled', disabled);
-            };
 
             safeSetText('arm-state', componentStates.arm || 'N/A');
             
@@ -764,11 +758,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     
                     if (gripperStrokeInput) {
                         gripperStrokeInput.disabled = false;
-                        gripperStrokeInput.placeholder = `${minStroke}-${maxStroke}`;
+                        gripperStrokeInput.placeholder = "";
                         gripperStrokeInput.min = minStroke.toString();
                         gripperStrokeInput.max = maxStroke.toString();
                     }
-                    setInputHelp(gripperStrokeRange, `(${minStroke}–${maxStroke})`, false);
+
                     if (moveToStrokeBtn) {
                         moveToStrokeBtn.disabled = false;
                         moveToStrokeBtn.classList.remove('btn-secondary');
@@ -781,7 +775,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         gripperStrokeInput.placeholder = "";
                         gripperStrokeInput.value = "";
                     }
-                    setInputHelp(gripperStrokeRange, '', true);
+
                     if (moveToStrokeBtn) {
                         moveToStrokeBtn.disabled = true;
                         moveToStrokeBtn.classList.remove('btn-primary');
@@ -796,14 +790,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     if (gripperForceInput) {
                         gripperForceInput.disabled = false;
-                        gripperForceInput.placeholder = `${minForce}-${maxForce}`;
+                        gripperForceInput.placeholder = "";
                         gripperForceInput.min = minForce.toString();
                         gripperForceInput.max = maxForce.toString();
                         if (!gripperForceInput.value && gripperConfig.force) {
                             gripperForceInput.value = gripperConfig.force.toString();
                         }
                     }
-                    setInputHelp(gripperForceRange, `(${minForce}–${maxForce})`, false);
+
                     if (setGripperForceBtn) {
                         setGripperForceBtn.disabled = false;
                         setGripperForceBtn.classList.remove('btn-secondary');
@@ -815,7 +809,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         gripperForceInput.placeholder = "";
                         gripperForceInput.value = "";
                     }
-                    setInputHelp(gripperForceRange, '', true);
+
                     if (setGripperForceBtn) {
                         setGripperForceBtn.disabled = true;
                         setGripperForceBtn.classList.remove('btn-primary');
@@ -832,7 +826,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     gripperStrokeInput.placeholder = "";
                     gripperStrokeInput.value = "";
                 }
-                setInputHelp(gripperStrokeRange, '', true);
+
                 if (moveToStrokeBtn) {
                     moveToStrokeBtn.disabled = true;
                     moveToStrokeBtn.classList.remove('btn-primary');
@@ -843,7 +837,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     gripperForceInput.placeholder = "";
                     gripperForceInput.value = "";
                 }
-                setInputHelp(gripperForceRange, '', true);
+
                 if (setGripperForceBtn) {
                     setGripperForceBtn.disabled = true;
                     setGripperForceBtn.classList.remove('btn-primary');
@@ -981,27 +975,28 @@ document.addEventListener('DOMContentLoaded', () => {
             const reach = document.getElementById('mg-reachable');
             if (cur) cur.textContent = '—';
             if (reach) reach.innerHTML = '<span class="muted">(connect the arm)</span>';
-            document.querySelectorAll('.mg-mode-btn').forEach(b => {
-                b.disabled = true;
-                b.classList.remove('active');
-            });
+            const modeVal = document.getElementById('mg-mode-value');
+            if (modeVal) { modeVal.textContent = '—'; modeVal.dataset.mode = ''; }
             const rec = document.getElementById('mg-recover-btn');
             if (rec) rec.disabled = true;
+            renderGraphModeOverride(null);   // no graph, nothing lowered
             return;
         }
-        document.querySelectorAll('.mg-mode-btn').forEach(b => { b.disabled = false; });
         const recBtn = document.getElementById('mg-recover-btn');
         if (recBtn) recBtn.disabled = false;
 
-        const modeBtns = document.querySelectorAll('.mg-mode-btn');
         const currentEl = document.getElementById('mg-current-node');
         const reachableEl = document.getElementById('mg-reachable');
 
-        // Mode buttons reflect server state: the active mode lights up.
+        // Enforcement is shown, not set: lowering it is administrator-only
+        // (the Administrator row). data-mode drives the colour.
         const liveMode = motionGraph.graph_mode || 'off';
-        modeBtns.forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.mode === liveMode);
-        });
+        const modeVal = document.getElementById('mg-mode-value');
+        if (modeVal) {
+            modeVal.textContent = liveMode.toUpperCase();
+            modeVal.dataset.mode = liveMode;
+        }
+        renderGraphModeOverride(motionGraph.mode_override);
 
         // Current node + reachable buttons.
         const current = motionGraph.current_node;
@@ -1012,7 +1007,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (reachable.length === 0) {
             const span = document.createElement('span');
             span.className = 'muted';
-            span.textContent = current ? '(no outgoing edges)' : '(off-grid — use Recover)';
+            span.textContent = current ? '(no outgoing edges)' : 'None, off-grid';
             reachableEl.appendChild(span);
         } else {
             reachable.forEach(nodeId => {
@@ -1155,13 +1150,13 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // Best-effort, one-time: nudge the controller into STRICT the first
+        // Best-effort, one-time: switch the controller into STRICT the first
         // time the card shows with a graph and we hold the claim. The robust
         // guarantee is the ensure-strict step at Travel time.
         if (!driveArmStrictInitialized && claimToken
                 && (motionGraph.graph_mode || 'off') !== 'strict') {
             driveArmStrictInitialized = true;
-            changeGraphMode('strict');
+            ensureStrictMode();
         }
 
         // Gripper leaf row: live state readout + whitelisted transitions.
@@ -1326,13 +1321,112 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function changeGraphMode(newMode) {
-        const result = await apiRequest('/control/graph/mode', 'POST', { mode: newMode });
-        if (result) {
-            addLogEntry(`graph_mode -> ${result.graph_mode}`, 'info');
+    // Countdown for a lowered enforcement mode. The row is hidden while
+    // STRICT, so its appearance is itself the warning; the number is the
+    // point, because the whole bargain of lowering the mode is that it comes
+    // back without anyone remembering to put it back.
+    function renderGraphModeOverride(override) {
+        const row = document.getElementById('mg-mode-override-row');
+        if (!row) return;
+        const adminOff = override?.scope === 'admin' && !!override?.active;
+        row.dataset.admin = adminOff ? 'true' : 'false';
+        setAdminGraphButton(adminOff);
+        if (!override || !override.active) {
+            row.hidden = true;
+            return;
         }
-        // Re-fetch status so the UI reflects the change.
+        row.hidden = false;
+        const labelEl = document.getElementById('mg-mode-override-label');
+        const restoreBtn = document.getElementById('mg-mode-restore-btn');
+        const textEl = document.getElementById('mg-mode-override-text');
+        // Admin OFF: one plain line and no restore button here -- only an
+        // administrator can end it, from the Administrator row.
+        if (labelEl) labelEl.hidden = adminOff;
+        if (restoreBtn) restoreBtn.hidden = adminOff;
+        if (!textEl) return;
+        if (adminOff) {
+            textEl.textContent = 'Enforcement OFF until admin restores it.';
+            textEl.className = 'mg-sash--warn';
+            return;
+        }
+        const left = Math.max(0, Math.round(override.remaining_seconds || 0));
+        const who = override.owner ? ` — ${override.owner}` : '';
+        const why = override.reason ? `: ${override.reason}` : '';
+        textEl.textContent =
+            `${String(override.mode || '').toUpperCase()} for ${left}s more, `
+            + `then back to ${override.restores_to || 'strict'}${who}${why}`;
+        textEl.className = left <= 30 ? 'mg-sash--bad' : 'mg-sash--warn';
+    }
+
+    // Raise enforcement to STRICT (the only mode a claim holder may set;
+    // lowering is administrator-only and the server refuses it with 403).
+    async function ensureStrictMode() {
+        const result = await apiRequest('/control/graph/mode', 'POST', { mode: 'strict' });
+        if (result) addLogEntry(`graph_mode -> ${result.graph_mode}`, 'info');
         fetchAndUpdateStatus();
+    }
+
+    async function restoreGraphModeNow() {
+        const admin = document.getElementById('mg-mode-override-row')?.dataset.admin === 'true';
+        const result = await apiRequest(
+            admin ? '/control/admin/graph/restore' : '/control/graph/mode/restore', 'POST');
+        if (result) {
+            addLogEntry(`graph_mode -> ${result.graph_mode} (restored)`, 'info');
+        }
+        fetchAndUpdateStatus();
+    }
+
+    // One Administrator button, two faces: red "Turn enforcement OFF" while
+    // enforcement is on, green "Turn enforcement ON" while an admin OFF is in
+    // force. Driven from /status by renderGraphModeOverride.
+    let adminGraphIsOff = false;
+    function setAdminGraphButton(isOff) {
+        adminGraphIsOff = !!isOff;
+        const btn = document.getElementById('mg-admin-off-btn');
+        if (!btn) return;
+        btn.textContent = adminGraphIsOff ? 'Turn enforcement ON' : 'Turn enforcement OFF';
+        btn.classList.toggle('btn-danger', !adminGraphIsOff);
+        btn.classList.toggle('btn-success', adminGraphIsOff);
+    }
+
+    async function adminGraphOn() {
+        const result = await apiRequest('/control/admin/graph/restore', 'POST');
+        if (result) {
+            addLogEntry(`graph_mode -> ${result.graph_mode} (admin restored)`, 'info');
+        }
+        fetchAndUpdateStatus();
+    }
+
+    // Persistent administrator OFF: no TTL, no claim. Unlike the timed
+    // override it survives claim changes, disconnects and restarts, so the
+    // confirmation says so. The same button then turns it back ON.
+    async function adminGraphOff() {
+        if (!window.confirm(
+            'Turn motion-graph enforcement OFF until you restore it?\n\n'
+            + 'There is no time limit: it stays OFF for every client across '
+            + 'claim changes, disconnects and service restarts until an '
+            + 'administrator presses "Turn enforcement ON". Motion still needs '
+            + 'a claim and the other safety checks.'
+        )) return;
+        const reason = window.prompt('Reason (recorded in the lab history):');
+        if (!reason || !reason.trim()) return;
+        const result = await apiRequest(
+            '/control/admin/graph/off', 'POST', { reason: reason.trim() });
+        if (result) {
+            addLogEntry(`graph_mode -> ${result.graph_mode} (admin, until restored)`, 'warning');
+        }
+        fetchAndUpdateStatus();
+    }
+
+    // Show the admin row only to an admin. Cosmetic: the server enforces
+    // require_admin on the endpoint whatever the page shows.
+    async function initAdminGraphOff() {
+        const row = document.getElementById('mg-admin-off-row');
+        const btn = document.getElementById('mg-admin-off-btn');
+        if (!row || !btn) return;
+        btn.addEventListener('click', () => (adminGraphIsOff ? adminGraphOn() : adminGraphOff()));
+        const me = await apiRequest('/auth/me', 'GET', null, true);
+        row.hidden = me?.identity?.role !== 'admin';
     }
 
     async function openRecoverPanel() {
@@ -2084,23 +2178,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // --- Control Modes tabs (Arm Control / Graph Control) ---
-    const modeTabs = [
-        { tab: document.getElementById('mode-tab-arm'), pane: document.getElementById('mode-pane-arm') },
-        { tab: document.getElementById('mode-tab-graph'), pane: document.getElementById('mode-pane-graph') },
-    ];
-    modeTabs.forEach(({ tab }) => {
-        if (!tab) return;
-        tab.addEventListener('click', () => {
-            modeTabs.forEach((m) => {
-                if (!m.tab || !m.pane) return;
-                const active = m.tab === tab;
-                m.tab.classList.toggle('active', active);
-                m.pane.hidden = !active;
-            });
-        });
-    });
-
     // --- WebSocket Handling ---
     function connectWebSocket() {
         if (socket && socket.readyState === WebSocket.OPEN) {
@@ -2311,9 +2388,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Motion-graph card listeners (Phase 4). All elements may be
     // missing if index.html is older than this build — guard each one.
-    document.querySelectorAll('.mg-mode-btn').forEach(btn => {
-        btn.addEventListener('click', () => changeGraphMode(btn.dataset.mode));
-    });
+    const mgRestoreBtn = document.getElementById('mg-mode-restore-btn');
+    if (mgRestoreBtn) {
+        mgRestoreBtn.addEventListener('click', restoreGraphModeNow);
+    }
+    initAdminGraphOff();
+
     const mgRecoverBtn = document.getElementById('mg-recover-btn');
     if (mgRecoverBtn) {
         mgRecoverBtn.addEventListener('click', openRecoverPanel);
@@ -2349,15 +2429,22 @@ document.addEventListener('DOMContentLoaded', () => {
         apiRequest('/component/enable', 'POST', { component: 'gripper' });
     });
     
+    // Blank/invalid fields use the same conservative default shown on reload.
+    // Units come from each control: rail/TCP mm/s, joints degrees/s.
+    function movementSpeed(input) {
+        const value = Number(input.value);
+        return Number.isFinite(value) && value > 0 ? value : Number(input.defaultValue);
+    }
+
     moveTrackLocBtn.addEventListener('click', () => {
         const location_name = trackLocationSelect.value;
-        const speed = parseFloat(trackSpeedInput.value) || null;
+        const speed = movementSpeed(trackSpeedInput);
         apiRequest('/track/move/location', 'POST', { location_name, speed });
     });
 
     movePredefinedBtn.addEventListener('click', () => {
         const location_name = predefinedPositionSelect.value;
-        const speed = jointSpeedInput ? parseInt(jointSpeedInput.value) || 20 : 20;
+        const speed = movementSpeed(jointSpeedInput);
         apiRequest('/move/location', 'POST', { 
             location_name, 
             speed 
@@ -2367,7 +2454,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Linear movement event listener
     moveLinearBtn.addEventListener('click', () => {
         const targetLocation = predefinedPositionSelect.value; // Use same dropdown as Move Joints
-        const speed = linearSpeedInput ? parseInt(linearSpeedInput.value) || 100 : 100;
+        const speed = movementSpeed(linearSpeedInput);
 
         if (!targetLocation) {
             showMessage('Please select a destination location.', 'error');
@@ -2376,7 +2463,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Use new plate_linear endpoint - moves from current position to target
         // Tool maintains the same absolute orientation throughout movement
-        apiRequest('/move/plate_linear', 'POST', {
+        apiRequest('/control/freehand/plate_linear', 'POST', {
             target_location: targetLocation,
             speed: speed
         });
@@ -2397,7 +2484,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         
-        apiRequest('/gripper/move/stroke', 'POST', { stroke, force: currentGripperForce() });
+        apiRequest('/control/freehand/gripper/stroke', 'POST', { stroke, force: currentGripperForce() });
     });
 
     setGripperForceBtn.addEventListener('click', () => {
@@ -2415,7 +2502,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        apiRequest('/gripper/force', 'POST', { force });
+        apiRequest('/control/freehand/gripper/force', 'POST', { force });
     });
     
     // --- Direct Motion Control handlers ---
@@ -2437,8 +2524,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 showMessage('Enter all joint angles before moving.', 'error');
                 return;
             }
-            const speed = parseFloat(directJointSpeed?.value) || 10;
-            apiRequest('/move/joints', 'POST', { angles, speed });
+            const speed = movementSpeed(directJointSpeed);
+            apiRequest('/control/freehand/joints', 'POST', { angles, speed });
             // Target dispatched — let telemetry take the inputs back so they
             // animate toward the commanded angles.
             dirtyJoints.clear();
@@ -2448,10 +2535,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- XYZ Jog handlers ---
     function jog(dx, dy, dz) {
         const step = parseFloat(jogStepInput?.value) || 10;
-        const speed = parseFloat(linearSpeedInput?.value) || 100;
-        apiRequest('/move/relative', 'POST', { dx: dx * step, dy: dy * step, dz: dz * step, speed });
+        const speed = movementSpeed(linearSpeedInput);
+        apiRequest('/control/freehand/relative', 'POST', { dx: dx * step, dy: dy * step, dz: dz * step, speed });
     }
 
+    // Buttons use robot-frame directions: each sign matches its API delta.
     const jogMap = {
         'jog-x-plus':  [  1,  0,  0 ],
         'jog-x-minus': [ -1,  0,  0 ],
@@ -2465,6 +2553,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const btn = document.getElementById(id);
         if (btn) btn.addEventListener('click', () => jog(dx, dy, dz));
     });
+
 
     // --- Lab Assistant (corner chat widget) ---
     // Natural-language motion control. The widget only ever calls two
@@ -2823,6 +2912,11 @@ document.addEventListener('DOMContentLoaded', () => {
         onPresets: renderCameraPresets,
         onLenses: renderCameraLenses,
     });
+
+    // Depth Camera cards (local RealSense; reads /realsense/cameras, then one
+    // card per camera on /realsense/<id>/… with an MJPEG preview and
+    // click-to-measure). No-op unless realsense.yaml configures a camera.
+    if (window.setupRealSenseCard) window.setupRealSenseCard({ apiBase: API_BASE_URL });
     
     // Initialize real-time joints display
     if (realtimeJointsDisplay) {
@@ -2858,4 +2952,4 @@ document.addEventListener('DOMContentLoaded', () => {
     addLogEntry('System initialized', 'info');
     
     window.apiRequest = apiRequest;
-}); 
+});

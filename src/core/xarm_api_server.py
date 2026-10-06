@@ -15,13 +15,13 @@ import logging
 import os
 from collections import deque
 from contextlib import asynccontextmanager
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Literal, Union
 from datetime import datetime, timezone
 from fastapi import Depends, FastAPI, HTTPException, BackgroundTasks, Header, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, Response as RawResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, FiniteFloat
 import uvicorn
 
 try:
@@ -48,7 +48,10 @@ try:
     )
     from .claims import ClaimConflict, InvalidClaimToken
     from .camera_tracker import CameraTracker
+    from . import realsense_camera, realsense_captures
+    from .realsense_camera import RealSenseError, RealSenseNotStreaming, RealSenseUnavailable
     from .sash_interlock import SashInterlock, SashInterlockError
+    from . import kinematics
     from . import assistant_actions
     from . import assistant_llm
 except ImportError:
@@ -75,7 +78,10 @@ except ImportError:
     )
     from core.claims import ClaimConflict, InvalidClaimToken
     from core.camera_tracker import CameraTracker
+    from core import realsense_camera, realsense_captures
+    from core.realsense_camera import RealSenseError, RealSenseNotStreaming, RealSenseUnavailable
     from core.sash_interlock import SashInterlock, SashInterlockError
+    from core import kinematics
     from core import assistant_actions
     from core import assistant_llm
 
@@ -228,22 +234,53 @@ class TrackLocationRequest(BaseModel):
     speed: Optional[float] = Field(default=None, description="Movement speed for the track (validated by safety level)")
     wait: bool = Field(default=True, description="Wait for movement to complete.")
 
+class TrajectoryWaypoint(BaseModel):
+    """One time-stamped sample of a coordinated rail + arm trajectory."""
+    t: FiniteFloat = Field(
+        ge=0,
+        description="Seconds from trajectory start. The first waypoint is at 0; times strictly increase.",
+    )
+    rail_mm: FiniteFloat = Field(
+        description="Absolute linear-rail position in mm from the homed origin (0 = Home, 700 = Cytation).",
+    )
+    joints_deg: List[FiniteFloat] = Field(
+        description=(
+            "Arm joint angles in degrees, base to wrist (J1..J5 on the xArm5). "
+            "Exactly as many entries as the arm has joints."
+        ),
+    )
+
+class TrajectoryStartTolerance(BaseModel):
+    """How far the measured start state may sit from the first waypoint."""
+    joint_deg: FiniteFloat = Field(default=1.0, gt=0, description="Per-joint tolerance in degrees")
+    rail_mm: FiniteFloat = Field(default=2.0, gt=0, description="Rail tolerance in mm")
+
+class TrajectoryRequest(BaseModel):
+    """Request model for a coordinated rail + arm trajectory.
+
+    Units are fixed: seconds, mm from rail home, degrees base-to-wrist.
+    See ``src/docs/TRAJECTORY_PLAN.md`` for the execution model and the
+    timing guarantees the validator checks against.
+    """
+    waypoints: List[TrajectoryWaypoint] = Field(min_length=2)
+    start_tolerance: TrajectoryStartTolerance = Field(default_factory=TrajectoryStartTolerance)
+
 class GripperRequest(BaseModel):
     """Request model for gripper operations."""
-    speed: Optional[float] = Field(default=None, description="Gripper speed (1-5000)")
-    force: Optional[float] = Field(default=None, description="Gripper force, when supported")
-    wait: bool = Field(default=True, description="Wait for operation to complete.")
+    speed: Optional[float] = Field(default=None, description="BioGripper Gen2 motor-speed setting (SDK units, not mm/s); default 1000, effective SDK range 500-4000. Ignored in STRICT graph mode.")
+    force: Optional[float] = Field(default=None, description="BioGripper Gen2 force setting, 1-100 percent, not N or measured contact force; default 50. Ignored in STRICT graph mode.")
+    wait: bool = Field(default=True, description="Wait for SDK jaw-motion completion (stopped or object detected); does not verify a grasp. Ignored in STRICT graph mode.")
 
 class GripperStrokeRequest(BaseModel):
     """Request model for gripper stroke/position control."""
-    stroke: float = Field(description="Target gripper stroke/position")
-    speed: Optional[float] = Field(default=None, description="Gripper movement speed")
-    force: Optional[float] = Field(default=None, description="Gripper force, when supported")
-    wait: bool = Field(default=True, description="Wait for operation to complete.")
+    stroke: float = Field(description="Absolute BioGripper Gen2 jaw opening in mm: 71 closed to 150 open. Raw stroke does not verify a grasp.")
+    speed: Optional[float] = Field(default=None, description="BioGripper Gen2 motor-speed setting (SDK units, not mm/s); default 1000, effective SDK range 500-4000.")
+    force: Optional[float] = Field(default=None, description="BioGripper Gen2 force setting, 1-100 percent, not N or measured contact force; default 50.")
+    wait: bool = Field(default=True, description="Wait for SDK jaw-motion completion (stopped or object detected), up to configured 5 s timeout; does not verify target position or grasp.")
 
 class GripperForceRequest(BaseModel):
     """Request model for setting gripper force."""
-    force: float = Field(description="Target gripper force")
+    force: float = Field(description="BioGripper Gen2 force setting, 1-100 percent, not N or measured contact force. Changes setting only; does not close jaws.")
 
 class VelocityRequest(BaseModel):
     """Request model for Cartesian velocity control."""
@@ -259,8 +296,8 @@ class ComponentRequest(BaseModel):
     component: str = Field(description="Component to manage ('gripper', 'track', or 'force_torque')")
 
 class ForceTorqueCalibrationRequest(BaseModel):
-    """Request model for force torque sensor calibration."""
-    samples: Optional[int] = Field(default=None, description="Number of calibration samples")
+    """Request an explicit fixed service tare; not payload/gravity calibration."""
+    samples: Optional[int] = Field(default=None, description="Number of service tare samples")
     delay: Optional[float] = Field(default=None, description="Delay between samples in seconds")
 
 class ForceTorqueMovementRequest(BaseModel):
@@ -285,8 +322,94 @@ class PlateLinearRequest(BaseModel):
 
 
 class GraphModeRequest(BaseModel):
-    """Request model for switching motion-graph enforcement mode."""
+    """Request model for switching motion-graph enforcement mode.
+
+    ``reason`` is required only when *lowering* below STRICT, because that
+    is the direction that relaxes the safety model. Raising to STRICT needs
+    neither field.
+    """
     mode: str = Field(description="One of: 'off', 'advisory', 'strict'")
+    reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "Why enforcement is being lowered. REQUIRED when moving below "
+            "'strict'; ignored when raising to it."
+        ),
+    )
+    ttl_seconds: Optional[float] = Field(
+        default=None,
+        ge=1.0,
+        description=(
+            "Seconds to stay lowered before reverting to strict on its own; "
+            "clamped to mode_override_max_seconds (src/settings/"
+            "motion_graph.yaml). Defaults to mode_override_default_seconds."
+        ),
+    )
+
+
+class GraphOffRequest(BaseModel):
+    """Optional settings for the one-call, bounded graph OFF shortcut."""
+
+    reason: str = Field(
+        default="Operator requested graph OFF via shortcut",
+        min_length=1,
+        description="Audit reason; a default is supplied for the shortcut.",
+    )
+    ttl_seconds: Optional[float] = Field(
+        default=None,
+        ge=1.0,
+        description="OFF duration; omitted uses the graph configuration default, capped by its maximum.",
+    )
+
+
+class AdminGraphOffRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    reason: str = Field(
+        default="Administrator requested graph OFF independent of claims",
+        min_length=1,
+        description="Nonblank audit reason for persistent OFF until an administrator restores it. No TTL is accepted.",
+    )
+
+
+class AdminGraphOverrideResponse(BaseModel):
+    active: Literal[True]
+    mode: Literal["off"]
+    restores_to: Literal["strict"]
+    scope: Literal["admin"]
+    persistent: Literal[True]
+    claim_bound: Literal[False]
+    owner: str = Field(description="Verified administrator identity.")
+    reason: str
+    created_at: datetime
+    granted_seconds: None
+    remaining_seconds: None
+    expires_at: None
+
+
+class AdminGraphOffResponse(BaseModel):
+    graph_mode: Literal["off"]
+    mode_override: AdminGraphOverrideResponse
+
+
+class AdminGraphRestoreResponse(BaseModel):
+    graph_mode: Literal["strict", "off"] = Field(
+        description="STRICT when a motion graph is loaded; OFF otherwise.",
+    )
+    override_cleared: bool = Field(description="Whether an admin override was active before restoration.")
+
+
+class AdminGraphErrorResponse(BaseModel):
+    detail: Union[str, Dict[str, Any], List[Dict[str, Any]]] = Field(
+        description="Authentication error object, plain-text service/reason error, or request validation error list.",
+    )
+
+
+_ADMIN_GRAPH_ERROR_RESPONSES = {
+    400: {"model": AdminGraphErrorResponse, "description": "Controller is not initialized."},
+    401: {"model": AdminGraphErrorResponse, "description": "No verified identity; detail.error is login_required."},
+    403: {"model": AdminGraphErrorResponse, "description": "Verified identity is not an administrator; detail.error is admin_required."},
+    503: {"model": AdminGraphErrorResponse, "description": "Identity verification unavailable, or persistent state could not be written/cleared. Mode unchanged."},
+}
 
 
 class SashOverrideRequest(BaseModel):
@@ -360,7 +483,7 @@ class GraphMoveToRequest(BaseModel):
     can differ (e.g. node 'uplc_draw_approach' has arm 'uplc_draw_home').
     """
     node_id: str = Field(description="Graph node id to move to")
-    speed: Optional[float] = Field(default=None, description="Movement speed (may be capped by edge.speed in STRICT)")
+    speed: Optional[float] = Field(default=None, description="Arm speed: linear mm/s, joint deg/s; capped by edge.speed in every graph mode")
 
 
 class GraphTravelToRequest(BaseModel):
@@ -372,7 +495,7 @@ class GraphTravelToRequest(BaseModel):
     executes it hop-by-hop.
     """
     node_id: str = Field(description="Graph node id to travel to (any reachable node)")
-    speed: Optional[float] = Field(default=None, description="Per-hop movement speed (each hop may be capped by its edge.speed)")
+    speed: Optional[float] = Field(default=None, description="Per-hop arm speed: linear mm/s, joint deg/s; capped by each edge in every graph mode")
 
 
 class AssistantMessage(BaseModel):
@@ -498,6 +621,43 @@ class GraphNodeCreateRequest(BaseModel):
     )
 
 
+class PoseSaveRequest(BaseModel):
+    """Body of POST /control/graph/pose — write a named arm pose into
+    joint_config.yaml.
+
+    This closes the authoring gap that made autonomous node growth
+    impossible: ``POST /control/graph/node`` takes ``arm`` as a pose NAME
+    that must already exist in joint_config.yaml, and until now nothing
+    could create one -- a pose could only be added by hand-editing YAML on
+    the device PC. Teach-by-demonstration is the normal flow: jog the
+    arm where you want it, POST this with a name, then POST
+    /control/graph/node referencing that name.
+    """
+    name: str = Field(
+        min_length=1, max_length=64,
+        description="Pose name, e.g. 'deck_slot3_high'. Convention: <station>_<target>_<height>.",
+    )
+    angles: Optional[List[float]] = Field(
+        default=None,
+        description=(
+            "Joint angles in degrees. Omit to capture the arm's CURRENT "
+            "joints, which is the teach-by-demonstration case."
+        ),
+    )
+    overwrite: bool = Field(
+        default=False,
+        description=(
+            "Replace an existing pose of this name. Required (409 without it) "
+            "when the name is taken -- this is how a node is re-calibrated. "
+            "The previous value is logged and returned as `replaced`."
+        ),
+    )
+    comment: Optional[str] = Field(
+        default=None, max_length=200,
+        description="Trailing YAML comment, e.g. why this pose was recalibrated.",
+    )
+
+
 class GraphEdgeCreateRequest(BaseModel):
     """Body of POST /control/graph/edge/create — add a new edge (motion)
     between two existing nodes.
@@ -592,12 +752,22 @@ async def lifespan(app: FastAPI):
     # Start background tasks
     log_task = asyncio.create_task(broadcast_logs())
     telemetry_task = asyncio.create_task(telemetry_loop())
+    gripper_status_task = asyncio.create_task(gripper_status_loop())
+
+    # Camera capture belongs to the standalone camera service. Poll its cached
+    # status without opening a camera or delaying robot status requests.
+    if camera_service is not None:
+        camera_service.start_polling()
 
     yield
 
     # Shutdown
     log_task.cancel()
     telemetry_task.cancel()
+    gripper_status_task.cancel()
+    await asyncio.gather(gripper_status_task, return_exceptions=True)
+    if camera_service is not None:
+        await asyncio.to_thread(camera_service.close)
     global controller
     if controller:
         logger.info("Disconnecting from robot...")
@@ -621,6 +791,8 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# USB and RealSense hardware are owned by the standalone camera service.
 
 # Add CORS middleware
 app.add_middleware(
@@ -833,14 +1005,14 @@ def _edge_identity(request: Request) -> Optional[dict]:
     return {"email": email, "role": role}
 
 
-async def _resolve_identity(request: Request) -> Optional[str]:
+async def _resolve_verified_identity(request: Request) -> Optional[dict]:
     """Resolve a verified principal email for a control request.
 
     Checks, in order: the trusted edge identity (``X-Auth-User`` +
     ``X-Edge-Auth``, see ``_edge_identity``), then an ``X-Api-Key`` header
     (machine principals / future SDK workflows -> the sidecar's
     GET /auth/verify), then the ``ac_auth_session`` cookie (humans ->
-    GET /auth/me). Returns the verified email, or None when no credential was
+    GET /auth/me). Returns the verified identity, or None when no credential was
     presented / it didn't validate.
 
     Fails closed: the sidecar round-trip runs off the event loop and any
@@ -850,20 +1022,41 @@ async def _resolve_identity(request: Request) -> Optional[str]:
     """
     edge = _edge_identity(request)
     if edge:
-        return edge["email"]
+        return edge
     api_key = request.headers.get("X-Api-Key")
     if api_key:
         status, payload, _ = await asyncio.to_thread(
             _auth_sidecar_call, "GET", "/auth/verify", None, None, api_key=api_key,
         )
-        return _identity_email(payload) if status == 200 else None
-    token = request.cookies.get(AUTH_COOKIE_NAME)
-    if token:
+    elif request.cookies.get(AUTH_COOKIE_NAME):
+        token = request.cookies[AUTH_COOKIE_NAME]
         status, payload, _ = await asyncio.to_thread(
             _auth_sidecar_call, "GET", "/auth/me", None, token,
         )
-        return _identity_email(payload) if status == 200 else None
-    return None
+    else:
+        return None
+    if status != 200 or not _identity_email(payload):
+        return None
+    identity = payload.get("identity")
+    return identity if isinstance(identity, dict) and identity.get("email") else payload
+
+
+async def _resolve_identity(request: Request) -> Optional[str]:
+    identity = await _resolve_verified_identity(request)
+    return identity["email"] if identity else None
+
+
+async def require_admin(request: Request):
+    """Always verify admin identity, even when the general login gate is off."""
+    try:
+        identity = await _resolve_verified_identity(request)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Auth service unreachable; cannot verify admin identity.")
+    if not identity:
+        raise HTTPException(status_code=401, detail={"error": "login_required", "hint": _LOGIN_HINT})
+    if identity.get("role") != "admin":
+        raise HTTPException(status_code=403, detail={"error": "admin_required"})
+    request.state.identity_email = identity["email"]
 
 
 class AuthEmailIn(BaseModel):
@@ -1081,6 +1274,24 @@ def reserve_motion() -> XArmController:
         )
     c.enter_motion()
     return c
+
+# The eight graph-bypassing ("freehand") routes below each answer at TWO paths:
+# the canonical ``/control/freehand/*`` and the original spelling. The legacy
+# paths predate the ``/control/*`` namespace by ten months (``/move/position``
+# landed 2025-07-13 in 0.2.5; the first ``/control/*`` route arrived 2026-05-23
+# with STATUS_SPEC v1.1), so the family that most needs to look dangerous was
+# the one family whose URLs did not say so. ``/control/freehand/*`` groups by
+# permission model, not by subject: every path under it is refused by
+# ``strict_graph_guard`` in STRICT, which is now legible from the URL alone.
+# Note that means the rail (``/track/move``) and the gripper belong here too --
+# "freehand" is "bypasses the motion graph", not "Cartesian".
+#
+# Stacked decorators on ONE handler, the same device-local convention
+# ``/control/stop`` + ``/move/stop`` already use: same function, same gate,
+# same guards, so the two spellings cannot drift. The legacy paths stay
+# indefinitely -- the device panel, any operator muscle memory and the
+# dashboard's /device/* allowlist all predate the alias.
+
 
 def strict_graph_guard(action: str) -> None:
     """Refuse a freehand (graph-bypassing) legacy action in STRICT mode.
@@ -1332,6 +1543,28 @@ async def telemetry_loop():
             # Back off so a persistent fault doesn't spin the loop hot.
             await asyncio.sleep(0.5)
 
+async def gripper_status_loop():
+    """Keep REST gripper feedback current even without WebSocket viewers.
+
+    Modbus reads run at 1 Hz independently of high-rate pose telemetry.
+    In particular, a wait=False command must not leave its initial
+    'moving' snapshot cached forever after the jaws have settled.
+    """
+    while True:
+        try:
+            await asyncio.sleep(1.0)
+            c = controller
+            # Faults can make is_alive false; keep reading diagnostics as
+            # long as the hardware connection itself remains available.
+            if c is None or c.arm is None or not c.arm.connected:
+                continue
+            await asyncio.to_thread(c.refresh_gripper_status)
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            logger.warning(f"Gripper status refresh failed: {exc}")
+
+
 # API Routes
 
 @app.get("/api")
@@ -1383,12 +1616,17 @@ async def connect_robot(request: ConnectionRequest, background_tasks: Background
     
     try:
         # Create and initialize the controller instance
-        controller = XArmController(
+        # Built in a worker thread: with auto_enable (the default) the
+        # constructor itself runs initialize() -- the connect handshake plus,
+        # when force_torque_config.yaml opts in, F/T enable + zeroing (~10 s).
+        # On the event loop that would freeze /health, /status and STOP.
+        controller = await asyncio.to_thread(
+            XArmController,
             profile_name=request.profile_name,
             host=request.host,
             model=request.model,
             gripper_type=request.gripper_type,
-            safety_level=request.get_safety_level_enum()
+            safety_level=request.get_safety_level_enum(),
         )
 
         # initialize() opens the SDK sockets and runs the connect/enable
@@ -1528,6 +1766,51 @@ async def get_all_positions():
         "gripper": gripper,
     }
 
+class ForwardKinematicsRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    joints: List[FiniteFloat] = Field(..., min_length=5, max_length=7, description="J1 through JN in degrees; exactly the connected axis count")
+
+
+class InverseKinematicsRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    pose: List[FiniteFloat] = Field(..., min_length=6, max_length=6, description="TCP [x,y,z,roll,pitch,yaw], mm and degrees")
+    reference_angles: Optional[List[FiniteFloat]] = Field(None, min_length=5, max_length=7, description="J1 through JN in degrees; omitted means read current joints")
+    limited: bool = Field(False, description="SDK IK ±180-degree normalization; NOT joint-limit validation")
+
+
+def _kinematics_arm():
+    arm = get_controller().arm
+    if arm is None or not arm.connected:
+        raise HTTPException(503, detail={"error": "controller_disconnected"})
+    return arm
+
+
+@app.get("/kinematics/config", tags=["kinematics"], summary="Read controller coordinate configuration and DH parameters")
+async def kinematics_config():
+    return await asyncio.to_thread(kinematics.configuration, _kinematics_arm())
+
+
+@app.get("/kinematics/limits", tags=["kinematics"], summary="Read reduced limits and ordinary-limit availability")
+async def kinematics_limits():
+    return await asyncio.to_thread(kinematics.limits, _kinematics_arm())
+
+
+@app.post("/kinematics/fk", tags=["kinematics"], summary="Read-only controller forward kinematics; no motion")
+async def kinematics_fk(request: ForwardKinematicsRequest):
+    arm = _kinematics_arm()
+    joints = kinematics.validate_joints(request.joints, arm.axis)
+    return await asyncio.to_thread(kinematics.forward, arm, joints)
+
+
+@app.post("/kinematics/ik", tags=["kinematics"], summary="Read-only controller inverse kinematics with reference angles; no motion")
+async def kinematics_ik(request: InverseKinematicsRequest):
+    arm = _kinematics_arm()
+    ref = request.reference_angles
+    if ref is not None:
+        ref = kinematics.validate_joints(ref, arm.axis)
+    return await asyncio.to_thread(kinematics.inverse, arm, request.pose, ref, request.limited)
+
+
 @app.get("/locations")
 async def get_locations():
     """Get all named arm positions from the position config file."""
@@ -1561,6 +1844,7 @@ async def get_locations():
         raise HTTPException(status_code=500, detail=f"Get arm positions failed: {str(e)}")
 
 # Movement endpoints
+@app.post("/control/freehand/position", dependencies=[Depends(require_claim)])
 @app.post("/move/position", dependencies=[Depends(require_claim)])
 async def move_to_position(request: PositionRequest, background_tasks: BackgroundTasks):
     """Move the robot to a specific Cartesian position.
@@ -1594,6 +1878,7 @@ async def move_to_position(request: PositionRequest, background_tasks: Backgroun
     background_tasks.add_task(move_task)
     return {"message": "Move to position command accepted."}
 
+@app.post("/control/freehand/joints", dependencies=[Depends(require_claim)])
 @app.post("/move/joints", dependencies=[Depends(require_claim)])
 async def move_joints(request: JointRequest, background_tasks: BackgroundTasks):
     """Move the robot to a specific joint configuration.
@@ -1625,6 +1910,7 @@ async def move_joints(request: JointRequest, background_tasks: BackgroundTasks):
     background_tasks.add_task(move_task)
     return {"message": "Move joints command accepted."}
 
+@app.post("/control/freehand/relative", dependencies=[Depends(require_claim)])
 @app.post("/move/relative", dependencies=[Depends(require_claim)])
 async def move_relative(request: RelativeRequest, background_tasks: BackgroundTasks):
     """Move the robot relative to its current position.
@@ -1787,7 +2073,7 @@ async def stop_movement(request: Request, background_tasks: BackgroundTasks):
 @app.post("/control/clear_errors", dependencies=[Depends(require_login)])
 @app.post("/clear/errors", dependencies=[Depends(require_login)])
 async def clear_errors(background_tasks: BackgroundTasks):
-    """Clear all robot errors and warnings"""
+    """Clear faults, re-enable the arm, and verify controller recovery."""
     ctrl = get_controller()
     
     try:
@@ -1796,11 +2082,11 @@ async def clear_errors(background_tasks: BackgroundTasks):
         if result:
             background_tasks.add_task(broadcast_status_update)
             return {
-                "message": "All errors and warnings cleared successfully",
+                "message": "Errors cleared; arm re-enabled and controller recovery verified",
                 "timestamp": datetime.now().isoformat()
             }
         else:
-            raise HTTPException(status_code=500, detail="Failed to clear all errors")
+            raise HTTPException(status_code=500, detail="Controller recovery failed; inspect /status details.health_failure")
             
     except HTTPException:
         raise
@@ -1907,6 +2193,7 @@ async def disable_component(request: ComponentRequest):
     else:
         raise HTTPException(status_code=500, detail=f"Failed to disable component '{component}'.")
 
+@app.post("/control/freehand/velocity", dependencies=[Depends(require_claim)])
 @app.post("/velocity/cartesian", dependencies=[Depends(require_claim)])
 async def set_cartesian_velocity(request: VelocityRequest):
     """Set the Cartesian velocity of the robot arm.
@@ -2024,6 +2311,7 @@ async def close_gripper(request: Optional[GripperRequest] = None):
         logger.error(f"Close gripper failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Close gripper failed: {str(e)}")
 
+@app.post("/control/freehand/gripper/stroke", dependencies=[Depends(require_claim)])
 @app.post("/gripper/move/stroke", dependencies=[Depends(require_claim)])
 async def move_gripper_stroke(request: GripperStrokeRequest):
     """Move gripper to a specific stroke position.
@@ -2053,6 +2341,7 @@ async def move_gripper_stroke(request: GripperStrokeRequest):
         logger.error(f"Move gripper to stroke failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Move gripper to stroke failed: {str(e)}")
 
+@app.post("/control/freehand/gripper/force", dependencies=[Depends(require_claim)])
 @app.post("/gripper/force", dependencies=[Depends(require_claim)])
 async def set_gripper_force(request: GripperForceRequest):
     """Set gripping force for grippers that support force control.
@@ -2078,6 +2367,7 @@ async def get_gripper_position():
     return {"position": position}
 
 # Linear track endpoints
+@app.post("/control/freehand/track", dependencies=[Depends(require_claim)])
 @app.post("/track/move", dependencies=[Depends(require_claim)])
 async def move_track(request: TrackRequest, background_tasks: BackgroundTasks):
     """Move the linear track to a specific position.
@@ -2153,6 +2443,41 @@ async def get_track_position():
         raise HTTPException(status_code=400, detail="Linear track is not enabled.")
     return {"position": await asyncio.to_thread(c.get_track_position)}
 
+@app.post("/control/trajectory/validate", dependencies=[Depends(require_login)])
+async def validate_trajectory(request: TrajectoryRequest):
+    """Validate a coordinated rail + arm trajectory. Moves nothing.
+
+    Checks shape, units, timing, joint and rail bounds, implied segment
+    speeds and the arm's measured start state, and returns the full
+    report with every violation. Read-only, so it needs neither a claim
+    nor a lowered graph mode, and it never touches the motion slot.
+
+    200 with ``valid: true`` and the report when the trajectory is
+    executable; 422 ``trajectory_invalid`` with the same report under
+    ``detail.report`` otherwise. The execute endpoint (not yet shipped)
+    will be a freehand action: refused in STRICT and subject to the
+    claim, interlock and single-motion-slot rules as one operation.
+    """
+    c = get_controller()
+    try:
+        report = await asyncio.to_thread(
+            c.validate_trajectory,
+            [wp.model_dump() for wp in request.waypoints],
+            request.start_tolerance.model_dump(),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not report.get("valid"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "trajectory_invalid",
+                "message": f"{len(report.get('errors', []))} violation(s); see report.errors",
+                "report": report,
+            },
+        )
+    return report
+
 @app.get("/track/locations")
 async def get_track_locations():
     """Get a list of all available named locations for the linear track from its config file."""
@@ -2215,7 +2540,7 @@ async def disable_force_torque_sensor():
 
 @app.post("/force-torque/calibrate", dependencies=[Depends(require_claim)])
 async def calibrate_force_torque_sensor(request: ForceTorqueCalibrationRequest, background_tasks: BackgroundTasks):
-    """Calibrate the force torque sensor to zero."""
+    """Compute a fixed service tare from the compensated controller channel."""
     c = get_controller()
 
     async def calibration_task():
@@ -2225,11 +2550,11 @@ async def calibrate_force_torque_sensor(request: ForceTorqueCalibrationRequest, 
             delay=request.delay,
         )
         if not success:
-            logger.error("Failed to calibrate force torque sensor.")
+            logger.error("Failed to compute force torque service tare.")
         await broadcast_status_update()
 
     background_tasks.add_task(calibration_task)
-    return {"message": "Force torque sensor calibration started."}
+    return {"message": "Force torque service tare started."}
 
 @app.get("/force-torque/data")
 async def get_force_torque_data():
@@ -2243,24 +2568,24 @@ async def get_force_torque_data():
     if data is None:
         raise HTTPException(status_code=500, detail="Failed to get force torque data.")
 
-    # magnitude/direction each re-read the sensor (get_ft_sensor_data); fetch
-    # them in one worker hop so neither blocks the event loop.
-    magnitude, direction = await asyncio.to_thread(
-        lambda: (c.get_force_torque_magnitude(), c.get_force_torque_direction())
-    )
-    return {
-        "data": data,
-        "magnitude": magnitude,
-        "direction": direction,
-        "calibrated": c.force_torque_calibrated
-    }
+    return data
+
+
+@app.get("/force-torque/config")
+async def get_force_torque_config(revision: Optional[str] = None):
+    """Interpretation of a sample; no device reads or automatic connection."""
+    config = await asyncio.to_thread(get_controller().get_force_torque_config, revision)
+    if config is None:
+        raise HTTPException(status_code=404, detail={"error": "ft_config_revision_unavailable"})
+    return config
+
 
 @app.get("/force-torque/status")
 async def get_force_torque_status():
     """Get comprehensive force torque sensor status."""
     c = get_controller()
     
-    return c.get_force_torque_status()
+    return await asyncio.to_thread(c.get_force_torque_status)
 
 @app.post("/force-torque/check-safety", dependencies=[Depends(require_claim)])
 async def check_force_torque_safety():
@@ -2330,6 +2655,7 @@ async def move_joint_until_torque(request: JointTorqueMovementRequest, backgroun
     background_tasks.add_task(torque_movement_task)
     return {"message": "Torque-controlled joint movement started."}
 
+@app.post("/control/freehand/plate_linear", dependencies=[Depends(require_claim)])
 @app.post("/move/plate_linear", dependencies=[Depends(require_claim)])
 async def move_plate_linear(request: PlateLinearRequest, background_tasks: BackgroundTasks):
     """Move linearly from current position to target with constant tool orientation.
@@ -2600,7 +2926,7 @@ async def graph_move_to(request: GraphMoveToRequest, background_tasks: Backgroun
     never touched here. Grip/release/narrow happens separately via
     POST /control/graph/gripper while parked at a node.
 
-    Returns 409 (edge_not_allowed) when STRICT mode refuses the transition
+    Returns 409 (edge_not_allowed) when the graph refuses the transition
     (including edges the current gripper state may not ride), 409
     (motion_in_progress) when a motion is already in flight, or 500 when
     the move fails.
@@ -2658,7 +2984,7 @@ async def graph_travel_to(request: GraphTravelToRequest, background_tasks: Backg
     matching the repo's blocking-move convention; live progress is
     visible on the /ws status stream.
 
-    Returns 409 for an unknown node, no path (no_path), a STRICT
+    Returns 409 for an unknown node, no path (no_path), a graph
     refusal (edge_not_allowed — e.g. off-grid), or a motion already in
     flight (motion_in_progress); 500 when a hop fails mid-journey (the arm
     is parked at the last completed node).
@@ -2710,13 +3036,14 @@ async def graph_travel_to(request: GraphTravelToRequest, background_tasks: Backg
     background_tasks.add_task(broadcast_status_update)
 
     # Surface edge speed-cap clamps: the requested max is only a ceiling of
-    # the caller's own, and STRICT clamps it per hop to edge.speed. Logging
+    # the caller's own, and graph travel clamps it per hop to edge.speed. Logging
     # through `logger` puts it on the panel's log stream (bare prints in the
     # controller never reach the browser).
     for clamp in result.get("speed_clamps") or []:
         logger.warning(
-            "speed clamped %s->%s: %s -> %s deg/s (graph edge limit)",
+            "speed clamped %s->%s: %s -> %s %s (graph edge limit)",
             clamp["from"], clamp["to"], clamp["requested"], clamp["applied"],
+            clamp.get("units", "(edge units)"),
         )
 
     if not result["success"]:
@@ -3000,6 +3327,694 @@ async def camera_ptz(body: dict):
     except Exception as exc:  # noqa: BLE001 - surface the passthrough's failure
         raise HTTPException(status_code=502, detail=f"camera ptz failed: {exc}")
     return {"ok": True}
+
+
+# =============================================================================
+# REALSENSE DEPTH CAMERAS (compatibility routes backed by camera service)
+#
+# Distinct from /camera/* above, which drives the *network* PTZ camera through
+# the dashboard. These routes forward to the standalone camera service. They
+# outlive arm connections (the client lives in a process-wide registry), so they answer
+# before /connect. Reads (/status, /depth, /intrinsics) are open like
+# GET /status; anything that turns a camera on or ships video is login-gated,
+# matching the authenticated viewing sessions the PTZ preview moved to. Nothing
+# here is claim-gated: looking is not arm actuation.
+#
+# Every camera is addressed by a device-local id from realsense.yaml, which is
+# the first path segment of its routes: /realsense/rs435i/status. The id is
+# part of the URL rather than a query parameter because it identifies the
+# resource, not a filter on it -- a client that holds a camera's URL holds
+# everything about that camera, and GET /realsense/cameras hands those URLs out
+# so nothing downstream has to build paths by string concatenation.
+# =============================================================================
+
+# Built once at import from src/settings/realsense.yaml and the local service
+# credential file. Without a service configuration the registry stays empty;
+# xArm never falls back to a direct hardware driver.
+camera_service = None
+remote_camera_store = None
+if os.environ.get("XARM_CAMERA_SERVICE_CONFIG"):
+    from .remote_realsense import configure as configure_remote_cameras
+    config, reason = realsense_camera.load_config(realsense_camera.default_config_path())
+    if reason:
+        raise RuntimeError(reason)
+    camera_service, remote_cameras, remote_camera_store = configure_remote_cameras(
+        os.environ["XARM_CAMERA_SERVICE_CONFIG"], config)
+    realsense_camera.set_cameras(remote_cameras)
+else:
+    realsense_camera.set_cameras({}, reason="XARM_CAMERA_SERVICE_CONFIG is required; cameras are owned by the standalone camera service")
+
+
+def _realsense_registry() -> Dict[str, Any]:
+    """Every configured camera, or 404 when the feature is off entirely."""
+    cameras = realsense_camera.cameras()
+    if not cameras:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "realsense_not_configured",
+                "hint": realsense_camera.configuration_reason()
+                or "set enabled: true and list a camera under cameras: in "
+                   "src/settings/realsense.yaml",
+            },
+        )
+    return cameras
+
+
+def _realsense(camera_id: str):
+    """One camera by id. 404 distinguishes "no cameras" from "not that one".
+
+    The unknown-camera body carries the ids that *do* exist, so a caller that
+    guessed (or whose config drifted) can correct itself from the refusal
+    instead of having to fetch a second endpoint.
+    """
+    cameras = _realsense_registry()
+    camera = cameras.get(camera_id)
+    if camera is None or not getattr(camera, "configured", False):
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "camera_not_found", "camera_id": camera_id,
+                    "cameras": sorted(cameras)},
+        )
+    return camera
+
+
+def _realsense_http_error(exc: Exception) -> HTTPException:
+    """Map camera exceptions to the status codes the panel keys on."""
+    if isinstance(exc, RealSenseUnavailable):
+        return HTTPException(status_code=503, detail={"error": "realsense_unavailable", "reason": str(exc)})
+    if isinstance(exc, RealSenseNotStreaming):
+        return HTTPException(status_code=409, detail={"error": "realsense_not_streaming", "reason": str(exc)})
+    if isinstance(exc, ValueError):
+        return HTTPException(status_code=400, detail={"error": "bad_request", "reason": str(exc)})
+    return HTTPException(status_code=502, detail={"error": "realsense_error", "reason": str(exc)})
+
+
+def _realsense_stream_kind(stream: Optional[str]) -> str:
+    kind = (stream or "color").lower()
+    if kind not in ("color", "depth"):
+        raise HTTPException(status_code=400, detail={"error": "bad_request",
+                                                     "reason": "stream must be 'color' or 'depth'"})
+    return kind
+
+
+def _camera_urls(camera_id: str) -> Dict[str, str]:
+    """Every route for one camera, so clients never build paths themselves."""
+    base = f"/realsense/{camera_id}"
+    return {
+        "status": f"{base}/status",
+        "snapshot": f"{base}/snapshot.jpg",
+        "depth_png": f"{base}/depth.png",
+        "stream": f"{base}/stream.mjpg",
+        "depth": f"{base}/depth",
+        "intrinsics": f"{base}/intrinsics",
+        "captures": f"{base}/captures",
+        "capture": f"/control/realsense/{camera_id}/capture",
+    }
+
+
+@app.get("/realsense/cameras")
+async def realsense_cameras():
+    """The cameras on this device PC and where to reach each one.
+
+    The discovery endpoint: an agent or panel reads this first and follows
+    ``urls``. Open like /status, answers before /connect, and never 404s --
+    a service with no camera configured returns an empty list plus the
+    ``reason`` (disabled, no entries, unreadable config), because "there are
+    none" is an answer, not an error. ``default`` is the id a caller may omit
+    naming; it is null as soon as there is more than one camera.
+    """
+    cameras = realsense_camera.cameras()
+
+    def _listing():
+        out = []
+        for camera_id, camera in sorted(cameras.items()):
+            described = camera.describe()
+            out.append({
+                "id": camera_id,
+                "label": camera.label,
+                "short_label": getattr(camera, "short_label", None) or camera_id,
+                "mount": dict(getattr(camera, "mount", None) or {}),
+                "state": described["state"],
+                "streaming": described["streaming"],
+                "start_on_demand": camera.start_on_demand,
+                "device": described["device"],
+                "urls": _camera_urls(camera_id),
+            })
+        return out
+
+    listing = await asyncio.to_thread(_listing)
+    return {
+        "cameras": listing,
+        "default": realsense_camera.default_camera_id(),
+        "reason": realsense_camera.configuration_reason(),
+    }
+
+
+@app.get("/cameras", tags=["cameras"])
+async def all_cameras():
+    """Discover configured RealSense cameras by capability.
+
+    Existing RealSense URLs and payloads are unchanged. Follow each camera's
+    URLs; color cameras do not advertise depth or calibrated intrinsics.
+    """
+    rs = await realsense_cameras()
+    usb = {"cameras": [], "available": False, "reason": "USB cameras are owned by the standalone camera service"}
+    cameras = [dict(camera, kind="realsense",
+                    capabilities=["color", "depth", "intrinsics", "snapshot", "mjpeg"])
+               for camera in rs["cameras"]]
+    return {"cameras": cameras + usb["cameras"],
+            "sources": {"realsense": {"reason": rs["reason"]},
+                        "usb": {"available": usb["available"], "reason": usb["reason"]}}}
+
+
+@app.get("/realsense/{camera_id}/status")
+async def realsense_status(camera_id: str):
+    """Device enumeration + pipeline state for one camera. Same data as
+    details.realsense.cameras.<id> on /status, plus library version and the
+    full stream config. Open read; works before /connect and reports
+    installed:false when the extra is missing rather than 404ing, so the
+    panel can explain itself."""
+    camera = _realsense(camera_id)
+    return await asyncio.to_thread(camera.describe)
+
+
+@app.post("/realsense/{camera_id}/start", dependencies=[Depends(require_login)])
+async def realsense_start(camera_id: str):
+    """Open the pipeline. 503 when disabled / driver missing / no camera on
+    the bus (body carries the reason), 502 when librealsense refuses the
+    configured stream profiles -- typically a USB 2 link."""
+    camera = _realsense(camera_id)
+    try:
+        return await asyncio.to_thread(camera.start)
+    except Exception as exc:  # noqa: BLE001
+        raise _realsense_http_error(exc)
+
+
+@app.post("/realsense/{camera_id}/stop", dependencies=[Depends(require_login)])
+async def realsense_stop(camera_id: str):
+    camera = _realsense(camera_id)
+    await asyncio.to_thread(camera.stop)
+    return await asyncio.to_thread(camera.describe)
+
+
+@app.get("/realsense/{camera_id}/snapshot.jpg", dependencies=[Depends(require_login)])
+async def realsense_snapshot(camera_id: str, stream: Optional[str] = None):
+    """One JPEG of the colour image (default) or the colourised depth map
+    (``?stream=depth``). Starts the pipeline when start_on_demand allows."""
+    camera = _realsense(camera_id)
+    kind = _realsense_stream_kind(stream)
+    try:
+        await asyncio.to_thread(camera.ensure_started)
+        data, bundle = await asyncio.to_thread(camera.jpeg, kind)
+    except Exception as exc:  # noqa: BLE001
+        raise _realsense_http_error(exc)
+    return RawResponse(content=data, media_type="image/jpeg", headers={
+        "Cache-Control": "no-store",
+        "X-Frame-Number": str(bundle.frame_number),
+        "X-Frame-Timestamp-Ms": str(bundle.timestamp_ms),
+    })
+
+
+@app.post("/control/realsense/{camera_id}/diagnostic", dependencies=[Depends(require_claim)])
+async def realsense_diagnostic(camera_id: str, start_if_idle: bool = False):
+    """Bounded export; optional service-owned startup without sensor-setting writes."""
+    camera = _realsense(camera_id)
+    try:
+        if getattr(camera, "remote", False):
+            capture_id, data = await asyncio.to_thread(camera.diagnostic_export, start_if_idle=start_if_idle)
+        else:
+            if start_if_idle:
+                await asyncio.to_thread(camera.start, preserve_sensor_settings=True)
+            capture_id, data = await asyncio.to_thread(camera.diagnostic_export)
+    except Exception as exc:
+        raise _realsense_http_error(exc)
+    return RawResponse(content=data, media_type="application/zip", headers={
+        "Cache-Control": "no-store",
+        "Content-Disposition": f'attachment; filename="{capture_id}.zip"',
+        "X-Capture-ID": capture_id,
+    })
+
+
+@app.get("/realsense/{camera_id}/depth.png", dependencies=[Depends(require_login)])
+async def realsense_depth_png(camera_id: str):
+    """The raw 16-bit depth map, lossless. Pixel value x depth_scale_m
+    (from /realsense/<id>/intrinsics) is metres; 0 means no reading."""
+    camera = _realsense(camera_id)
+    try:
+        await asyncio.to_thread(camera.ensure_started)
+        data, bundle = await asyncio.to_thread(camera.depth_png)
+    except Exception as exc:  # noqa: BLE001
+        raise _realsense_http_error(exc)
+    return RawResponse(content=data, media_type="image/png", headers={
+        "Cache-Control": "no-store",
+        "X-Frame-Number": str(bundle.frame_number),
+        "X-Depth-Scale-M": str(bundle.depth_scale),
+    })
+
+
+@app.get("/realsense/{camera_id}/stream.mjpg", dependencies=[Depends(require_login)])
+async def realsense_stream(camera_id: str, stream: Optional[str] = None, fps: float = 10.0):
+    """Live MJPEG preview (multipart/x-mixed-replace) for an <img> tag.
+    Paced to ``fps`` (default 10, max 30). Ends when the pipeline stops."""
+    camera = _realsense(camera_id)
+    kind = _realsense_stream_kind(stream)
+    try:
+        await asyncio.to_thread(camera.ensure_started)
+    except Exception as exc:  # noqa: BLE001
+        raise _realsense_http_error(exc)
+    fps = max(0.5, min(30.0, float(fps)))
+
+    async def body():
+        # The generator blocks on the capture thread's condition variable;
+        # pull each part on a worker so the event loop stays free.
+        it = camera.mjpeg_frames(kind, max_fps=fps)
+        while True:
+            chunk = await asyncio.to_thread(next, it, None)
+            if chunk is None:
+                return
+            yield chunk
+
+    return StreamingResponse(body(), media_type=camera.mjpeg_content_type(),
+                             headers={"Cache-Control": "no-store"})
+
+
+@app.get("/realsense/{camera_id}/depth")
+async def realsense_depth_at(camera_id: str, x: int, y: int, window: int = 5):
+    """Metric distance at pixel (x, y) plus a camera-frame 3-D point.
+    ``window`` (odd) is the median patch size; 5 is a sensible default for
+    a robot, 1 is the raw pixel. Does NOT start the pipeline: 409 when it
+    is stopped, so an open read cannot switch the camera on."""
+    camera = _realsense(camera_id)
+    try:
+        return await asyncio.to_thread(camera.depth_at, x, y, window=window)
+    except Exception as exc:  # noqa: BLE001
+        raise _realsense_http_error(exc)
+
+
+@app.get("/realsense/{camera_id}/intrinsics")
+async def realsense_intrinsics(camera_id: str):
+    """Pinhole intrinsics per stream + depth scale. Populated while streaming."""
+    camera = _realsense(camera_id)
+    return await asyncio.to_thread(camera.intrinsics)
+
+
+# -----------------------------------------------------------------------------
+# CAPTURE RECORDS
+#
+# The endpoints above are transient: they answer "what does the camera see
+# right now". A capture is durable -- one aligned frameset written to disk with
+# the arm pose it was taken from, which is what makes it a measurement rather
+# than a picture. See core/realsense_captures.py for the store and
+# src/settings/realsense.yaml for the retention policy.
+#
+# One store serves every camera: the records live under
+# <root>/<camera_id>/<day>/<capture_id>/ and share a single retention budget,
+# because the bound that matters is the disk's, not any one lens's.
+#
+# Gating follows the same three tiers as the rest of this service and
+# STATUS_SPEC 5: taking a record is an authorised act, so POST/DELETE are
+# claim-gated; the metadata is an open read like /status; the image bytes are
+# login-gated like every other frame this service ships.
+# -----------------------------------------------------------------------------
+
+realsense_captures.set_shared(remote_camera_store)
+
+
+class RealSenseCaptureRequest(BaseModel):
+    """Body for POST /control/realsense/capture. Every field is optional."""
+
+    camera: Optional[str] = Field(
+        default=None,
+        description=(
+            "Camera id for the fixed-path alias POST /control/realsense/capture. "
+            "Omit it when exactly one camera is configured. The nested route "
+            "POST /control/realsense/{camera_id}/capture ignores this field."
+        ),
+    )
+    label: Optional[str] = Field(default=None, description="Free-form name for this capture")
+    node_id: Optional[str] = Field(
+        default=None,
+        description="Motion-graph node this capture belongs to; defaults to the arm's current node",
+    )
+    tags: Optional[List[str]] = Field(default=None, description="Free-form tags for later filtering")
+    protected: bool = Field(
+        default=False,
+        description="Exempt this capture from keep_days/keep_max_gb retention",
+    )
+
+
+def _capture_store():
+    store = remote_camera_store or realsense_captures.shared_store()
+    if store is None or not store.enabled:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "captures_not_configured",
+                "hint": "set captures.enabled: true in src/settings/realsense.yaml",
+            },
+        )
+    return store
+
+
+def _capture_arm_connected(controller: Any) -> bool:
+    """Whether the arm is connected, derived exactly as ``/status`` derives it.
+
+    There is no ``is_connected`` attribute on the controller: the connection
+    lives in ``controller.states["connection"]`` and ``status_builder`` reads
+    it as ``_component_state(controller, "connection") == "enabled"``. The
+    first version of this helper used ``getattr(controller, "is_connected",
+    False)``, which silently took the default and stamped
+    ``arm.connected: false`` on every capture -- including captures whose own
+    joints and TCP pose proved the arm was live (caught by the access test,
+    2026-09-20). Sharing the derivation is what stops the two surfaces
+    disagreeing again.
+    """
+    try:
+        state = controller.states.get("connection")
+    except Exception:  # noqa: BLE001 - a capture must not fail over metadata
+        return False
+    if state is None:
+        return False
+    value = getattr(state, "value", state)
+    return str(value) == "enabled"
+
+
+def _capture_arm_state() -> Dict[str, Any]:
+    """The arm's pose at capture time, or a reason it is unknown.
+
+    Never raises and never touches the SDK: it reads the same cached
+    telemetry /status serves, because a capture must not be able to stall on
+    a controller round-trip (or fail outright when the arm is not connected
+    -- the camera is useful before /connect).
+    """
+    state: Dict[str, Any] = {
+        "connected": False,
+        "node_id": None,
+        "joints": None,
+        "position": None,
+        "track_position": None,
+        "gripper_state": None,
+        "activity": None,
+    }
+    try:
+        controller = get_controller()
+    except Exception:  # noqa: BLE001 - no controller is a fact, not an error
+        state["reason"] = "arm controller not instantiated"
+        return state
+    if controller is None:
+        state["reason"] = "arm controller not instantiated"
+        return state
+    state["connected"] = _capture_arm_connected(controller)
+    for field, attr in (
+        ("node_id", "current_node"),
+        ("gripper_state", "current_gripper_state"),
+        ("track_position", "last_track_position"),
+    ):
+        try:
+            state[field] = getattr(controller, attr, None)
+        except Exception:  # noqa: BLE001
+            state[field] = None
+    for field, attr in (("joints", "last_joints"), ("position", "last_position")):
+        try:
+            value = getattr(controller, attr, None)
+            state[field] = list(value) if value else None
+        except Exception:  # noqa: BLE001
+            state[field] = None
+    return state
+
+
+def _capture_requester(request: Request) -> str:
+    """Who took this capture: the verified login, else the claim holder.
+
+    Both can be absent (login not enforced, claim not enforced), and neither
+    lookup may raise into the capture path, so this falls back to "unknown"
+    rather than refusing to record a frame over an audit detail.
+    """
+    email = getattr(request.state, "identity_email", None)
+    if email:
+        return str(email)
+    try:
+        holder = get_controller().claim_manager.claimed_by()
+    except Exception:  # noqa: BLE001 - not connected / no claim manager
+        return "unknown"
+    if isinstance(holder, dict) and holder.get("owner"):
+        return str(holder["owner"])
+    return "unknown"
+
+
+def _capture_urls(camera_id: str, capture_id: str, meta: Dict[str, Any]) -> Dict[str, str]:
+    base = f"/realsense/{camera_id}/captures/{capture_id}"
+    urls = {"meta": base}
+    for name, key in ((realsense_captures.COLOR_NAME, "color"),
+                      (realsense_captures.DEPTH_NAME, "depth")):
+        if name in (meta.get("files") or {}):
+            urls[key] = f"{base}/{name}"
+    return urls
+
+
+async def _realsense_capture(request: Request, camera: Any,
+                             body: RealSenseCaptureRequest) -> Dict[str, Any]:
+    """Grab one aligned frameset from ``camera`` and write it to the store.
+
+    Shared by the canonical nested route and the fixed-path alias below, so
+    the two cannot drift: they differ only in how the camera is chosen.
+    """
+    store = _capture_store()
+    camera_id = camera.camera_id
+    arm = _capture_arm_state()
+    if body.node_id is not None:
+        arm["node_id"] = body.node_id
+    from datetime import datetime, timezone
+    context = {"arm": arm, "requested_by": _capture_requester(request),
+               "context_sampled_at": datetime.now(timezone.utc).isoformat(),
+               "synchronization": "cached robot telemetry, not hardware synchronized"}
+    try:
+        result = await asyncio.to_thread(camera.capture_remote, label=body.label,
+            tags=list(body.tags or []), protected=body.protected, context=context)
+    except Exception as exc:
+        raise _realsense_http_error(exc)
+    result["urls"] = _capture_urls(camera_id, result["capture_id"], result["meta"])
+    return result
+
+
+@app.post("/control/realsense/{camera_id}/capture", dependencies=[Depends(require_claim)])
+async def realsense_capture(camera_id: str, request: Request,
+                            body: Optional[RealSenseCaptureRequest] = None):
+    """Grab the latest aligned frameset from one camera and keep it.
+
+    Writes colour.jpg + depth.png + meta.json under that camera's directory
+    and returns the record. The pipeline is started on demand when
+    realsense.yaml allows it: the caller already holds the claim, so this is
+    an authorised actor and the idle timeout will stop the camera again.
+
+    409 when the camera is off and start_on_demand is false, 503 when the
+    extra or the hardware is missing, 404 for an unknown camera or when
+    captures are disabled.
+    """
+    camera = _realsense(camera_id)
+    return await _realsense_capture(request, camera, body or RealSenseCaptureRequest())
+
+
+@app.post("/control/realsense/capture", dependencies=[Depends(require_claim)])
+async def realsense_capture_alias(request: Request,
+                                  body: Optional[RealSenseCaptureRequest] = None):
+    """Capture from the camera named in the body -- the SKILL-FACING ALIAS.
+
+    This exists because of how the lab drives this service. A SkillDef carries
+    one fixed ``endpoint`` string, and both the skill executor
+    (``lab_skills.plan.execute_plan``) and the dashboard passthrough send it
+    verbatim: there is no path templating anywhere in that chain, so a path
+    segment that varies per camera cannot be expressed in an agent plan at
+    all. A fixed path with the camera in the *body* can. The nested route
+    above stays canonical for everything else -- the panel, the docs, the
+    capture URLs -- and this one only resolves a name and delegates, so the
+    two cannot behave differently.
+
+    ``camera`` omitted means the default camera, which exists only when
+    exactly one is configured; with two, refusing (400 ``camera_required``,
+    listing the ids) is the only honest answer, because picking one would
+    file the evidence under the wrong lens.
+    """
+    body = body or RealSenseCaptureRequest()
+    cameras = _realsense_registry()
+    requested = (body.camera or "").strip() or None
+    if requested is None:
+        requested = realsense_camera.default_camera_id()
+        if requested is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "camera_required",
+                    "hint": "more than one camera is configured; set \"camera\" in the body",
+                    "cameras": sorted(cameras),
+                },
+            )
+    if requested not in cameras:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "camera_not_found", "camera_id": requested,
+                    "cameras": sorted(cameras)},
+        )
+    return await _realsense_capture(request, cameras[requested], body)
+
+
+@app.get("/realsense/captures")
+async def realsense_captures_list(
+    limit: int = 50,
+    node_id: Optional[str] = None,
+    label: Optional[str] = None,
+    since: Optional[str] = None,
+):
+    """List capture metadata across every camera, newest first. Open read.
+
+    Every record carries its ``camera_id``, and ids are timestamps, so the
+    cameras interleave in one chronological list rather than being grouped.
+    ``since`` is an ISO-8601 UTC instant compared against captured_at.
+    """
+    store = _capture_store()
+    limit = max(1, min(500, int(limit)))
+    items = await asyncio.to_thread(
+        store.list_captures, camera_id=None, limit=limit, node_id=node_id,
+        label=label, since=since,
+    )
+    return {"captures": items, "count": len(items), "retention": store.describe()}
+
+
+@app.get("/realsense/{camera_id}/captures")
+async def realsense_camera_captures_list(
+    camera_id: str,
+    limit: int = 50,
+    node_id: Optional[str] = None,
+    label: Optional[str] = None,
+    since: Optional[str] = None,
+):
+    """The same listing, narrowed to one camera."""
+    camera = _realsense(camera_id)
+    store = _capture_store()
+    limit = max(1, min(500, int(limit)))
+    items = await asyncio.to_thread(
+        store.list_captures, camera_id=camera.camera_id, limit=limit,
+        node_id=node_id, label=label, since=since,
+    )
+    return {"camera_id": camera.camera_id, "captures": items, "count": len(items),
+            "retention": store.describe()}
+
+
+@app.get("/realsense/{camera_id}/captures/{capture_id}")
+async def realsense_capture_meta(camera_id: str, capture_id: str):
+    """One capture's meta.json."""
+    camera = _realsense(camera_id)
+    store = _capture_store()
+    try:
+        meta = await asyncio.to_thread(store.get, camera.camera_id, capture_id)
+    except realsense_captures.CaptureNotFound:
+        raise HTTPException(status_code=404, detail={"error": "capture_not_found",
+                                                     "camera_id": camera_id,
+                                                     "capture_id": capture_id})
+    return {"capture_id": capture_id, "camera_id": camera.camera_id,
+            "urls": _capture_urls(camera.camera_id, capture_id, meta), "meta": meta}
+
+
+@app.get("/realsense/{camera_id}/captures/{capture_id}/{filename}",
+         dependencies=[Depends(require_login)])
+async def realsense_capture_file(camera_id: str, capture_id: str, filename: str):
+    """One capture artefact: color.jpg or depth.png.
+
+    Login-gated for the same reason /realsense/<id>/snapshot.jpg is: these are
+    frames from a lab camera. Both the camera id and the filename are
+    whitelisted in the store, so no path built here can escape the capture
+    directory.
+    """
+    camera = _realsense(camera_id)
+    store = _capture_store()
+    try:
+        data = await asyncio.to_thread(store.get_file, camera.camera_id, capture_id, filename)
+    except realsense_captures.CaptureNotFound:
+        raise HTTPException(status_code=404, detail={"error": "capture_file_not_found",
+                                                     "camera_id": camera_id,
+                                                     "capture_id": capture_id,
+                                                     "filename": filename})
+    media = "image/jpeg" if filename.endswith(".jpg") else "image/png"
+    return RawResponse(data, media_type=media, headers={"Cache-Control": "no-store"})
+
+
+@app.delete("/control/realsense/{camera_id}/captures/{capture_id}",
+            dependencies=[Depends(require_claim)])
+async def realsense_capture_delete(camera_id: str, capture_id: str):
+    """Remove one capture, including a protected one."""
+    camera = _realsense(camera_id)
+    store = _capture_store()
+    removed = await asyncio.to_thread(store.delete, camera.camera_id, capture_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail={"error": "capture_not_found",
+                                                     "camera_id": camera_id,
+                                                     "capture_id": capture_id})
+    return {"ok": True, "camera_id": camera.camera_id, "capture_id": capture_id}
+
+
+# -----------------------------------------------------------------------------
+# AGENT DOCUMENTATION
+#
+# Same shape as the other lab device services (torry-pines-shaker-server,
+# mt-xpr-balance-server, sense-every-zone): a Markdown agent guide, a Markdown
+# API reference, and a plain-text /llms.txt index, so an agent -- or the
+# dashboard's API reference page -- can discover how to drive this device
+# without reading the repo. Open reads: documentation is not actuation.
+# -----------------------------------------------------------------------------
+
+_AGENT_DOCS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "docs", "agent")
+
+
+def _agent_document(name: str) -> str:
+    path = os.path.join(_AGENT_DOCS_DIR, name)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read()
+    except OSError:
+        raise HTTPException(
+            status_code=404,
+            detail={"error": "document_not_found", "document": name},
+        )
+
+
+@app.get("/agent-docs", response_class=RawResponse, summary="Agent guide (Markdown)")
+async def agent_docs():
+    return RawResponse(content=_agent_document("AGENT_GUIDE.md"), media_type="text/markdown")
+
+
+@app.get("/agent-docs/api-reference", response_class=RawResponse,
+         summary="API reference (Markdown)")
+async def agent_api_reference():
+    return RawResponse(content=_agent_document("API_REFERENCE.md"), media_type="text/markdown")
+
+
+@app.get("/llms.txt", response_class=RawResponse, summary="Discovery index for agents")
+async def llms_txt():
+    return RawResponse(
+        content=(
+            "# xArm translocation service (STATUS_SPEC v1.1 device service)\n\n"
+            "## Documentation\n\n"
+            "- [Agent guide](agent-docs): claims, motion-graph moves, camera-service\n"
+            "  ownership, RealSense compatibility routes and capture records.\n"
+            "- [API reference](agent-docs/api-reference): every route with bodies and\n"
+            "  refusal codes.\n"
+            "- [OpenAPI](openapi.json): request/response schemas.\n\n"
+            "## Depth cameras\n\n"
+            "The standalone camera service owns capture and serves /v1/cameras.\n"
+            "This xArm service keeps /realsense/* compatibility routes.\n"
+            "Cameras are addressed by a device-local id. GET /realsense/cameras lists\n"
+            "them with a ready-made URL per route, so no client builds paths by hand;\n"
+            "everything else lives under /realsense/{camera_id}/. Captures are written\n"
+            "with POST /control/realsense/{camera_id}/capture, or with the fixed-path\n"
+            "alias POST /control/realsense/capture and a \"camera\" field in the body\n"
+            "for callers (skill plans) that cannot template a path.\n\n"
+            "## Live status\n\n"
+            "Read GET /status through the lab-skills SDK or the dashboard; live status\n"
+            "is not a documentation-proxy resource. Read allowed_actions before acting.\n"
+        ),
+        media_type="text/plain",
+    )
 
 
 @app.post("/assistant/plan")
@@ -3346,15 +4361,56 @@ async def set_gripper_state(request: GraphGripperRequest, background_tasks: Back
 
 
 @app.post("/control/graph/mode", dependencies=[Depends(require_claim)])
-async def set_graph_mode(request: GraphModeRequest):
-    """Switch the enforcement mode (off | advisory | strict).
+async def set_graph_mode(request: GraphModeRequest, http_request: Request):
+    """Set the enforcement mode. Only ``strict`` is accepted here.
+
+    **Lowering enforcement is administrator-only.** ``off`` and ``advisory``
+    are refused with **403** ``admin_required``; an administrator turns
+    enforcement OFF with ``POST /control/admin/graph/off`` and back ON with
+    ``POST /control/admin/graph/restore``. ``strict`` stays open to the claim
+    holder, since raising enforcement is always safe.
 
     OFF: graph is not consulted; legacy behavior.
     ADVISORY: graph observes; off-whitelist moves log a warning but proceed.
     STRICT: edge.mode overrides preset format, edge.speed caps caller's
     speed, off-whitelist moves return HTTP 409.
+
+    **Lowering below STRICT is time-limited and self-reverting.** It needs a
+    ``reason`` (422 without one), runs for ``ttl_seconds`` clamped to the cap
+    in motion_graph.yaml, and then snaps back to STRICT with no help from the
+    caller — as it also does when the lowering session releases or loses its
+    claim, and on ``/disconnect``. This is what makes the documented freehand
+    recipe (claim -> advisory -> raw moves -> strict) safe to hand out: the
+    mode is process-wide state shared with every other client of this device,
+    and the previous unbounded switch relied on the operator remembering to
+    put it back.
+
+    The timed-window machinery described above now only matters for a
+    window opened before this restriction (it still reverts on its own).
     """
+    return await _apply_graph_mode(request, http_request)
+
+
+def _reject_non_admin_lowering(mode: GraphMode) -> None:
+    """Refuse any claim-holder request that would lower enforcement."""
+    if mode != GraphMode.STRICT:
+        raise HTTPException(status_code=403, detail={
+            "error": "admin_required",
+            "action": "graph.mode",
+            "mode": mode.value,
+            "message": (
+                "Lowering motion-graph enforcement is administrator-only. An "
+                "administrator uses POST /control/admin/graph/off (and "
+                "/control/admin/graph/restore to turn it back on)."
+            ),
+        })
+
+
+async def _apply_graph_mode(
+    request: GraphModeRequest, http_request: Request,
+):
     c = get_controller()
+    _reject_admin_graph_override(c)
     try:
         mode = GraphMode(request.mode)
     except ValueError:
@@ -3362,11 +4418,160 @@ async def set_graph_mode(request: GraphModeRequest):
             status_code=422,
             detail=f"mode must be one of: off, advisory, strict (got {request.mode!r})",
         )
+    _reject_non_admin_lowering(mode)
+
+    holder = None
     try:
-        c.set_graph_mode(mode)
+        holder = c.claim_manager.claimed_by()
+    except Exception:  # noqa: BLE001 - claims not enforced / no manager
+        holder = None
+    owner = (getattr(http_request.state, "identity_email", None)
+             or (holder or {}).get("owner"))
+
+    try:
+        granted = c.set_graph_mode(
+            mode,
+            reason=request.reason,
+            ttl_seconds=request.ttl_seconds,
+            owner=owner,
+            session_id=(holder or {}).get("session_id"),
+        )
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return {"graph_mode": c.graph_mode.value}
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "reason_required",
+                "action": "graph.mode",
+                "mode": mode.value,
+                "message": str(exc),
+                "hint": (
+                    "Retry with {\"mode\": \"" + mode.value + "\", \"reason\": "
+                    "\"...\"}. Add ttl_seconds to choose the window; it reverts "
+                    "to strict on its own either way."
+                ),
+            },
+        )
+
+    override = c.graph_mode_override_snapshot()
+    await broadcast_status_update()
+    return {
+        "graph_mode": c.graph_mode.value,
+        "granted_seconds": granted,
+        "expires_at": (override or {}).get("expires_at"),
+        "reverts_to": (override or {}).get("restores_to"),
+        "mode_override": override,
+    }
+
+
+@app.post("/control/graph/off", dependencies=[Depends(require_claim)])
+async def turn_graph_off(
+    http_request: Request, request: Optional[GraphOffRequest] = None,
+):
+    """Retired for claim holders: always **403** ``admin_required``.
+
+    Turning enforcement OFF is administrator-only; use
+    ``POST /control/admin/graph/off``. Kept (rather than removed) so an old
+    client gets an explanation instead of a 404.
+    """
+    options = request or GraphOffRequest()
+    return await set_graph_mode(
+        GraphModeRequest(
+            mode="off", reason=options.reason, ttl_seconds=options.ttl_seconds,
+        ),
+        http_request,
+    )
+
+
+@app.post("/control/admin/graph/off", dependencies=[Depends(require_admin)],
+          responses={200: {"model": AdminGraphOffResponse},
+                     **_ADMIN_GRAPH_ERROR_RESPONSES,
+                     422: {"model": AdminGraphErrorResponse,
+                           "description": "Blank reason, unsupported fields (including ttl_seconds), or invalid request body."}})
+async def admin_turn_graph_off(
+    http_request: Request, request: Optional[AdminGraphOffRequest] = None,
+):
+    """Admin-only graph OFF, without acquiring or holding a claim.
+
+    No body required. OFF persists until explicit admin restoration, including
+    across claim changes, disconnects and service restarts. No TTL. Ordinary
+    motion still requires its existing claim and other safety checks.
+
+    Requires a verified admin session cookie, X-Api-Key, or authenticated edge
+    identity even when general login enforcement is disabled. A claim token
+    alone is insufficient. Neither admin endpoint acquires or releases claims.
+    While active, ordinary mode/off/restore calls return 409 admin_graph_off.
+    """
+    options = request or AdminGraphOffRequest()
+    c = get_controller()
+    try:
+        override = c.set_admin_graph_off(
+            owner=http_request.state.identity_email, reason=options.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except OSError:
+        logger.exception("Could not persist administrator graph OFF")
+        raise HTTPException(status_code=503, detail="Could not persist administrator graph state; mode unchanged.")
+    await broadcast_status_update()
+    return {"graph_mode": c.graph_mode.value, "mode_override": override}
+
+
+@app.post("/control/admin/graph/restore", dependencies=[Depends(require_admin)],
+          responses={200: {"model": AdminGraphRestoreResponse},
+                     **_ADMIN_GRAPH_ERROR_RESPONSES})
+async def admin_restore_graph_mode(http_request: Request):
+    """Clear persistent admin OFF and any ordinary timed override, without a claim.
+
+    No body required. Requires a verified admin identity even when general
+    login enforcement is disabled. Restores STRICT if a graph is loaded,
+    otherwise OFF. Repeated restoration is idempotent; override_cleared reports
+    whether an admin override was active. Existing claims are unaffected.
+    """
+    c = get_controller()
+    try:
+        cleared = c.restore_admin_graph_mode(owner=http_request.state.identity_email)
+    except OSError:
+        logger.exception("Could not clear administrator graph OFF")
+        raise HTTPException(status_code=503, detail="Could not clear administrator graph state; mode unchanged.")
+    await broadcast_status_update()
+    return {"graph_mode": c.graph_mode.value, "override_cleared": cleared}
+
+
+def _reject_admin_graph_override(c):
+    override = c.graph_mode_override_snapshot()
+    if isinstance(override, dict) and override.get("scope") == "admin":
+        raise HTTPException(status_code=409, detail={
+            "error": "admin_graph_off",
+            "message": "Administrator OFF is active; use the admin restore endpoint to re-enable the graph.",
+        })
+
+
+@app.post("/control/graph/mode/restore", dependencies=[Depends(require_claim)])
+async def restore_graph_mode():
+    """Drop a mode override early, restoring STRICT now.
+
+    Equivalent to ``POST /control/graph/mode {"mode": "strict"}`` and kept
+    beside it for the same reason the sash interlock has an explicit
+    ``override/clear``: "put the guard back" is a distinct intent from "set
+    the mode to this value", and a one-button UI control should not have to
+    know which value to send.
+    """
+    c = get_controller()
+    _reject_admin_graph_override(c)
+    was_overridden = c.restore_graph_mode("explicit") is not None
+    # No override does not mean nothing to do: a deployment can boot below
+    # STRICT, or have been lowered before windows existed. The button means
+    # "enforce again", so raise the mode even then -- but only when there is
+    # a graph to enforce, since set_graph_mode refuses otherwise.
+    if c.graph_mode != GraphMode.STRICT and c.motion_graph is not None:
+        c.set_graph_mode(GraphMode.STRICT)
+    await broadcast_status_update()
+    return {
+        "graph_mode": c.graph_mode.value,
+        "override_cleared": was_overridden,
+    }
 
 
 @app.post("/control/graph/record", dependencies=[Depends(require_claim)])
@@ -3705,6 +4910,170 @@ async def create_graph_node(request: GraphNodeCreateRequest):
     }
 
 
+@app.post("/control/graph/pose", dependencies=[Depends(require_claim)])
+async def save_graph_pose(request: PoseSaveRequest):
+    """Write a named arm pose into joint_config.yaml.
+
+    Claim-gated like every mutating endpoint. With ``angles`` omitted the
+    arm's current joints are captured, which is the teach-by-demonstration
+    flow: jog into place, save, then reference the name from
+    POST /control/graph/node.
+
+    Refusals: **409** the name exists and ``overwrite`` is false · **422**
+    wrong joint count or an angle outside joint_config's limits · **409**
+    the arm is not connected and no explicit ``angles`` were given.
+    """
+    c = get_controller()
+
+    angles = request.angles
+    if angles is None:
+        if not (getattr(c, "arm", None) and getattr(c.arm, "connected", False)):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "arm_not_connected",
+                    "message": (
+                        "Cannot capture the current pose: the arm is not "
+                        "connected. Pass `angles` explicitly, or connect first."
+                    ),
+                },
+            )
+        angles = list(c.get_current_joints() or [])
+        if not angles:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "pose_unreadable",
+                        "message": "Controller returned no joint angles."},
+            )
+
+    expected = int(getattr(c, "num_joints", 5) or 5)
+    if len(angles) != expected:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "wrong_joint_count",
+                "expected": expected, "got": len(angles),
+            },
+        )
+    # Reuse the controller's own limit check rather than a second copy of the
+    # bounds: a pose this rejects could never be moved to anyway, so writing
+    # it would create a node that is unreachable by construction.
+    validator = getattr(c, "_validate_joint_angles", None)
+    if validator is not None and not validator(list(angles)):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "joint_limits",
+                "angles": list(angles),
+                "message": (
+                    "Pose is outside joint_config.yaml limits; it would be "
+                    "unreachable. Refusing to write it."
+                ),
+            },
+        )
+
+    positions = (c.position_config or {}).get("positions", {})
+    existed = request.name in positions
+    if existed and not request.overwrite:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "pose_exists",
+                "name": request.name,
+                "current": list(positions[request.name]),
+                "hint": "re-send with overwrite=true to recalibrate this pose",
+            },
+        )
+    previous = list(positions[request.name]) if existed else None
+
+    rounded = [round(float(a), 2) for a in angles]
+    try:
+        _write_pose_to_yaml(request.name, rounded, request.comment, existed)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"could not write joint_config.yaml: {exc}")
+
+    # Hot-reload in memory so the pose is usable immediately (no restart).
+    c.position_config.setdefault("positions", {})[request.name] = rounded
+
+    logger.warning(
+        "[pose] %s %r = %s%s",
+        "UPDATED" if existed else "CREATED", request.name, rounded,
+        f" (was {previous})" if previous else "",
+    )
+    return {
+        "saved": {"name": request.name, "angles": rounded},
+        "replaced": previous,
+        "captured_from_arm": request.angles is None,
+    }
+
+
+def _joint_config_path() -> str:
+    """Path of the pose file this endpoint writes.
+
+    Overridable so a test can point the writer at a tmp copy: the first
+    version of this endpoint wrote straight to the repo's real
+    joint_config.yaml, and a test that exercised it committed a junk pose
+    into the live cell's configuration. A writer aimed at production by
+    default is a writer that will eventually be aimed at production by
+    accident.
+    """
+    return os.environ.get(
+        "XARM_JOINT_CONFIG_PATH",
+        os.path.join("src", "settings", "joint_config.yaml"),
+    )
+
+
+def _write_pose_to_yaml(
+    name: str, angles: list, comment: Optional[str], existed: bool
+) -> None:
+    """Write one pose into joint_config.yaml, preserving comments.
+
+    Hand-edits the text rather than round-tripping the whole document:
+    joint_config.yaml is heavily commented (each pose carries the bench
+    note that explains it, e.g. "Gripper close to 120mm to grip from long
+    side") and those comments are the only record of why a pose is what it
+    is. A full ruamel dump would survive them but reflow the file; an
+    in-place line edit keeps the diff to one line, which is what makes a
+    recalibration reviewable in git.
+    """
+    path = _joint_config_path()
+    with open(path) as fh:
+        lines = fh.read().split("\n")
+
+    body = "[" + ", ".join(f"{a}" for a in angles) + "]"
+    rendered = f"  {name}: {body}"
+    if comment:
+        rendered += f"  # {comment}"
+
+    if existed:
+        import re as _re
+        pat = _re.compile(r"^\s{2}" + _re.escape(name) + r":\s*\[")
+        for i, line in enumerate(lines):
+            if pat.match(line):
+                # Keep any existing trailing comment when the caller gave none.
+                if not comment and "#" in line:
+                    rendered += "  #" + line.split("#", 1)[1]
+                lines[i] = rendered
+                break
+        else:  # pragma: no cover - guarded by the caller's `existed` check
+            raise OSError(f"pose {name!r} reported as existing but not found in {path}")
+    else:
+        # Append under `positions:`; find the last indented entry so the new
+        # pose lands inside the mapping rather than after a trailing comment.
+        last = max(
+            (i for i, l in enumerate(lines) if l.startswith("  ") and ":" in l),
+            default=None,
+        )
+        if last is None:
+            raise OSError(f"no `positions:` entries found in {path}")
+        lines.insert(last + 1, rendered)
+
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        fh.write("\n".join(lines))
+    os.replace(tmp, path)
+
+
 def _append_node_to_yaml(req: "GraphNodeCreateRequest") -> "MotionGraph":  # type: ignore[name-defined]
     """Append a new node to motion_graph.yaml (ruamel round-trip), validate
     the candidate with the real loader, then hot-reload.
@@ -3854,4 +5223,4 @@ if __name__ == "__main__":
 
     # app.add_event_handler("startup", startup_connect)
     
-    uvicorn.run(app, host=host, port=port) 
+    uvicorn.run(app, host=host, port=port)

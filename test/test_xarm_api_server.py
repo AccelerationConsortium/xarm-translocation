@@ -158,3 +158,53 @@ def test_get_configs(client):
     assert response.status_code == 200
     data = response.json()
     assert isinstance(data, list) 
+
+# ── Coordinated trajectory validation (read-only) ───────────────────────────
+
+def _trajectory_body():
+    return {
+        "waypoints": [
+            {"t": 0.0, "rail_mm": 0.0, "joints_deg": [0, 0, 0, 0, 0]},
+            {"t": 1.0, "rail_mm": 20.0, "joints_deg": [5, 0, 0, 0, 0]},
+        ]
+    }
+
+
+def test_trajectory_validate_returns_report_when_valid(client, mock_controller):
+    mock_controller.validate_trajectory.return_value = {"valid": True, "errors": [], "summary": {}}
+    r = client.post("/control/trajectory/validate", json=_trajectory_body())
+    assert r.status_code == 200
+    assert r.json()["valid"] is True
+    waypoints, tolerance = mock_controller.validate_trajectory.call_args.args
+    assert waypoints[1] == {"t": 1.0, "rail_mm": 20.0, "joints_deg": [5.0, 0.0, 0.0, 0.0, 0.0]}
+    assert tolerance == {"joint_deg": 1.0, "rail_mm": 2.0}
+
+
+def test_trajectory_validate_422_with_full_report_when_invalid(client, mock_controller):
+    report = {"valid": False, "errors": [{"code": "rail_speed_too_high", "index": 1, "message": "x"}]}
+    mock_controller.validate_trajectory.return_value = report
+    r = client.post("/control/trajectory/validate", json=_trajectory_body())
+    assert r.status_code == 422
+    detail = r.json()["detail"]
+    assert detail["error"] == "trajectory_invalid"
+    assert detail["report"] == report
+
+
+def test_trajectory_validate_rejects_malformed_body_before_the_controller(client, mock_controller):
+    body = {"waypoints": [{"t": 0, "rail_mm": 0, "joints_deg": [0, 0, 0, 0, 0]}]}  # one waypoint
+    r = client.post("/control/trajectory/validate", json=body)
+    assert r.status_code == 422
+    mock_controller.validate_trajectory.assert_not_called()
+    body = _trajectory_body(); body["waypoints"][0]["t"] = -1
+    assert client.post("/control/trajectory/validate", json=body).status_code == 422
+
+
+def test_trajectory_validate_needs_neither_claim_nor_lowered_graph_mode(client, mock_controller):
+    """Validation moves nothing: STRICT and a busy motion slot must not refuse it."""
+    from src.core.motion_graph import GraphMode
+    mock_controller.graph_mode = GraphMode.STRICT
+    mock_controller._motion_in_progress = True
+    mock_controller.validate_trajectory.return_value = {"valid": True, "errors": []}
+    r = client.post("/control/trajectory/validate", json=_trajectory_body())
+    assert r.status_code == 200
+    mock_controller.enter_motion.assert_not_called()

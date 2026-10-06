@@ -2,7 +2,7 @@
 workspace_limits:
   x: [-700, 700]
   y: [-700, 700]
-  z: [-200, 700]
+  z: [-250, 700]   # lowered 2026-10-02: cytation_low sits at z ≈ -223 mm
   roll: [-180, 180]
   pitch: [-180, 180]
   yaw: [-180, 180]

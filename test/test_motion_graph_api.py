@@ -88,12 +88,49 @@ def mock_controller_with_graph():
     mc.host = "127.0.0.1"
     mc.xarm_config = {"port": 18333}
 
-    # set_graph_mode mutates graph_mode like the real method.
-    def _set_mode(mode):
+    # set_graph_mode mutates graph_mode like the real method, including the
+    # bounded-override contract: lowering below STRICT needs a reason and
+    # opens a self-reverting window (the real thing is unit-tested against a
+    # real controller in test_graph_mode_override.py).
+    override: dict = {}
+
+    def _set_mode(mode, *, reason=None, ttl_seconds=None, owner=None, session_id=None):
         if mc.motion_graph is None and mode != GraphMode.OFF:
             raise RuntimeError("not loaded")
+        baseline = override.get("previous", mc.graph_mode)
+        if mode == GraphMode.STRICT:
+            override.clear()
+            mc.graph_mode = mode
+            return None
+        if baseline != GraphMode.STRICT:
+            mc.graph_mode = mode
+            return None
+        if not str(reason or "").strip():
+            raise ValueError("reason required")
+        granted = min(float(ttl_seconds or 300.0), 900.0)
+        override.update({"active": True, "mode": mode.value, "previous": baseline,
+                         "restores_to": baseline.value, "reason": reason.strip(),
+                         "owner": owner, "granted_seconds": granted,
+                         "remaining_seconds": granted,
+                         "expires_at": "2026-09-21T00:00:00Z"})
         mc.graph_mode = mode
+        return granted
     mc.set_graph_mode.side_effect = _set_mode
+
+    def _snapshot():
+        if not override:
+            return None
+        return {k: v for k, v in override.items() if k != "previous"}
+    mc.graph_mode_override_snapshot.side_effect = _snapshot
+
+    def _restore(trigger):
+        if not override:
+            return None
+        restored = override["previous"]
+        override.clear()
+        mc.graph_mode = restored
+        return restored.value
+    mc.restore_graph_mode.side_effect = _restore
 
     return mc
 
@@ -153,10 +190,80 @@ def test_post_graph_mode_invalid_value_returns_422(graph_client):
     assert resp.status_code == 422
 
 
-def test_post_graph_mode_off_works_without_graph(graph_client, mock_controller_with_graph):
+# ── Lowering is administrator-only ───────────────────────────────────
+#
+# The claim-holder routes refuse anything below STRICT with 403
+# admin_required; /control/admin/graph/off is the only way down (covered in
+# test_admin_graph_override.py). The shared fixture boots ADVISORY, so these
+# pin STRICT first to show the refusal leaves the mode untouched.
+
+
+@pytest.fixture
+def strict_client(graph_client, mock_controller_with_graph):
+    mock_controller_with_graph.graph_mode = GraphMode.STRICT
+    return graph_client
+
+
+@pytest.mark.parametrize("body", [
+    {"mode": "off"},
+    {"mode": "advisory"},
+    {"mode": "off", "reason": "bench", "ttl_seconds": 120},
+])
+def test_lowering_via_graph_mode_is_admin_only(strict_client, mock_controller_with_graph, body):
+    resp = strict_client.post("/control/graph/mode", json=body)
+    assert resp.status_code == 403, resp.text
+    detail = resp.json()["detail"]
+    assert detail["error"] == "admin_required"
+    assert detail["mode"] == body["mode"]
+    assert "/control/admin/graph/off" in detail["message"]
+    mock_controller_with_graph.set_graph_mode.assert_not_called()
+    assert mock_controller_with_graph.graph_mode == GraphMode.STRICT
+
+
+def test_lowering_is_refused_even_without_a_graph(graph_client, mock_controller_with_graph):
     mock_controller_with_graph.motion_graph = None
     resp = graph_client.post("/control/graph/mode", json={"mode": "off"})
+    assert resp.status_code == 403
+
+
+@pytest.mark.parametrize("body", [None, {}, {"reason": "Cartesian teaching", "ttl_seconds": 60}])
+def test_graph_off_shortcut_is_admin_only(strict_client, mock_controller_with_graph, body):
+    resp = strict_client.post("/control/graph/off", json=body)
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["detail"]["error"] == "admin_required"
+    mock_controller_with_graph.set_graph_mode.assert_not_called()
+    assert mock_controller_with_graph.graph_mode == GraphMode.STRICT
+
+
+def test_graph_off_shortcut_still_requires_the_claim(strict_client, mock_controller_with_graph):
+    from src.core.claims import ClaimManager
+    mock_controller_with_graph.claim_manager = ClaimManager(enforce=True)
+    assert strict_client.post("/control/graph/off").status_code == 423
+    mock_controller_with_graph.set_graph_mode.assert_not_called()
+
+
+def test_raising_to_strict_grants_no_window(strict_client):
+    resp = strict_client.post("/control/graph/mode", json={"mode": "strict"})
     assert resp.status_code == 200
+    assert resp.json()["granted_seconds"] is None
+    assert resp.json()["mode_override"] is None
+
+
+def test_restore_endpoint_clears_the_window(strict_client, mock_controller_with_graph):
+    # No route can open a window any more; open one on the controller, as a
+    # window left over from before the restriction would be.
+    mock_controller_with_graph.set_graph_mode(GraphMode.ADVISORY, reason="survey")
+    resp = strict_client.post("/control/graph/mode/restore")
+    assert resp.status_code == 200
+    assert resp.json() == {"graph_mode": "strict", "override_cleared": True}
+    assert mock_controller_with_graph.graph_mode == GraphMode.STRICT
+
+
+def test_restore_endpoint_is_idempotent(strict_client):
+    resp = strict_client.post("/control/graph/mode/restore")
+    assert resp.status_code == 200
+    assert resp.json()["override_cleared"] is False
+    assert resp.json()["graph_mode"] == "strict"
 
 
 # ── /move/location returns 409 in STRICT on off-whitelist ────────────
