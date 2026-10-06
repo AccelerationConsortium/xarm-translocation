@@ -403,6 +403,7 @@ document.addEventListener('DOMContentLoaded', () => {
             is_alive: isAlive,
             simulated: details.simulated === true,
             connection_details: details.connection_details || null,
+            model_name: details.model_name || null,   // "xArm5" etc.; absent for non-xArm backends
             system_status: {
                 last_error: lastError ? lastError.message : 'None',
             },
@@ -677,6 +678,19 @@ document.addEventListener('DOMContentLoaded', () => {
             // ...and the persistent position readout, which shows in every
             // state (including the normal one, where the banner is absent).
             renderSashRow(data.sash_interlock);
+
+            // Header "Open Studio" quick-link: the simulator's Studio or the
+            // real arm's (via the device PC's 18333 portproxy), matching the
+            // session. UFACTORY Studio exists only for xArm controllers, so it
+            // shows only when the connected backend reports an xArm model_name
+            // (the UR robot-motion service shares this panel and never does).
+            const simStudioLink = document.getElementById('sim-studio-link');
+            if (simStudioLink) {
+                const isXArm = typeof data.model_name === 'string' && /^xarm/i.test(data.model_name);
+                simStudioLink.hidden = !(isConnected && isXArm);
+                simStudioLink.href = data.simulated === true
+                    ? simStudioLink.dataset.srcSim : simStudioLink.dataset.srcHw;
+            }
 
             // Per-target connection lines (Hardware / Docker).
             updateConnLines(data);
