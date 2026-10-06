@@ -117,6 +117,8 @@ html.dark .pill.active { background: #082f49; border-color: #075985; color: #7dd
 .workspace-page .connection-settings .form-group { gap: 8px; }
 .workspace-page .connection-settings label { flex: none; letter-spacing: normal; min-width: 6.5em; }
 .workspace-page .connection-settings select { flex: 1; min-width: 0; width: 100%; }
+.workspace-page .studio-link.btn { display: inline-flex; color: white; text-decoration: none; }
+.workspace-page .studio-link.btn[hidden] { display: none; }
 @media (max-width: 640px) {
     .workspace-page .connection-settings .form-group { flex-direction: column; align-items: stretch; }
     .workspace-page .connection-settings select { flex: none; }
