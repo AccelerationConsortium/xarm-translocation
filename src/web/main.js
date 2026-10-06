@@ -678,16 +678,6 @@ document.addEventListener('DOMContentLoaded', () => {
             // state (including the normal one, where the banner is absent).
             renderSashRow(data.sash_interlock);
 
-            // Header "Open Studio" quick-link: the simulator's Studio or the
-            // real arm's (via the device PC's 18333 portproxy), matching the
-            // session; hidden while disconnected.
-            const simStudioLink = document.getElementById('sim-studio-link');
-            if (simStudioLink) {
-                simStudioLink.hidden = !isConnected;
-                simStudioLink.href = data.simulated === true
-                    ? simStudioLink.dataset.srcSim : simStudioLink.dataset.srcHw;
-            }
-
             // Per-target connection lines (Hardware / Docker).
             updateConnLines(data);
             updateLockHints();
