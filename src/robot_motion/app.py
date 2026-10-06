@@ -1,4 +1,4 @@
-"""Bundled prototyping UI and side-effect-free STATUS_SPEC observation service."""
+"""Side-effect-free STATUS_SPEC observation service serving the shared web UI."""
 
 from __future__ import annotations
 
@@ -12,19 +12,35 @@ from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, PlainTextResponse
-from fastapi.staticfiles import StaticFiles
 from sdl_lab_contract import EquipmentStatus, HealthResponse, ProbeResponse
 from core.motion_graph import GraphError
 
 from . import __version__
-from .config import Settings
+from .config import MODELS, Settings
 from .drivers import inventory
 from .drivers.ur import URObserver
 from .graph import Graph, PreviewRequest
 
 log = logging.getLogger(__name__)
+# The shared xArm web UI (src/web) is served byte-for-byte from this allowlist.
+# Never mount the whole package: that would also publish server.py. Query
+# strings (the UI's ?v= cache keys) are ignored by path routing.
+SHARED_UI_FILES = {
+    "index.html": "text/html",
+    "graph.html": "text/html",
+    "main.js": "text/javascript",
+    "graph.js": "text/javascript",
+    "workspace.js": "text/javascript",
+    "camera-player.js": "text/javascript",
+    "realsense-card.js": "text/javascript",
+    "cytoscape.min.js": "text/javascript",
+    "style.css": "text/css",
+    "graph.css": "text/css",
+    "workspace.css": "text/css",
+}
+NOT_PRESENT = "Not present on this service; shared UI compatibility answer only."
 NOTICE = (
     "Prototype only. UR physical control is not implemented in this release. "
     "MG400 support is planned. Existing xArm control uses the legacy application."
@@ -120,6 +136,26 @@ def create_app(settings: Settings | None = None, *, observer=None):
     def health():
         return HealthResponse(status="healthy")
 
+    def measured(details):
+        # The shared UI reads xArm-named keys. Fill them only from a valid RTDE
+        # sample so a missing or stale stream never shows as a position.
+        telemetry = details.get("telemetry") or {}
+        valid = telemetry.get("valid") is True
+        return {
+            "current_joints": telemetry.get("joints_deg") if valid else None,
+            "current_position": telemetry.get("tcp_mm_rpy_deg") if valid else None,
+            "num_joints": MODELS[settings.model]["joints"] if settings.model else None,
+            "connection_details": (
+                {
+                    "host": settings.robot_host,
+                    "port": 30004 if settings.ur_transport == "rtde" else 29999,
+                    "profile_name": settings.model,
+                }
+                if settings.observe
+                else None
+            ),
+        }
+
     @app.get("/status", response_model=EquipmentStatus)
     def status():
         stale = (
@@ -159,6 +195,7 @@ def create_app(settings: Settings | None = None, *, observer=None):
             allowed_actions=[],
             details={
                 **current["details"],
+                **measured(current["details"]),
                 "monitoring_only": True,
                 "control_enabled": False,
                 "control_implementation": "not_implemented",
@@ -240,24 +277,86 @@ def create_app(settings: Settings | None = None, *, observer=None):
 
     # No /control routes: claims are N/A in this observation/preview service.
     # The isolated legacy-xarm application retains its original hard claims.
-    @app.get("/web/pyxarm/{asset}", include_in_schema=False)
-    def shared_web_asset(asset: str):
-        # Reuse the packaged assets byte-for-byte, not the legacy application
-        # or its command-sending JavaScript. Never mount the whole web package:
-        # that would also publish server.py and the xArm control pages.
-        media_types = {
-            "style.css": "text/css",
-            "cytoscape.min.js": "text/javascript",
+    # The shared UI's Take Control / motion buttons therefore get 404s here.
+
+    # Read-only polls the shared UI issues on load. Each answers truthfully
+    # that the feature is absent so the page renders without inventing state.
+    shared = {"tags": ["shared-ui"], "summary": NOT_PRESENT}
+
+    @app.get("/graph/layout", **shared)
+    def graph_layout():
+        return {"positions": {}, "expanded": {}, "pan": None, "zoom": None}
+
+    @app.get("/locations", **shared)
+    @app.get("/track/locations", **shared)
+    def named_locations():
+        return {"locations": [], "positions": {}}
+
+    @app.get("/interlocks/sash", **shared)
+    def sash_interlock():
+        return {"configured": False, "connected": False, "notice": NOT_PRESENT}
+
+    @app.get("/auth/config", **shared)
+    def auth_config():
+        return {"enabled": False}
+
+    @app.get("/auth/me", **shared)
+    def auth_me():
+        return {"authenticated": False, "identity": None}
+
+    @app.get("/camera/config", **shared)
+    def camera_config():
+        return {"configured": False, "available": False, "connected": False}
+
+    @app.get("/assistant/status", **shared)
+    def assistant_status():
+        return {
+            "enabled": False,
+            "reason": NOT_PRESENT,
+            "model": None,
+            "graph_loaded": graph is not None,
+            "places": [],
         }
-        if asset not in media_types:
+
+    @app.get("/api/configurations", **shared)
+    def configurations():
+        return []
+
+    @app.websocket("/ws")
+    async def status_push(websocket: WebSocket):
+        # Same cached envelope as /status, pushed at the poll cadence. Browser
+        # messages are drained only to notice the disconnect; none is acted on.
+        await websocket.accept()
+
+        async def push():
+            try:
+                while True:
+                    await websocket.send_text(
+                        json.dumps(
+                            {"type": "status_update", "data": status().model_dump(mode="json")}
+                        )
+                    )
+                    await asyncio.sleep(settings.poll_interval_s)
+            except (WebSocketDisconnect, RuntimeError):
+                return
+
+        pusher = asyncio.create_task(push())
+        try:
+            while True:
+                await websocket.receive_text()
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        finally:
+            pusher.cancel()
+
+    @app.get("/web", include_in_schema=False)
+    @app.get("/web/", include_in_schema=False)
+    @app.get("/web/{asset}", include_in_schema=False)
+    def shared_ui(asset: str = "index.html"):
+        if asset not in SHARED_UI_FILES:
             raise HTTPException(status_code=404, detail="Unknown shared UI asset")
         return FileResponse(
-            str(files("web").joinpath(asset)), media_type=media_types[asset]
+            str(files("web").joinpath(asset)), media_type=SHARED_UI_FILES[asset]
         )
 
-    app.mount(
-        "/web",
-        StaticFiles(directory=str(files("robot_motion").joinpath("web")), html=True),
-        name="web",
-    )
     return app

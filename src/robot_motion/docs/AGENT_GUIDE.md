@@ -1,8 +1,8 @@
 # Robot Motion — operator and agent guide
 
 Version 0.4.0a1 is an observation and topology-preview prototype, not a new
-hardware-control deployment. The bundled UI is at /web/. Importing the package
-and listing drivers never connect to equipment.
+hardware-control deployment. The repository's shared web UI is served at /web/.
+Importing the package and listing drivers never connect to equipment.
 
 ## Implementation status
 
@@ -59,56 +59,34 @@ Never transfer coordinates from one physical robot to another.
 Graphs submitted in the browser are not persisted or sent to hardware.
 UR hardware control still requires implementation and commissioning.
 
-## Control workspace UI
+## Shared web UI
 
-The control page reuses the packaged pyxarm stylesheet byte-for-byte and its
-two-column layout: connection tile and Direct Drive / Graph Control on the left,
-camera placeholder, Gripper / Tool I/O, and status log on the right. The camera
-and tool panels explicitly show unavailable state; no camera source is loaded.
-Refresh Status only reads the service's cached /status response. It does not
-connect or send commands to the robot. The page does not load the legacy xArm
-command handlers, camera player, controller settings or API server.
+/web/ serves the repository's shared xArm web UI (src/web) byte-for-byte from
+a fixed file allowlist: index.html, graph.html and their bundled scripts and
+stylesheets. server.py, Python source and every other path answer 404. This
+service has no UI of its own; UI work happens in src/web for every robot.
 
-Motion Graph opens the offline editor in a separate view on the same page.
-Control Interface returns to the control view without discarding the draft.
-The editor reuses the packaged Cytoscape library byte-for-byte.
+The page is written against the xArm API and renders here as a read-only
+panel. /status fills current_joints and current_position only from a valid
+RTDE receive sample (otherwise null, never zero), num_joints from the model
+profile, and connection_details when observation is enabled. /ws pushes the
+same cached envelope at the poll cadence and acts on no browser message. The
+page's other load-time reads (/graph/layout, /locations, /track/locations,
+/interlocks/sash, /auth/config, /auth/me, /camera/config, /assistant/status,
+/api/configurations) answer that the feature is absent, so the page renders
+without inventing state. Nothing from the browser is persisted.
 
-Graph Workspace provides local node editing, directed joint/linear edges,
-selection on the canvas or keyboard-accessible selectors, topology validation,
-route highlighting, JSON import/export and a bounded 30-step graph undo history.
-Deleting a node also removes its incident edges; undo restores the prior graph.
-Coordinates must be entered explicitly; blank fields do not imply zero.
-Changing draft model starts an empty graph rather than converting coordinates.
-Linear arrivals require an explicit target TCP pose. Drafts and canvas layout
-are in tab memory, not server state. Export before closing the tab. Unsaved
-graph changes produce a browser leave-page warning where supported.
+Take Control, Connect, STOP, recovery, gripper, rail, graph-edit and motion
+buttons send their requests to routes this service does not have and receive
+404. In particular, the displayed STOP button cannot stop the robot: use the
+established operator controls. allowed_actions stays empty regardless of what
+the page shows, and no status response can change that.
 
-Blue graph highlighting denotes a proposed topology route, NOT the measured
-robot position, physical trajectory, simulation or execution. Invalid or edited
-JSON disables preview/export and hides the old diagram until validation succeeds.
-Responses from older validation/preview requests cannot replace newer edits.
-Import and offline requests are bounded to 256 KiB.
-
-The Direct Drive pane has read-only joint/TCP snapshots when RTDE is enabled;
-missing, malformed, failed or stale telemetry is explicitly "Not observed".
-Measurements do not authorize a move or establish a current graph node.
-Take Control, STOP, recovery, connection, freedrive, pose capture and motion
-buttons are disabled and have no command handlers. In particular, the displayed
-STOP button cannot stop the robot: use the established operator controls.
-Neither an installed SDK nor a status response can enable these buttons.
-
-Shared assets are exposed through a two-file allowlist under /web/pyxarm/;
-arbitrary files, Python source, legacy control pages and command scripts are
-not exposed there. The browser requests only status, driver inventory, configured
-graph and the two offline graph-calculation routes. There are no camera streams
-or robot WebSocket connections in this workspace.
-
-The dashboard proxy permits only fixed asset paths without query strings and
-enforces script-src 'self'. Keep asset URLs relative and query-free, and all
-JavaScript (including theme initialization) in external bundled scripts. The
-proxy already sends Cache-Control: no-store; do not add cache-busting queries
-or weaken its CSP. Browser regressions cover both direct and dashboard-prefixed
-URLs with the dashboard's CSP and fixed-path restrictions, using an offline app.
+Known limitation: the shared page uses an inline theme script and ?v= asset
+queries, which the dashboard proxy's script-src 'self' CSP and fixed,
+query-free asset paths refuse. Until the proxy allowlist or the shared UI
+changes, open the panel directly on this service's port. That is UI and proxy
+work, not a change to this service.
 
 ## API discovery
 
@@ -118,6 +96,8 @@ URLs with the dashboard's CSP and fixed-path restrictions, using an offline app.
 - /drivers: model and SDK inventory
 - /graph: configured local topology, if any
 - POST /graph/validate and /graph/preview: offline topology calculations
+- /web/: the shared web UI, read-only here; /ws: cached status envelope push
+- shared-ui tagged routes: absent-feature answers for the page's load-time reads
 - /docs, /openapi.json: generated API documentation
 - /agent-docs/api-reference: generated readable route/schema reference
 - /llms.txt: documentation index
