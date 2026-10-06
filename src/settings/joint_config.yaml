@@ -14,9 +14,9 @@ positions:
   opentrons_4_low: [-164.94, 41.24, -53.53, 11.86, 14.57]
   opentrons_4_low_top: [-164.95, 35.06, -51.13, 15.64, 14.63]
   opentrons_4_low_press: [-164.95, 36.03, -51.59, 14.96, 14.49]        # todo get this real position  
-  opentrons_6_high: [-198.22, 33.43, -52.03, 17.92, -18.60]
-  opentrons_6_low: [-198.20, 41.26, -54.90, 12.96, -18.69]
-  opentrons_6_low_press: [-198.20, 41.63, -55.06, 12.75, -18.69]
+  opentrons_6_high: [-198.91, 30.83, -51.62, 20.11, -19.25]
+  opentrons_6_low: [-198.9, 41.43, -55.31, 13.21, -19.38]
+  # opentrons_6_low_press: [-198.20, 41.63, -55.06, 12.75, -18.69]
   
   # The following happens when linear rail is at Home (0 mm)
   uplc_home: [20.37, -37.85, -26.7, 64.85, 113.86]
@@ -54,9 +54,9 @@ positions:
   hood_shaker_low_press: [-174.86, 39.80, -63.90, 23.68, 4.84]         # Press plate down
 
   hood_filter_home: [-226.10, -5.22, -32.69, 37.49, -46.08]      
-  hood_filter_high: [-208.3, 29.88, -81.07, 50.85, -28.15]     
-  hood_filter_low: [-208.39, 35.58, -79.92, 44, -28.33]              # Gripper close to 120mm to grip from long side  and away from filteration plate
-  hood_filter_top_plate: [-208.19, 32.05, -80.86, 48.42, -27.99]     # Position to grip top plate of filteration plate
+  hood_filter_high: [-211, 27.01, -77.82, 50.44, -30.86]    
+  hood_filter_low: [-211, 34.29, -76.33, 41.68, -30.98]              # Gripper close to 120mm to grip from long side  and away from filteration plate
+  hood_filter_top_plate: [-211, 29.91, -76.83, 46.56, -30.91]     # Position to grip top plate of filteration plate
 
   # The following happens when linear rail is at Cytation location (700mm)
   cytation_home: [43.54, -43.36, -12.12, 55.2, -46.34]
@@ -64,5 +64,5 @@ positions:
   cytation_high_pull: [40.92, 74.78, -73.72, -1.37, -49.92]
   cytation_low:  [45.54, 79.44, -84.08, 4.37, -45.21]
   plateloc_home: [43.68, -49.44, -29.29, 78.45, -46.07]
-  plateloc_high: [66.52, 2.98, -68.94, 66.07, -23.22]
-  plateloc_low:  [66.5, 4.97, -64.57, 59.71, -23.3]
+  plateloc_high: [69.2, 12.4, -80.86, 68.6, -20.53]
+  plateloc_low:  [69.2, 13.57, -77.42, 63.99, -20.56]
