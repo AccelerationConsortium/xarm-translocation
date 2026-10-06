@@ -1539,7 +1539,7 @@ input#linear-speed {
     border-top: 1px solid var(--border);
 }
 
-/* Row of header quick-links (Motion Graph + the sim-only Open Studio). */
+/* Row of header quick-links (Motion Graph). */
 .tile-links {
     display: flex;
     flex-wrap: wrap;
@@ -2581,8 +2581,8 @@ input#linear-speed {
 :root.dark .camera-stage,
 :root.dark .camera-video { background: #020617; }     /* slate-950 */
 
-/* Link row (Motion Graph + Open Studio), one line under the
-   Safety level control in the title tile. */
+/* Link row (Motion Graph), one line under the Safety level control in
+   the title tile. .studio-link is the shared quick-link style. */
 .preview-links {
     display: flex;
     flex-direction: row;
