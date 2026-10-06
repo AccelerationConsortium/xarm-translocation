@@ -23,7 +23,7 @@ positions:
   # The following are for opening/closing the uplc draw, no payload allowed
   uplc_draw_home: [-3.5, 8.1, -70.1, 62.1, 90.0]
   uplc_draw_open_max: [-5.5, 8.3, -70.4, 62.2, 88]                 # slight further from fully open to avoid collision with the arm
-  uplc_draw_open_min: [-36.68, 29.4, -100.85, 71.28, 56.85]                 # slight short from fully close to avoid collision with the arm
+  uplc_draw_open_min: [-36.77, 29.67, -101.22, 71.35, 56.77]                # slight short from fully close to avoid collision with the arm
   uplc_draw_open_close: [-37.27, 30.54, -102.61, 71.89, 56.26]           # You hear a "click" when the door is closed/opened
   # The following are for putting in/taking out the uplc plate, no payload allowed
   uplc_plate_home: [-89.95, -54.66, -40.29, 94.98, -89.63]
@@ -49,8 +49,8 @@ positions:
   # The following happens when linear rail is at Hood location (same as Deck for now  )
   # The Arm can reach the shaker and filteration setup in the fumehoods
   hood_home: [-184.42, -67.82, 8.18, 59.11, -4.33]
-  hood_shaker_high: [-174.87, 28.61, -61.45, 32.40, 4.98]
-  hood_shaker_low: [-175.08, 39.45, -63.74, 23.85, 4.62]               # Gripper close to 120mm to grip from long side
+  hood_shaker_high: [-176.16, 29.22, -59.69, 30.03, 3.65]
+  hood_shaker_low: [-176.16, 38.41, -61.87, 23.01, 3.52]               # Gripper close to 120mm to grip from long side
   hood_shaker_low_press: [-174.86, 39.80, -63.90, 23.68, 4.84]         # Press plate down
 
   hood_filter_home: [-226.10, -5.22, -32.69, 37.49, -46.08]      
