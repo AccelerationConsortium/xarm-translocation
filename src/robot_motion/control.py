@@ -11,10 +11,8 @@ Hard claims (core.claims) gate /connect, /disconnect and /control/joint_step;
 from __future__ import annotations
 
 import asyncio
-import hmac
 import json
 import logging
-import os
 import threading
 from datetime import datetime, timezone
 
@@ -30,12 +28,9 @@ from .drivers.joint_step import (
     JointStepRefused,
 )
 from .drivers.ur_control import ControlSession
+from .edge import SECRET_ENV, configured_secret, edge_identity
 
 log = logging.getLogger(__name__)
-EDGE_USER_HEADER = "X-Auth-User"
-EDGE_ROLE_HEADER = "X-Auth-Role"
-EDGE_TRUST_HEADER = "X-Edge-Auth"
-SECRET_ENV = "ROBOT_MOTION_EDGE_SHARED_SECRET"
 STOP_NOTICE = (
     "Software stop request only; not a safety-rated stop and not confirmed by "
     "measurement. Use the teach pendant or hardware stop for the real thing."
@@ -53,11 +48,7 @@ class URControl:
         # refuse /connect while anything else runs or owns the robot.
         self._observe = observe or (lambda: (None, True))
         self.claims = ClaimManager(enforce=True)
-        self.secret = (
-            edge_secret
-            if edge_secret is not None
-            else (os.environ.get(SECRET_ENV, "").strip() or None)
-        )
+        self.secret = configured_secret(edge_secret)
         self._session_factory = session_factory or (lambda: ControlSession(settings))
         self._lock = threading.Lock()
         self.session = None
@@ -66,15 +57,7 @@ class URControl:
 
     # ── identity and gates ──────────────────────────────────────────
     def identity(self, request):
-        if not self.secret:
-            return None
-        presented = request.headers.get(EDGE_TRUST_HEADER)
-        if not presented or not hmac.compare_digest(presented, self.secret):
-            return None
-        email = (request.headers.get(EDGE_USER_HEADER) or "").strip().lower()
-        if not email:
-            return None
-        return {"email": email, "role": (request.headers.get(EDGE_ROLE_HEADER) or "").strip() or None}
+        return edge_identity(request, self.secret)
 
     def require_login(self, request: Request):
         if not self.secret:

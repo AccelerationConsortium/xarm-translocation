@@ -12,8 +12,8 @@ from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from sdl_lab_contract import EquipmentStatus, HealthResponse, ProbeResponse
 from core.motion_graph import GraphError
 
@@ -21,6 +21,7 @@ from . import __version__
 from .config import MODELS, Settings
 from .drivers import inventory
 from .drivers.ur import URObserver
+from .edge import configured_secret, edge_identity
 from .graph import Graph, PreviewRequest
 
 log = logging.getLogger(__name__)
@@ -324,13 +325,24 @@ def create_app(
     def sash_interlock():
         return {"configured": False, "connected": False, "notice": NOT_PRESENT}
 
+    # Behind the lab's edge the human is already signed in; report that
+    # identity (verified by the shared secret) so the panel shows who is
+    # signed in and never renders its own login form. Direct callers get none.
+    secret = configured_secret(edge_secret)
+
     @app.get("/auth/config", **shared)
     def auth_config():
-        return {"enabled": False}
+        return {"enabled": secret is not None}
 
     @app.get("/auth/me", **shared)
-    def auth_me():
-        return {"authenticated": False, "identity": None}
+    def auth_me(request: Request):
+        identity = edge_identity(request, secret)
+        if identity is None:
+            return {"authenticated": False, "identity": None}
+        return {
+            "authenticated": True,
+            "identity": {"email": identity["email"], "role": identity["role"] or "user", "via": "edge"},
+        }
 
     @app.get("/camera/config", **shared)
     def camera_config():
@@ -379,14 +391,23 @@ def create_app(
         finally:
             pusher.cancel()
 
+    model_label = {"ur3e": "UR3e", "ur5e": "UR5e", "ur5_cb3": "UR5 CB3", "mg400": "MG400"}
+    page_title = f"{model_label.get(settings.model, 'Robot Motion')} Control"
+
     @app.get("/web", include_in_schema=False)
     @app.get("/web/", include_in_schema=False)
     @app.get("/web/{asset}", include_in_schema=False)
     def shared_ui(asset: str = "index.html"):
         if asset not in SHARED_UI_FILES:
             raise HTTPException(status_code=404, detail="Unknown shared UI asset")
-        return FileResponse(
-            str(files("web").joinpath(asset)), media_type=SHARED_UI_FILES[asset]
-        )
+        path = files("web").joinpath(asset)
+        if asset == "index.html":
+            # The shared page is the xArm panel; only its tab title names the
+            # robot. Swap that one tag for the configured model, nothing else.
+            html = path.read_text(encoding="utf-8").replace(
+                "<title>xArm Control</title>", f"<title>{page_title}</title>", 1
+            )
+            return HTMLResponse(html, headers={"Cache-Control": "no-store"})
+        return FileResponse(str(path), media_type=SHARED_UI_FILES[asset])
 
     return app

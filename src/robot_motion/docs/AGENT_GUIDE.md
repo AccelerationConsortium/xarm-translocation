@@ -97,11 +97,14 @@ panel's own jog and graph buttons still have no routes here. In every case the
 displayed STOP button is a software request, not a safety-rated stop: use the
 established operator controls.
 
-Known limitation: the shared page uses an inline theme script and ?v= asset
-queries, which the dashboard proxy's script-src 'self' CSP and fixed,
-query-free asset paths refuse. Until the proxy allowlist or the shared UI
-changes, open the panel directly on this service's port. That is UI and proxy
-work, not a change to this service.
+The canonical operator URL is the lab edge's /ur5e/web/ (dashboard repo,
+deploy/Caddyfile.single-edge): forward_auth signs the human in, the edge
+strips only the /ur5e prefix and injects X-Auth-User plus X-Edge-Auth. The
+page derives that prefix from its URL for its API and /ws calls. /auth/config
+and /auth/me report the edge identity when ROBOT_MOTION_EDGE_SHARED_SECRET
+matches; otherwise they report no identity, and the panel still renders
+read-only. The earlier dashboard-side CSP proxy and its /utils/robot_motion
+page are retired; the direct port stays reachable only on the Tailnet.
 
 ## API discovery
 

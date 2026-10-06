@@ -138,10 +138,19 @@ def test_all_default_ui_and_documentation_assets_are_packaged():
 
 def test_shared_ui_is_exact_and_never_exposes_python_or_other_files():
     with TestClient(create_app()) as client:
-        for asset in ["index.html", "main.js", "workspace.js", "style.css", "cytoscape.min.js"]:
+        for asset in ["main.js", "workspace.js", "style.css", "cytoscape.min.js"]:
             response = client.get("/web/" + asset)
             assert response.content == files("web").joinpath(asset).read_bytes()
-        assert client.get("/web/").content == files("web").joinpath("index.html").read_bytes()
+        # index.html differs from the shared file in exactly one tag: the title.
+        shared = files("web").joinpath("index.html").read_text(encoding="utf-8")
+        assert "<title>xArm Control</title>" in shared
+        served = client.get("/web/").text
+        assert served == shared.replace("<title>xArm Control</title>", "<title>Robot Motion Control</title>")
+        assert client.get("/web/index.html").text == served
+    ur5e = Settings(driver="ur", model="ur5e")
+    with TestClient(create_app(ur5e)) as client:
+        assert "<title>UR5e Control</title>" in client.get("/web/").text
+    with TestClient(create_app()) as client:
         for path in [
             "/web/server.py",
             "/web/__init__.py",
@@ -199,6 +208,18 @@ def test_shared_ui_read_polls_answer_absent_features_and_status_maps_telemetry()
         assert client.get("/interlocks/sash").json()["configured"] is False
         assert client.get("/auth/config").json() == {"enabled": False}
         assert client.get("/auth/me").json() == {"authenticated": False, "identity": None}
+    # Behind the edge, a secret-verified identity is reported; forged or
+    # unsecured headers are not.
+    with TestClient(create_app(settings, observer=Observer(), edge_secret="edge-fixture")) as client:
+        assert client.get("/auth/config").json() == {"enabled": True}
+        assert client.get("/auth/me").json()["authenticated"] is False
+        forged = {"X-Auth-User": "x@example.invalid", "X-Edge-Auth": "wrong"}
+        assert client.get("/auth/me", headers=forged).json()["authenticated"] is False
+        vouched = {"X-Auth-User": "Op@Example.invalid", "X-Edge-Auth": "edge-fixture", "X-Auth-Role": "admin"}
+        assert client.get("/auth/me", headers=vouched).json() == {
+            "authenticated": True,
+            "identity": {"email": "op@example.invalid", "role": "admin", "via": "edge"},
+        }
         assert client.get("/camera/config").json()["configured"] is False
         assert client.get("/assistant/status").json()["enabled"] is False
         # "Connect to" offers only the configured robot profile.
