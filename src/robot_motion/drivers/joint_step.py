@@ -131,6 +131,13 @@ class JointStepExecutor:
         # never issue a concurrent SDK call. This is NOT a safety-rated stop.
         self._cancelled.set()
 
+    @property
+    def latched(self):
+        """Why further steps are refused, or None. Cleared only by replacement."""
+        if self._fault is not None:
+            return self._fault
+        return "Stop requested; operator reconciliation required" if self._cancelled.is_set() else None
+
     def _require_claim_and_unlatched(self, token):
         if self._cancelled.is_set() or self._fault is not None:
             raise JointStepRefused(

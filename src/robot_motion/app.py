@@ -42,8 +42,10 @@ SHARED_UI_FILES = {
 }
 NOT_PRESENT = "Not present on this service; shared UI compatibility answer only."
 NOTICE = (
-    "Prototype only. UR physical control is not implemented in this release. "
-    "MG400 support is planned. Existing xArm control uses the legacy application."
+    "Prototype only. UR physical control is limited to config-gated, claimed, "
+    "identity-checked single-joint steps under commissioning and is absent unless "
+    "the local config enables it. MG400 support is planned. Existing xArm control "
+    "uses the legacy application."
 )
 SAFETY = (
     "Topology preview only: no collision, reachability, joint-limit, payload, "
@@ -51,7 +53,13 @@ SAFETY = (
 )
 
 
-def create_app(settings: Settings | None = None, *, observer=None):
+def create_app(
+    settings: Settings | None = None,
+    *,
+    observer=None,
+    control_session_factory=None,
+    edge_secret=None,
+):
     settings = settings or Settings()
     observation = None
     observed_at = None
@@ -118,11 +126,21 @@ def create_app(settings: Settings | None = None, *, observer=None):
                     pass
             if observer is not None and callable(getattr(observer, "close", None)):
                 await asyncio.to_thread(observer.close)
+            if control is not None:
+                await asyncio.to_thread(control.shutdown)
 
     app = FastAPI(
         title="Robot Motion", version=__version__, lifespan=lifespan, description=NOTICE
     )
     app.state.settings = settings
+
+    control = None
+    if settings.control_enabled:
+        from .control import URControl
+
+        control = URControl(
+            settings, session_factory=control_session_factory, edge_secret=edge_secret
+        ).install(app)
 
     @app.get("/", response_model=ProbeResponse)
     def probe():
@@ -177,6 +195,7 @@ def create_app(settings: Settings | None = None, *, observer=None):
                 ),
             }
         )
+        control_state = control.state() if control is not None else None
         return EquipmentStatus(
             protocol_version="1.2",
             equipment_id=settings.equipment_id,
@@ -192,13 +211,15 @@ def create_app(settings: Settings | None = None, *, observer=None):
             message=current["message"],
             components=current["components"],
             last_error=current.get("last_error"),
-            allowed_actions=[],
+            allowed_actions=control_state["allowed_actions"] if control_state else [],
             details={
                 **current["details"],
                 **measured(current["details"]),
-                "monitoring_only": True,
-                "control_enabled": False,
-                "control_implementation": "not_implemented",
+                "monitoring_only": control is None,
+                "control_enabled": control is not None,
+                "control_implementation": "joint_step" if control is not None else "not_implemented",
+                "claimed_by": control_state["claimed_by"] if control_state else None,
+                "control_session": control_state["control_session"] if control_state else None,
                 "driver": settings.driver,
                 "model": settings.model,
                 "primary_operation": "controller program playing; not proof of physical arm movement",
@@ -275,9 +296,9 @@ def create_app(settings: Settings | None = None, *, observer=None):
     def llms():
         return "# Robot Motion\n\n- [Guide](/agent-docs)\n- [Reference](/agent-docs/api-reference)\n- [OpenAPI](/openapi.json)\n- [Status](/status)\n- [Drivers](/drivers)\n"
 
-    # No /control routes: claims are N/A in this observation/preview service.
-    # The isolated legacy-xarm application retains its original hard claims.
-    # The shared UI's Take Control / motion buttons therefore get 404s here.
+    # Without control_enabled there are no /control routes: claims are N/A and
+    # the shared UI's Take Control / motion buttons get 404s. The legacy xArm
+    # application retains its own hard claims.
 
     # Read-only polls the shared UI issues on load. Each answers truthfully
     # that the feature is absent so the page renders without inventing state.

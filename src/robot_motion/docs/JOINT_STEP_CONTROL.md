@@ -1,10 +1,47 @@
 # Small joint-step executor — offline-tested, not commissioned
 
 `drivers/joint_step.py` implements the control primitive for one finite,
-single-joint `moveJ`, followed by measured completion checks. It is **not loaded
-by the live application**. It has no robot address, SDK constructor, script
-upload, server endpoint, UI handler, linear move, gripper, power, brake-release,
-or automatic homing operation. The deployed service remains receive-only.
+single-joint `moveJ`, followed by measured completion checks. The executor
+itself has no robot address, SDK constructor, script upload, linear move,
+gripper, power, brake-release, or automatic homing operation. It is reached
+only through the config-gated routes described under "Service integration";
+a deployment without `control_enabled` has no such routes and stays
+receive-only.
+
+## Service integration (config-gated, not commissioned)
+
+`control.py` installs the routes only when the local config sets
+`control_enabled: true` together with a complete `control` block
+(`authorized_operators`, every `joint_step` limit including the six joint
+bounds, the stop deceleration and `commissioning_id`) on a service that
+already observes the same UR robot over RTDE. A lone flag is rejected.
+
+- Identity: requests must carry the dashboard edge's `X-Auth-User` and an
+  `X-Edge-Auth` that matches `ROBOT_MOTION_EDGE_SHARED_SECRET`. Without that
+  secret every control route answers 503; unverified callers get 401 and
+  verified callers outside `authorized_operators` get 403. The verified
+  e-mail, never the client's `owner` field, becomes the claim holder.
+- Claims: `POST /control/claim`, `/control/heartbeat`, `/control/release`
+  reuse `core.claims.ClaimManager` under hard enforcement. `/connect`,
+  `/disconnect` and `/control/joint_step` require the held `X-Claim-Token`
+  (423 otherwise, including when nobody holds a claim).
+- `POST /connect` is the one place that constructs `RTDEControlInterface`,
+  which uploads ur_rtde's control script and takes the controller's program
+  slot, plus a dedicated receive stream (`actual_q`, `actual_qd`,
+  `robot_mode`, `safety_mode`, default 125 Hz) stamped on packet arrival and
+  served one new packet per read. `POST /disconnect` closes both.
+- `POST /control/joint_step` runs the executor once; refusals are 412 with
+  the executor's reason, a failed dispatch is 500 with `stop_attempted`,
+  `stop_confirmed: false`, `stop_error` and `latched: true`. A latch clears
+  only through an explicit, claimed `/disconnect` then `/connect`.
+- `POST /control/stop` (alias `/move/stop`) needs identity but no claim: it
+  wakes the executor's cancel latch and issues `stopJ` through the session's
+  SDK lock. It is a software request, never confirmed by measurement and not
+  a safety-rated stop.
+- `/status` reports `details.claimed_by`, `details.control_session` (open,
+  latched reason, commissioning id, last event) and `allowed_actions`
+  (`control.stop` always; `control.joint_step` while open and unlatched;
+  `connect` while closed).
 
 ## Implemented
 
@@ -47,18 +84,21 @@ and [asynchronous move documentation](https://sdurobotics.gitlab.io/ur_rtde/page
 
 ## Required before live commissioning
 
-This library is a control building block, **not a complete safety system or
-permission to execute hardware**. A reviewed application integration must:
+The routes above are a control building block, **not a complete safety system
+or permission to execute hardware**. Still outstanding before a first
+supervised step on the UR5e:
 
-1. Provide a human-approved, main-merged commissioned plan through lab-skills,
-   hard claims, and authenticated equipment authorization. A profile's text ID
-   does not establish any of these. Do not replace the callback with a bypass.
-2. Establish exclusive controller-program ownership. RTDEControlInterface can
-   upload a script on construction; the executor deliberately does not create
-   it. Never treat this as the passive RTDE receive connection.
-3. Supply a dedicated bounded, fresh RTDE reader including actual_qd and safety
-   state. The UI's polling snapshots are too old for control. Host timestamps
-   must reflect packet receipt, not merely the time cached getters are called.
+1. A human-approved, main-merged commissioned plan through lab-skills. The
+   service checks identity, the operator allowlist and the configured
+   `commissioning_id`; it does not verify that a plan exists or was approved.
+   Do not replace the authorization callback with a bypass.
+2. Exclusive controller-program ownership in practice: confirm nothing else
+   (LLE demo, pendant program, another ur_rtde client) owns the robot before
+   `/connect` uploads the control script. Never treat `/connect` as passive.
+3. Validation of the feedback stamp: the reader stamps a packet when ur_rtde's
+   cached timestamp advances, polled at twice the stream rate. Measure the
+   real stamp error on the deployment PC (Windows timer granularity is ~15 ms)
+   before trusting `feedback_max_age_s` as a bound.
 4. Verify tool/TCP, payload, joint limits, workspace clearance, speed and stop
    deceleration on the actual UR5e. Joint-space bounds do not establish Cartesian
    clearance or collision safety, even for a small rotation.
@@ -67,11 +107,13 @@ permission to execute hardware**. A reviewed application integration must:
    can block the polling loop: its software timeout and cancellation are not a
    safety-rated stop or a hard real-time deadline. Stop may not be deliverable
    after a disconnect. Use established hardware/operator stops.
-6. Integrate structured 412/423 refusals, truthful activity/last_error and
-   allowed_actions, authenticated SDK routes, audit/record handling and human
-   reconciliation. Keep the existing read-only proxy allowlist unchanged until
-   that complete integration is reviewed. No endpoint can enable this executor
-   in the current deployment.
+6. Durable audit and record handling: the service keeps only the last control
+   event in memory and the process log. Human reconciliation after a latch is
+   a claimed `/disconnect` + `/connect`; nothing verifies the arm's physical
+   state for the operator. The dashboard proxy allowlist still exposes none of
+   these routes; control traffic must come through the authenticated edge.
+   No endpoint can enable control at runtime: it is a local config change plus
+   a service restart during an authorized window.
 
 Offline tests exercise success, unit conversion, bounds, claims, stale data,
 unexpected motion, request replay, concurrency, ambiguous dispatch, stop failure,

@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from .drivers.joint_step import JointStepLimits
 
 MODELS = {
     "xarm5": {
@@ -42,6 +44,29 @@ MODELS = {
 }
 
 
+class ControlSettings(BaseModel):
+    """Explicit commissioning inputs for the joint-step control routes.
+
+    Nothing here is guessed: the operator allowlist, every joint bound, the
+    stop deceleration and the commissioning reference come from the local
+    config. The dashboard edge's shared secret comes from the environment.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    authorized_operators: tuple[str, ...] = Field(min_length=1, max_length=50)
+    joint_step: JointStepLimits
+    # Dedicated receive stream for control feedback; the UI poll is too old.
+    feedback_frequency_hz: float = Field(default=125, ge=50, le=500, allow_inf_nan=False)
+
+    @field_validator("authorized_operators")
+    @classmethod
+    def email_identities(cls, operators):
+        normalized = tuple(sorted({o.strip().lower() for o in operators}))
+        if any(not o or "@" not in o or " " in o for o in normalized):
+            raise ValueError("Authorized operators are e-mail identities")
+        return normalized
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     equipment_id: str = Field(
@@ -57,12 +82,19 @@ class Settings(BaseModel):
     poll_interval_s: float = Field(default=10, ge=5, le=300, allow_inf_nan=False)
     timeout_s: float = Field(default=2, ge=0.1, le=5, allow_inf_nan=False)
     graph_file: str | None = None
-    # This first release cannot be switched into physical control by a UI
-    # toggle or config typo. A reviewed controller integration is still needed.
-    control_enabled: Literal[False] = False
+    # Physical control cannot be switched on by a UI toggle or a lone flag:
+    # it needs this flag AND a complete control block AND RTDE observation of
+    # the same robot. Even then only bounded single-joint steps exist.
+    control_enabled: bool = False
+    control: ControlSettings | None = None
 
     @model_validator(mode="after")
     def coherent(self):
+        if self.control_enabled:
+            if self.control is None:
+                raise ValueError("control_enabled requires an explicit control block")
+            if not (self.driver == "ur" and self.observe and self.ur_transport == "rtde"):
+                raise ValueError("Control requires RTDE observation of the same UR robot")
         if self.ur_transport == "rtde" and self.driver != "ur":
             raise ValueError("RTDE transport requires a UR driver")
         if self.driver == "none":

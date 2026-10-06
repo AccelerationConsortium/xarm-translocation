@@ -2,10 +2,11 @@
 
 from importlib.util import find_spec
 
-from ..config import MODELS
-
 
 def inventory():
+    # Imported here: config imports drivers.joint_step for its control block.
+    from ..config import MODELS
+
     return {
         "ui_included": True,
         "drivers": {
@@ -21,7 +22,7 @@ def inventory():
                 "implementation": "observe",
                 "observation_transports": ["dashboard", "rtde_receive"],
                 "rtde_wrapper": "automated-lle URArm adaptation",
-                "control": "not yet implemented",
+                "control": "joint_step (config-gated; not commissioned)",
             },
             "mg400": {
                 "extra": "mg400",

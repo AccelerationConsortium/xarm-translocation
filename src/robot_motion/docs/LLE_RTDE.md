@@ -51,8 +51,9 @@ authenticated dashboard proxy needs no new routes or permissions.
 
 ## Remaining before Direct Drive
 
-LLE moveJ/moveL primitives are not yet commissioned behind this application's
-SDK/claim and authentication boundary. Browser motion remains disabled.
-Commissioning needs UR5e-specific tool/payload and workspace validation,
-motion/speed limits, ownership, stop/failure behavior, verified feedback and
-human-supervised execution through the lab's approved control workflow.
+The LLE moveJ/moveL primitives themselves are not used. The only motion path
+is the bounded single-joint step in JOINT_STEP_CONTROL.md, behind config,
+identity and hard claims, and it is not yet commissioned on the UR5e: tool,
+payload and workspace validation, speed and stop verification, program
+ownership checks and human-supervised execution through the lab's approved
+control workflow are still required. Browser jogging has no route here.

@@ -76,7 +76,7 @@ from robot_motion.drivers import inventory
 from robot_motion.drivers.lle_rtde import URArm
 URArm('robot.invalid')
 create_app(Settings(driver='ur', model='ur5e', observe=True, robot_host='robot.invalid', ur_transport='rtde'))
-assert inventory()['drivers']['ur']['control'] == 'not yet implemented'
+assert inventory()['drivers']['ur']['control'] == 'joint_step (config-gated; not commissioned)'
 """
     completed = subprocess.run(
         [sys.executable, "-c", script], capture_output=True, text=True, timeout=15

@@ -11,18 +11,23 @@ Importing the package and listing drivers never connect to equipment.
   unchanged. No migration of an existing service is implied.
 - UR3e, UR5e, UR5-CB3: read-only Dashboard status plus opt-in RTDE joint/TCP
   observation using the adapted automated-lle URArm wrapper (see LLE_RTDE.md).
-  No RTDE control interface, program uploads, motion, recovery, power, brakes,
-  gripper or IO commands are instantiated or exposed by the prototype.
+  By default no RTDE control interface, program upload, motion, recovery,
+  power, brake, gripper or IO command is instantiated or exposed.
+- UR control: a local config may enable config-gated, identity-checked,
+  hard-claimed single-joint steps (0.1 deg default, 0.5 deg ceiling) through
+  /connect, /control/joint_step and /control/stop; see JOINT_STEP_CONTROL.md.
+  This is commissioning scaffolding, not an approved motion capability.
 - MG400: reserved optional extra and model metadata only; no hardware driver yet.
-
-An isolated small joint-step executor is available for offline development;
-see JOINT_STEP_CONTROL.md. It is not wired into this service or UI and does
-not change allowed_actions or the receive-only deployment configuration.
 
 ## Contract and safety
 
-The prototype conforms to STATUS_SPEC v1.2's read-only profile: the /control
-surface, claims, and mutation-refusal semantics are N/A. allowed_actions is empty.
+Without control_enabled the service conforms to STATUS_SPEC v1.2's read-only
+profile: the /control surface, claims, and mutation-refusal semantics are N/A
+and allowed_actions is empty. With control enabled, /control/claim,
+/control/heartbeat and /control/release hold a hard-enforced single claim;
+/connect, /disconnect and /control/joint_step refuse 423 without its token,
+412 when the executor refuses, and /control/stop needs identity only.
+allowed_actions then lists exactly what a POST will honor.
 Primary operation for UR observation means the controller program is PLAYING;
 it does not mean the physical arm is moving. Failed/stale observations are unknown,
 not device faults. Reported safety faults take precedence over readiness.
@@ -35,10 +40,15 @@ must use lab-skills, claims, interlocks, and validated human-approved plans.
 
 Use a gitignored *.local.json config, passed with --config. Robot addresses,
 deployment paths and calibration stay local. Observation requires observe=true,
-driver=ur, an explicit model, and robot_host. control_enabled accepts only false.
+driver=ur, an explicit model, and robot_host. control_enabled defaults to false
+and is rejected unless a complete control block (authorized_operators, all
+joint_step limits, commissioning_id) accompanies it on an RTDE-observed robot;
+the edge secret comes from ROBOT_MOTION_EDGE_SHARED_SECRET in the service
+environment, never from the config file. Enabling control is a local config
+change plus a restart in an authorized window; no request can switch it on.
 Do not point a second controller at a robot owned by another workflow.
 ur_transport defaults to dashboard; rtde adds receive-only telemetry and
-requires the existing [ur] extra. It does not enable physical control.
+requires the existing [ur] extra. It does not by itself enable physical control.
 
 The process polls only fixed read commands in the background. /status reads its
 cache and never reconnects, enables hardware, resets a fault, or runs a program.
@@ -76,11 +86,14 @@ page's other load-time reads (/graph/layout, /locations, /track/locations,
 /api/configurations) answer that the feature is absent, so the page renders
 without inventing state. Nothing from the browser is persisted.
 
-Take Control, Connect, STOP, recovery, gripper, rail, graph-edit and motion
-buttons send their requests to routes this service does not have and receive
-404. In particular, the displayed STOP button cannot stop the robot: use the
-established operator controls. allowed_actions stays empty regardless of what
-the page shows, and no status response can change that.
+Without control enabled, Take Control, Connect, STOP, recovery, gripper, rail,
+graph-edit and motion buttons send their requests to routes this service does
+not have and receive 404; allowed_actions stays empty regardless of what the
+page shows. With control enabled, Take Control, Connect and STOP reach the
+claim, /connect and /control/stop routes (identity permitting), while the
+panel's own jog and graph buttons still have no routes here. In every case the
+displayed STOP button is a software request, not a safety-rated stop: use the
+established operator controls.
 
 Known limitation: the shared page uses an inline theme script and ?v= asset
 queries, which the dashboard proxy's script-src 'self' CSP and fixed,
@@ -98,11 +111,15 @@ work, not a change to this service.
 - POST /graph/validate and /graph/preview: offline topology calculations
 - /web/: the shared web UI, read-only here; /ws: cached status envelope push
 - shared-ui tagged routes: absent-feature answers for the page's load-time reads
+- control tagged routes (only with control_enabled): /control/claim, heartbeat,
+  release; /connect, /disconnect; /control/joint_step; /control/stop (/move/stop)
 - /docs, /openapi.json: generated API documentation
 - /agent-docs/api-reference: generated readable route/schema reference
 - /llms.txt: documentation index
 
-The prototype has no authentication because it exposes no hardware mutations.
-Serve it only on the loopback or explicitly firewalled Tailnet interface.
-Do not expose it publicly. A future control service needs reviewed authentication,
-hard claims, commissioning gates, safe stop handling and truthful completion checks.
+The read-only routes have no authentication because they mutate nothing. The
+control routes trust only the dashboard edge's shared-secret identity headers
+and refuse entirely when that secret is unset. Serve the process only on the
+loopback or explicitly firewalled Tailnet interface; never expose it publicly.
+Commissioning the control routes on the physical robot remains outstanding;
+see JOINT_STEP_CONTROL.md for the list.

@@ -6,8 +6,11 @@ not implemented yet). Run robot-motion serve for the observation/graph-preview
 prototype, or robot-motion drivers for an offline capability inventory. UR
 model profiles are ur3e, ur5e and ur5_cb3. The UR service has no UI of its
 own: it serves the shared xArm panel read-only and maps RTDE telemetry into
-the status keys that panel reads. Physical UR control is not implemented in
-this release. Machine configuration and calibrated graphs belong in *.local.json.
+the status keys that panel reads. Physical UR control is limited to
+config-gated, identity-checked, hard-claimed single-joint steps that are not
+yet commissioned (see the packaged JOINT_STEP_CONTROL.md); without that local
+config the service has no /control routes. Machine configuration, control
+limits and calibrated graphs belong in *.local.json.
 
 The existing xArm5 application remains available through pyxarm and the explicit
 robot-motion legacy-xarm command after installing [xarm]. Its controller,
