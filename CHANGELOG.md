@@ -7,6 +7,34 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — coordinated rail + arm trajectory validation; STOP now reaches the rail (2026-10-06)
+
+A digital-twin planner asked for an endpoint that executes time-stamped
+waypoints carrying the rail position and all arm joints on one timeline.
+The controller cannot do that: the rail is a Modbus-RTU servo behind the
+control box with a single target/speed register and a 100 ms status poll,
+not a planner axis, so true synchronisation is unsupported. The achievable
+model (rail defines the timeline, arm streamed against the rail's measured
+position) and its timing bounds are written up in
+`src/docs/TRAJECTORY_PLAN.md`. This change ships the parts that do not
+depend on that decision.
+
+- **`stop_motion` now stops the rail too.** It only issued the arm's
+  `emergency_stop` (state 4), which the rail's Modbus servo never sees, so a
+  rail move in flight ran on to its target after STOP, including the sash
+  watchdog's stop. The arm is stopped first, then the rail's stop register
+  is written; a rail failure makes STOP report failure but never masks
+  whether the arm stopped, and never raises.
+- **New `POST /control/trajectory/validate`.** Read-only: checks shape,
+  fixed units (s, mm from rail home, degrees base to wrist), timing,
+  joint and rail bounds, danger zones, implied per-segment rail and joint
+  speeds against the safety-scaled limits, and the measured start state
+  against a tolerance. Collects every violation. 200 with the report when
+  valid, 422 `trajectory_invalid` with the same report otherwise. Needs a
+  login only: no claim, no lowered graph mode, no motion slot.
+- New pure module `core.trajectory` with the validator and the
+  machine-readable `execution_model` the report returns.
+
 ### Added — lowering motion-graph enforcement is now bounded and self-reverting (2026-09-21)
 
 `POST /control/graph/mode` set process-wide state with no expiry. Lowering to

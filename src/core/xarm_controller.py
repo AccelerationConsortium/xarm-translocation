@@ -1584,7 +1584,34 @@ class XArmController:
         # Stopping deliberately leaves the arm unready. Report whether the
         # stop command succeeded without treating that state as stop failure.
         self._record_health_failure("emergency_stop", code, "Stop requested; recovery required")
-        return check_operation_result(code, 'emergency_stop')
+        arm_stopped = check_operation_result(code, 'emergency_stop')
+        # The rail is a separate Modbus servo: ``emergency_stop`` (arm state
+        # 4) does not reach it, so a rail move in flight would otherwise run
+        # to its target. Arm first (one TCP command, highest consequence),
+        # rail second; a rail failure is reported, never allowed to mask
+        # whether the arm stopped.
+        rail_stopped = self._stop_track()
+        return arm_stopped and rail_stopped
+
+    def _stop_track(self):
+        """Halt the linear rail; True when stopped or no rail is configured.
+
+        Not gated on the track being motion-ENABLED: a stop must reach a
+        rail that was commanded before the state bookkeeping caught up.
+        Never raises -- the caller is the stop path.
+        """
+        if not self.arm or not self.enable_track:
+            return True
+        try:
+            ret = self.arm.set_linear_track_stop()
+        except Exception as exc:  # noqa: BLE001 - stop path must not raise
+            print(f"Warning: linear track stop raised: {exc}")
+            return False
+        code = ret[0] if isinstance(ret, (tuple, list)) else ret
+        if code not in (None, 0):
+            print(f"Warning: linear track stop returned code {code}")
+            return False
+        return True
 
     def set_manual_mode(self, enable):
         """Enable or disable manual (drag/teach) mode.
@@ -2047,6 +2074,37 @@ class XArmController:
             self.last_joints = joints
             return joints
         return None
+
+    def validate_trajectory(self, waypoints, start_tolerance=None):
+        """Validate a coordinated rail + arm trajectory without moving.
+
+        Read-only: it samples the arm's joint angles and the rail encoder
+        for the start-state check and applies the same bounds the move
+        paths use (model joint limits, safety-scaled joint speed, the
+        0-700 mm rail stroke, configured danger zones). See
+        ``core.trajectory`` for the report shape and
+        ``src/docs/TRAJECTORY_PLAN.md`` for the execution model.
+
+        ``waypoints`` are mappings with ``t``, ``rail_mm`` and
+        ``joints_deg``; ``start_tolerance`` is an optional mapping with
+        ``joint_deg`` and ``rail_mm``.
+        """
+        from core.trajectory import (
+            StartState, StartTolerance, TrajectoryLimits, Waypoint, validate_trajectory,
+        )
+        if not self.arm:
+            raise RuntimeError("Cannot validate a trajectory: no arm connection")
+
+        parsed = [Waypoint.from_mapping(wp) for wp in waypoints]
+        limits = TrajectoryLimits(
+            joint_limits_deg=list(self.joint_limits),
+            max_joint_speed_deg_s=float(self.max_joint_speed),
+            rail_danger_zones=list((self.track_config or {}).get('danger_zones', [])),
+        )
+        joints = self.get_current_joints()
+        rail = self.get_track_position() if self.enable_track else None
+        tol = StartTolerance(**start_tolerance) if start_tolerance else StartTolerance()
+        return validate_trajectory(parsed, limits, StartState(joints_deg=joints, rail_mm=rail), tol)
 
     def go_home(self, speed=None, mvacc=None, wait=True):
         """Move the robot to the named ``robot_home`` preset.

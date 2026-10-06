@@ -51,6 +51,7 @@ def mock_xarm_api():
     mock_arm.set_mode.return_value = 0
     mock_arm.set_state.return_value = 0
     mock_arm.emergency_stop.return_value = 0
+    mock_arm.set_linear_track_stop.return_value = 0
     mock_arm.register_error_warn_changed_callback.return_value = 0
     mock_arm.register_state_changed_callback.return_value = 0
     

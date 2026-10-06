@@ -234,6 +234,37 @@ class TrackLocationRequest(BaseModel):
     speed: Optional[float] = Field(default=None, description="Movement speed for the track (validated by safety level)")
     wait: bool = Field(default=True, description="Wait for movement to complete.")
 
+class TrajectoryWaypoint(BaseModel):
+    """One time-stamped sample of a coordinated rail + arm trajectory."""
+    t: FiniteFloat = Field(
+        ge=0,
+        description="Seconds from trajectory start. The first waypoint is at 0; times strictly increase.",
+    )
+    rail_mm: FiniteFloat = Field(
+        description="Absolute linear-rail position in mm from the homed origin (0 = Home, 700 = Cytation).",
+    )
+    joints_deg: List[FiniteFloat] = Field(
+        description=(
+            "Arm joint angles in degrees, base to wrist (J1..J5 on the xArm5). "
+            "Exactly as many entries as the arm has joints."
+        ),
+    )
+
+class TrajectoryStartTolerance(BaseModel):
+    """How far the measured start state may sit from the first waypoint."""
+    joint_deg: FiniteFloat = Field(default=1.0, gt=0, description="Per-joint tolerance in degrees")
+    rail_mm: FiniteFloat = Field(default=2.0, gt=0, description="Rail tolerance in mm")
+
+class TrajectoryRequest(BaseModel):
+    """Request model for a coordinated rail + arm trajectory.
+
+    Units are fixed: seconds, mm from rail home, degrees base-to-wrist.
+    See ``src/docs/TRAJECTORY_PLAN.md`` for the execution model and the
+    timing guarantees the validator checks against.
+    """
+    waypoints: List[TrajectoryWaypoint] = Field(min_length=2)
+    start_tolerance: TrajectoryStartTolerance = Field(default_factory=TrajectoryStartTolerance)
+
 class GripperRequest(BaseModel):
     """Request model for gripper operations."""
     speed: Optional[float] = Field(default=None, description="BioGripper Gen2 motor-speed setting (SDK units, not mm/s); default 1000, effective SDK range 500-4000. Ignored in STRICT graph mode.")
@@ -2411,6 +2442,41 @@ async def get_track_position():
     if not c.has_track():
         raise HTTPException(status_code=400, detail="Linear track is not enabled.")
     return {"position": await asyncio.to_thread(c.get_track_position)}
+
+@app.post("/control/trajectory/validate", dependencies=[Depends(require_login)])
+async def validate_trajectory(request: TrajectoryRequest):
+    """Validate a coordinated rail + arm trajectory. Moves nothing.
+
+    Checks shape, units, timing, joint and rail bounds, implied segment
+    speeds and the arm's measured start state, and returns the full
+    report with every violation. Read-only, so it needs neither a claim
+    nor a lowered graph mode, and it never touches the motion slot.
+
+    200 with ``valid: true`` and the report when the trajectory is
+    executable; 422 ``trajectory_invalid`` with the same report under
+    ``detail.report`` otherwise. The execute endpoint (not yet shipped)
+    will be a freehand action: refused in STRICT and subject to the
+    claim, interlock and single-motion-slot rules as one operation.
+    """
+    c = get_controller()
+    try:
+        report = await asyncio.to_thread(
+            c.validate_trajectory,
+            [wp.model_dump() for wp in request.waypoints],
+            request.start_tolerance.model_dump(),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not report.get("valid"):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "trajectory_invalid",
+                "message": f"{len(report.get('errors', []))} violation(s); see report.errors",
+                "report": report,
+            },
+        )
+    return report
 
 @app.get("/track/locations")
 async def get_track_locations():

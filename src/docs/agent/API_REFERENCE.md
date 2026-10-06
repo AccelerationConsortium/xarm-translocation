@@ -171,6 +171,32 @@ collision checks still apply. A successful HTTP response means accepted,
 not completed: poll status for completion/errors. Raw moves clear the node
 pin; recover to a verified node before resuming graph motion.
 
+## Coordinated rail + arm trajectories (validation only)
+
+`POST /control/trajectory/validate` checks a time-stamped trajectory that
+carries the absolute rail position and every arm joint, and moves nothing.
+It needs a login but no claim and no lowered graph mode, and it never
+takes the motion slot, so it is safe to call while another motion runs.
+
+Units are fixed: `t` in seconds from 0 and strictly increasing; `rail_mm`
+absolute from the rail home (0 = Home, 700 = Cytation); `joints_deg` in
+degrees, base to wrist, exactly as many as the arm has joints. Optional
+`start_tolerance` (`joint_deg`, default 1.0; `rail_mm`, default 2.0) bounds
+how far the first waypoint may sit from the measured start.
+
+**200** returns the report with `valid: true`. **422** `trajectory_invalid`
+returns the same report under `detail.report` with every violation in
+`errors[]` (`code`, `message`, `index`), so fix all of them before
+resubmitting. The report also carries `summary.segments` (implied rail and
+joint speed per segment), `start_state` (measured joints and rail with the
+error against the first waypoint) and `execution_model` (the timing
+guarantees the executor can offer).
+
+There is **no execute endpoint yet**. The controller cannot synchronise the
+rail with the arm; the achievable model and its limits are documented in
+`src/docs/TRAJECTORY_PLAN.md`. When execute ships it will be a freehand
+action: refused in STRICT, claim required, one motion-slot operation.
+
 ## BioGripper Gen2: raw stroke and force
 
 The installed gripper is a BioGripper Gen2. A stroke command supplies an

@@ -596,3 +596,85 @@ class TestHealthRecovery:
         assert c.stop_motion() is True
         assert c.alive is False
         assert c.health_failure["operation"] == "emergency_stop"
+
+
+class TestStopReachesTheRail:
+    """``stop_motion`` must halt the rail too: arm state 4 does not reach the
+    Modbus servo, so a rail move in flight would otherwise run to target."""
+
+    @staticmethod
+    def _stop_calls(mock_arm):
+        return [c[0] for c in mock_arm.mock_calls
+                if c[0] in ("emergency_stop", "set_linear_track_stop")]
+
+    def test_arm_then_rail(self, initialized_controller, mock_xarm_api):
+        mock_xarm_api.reset_mock()
+        assert initialized_controller.stop_motion() is True
+        assert self._stop_calls(mock_xarm_api) == ["emergency_stop", "set_linear_track_stop"]
+
+    def test_rail_stop_failure_is_reported_after_the_arm_stopped(self, initialized_controller, mock_xarm_api):
+        mock_xarm_api.set_linear_track_stop.return_value = 1
+        assert initialized_controller.stop_motion() is False
+        mock_xarm_api.emergency_stop.assert_called_once()
+
+    def test_rail_stop_exception_never_escapes(self, initialized_controller, mock_xarm_api):
+        mock_xarm_api.set_linear_track_stop.side_effect = OSError("rs485 timeout")
+        assert initialized_controller.stop_motion() is False
+        mock_xarm_api.emergency_stop.assert_called_once()
+
+    def test_simulation_tuple_return_counts_as_stopped(self, initialized_controller, mock_xarm_api):
+        # @xarm_is_not_simulation_mode returns (0, []) instead of an int.
+        mock_xarm_api.set_linear_track_stop.return_value = (0, [])
+        assert initialized_controller.stop_motion() is True
+
+    def test_no_rail_configured_skips_the_rail(self, initialized_controller, mock_xarm_api):
+        initialized_controller.enable_track = False
+        assert initialized_controller.stop_motion() is True
+        mock_xarm_api.set_linear_track_stop.assert_not_called()
+
+
+class TestTrajectoryValidation:
+    def _traj(self, c, rail0=0.0):
+        zero = [0.0] * c.num_joints
+        moved = [5.0] + [0.0] * (c.num_joints - 1)
+        return [
+            {"t": 0.0, "rail_mm": rail0, "joints_deg": zero},
+            {"t": 1.0, "rail_mm": rail0 + 20.0, "joints_deg": moved},
+        ]
+
+    def test_valid_from_measured_start(self, initialized_controller, mock_xarm_api):
+        c = initialized_controller
+        mock_xarm_api.get_servo_angle.return_value = (0, [0.0] * c.num_joints)
+        mock_xarm_api.get_linear_track_pos.return_value = (0, 0.0)
+        report = c.validate_trajectory(self._traj(c))
+        assert report["valid"] is True, report["errors"]
+        assert report["summary"]["num_joints"] == c.num_joints
+        assert report["summary"]["limits"]["max_joint_speed_deg_s"] == float(c.max_joint_speed)
+        assert report["summary"]["limits"]["rail_limits_mm"] == [0.0, 700.0]
+        # Validation reads; it never moves or touches the motion slot.
+        mock_xarm_api.set_servo_angle.assert_not_called()
+        mock_xarm_api.set_linear_track_pos.assert_not_called()
+        assert c._motion_in_progress is False
+
+    def test_start_mismatch_and_tolerance(self, initialized_controller, mock_xarm_api):
+        c = initialized_controller
+        mock_xarm_api.get_servo_angle.return_value = (0, [0.0] * c.num_joints)
+        mock_xarm_api.get_linear_track_pos.return_value = (0, 5.0)
+        report = c.validate_trajectory(self._traj(c))
+        assert [e["code"] for e in report["errors"]] == ["start_rail_mismatch"]
+        report = c.validate_trajectory(self._traj(c), {"joint_deg": 1.0, "rail_mm": 10.0})
+        assert report["valid"] is True
+
+    def test_unreadable_rail_refuses(self, initialized_controller, mock_xarm_api):
+        c = initialized_controller
+        mock_xarm_api.get_linear_track_pos.return_value = (1, 0.0)
+        report = c.validate_trajectory(self._traj(c))
+        assert "start_state_unavailable" in [e["code"] for e in report["errors"]]
+
+    def test_no_rail_configured_cannot_validate_rail_start(self, initialized_controller, mock_xarm_api):
+        c = initialized_controller
+        c.enable_track = False
+        mock_xarm_api.get_linear_track_pos.reset_mock()
+        report = c.validate_trajectory(self._traj(c))
+        assert "start_state_unavailable" in [e["code"] for e in report["errors"]]
+        mock_xarm_api.get_linear_track_pos.assert_not_called()
