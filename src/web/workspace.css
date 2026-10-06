@@ -109,12 +109,13 @@ html.dark .pill.active { background: #082f49; border-color: #075985; color: #7dd
 .camera-tile .camera-head { cursor: default; min-height: 16px; }
 .camera-tile .camera-head:has(.camera-dot:only-child) { display: none; }
 
-/* Connection choices share a row; narrow screens keep their fields aligned. */
+/* Connection choices stack: "Connect to" above "Safety level", labels in a
+   fixed column so the two selects line up. Narrow screens stack label/field. */
 .workspace-page .connection-settings {
-    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px;
+    display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px;
 }
 .workspace-page .connection-settings .form-group { gap: 8px; }
-.workspace-page .connection-settings label { flex: none; letter-spacing: normal; }
+.workspace-page .connection-settings label { flex: none; letter-spacing: normal; min-width: 6.5em; }
 .workspace-page .connection-settings select { flex: 1; min-width: 0; width: 100%; }
 @media (max-width: 640px) {
     .workspace-page .connection-settings .form-group { flex-direction: column; align-items: stretch; }
