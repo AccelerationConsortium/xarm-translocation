@@ -50,13 +50,25 @@ def settings(**overrides):
 
 
 class Observer:
+    """Dashboard-shaped observation; tests flip program_state or make it fail."""
+
+    def __init__(self):
+        self.program_state = "STOPPED"
+        self.failing = False
+
     def read(self):
+        if self.failing:
+            raise ConnectionError("fixture dashboard unreachable")
         return {
             "equipment_status": "ready",
             "activity": "idle",
             "message": "fixture",
             "components": {},
-            "details": {},
+            "details": {
+                "robotmode": "RUNNING",
+                "safetystatus": "NORMAL",
+                "program_state": self.program_state,
+            },
         }
 
 
@@ -108,9 +120,21 @@ class Control:
         self.moves = []
         self.stops = []
         self.disconnections = 0
+        self.watchdogs = []
+        self.watchdog_accepted = True
+        self.kicks = 0
+        self.kick_ok = True
 
     def isConnected(self):
         return self.connected
+
+    def setWatchdog(self, min_frequency):
+        self.watchdogs.append(min_frequency)
+        return self.watchdog_accepted
+
+    def kickWatchdog(self):
+        self.kicks += 1
+        return self.kick_ok
 
     def moveJ(self, target, speed, acceleration, asynchronous):
         self.moves.append((list(target), speed, acceleration, asynchronous))
@@ -130,6 +154,7 @@ class Rig:
     def __init__(self, config):
         self.config = config
         self.world = World()
+        self.observer = Observer()
         self.control = Control(self.world)
         self.receiver = Receiver(self.world)
         self.control_calls = []
@@ -152,14 +177,25 @@ class Rig:
         return TestClient(
             create_app(
                 self.config,
-                observer=Observer(),
+                observer=self.observer,
                 control_session_factory=self.session,
                 edge_secret=secret,
             )
         )
 
 
+def wait_observed(client):
+    """The poll runs in a thread at startup; wait for its first observation."""
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if client.get("/status").json()["details"].get("robotmode"):
+            return
+        time.sleep(0.02)
+    raise AssertionError("fixture observation never arrived")
+
+
 def claim(client, session_id="session-a"):
+    wait_observed(client)
     response = client.post(
         "/control/claim",
         json={"owner": "ignored client value", "session_id": session_id, "ttl_s": 60},
@@ -360,6 +396,122 @@ def test_unsafe_controller_state_refuses_before_any_command():
         assert refused.status_code == 412
         assert "safety state" in refused.json()["detail"]["reason"]
         assert rig.control.moves == [] and rig.control.stops == []
+
+
+def test_connect_refuses_unless_the_robot_is_observed_idle():
+    rig = Rig(settings())
+    rig.observer.program_state = "PLAYING"  # someone else's program owns the robot
+    with rig.client() as client:
+        held = claim(client)
+        refused = client.post("/connect", headers=held)
+        assert refused.status_code == 409
+        detail = refused.json()["detail"]
+        assert detail["error"] == "robot_not_idle"
+        assert detail["observed"]["program_state"] == "PLAYING"
+        assert rig.control_calls == [] and rig.receiver_calls == []
+        status = client.get("/status").json()
+        assert status["details"]["control_session"]["last_event"]["kind"] == "connect_refused"
+        assert status["allowed_actions"] == ["control.stop", "connect"]
+    # PAUSED is not idle either: the paused program still owns the robot.
+    paused = Rig(settings())
+    paused.observer.program_state = "PAUSED"
+    with paused.client() as client:
+        held = claim(client)
+        assert client.post("/connect", headers=held).json()["detail"]["error"] == "robot_not_idle"
+        assert paused.control_calls == []
+    # No fresh observation at all: unknown is not idle.
+    fresh = Rig(settings())
+    fresh.observer.failing = True
+    with fresh.client() as client:
+        token = client.post(
+            "/control/claim",
+            json={"owner": "x", "session_id": "s", "ttl_s": 60},
+            headers=HEADERS,
+        ).json()["claim_token"]
+        refused = client.post("/connect", headers={**HEADERS, "X-Claim-Token": token})
+        assert refused.status_code == 409
+        assert refused.json()["detail"]["error"] == "observation_unavailable"
+        assert fresh.control_calls == []
+
+
+def test_watchdog_is_armed_kicked_and_fails_closed():
+    rig = Rig(settings(control={
+        "authorized_operators": [OPERATOR], "joint_step": LIMITS, "watchdog_hz": 20,
+    }))
+    with rig.client() as client:
+        held = claim(client)
+        assert client.post("/connect", headers=held).status_code == 200
+        assert rig.control.watchdogs == [20]
+        deadline = time.monotonic() + 2
+        while rig.control.kicks < 3 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert rig.control.kicks >= 3
+        session = client.get("/status").json()["details"]["control_session"]
+        assert session["watchdog_ok"] is True and session["watchdog_error"] is None
+        # The controller stops acknowledging: no more steps, status says why.
+        rig.control.kick_ok = False
+        deadline = time.monotonic() + 2
+        while rig.control.kicks and client.get("/status").json()["details"]["control_session"]["watchdog_ok"]:
+            assert time.monotonic() < deadline, "watchdog failure never surfaced"
+            time.sleep(0.02)
+        status = client.get("/status").json()
+        assert "control.joint_step" not in status["allowed_actions"]
+        assert "watchdog" in status["details"]["control_session"]["watchdog_error"].lower() or status["details"]["control_session"]["watchdog_error"]
+        kicks_after_fault = rig.control.kicks
+        refused = client.post("/control/joint_step", json=step(), headers=held)
+        assert refused.status_code == 412
+        assert "disconnected" in refused.json()["detail"]["reason"]
+        time.sleep(0.1)
+        assert rig.control.kicks == kicks_after_fault  # kicking stopped
+        assert rig.control.moves == []
+        assert client.post("/disconnect", headers=held).status_code == 200
+    # A controller that refuses the watchdog never gets a session.
+    rig = Rig(settings())
+    rig.control.watchdog_accepted = False
+    with rig.client() as client:
+        held = claim(client)
+        failed = client.post("/connect", headers=held)
+        assert failed.status_code == 502
+        assert "watchdog" in failed.json()["detail"]["message"].lower()
+        assert rig.control.disconnections == 1 and rig.receiver.disconnections == 1
+        assert client.get("/status").json()["allowed_actions"] == ["control.stop", "connect"]
+
+
+def test_audit_file_records_every_control_event(tmp_path):
+    import json
+
+    audit = tmp_path / "control-audit.jsonl"
+    rig = Rig(settings(control={
+        "authorized_operators": [OPERATOR], "joint_step": LIMITS, "audit_file": str(audit),
+    }))
+    with rig.client() as client:
+        held = claim(client)
+        assert client.post("/connect", headers=held).status_code == 200
+        request = step()
+        assert client.post("/control/joint_step", json=request, headers=held).status_code == 200
+        assert client.post("/control/stop", headers=HEADERS).status_code == 200
+        assert client.post("/disconnect", headers=held).status_code == 200
+    events = [json.loads(line) for line in audit.read_text(encoding="utf-8").splitlines()]
+    assert [e["kind"] for e in events] == ["claim", "connect", "joint_step", "stop", "disconnect"]
+    assert all(e["operator"] == OPERATOR for e in events)
+    assert events[2]["request_id"] == request["request_id"]
+    assert events[3]["requested"] is True
+
+
+def test_relative_audit_file_resolves_beside_the_config(tmp_path):
+    import json
+
+    from robot_motion.config import load_settings
+
+    config = tmp_path / "robot.local.json"
+    config.write_text(json.dumps({
+        "driver": "ur", "model": "ur5e", "observe": True, "robot_host": "robot.invalid",
+        "ur_transport": "rtde", "control_enabled": True,
+        "control": {"authorized_operators": [OPERATOR], "joint_step": LIMITS,
+                    "audit_file": "logs/control.jsonl"},
+    }))
+    loaded = load_settings(config)
+    assert loaded.control.audit_file == str((tmp_path / "logs" / "control.jsonl").resolve())
 
 
 def test_stop_without_a_session_is_honest():

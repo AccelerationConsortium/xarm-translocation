@@ -57,6 +57,11 @@ class ControlSettings(BaseModel):
     joint_step: JointStepLimits
     # Dedicated receive stream for control feedback; the UI poll is too old.
     feedback_frequency_hz: float = Field(default=125, ge=50, le=500, allow_inf_nan=False)
+    # ur_rtde communication watchdog: the controller stops the control script
+    # when kicks stop arriving at this rate (e.g. a frozen or dead service).
+    watchdog_hz: float = Field(default=10, ge=1, le=50, allow_inf_nan=False)
+    # JSON-lines audit of every control event; relative to the config file.
+    audit_file: str | None = None
 
     @field_validator("authorized_operators")
     @classmethod
@@ -111,9 +116,18 @@ def load_settings(path: Path | None) -> Settings:
     if path is None:
         return Settings()
     settings = Settings.model_validate(json.loads(path.read_text(encoding="utf-8-sig")))
+
+    def beside_config(value):
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = path.parent / candidate
+        return str(candidate.resolve())
+
     if settings.graph_file:
-        graph_path = Path(settings.graph_file)
-        if not graph_path.is_absolute():
-            graph_path = path.parent / graph_path
-        settings = settings.model_copy(update={"graph_file": str(graph_path.resolve())})
+        settings = settings.model_copy(update={"graph_file": beside_config(settings.graph_file)})
+    if settings.control and settings.control.audit_file:
+        control = settings.control.model_copy(
+            update={"audit_file": beside_config(settings.control.audit_file)}
+        )
+        settings = settings.model_copy(update={"control": control})
     return settings

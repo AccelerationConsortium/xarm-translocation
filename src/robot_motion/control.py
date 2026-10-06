@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import json
 import logging
 import os
 import threading
@@ -41,10 +42,16 @@ STOP_NOTICE = (
 )
 
 
+IDLE_STATE = {"robotmode": "RUNNING", "safetystatus": "NORMAL", "program_state": "STOPPED"}
+
+
 class URControl:
-    def __init__(self, settings, *, session_factory=None, edge_secret=None):
+    def __init__(self, settings, *, session_factory=None, edge_secret=None, observe=None):
         self.settings = settings
         self.config = settings.control
+        # Latest cached Dashboard observation: (observation, stale). Used to
+        # refuse /connect while anything else runs or owns the robot.
+        self._observe = observe or (lambda: (None, True))
         self.claims = ClaimManager(enforce=True)
         self.secret = (
             edge_secret
@@ -129,6 +136,32 @@ class URControl:
             and self.session.is_open
         )
 
+    def connect_preconditions(self):
+        """Why /connect must refuse right now, or None.
+
+        Uploading the control script takes the controller's program slot, so
+        the robot must be observed idle first: controller RUNNING, safety
+        NORMAL and no program PLAYING or PAUSED (an LLE demo, a pendant
+        program or another ur_rtde client would show as PLAYING). A stale or
+        failed observation refuses too; "unknown" is not "idle".
+        """
+        current, stale = self._observe()
+        details = (current or {}).get("details") or {}
+        if stale or not details.get("robotmode"):
+            return {
+                "error": "observation_unavailable",
+                "hint": "No fresh Dashboard observation; cannot verify the robot is idle",
+            }
+        observed = {key: details.get(key) for key in IDLE_STATE}
+        if observed != IDLE_STATE:
+            return {
+                "error": "robot_not_idle",
+                "observed": observed,
+                "required": IDLE_STATE,
+                "hint": "Stop the running program / other client on the pendant before connecting",
+            }
+        return None
+
     def event(self, kind, identity, **extra):
         self.last_event = {
             "kind": kind,
@@ -137,13 +170,20 @@ class URControl:
             **extra,
         }
         log.info("UR control %s by %s %s", kind, self.last_event["operator"], extra)
+        if self.config.audit_file:
+            # Durable trail; a logging failure must never block or hide a stop.
+            try:
+                with open(self.config.audit_file, "a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(self.last_event, default=str) + "\n")
+            except OSError:
+                log.exception("UR control audit append failed")
 
     # ── state for /status ───────────────────────────────────────────
     def state(self):
         session_open = self.session is not None and self.session.is_open
         latched = self.executor.latched if self.executor is not None else None
         allowed = ["control.stop"]
-        if session_open and latched is None:
+        if session_open and latched is None and self.session.watchdog_ok:
             allowed.append("control.joint_step")
         if not session_open:
             allowed.append("connect")
@@ -152,6 +192,8 @@ class URControl:
             "control_session": {
                 "open": session_open,
                 "latched": latched,
+                "watchdog_ok": self.session.watchdog_ok if session_open else None,
+                "watchdog_error": self.session.watchdog_error if session_open else None,
                 "commissioning_id": self.config.joint_step.commissioning_id,
                 "max_step_deg": self.config.joint_step.max_step_deg,
                 "last_event": self.last_event,
@@ -218,6 +260,10 @@ class URControl:
                         status_code=409,
                         detail={"error": "control_session_open", "hint": "POST /disconnect first"},
                     )
+                problem = self.connect_preconditions()
+                if problem is not None:
+                    self.event("connect_refused", identity, **problem)
+                    raise HTTPException(status_code=409, detail=problem)
                 session = self._session_factory()
                 try:
                     session.open()

@@ -25,11 +25,27 @@ already observes the same UR robot over RTDE. A lone flag is rejected.
   reuse `core.claims.ClaimManager` under hard enforcement. `/connect`,
   `/disconnect` and `/control/joint_step` require the held `X-Claim-Token`
   (423 otherwise, including when nobody holds a claim).
-- `POST /connect` is the one place that constructs `RTDEControlInterface`,
-  which uploads ur_rtde's control script and takes the controller's program
-  slot, plus a dedicated receive stream (`actual_q`, `actual_qd`,
-  `robot_mode`, `safety_mode`, default 125 Hz) stamped on packet arrival and
-  served one new packet per read. `POST /disconnect` closes both.
+- `POST /connect` first requires a fresh Dashboard observation showing the
+  robot idle: controller RUNNING, safety NORMAL, program STOPPED. PLAYING or
+  PAUSED means another program or client (LLE demo, pendant, other ur_rtde
+  user) owns the robot and the request is refused 409 `robot_not_idle`; a
+  stale or failed observation is refused 409 `observation_unavailable`.
+  It is then the one place that constructs `RTDEControlInterface`, which
+  uploads ur_rtde's control script and takes the controller's program slot,
+  plus a dedicated receive stream (`actual_q`, `actual_qd`, `robot_mode`,
+  `safety_mode`, default 125 Hz) stamped on packet arrival and served one new
+  packet per read. `POST /disconnect` closes both.
+- The session arms ur_rtde's communication watchdog (`watchdog_hz`, default
+  10 Hz) and kicks it at twice that rate from a dedicated thread. If this
+  service freezes or dies, the controller itself halts the control script.
+  A refused kick marks the interface faulted: steps are refused, status
+  shows `watchdog_ok: false` with the error, and kicking stops so the
+  controller completes the shutdown. A controller that refuses the watchdog
+  never gets a session (502).
+- Every control event (claim, connect, connect_refused, joint_step,
+  joint_step_refused, joint_step_failed, stop, disconnect) is appended as a
+  JSON line to `control.audit_file` when configured (path relative to the
+  config file), besides the process log and `details.control_session.last_event`.
 - `POST /control/joint_step` runs the executor once; refusals are 412 with
   the executor's reason, a failed dispatch is 500 with `stop_attempted`,
   `stop_confirmed: false`, `stop_error` and `latched: true`. A latch clears
@@ -92,9 +108,11 @@ supervised step on the UR5e:
    service checks identity, the operator allowlist and the configured
    `commissioning_id`; it does not verify that a plan exists or was approved.
    Do not replace the authorization callback with a bypass.
-2. Exclusive controller-program ownership in practice: confirm nothing else
-   (LLE demo, pendant program, another ur_rtde client) owns the robot before
-   `/connect` uploads the control script. Never treat `/connect` as passive.
+2. Exclusive controller-program ownership in practice: `/connect` refuses
+   while the Dashboard shows a program PLAYING/PAUSED, but a client that has
+   connected without running a program is invisible to it. Confirm on the
+   pendant that nothing else (LLE demo, another ur_rtde client) is attached
+   before connecting. Never treat `/connect` as passive.
 3. Validation of the feedback stamp: the reader stamps a packet when ur_rtde's
    cached timestamp advances, polled at twice the stream rate. Measure the
    real stamp error on the deployment PC (Windows timer granularity is ~15 ms)
@@ -102,13 +120,16 @@ supervised step on the UR5e:
 4. Verify tool/TCP, payload, joint limits, workspace clearance, speed and stop
    deceleration on the actual UR5e. Joint-space bounds do not establish Cartesian
    clearance or collision safety, even for a small rotation.
-5. Provide and test an independent controller-side watchdog and operator stop
-   procedure. Python callbacks, SDK calls, OS scheduling, or a crashed process
-   can block the polling loop: its software timeout and cancellation are not a
-   safety-rated stop or a hard real-time deadline. Stop may not be deliverable
-   after a disconnect. Use established hardware/operator stops.
-6. Durable audit and record handling: the service keeps only the last control
-   event in memory and the process log. Human reconciliation after a latch is
+5. Test the controller-side watchdog and the operator stop procedure on the
+   real controller: confirm on the pendant that the control script halts
+   when the service is killed mid-step, and measure how long that takes at
+   the configured `watchdog_hz`. Python callbacks, SDK calls, OS scheduling,
+   or a crashed process can still block the polling loop: its software
+   timeout and cancellation are not a safety-rated stop or a hard real-time
+   deadline. Stop may not be deliverable after a disconnect. Use established
+   hardware/operator stops.
+6. Record handling and reconciliation: the JSON-lines audit file is a local
+   trail, not the lab's record system. Human reconciliation after a latch is
    a claimed `/disconnect` + `/connect`; nothing verifies the arm's physical
    state for the operator. The dashboard proxy allowlist still exposes none of
    these routes; control traffic must come through the authenticated edge.

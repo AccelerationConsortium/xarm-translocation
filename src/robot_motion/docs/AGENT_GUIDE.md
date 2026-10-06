@@ -44,7 +44,9 @@ driver=ur, an explicit model, and robot_host. control_enabled defaults to false
 and is rejected unless a complete control block (authorized_operators, all
 joint_step limits, commissioning_id) accompanies it on an RTDE-observed robot;
 the edge secret comes from ROBOT_MOTION_EDGE_SHARED_SECRET in the service
-environment, never from the config file. Enabling control is a local config
+environment, never from the config file. Optional control settings:
+watchdog_hz (controller-side watchdog rate, default 10) and audit_file
+(JSON-lines control event trail, relative to the config file). Enabling control is a local config
 change plus a restart in an authorized window; no request can switch it on.
 Do not point a second controller at a robot owned by another workflow.
 ur_transport defaults to dashboard; rtde adds receive-only telemetry and

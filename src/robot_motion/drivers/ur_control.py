@@ -152,15 +152,31 @@ class ControlFeedback:
 
 
 class _SerializedControl:
-    """RTDEControlInterface is not thread-safe: one caller inside the SDK at a time."""
+    """RTDEControlInterface is not thread-safe: one caller inside the SDK at a time.
+
+    fault is set by the watchdog kicker when the controller stops acknowledging
+    kicks; from then on the interface reports disconnected so the executor
+    refuses rather than trusting a link the controller may have dropped.
+    """
 
     def __init__(self, control, lock):
         self._control = control
         self._lock = lock
+        self.fault = None
 
     def isConnected(self):
+        if self.fault is not None:
+            return False
         with self._lock:
             return bool(self._control.isConnected())
+
+    def setWatchdog(self, min_frequency):
+        with self._lock:
+            return self._control.setWatchdog(min_frequency)
+
+    def kickWatchdog(self):
+        with self._lock:
+            return self._control.kickWatchdog()
 
     def moveJ(self, target, speed, acceleration, asynchronous):
         with self._lock:
@@ -199,16 +215,38 @@ class ControlSession:
         self._sdk_lock = threading.RLock()
         self.control = None
         self.feedback = None
+        self._kicker = None
+        self._kick_stop = threading.Event()
+        self.watchdog_error = None
 
     @property
     def is_open(self):
         return self.control is not None
+
+    @property
+    def watchdog_ok(self):
+        return self.control is not None and self.watchdog_error is None
+
+    def _kick(self, proxy, interval):
+        # The controller-side watchdog is the fail-safe for a frozen or dead
+        # service: once kicks stop, the controller halts the control script.
+        # A refused kick is treated the same way here: stop kicking, mark the
+        # interface faulted, and let the controller do its part.
+        while not self._kick_stop.wait(interval):
+            try:
+                if proxy.kickWatchdog() is not True:
+                    raise RuntimeError("Controller did not acknowledge the watchdog kick")
+            except Exception as exc:
+                self.watchdog_error = str(exc)
+                proxy.fault = f"watchdog: {exc}"
+                return
 
     def open(self):
         with self._lock:
             if self.control is not None:
                 raise RuntimeError("Control session already open")
             frequency = self.settings.control.feedback_frequency_hz
+            watchdog_hz = self.settings.control.watchdog_hz
             receiver = self._receiver_factory(
                 self.settings.robot_host, frequency=frequency, variables=list(FEEDBACK_VARIABLES)
             )
@@ -219,8 +257,23 @@ class ControlSession:
             except Exception:
                 feedback.close()
                 raise
+            proxy = _SerializedControl(control, self._sdk_lock)
+            try:
+                if proxy.setWatchdog(watchdog_hz) is not True:
+                    raise RuntimeError("Controller refused the communication watchdog")
+            except Exception:
+                proxy.disconnect()
+                feedback.close()
+                raise
+            self.watchdog_error = None
+            self._kick_stop.clear()
+            self._kicker = threading.Thread(
+                target=self._kick, args=(proxy, 1 / (2 * watchdog_hz)),
+                name="ur-control-watchdog", daemon=True,
+            )
+            self._kicker.start()
             self.feedback = feedback
-            self.control = _SerializedControl(control, self._sdk_lock)
+            self.control = proxy
 
     def stop(self, deceleration_deg_s2):
         with self._lock:
@@ -231,8 +284,11 @@ class ControlSession:
 
     def close(self):
         with self._lock:
-            control, feedback = self.control, self.feedback
-            self.control = self.feedback = None
+            control, feedback, kicker = self.control, self.feedback, self._kicker
+            self.control = self.feedback = self._kicker = None
+        self._kick_stop.set()
+        if kicker is not None:
+            kicker.join(timeout=2)
         errors = []
         for closer in (
             getattr(control, "disconnect", None),

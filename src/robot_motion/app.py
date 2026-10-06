@@ -134,12 +134,37 @@ def create_app(
     )
     app.state.settings = settings
 
+    def current_observation():
+        stale = (
+            observed_at is None
+            or time.monotonic() - observed_at > settings.poll_interval_s + 30
+        )
+        current = (
+            observation
+            if observation is not None and not stale
+            else {
+                "equipment_status": "unknown",
+                "activity": "unknown",
+                "components": {},
+                "details": {},
+                "message": (
+                    "No fresh robot observation"
+                    if settings.observe
+                    else "Observation disabled; no robot connection"
+                ),
+            }
+        )
+        return current, stale
+
     control = None
     if settings.control_enabled:
         from .control import URControl
 
         control = URControl(
-            settings, session_factory=control_session_factory, edge_secret=edge_secret
+            settings,
+            session_factory=control_session_factory,
+            edge_secret=edge_secret,
+            observe=current_observation,
         ).install(app)
 
     @app.get("/", response_model=ProbeResponse)
@@ -176,25 +201,7 @@ def create_app(
 
     @app.get("/status", response_model=EquipmentStatus)
     def status():
-        stale = (
-            observed_at is None
-            or time.monotonic() - observed_at > settings.poll_interval_s + 30
-        )
-        current = (
-            observation
-            if observation is not None and not stale
-            else {
-                "equipment_status": "unknown",
-                "activity": "unknown",
-                "components": {},
-                "details": {},
-                "message": (
-                    "No fresh robot observation"
-                    if settings.observe
-                    else "Observation disabled; no robot connection"
-                ),
-            }
-        )
+        current, stale = current_observation()
         control_state = control.state() if control is not None else None
         return EquipmentStatus(
             protocol_version="1.2",
