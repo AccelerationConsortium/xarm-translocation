@@ -2221,7 +2221,11 @@ document.addEventListener('DOMContentLoaded', () => {
             // Friendly display names for known profiles; fall back to a humanized
             // version of the raw profile name. Option values stay the raw profile
             // name so /connect keeps receiving robot / docker.
-            const profileLabels = { robot: 'Robot', docker: 'Docker' };
+            const profileLabels = {
+                robot: 'Robot', docker: 'Docker',
+                // robot-motion UR profiles (values are its model ids)
+                ur3e: 'UR-3e', ur5e: 'UR-5e', ur5_cb3: 'UR5 CB3',
+            };
             const label = p => profileLabels[p] || p.replace(/_/g, ' ').toUpperCase();
             configSelect.innerHTML = profiles.map(p =>
                 `<option value="${p}"${p === 'robot' ? ' selected' : ''}>${label(p)}</option>`

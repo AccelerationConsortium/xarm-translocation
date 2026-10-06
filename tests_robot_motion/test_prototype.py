@@ -201,7 +201,8 @@ def test_shared_ui_read_polls_answer_absent_features_and_status_maps_telemetry()
         assert client.get("/auth/me").json() == {"authenticated": False, "identity": None}
         assert client.get("/camera/config").json()["configured"] is False
         assert client.get("/assistant/status").json()["enabled"] is False
-        assert client.get("/api/configurations").json() == []
+        # "Connect to" offers only the configured robot profile.
+        assert client.get("/api/configurations").json() == ["ur5e"]
         assert client.post("/graph/layout", json={"positions": {}}).status_code == 405
         with client.websocket_connect("/ws") as websocket:
             message = websocket.receive_json()
@@ -210,6 +211,7 @@ def test_shared_ui_read_polls_answer_absent_features_and_status_maps_telemetry()
         assert message["data"]["allowed_actions"] == []
     # Without a valid sample the xArm-named keys are null, never zero.
     with TestClient(create_app()) as client:
+        assert client.get("/api/configurations").json() == []
         details = client.get("/status").json()["details"]
         assert details["current_joints"] is None
         assert details["current_position"] is None

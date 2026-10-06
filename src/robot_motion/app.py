@@ -341,7 +341,9 @@ def create_app(
 
     @app.get("/api/configurations", **shared)
     def configurations():
-        return []
+        # The panel's "Connect to" list: only the configured robot profile.
+        # The value is the model id; main.js maps it to a display label.
+        return [settings.model] if settings.model else []
 
     @app.websocket("/ws")
     async def status_push(websocket: WebSocket):
