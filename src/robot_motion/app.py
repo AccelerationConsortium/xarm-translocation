@@ -18,6 +18,7 @@ from sdl_lab_contract import EquipmentStatus, HealthResponse, ProbeResponse
 from core.motion_graph import GraphError
 
 from . import __version__
+from .cameras import Cameras
 from .config import MODELS, Settings
 from .drivers import inventory
 from .drivers.ur import URObserver
@@ -60,6 +61,8 @@ def create_app(
     observer=None,
     control_session_factory=None,
     edge_secret=None,
+    stereo_cameras=None,
+    camera_transport=None,
 ):
     settings = settings or Settings()
     observation = None
@@ -113,9 +116,15 @@ def create_app(
             observed_time = now
             await asyncio.sleep(settings.poll_interval_s)
 
+    cameras = Cameras(
+        settings, edge_secret=edge_secret, stereo=stereo_cameras, transport=camera_transport
+    )
+
     @asynccontextmanager
     async def lifespan(_app):
         task = asyncio.create_task(poll()) if settings.observe else None
+        # Camera telemetry is polled on its own thread; /status only reads it.
+        cameras.start()
         try:
             yield
         finally:
@@ -129,6 +138,7 @@ def create_app(
                 await asyncio.to_thread(observer.close)
             if control is not None:
                 await asyncio.to_thread(control.shutdown)
+            await asyncio.to_thread(cameras.close)
 
     app = FastAPI(
         title="Robot Motion", version=__version__, lifespan=lifespan, description=NOTICE
@@ -217,10 +227,13 @@ def create_app(
             activity=current["activity"],
             activity_since=activity_since if not stale else None,
             message=current["message"],
-            components=current["components"],
+            # Cameras are components, not state inputs: arm observation does
+            # not depend on them, so an outage never moves equipment_status.
+            components={**cameras.components(), **current["components"]},
             last_error=current.get("last_error"),
             allowed_actions=control_state["allowed_actions"] if control_state else [],
             details={
+                **cameras.details(),
                 **current["details"],
                 **measured(current["details"]),
                 "monitoring_only": control is None,
@@ -302,7 +315,7 @@ def create_app(
 
     @app.get("/llms.txt", response_class=PlainTextResponse)
     def llms():
-        return "# Robot Motion\n\n- [Guide](/agent-docs)\n- [Reference](/agent-docs/api-reference)\n- [OpenAPI](/openapi.json)\n- [Status](/status)\n- [Drivers](/drivers)\n"
+        return "# Robot Motion\n\n- [Guide](/agent-docs)\n- [Reference](/agent-docs/api-reference)\n- [OpenAPI](/openapi.json)\n- [Status](/status)\n- [Drivers](/drivers)\n- [Cameras](/cameras)\n"
 
     # Without control_enabled there are no /control routes: claims are N/A and
     # the shared UI's Take Control / motion buttons get 404s. The legacy xArm
@@ -344,9 +357,9 @@ def create_app(
             "identity": {"email": identity["email"], "role": identity["role"] or "user", "via": "edge"},
         }
 
-    @app.get("/camera/config", **shared)
-    def camera_config():
-        return {"configured": False, "available": False, "connected": False}
+    # /camera/* and /realsense/*: real routes, configured by the local
+    # lab_camera / camera_service blocks (see cameras.py).
+    cameras.install(app)
 
     @app.get("/assistant/status", **shared)
     def assistant_status():

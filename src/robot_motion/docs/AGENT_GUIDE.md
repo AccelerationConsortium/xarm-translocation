@@ -84,9 +84,10 @@ RTDE receive sample (otherwise null, never zero), num_joints from the model
 profile, and connection_details when observation is enabled. /ws pushes the
 same cached envelope at the poll cadence and acts on no browser message. The
 page's other load-time reads (/graph/layout, /locations, /track/locations,
-/interlocks/sash, /auth/config, /auth/me, /camera/config, /assistant/status,
+/interlocks/sash, /auth/config, /auth/me, /assistant/status,
 /api/configurations) answer that the feature is absent, so the page renders
-without inventing state. Nothing from the browser is persisted.
+without inventing state. /camera/config and /realsense/cameras are real (see
+Cameras). Nothing from the browser is persisted.
 
 Without control enabled, Take Control, Connect, STOP, recovery, gripper, rail,
 graph-edit and motion buttons send their requests to routes this service does
@@ -106,6 +107,43 @@ matches; otherwise they report no identity, and the panel still renders
 read-only. The earlier dashboard-side CSP proxy and its /utils/robot_motion
 page are retired; the direct port stays reachable only on the Tailnet.
 
+## Cameras
+
+The panel's camera tile has two optional views, each configured by a local
+config block and neither loading a camera SDK in this process. Looking is not
+arm actuation: no camera route is claim-gated, touches the robot, or changes
+equipment_status.
+
+- Tapo Camera (lab_camera): the bench's network PTZ camera as registered on
+  the lab dashboard (dashboard_base_url, camera_id, optional lens). The xArm's
+  CameraTracker reads its live state from the dashboard's open /api/equipment
+  snapshot; GET /camera/config reports configured, available, reason, lenses
+  (with ptz_capable), presets and the go2rtc stream source. The video itself
+  uses the dashboard's authenticated viewing sessions on the shared page
+  origin, so it plays only through the lab edge. POST /camera/ptz (verbatim
+  {direction, speed, duration_ms} or stop {pan, tilt, zoom}) and POST
+  /camera/preset ({preset_id}) forward to the dashboard's audited
+  /api/equipment/<camera_id>/control/* passthrough carrying the caller's own
+  credential: their X-Api-Key if present, else only their ac_auth_session
+  cookie. This service stores no camera credential; the dashboard authorizes
+  and audits the real person. With no motion graph runner there is no "Follow
+  arm": /camera/config says follow_supported false and POST /camera/follow
+  answers 409.
+- Stereo Camera (camera_service): RealSense cameras owned by the standalone
+  SDL camera service on this PC, reached through the xArm's remote facade with
+  the xArm's /realsense/<id>/* routes and payloads. service_file names the
+  private {"url", "token", "cameras"} JSON (the xArm's
+  XARM_CAMERA_SERVICE_CONFIG format), relative to the config file; cameras
+  lists the panel metadata (id, label, short_label, mount) for exactly those
+  ids. A rejected camera configuration is logged and reported as the
+  /realsense/cameras reason; it never stops robot observation. /status gains
+  components.realsense_<id> and details.realsense from cached telemetry.
+
+Discovery, /camera/config, /realsense/<id>/status, /depth and /intrinsics are
+open reads. Pixels (snapshot.jpg, depth.png, stream.mjpg), start/stop and PTZ
+need the edge identity (ROBOT_MOTION_EDGE_SHARED_SECRET): 401 without it, 503
+when the service has no secret.
+
 ## API discovery
 
 - /: STATUS_SPEC probe
@@ -116,6 +154,9 @@ page are retired; the direct port stays reachable only on the Tailnet.
 - POST /graph/validate and /graph/preview: offline topology calculations
 - /web/: the shared web UI, read-only here; /ws: cached status envelope push
 - shared-ui tagged routes: absent-feature answers for the page's load-time reads
+- cameras tagged routes: /cameras and /realsense/cameras discovery,
+  /camera/config, /camera/ptz, /camera/preset, /camera/follow (409), and
+  /realsense/<id>/{status,start,stop,snapshot.jpg,depth.png,stream.mjpg,depth,intrinsics}
 - control tagged routes (only with control_enabled): /control/claim, heartbeat,
   release; /connect, /disconnect; /control/joint_step; /control/stop (/move/stop)
 - /docs, /openapi.json: generated API documentation

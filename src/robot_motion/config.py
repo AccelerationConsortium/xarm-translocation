@@ -72,6 +72,55 @@ class ControlSettings(BaseModel):
         return normalized
 
 
+class LabCameraSettings(BaseModel):
+    """The bench's network PTZ camera, as registered on the lab dashboard.
+
+    Read through the dashboard's open /api/equipment snapshot; PTZ and preset
+    recalls go through its audited control passthrough carrying the
+    operator's own credential, so no camera credential lives here.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    # Dashboard (aggregator) origin, not the camera gateway, which binds to
+    # loopback on the dashboard host.
+    dashboard_base_url: str = Field(pattern=r"^https?://[^\s/?#]+$")
+    camera_id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    # Lens id from the camera's details.lenses (e.g. "wide" / "tele"); the
+    # panel starts on it and offers a switch. None: the camera's first lens.
+    lens: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,32}$")
+    request_timeout_s: float = Field(default=5, ge=0.5, le=15, allow_inf_nan=False)
+
+
+class StereoCameraSettings(BaseModel):
+    """Panel metadata for one camera-service RealSense alias."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    id: str = Field(pattern=r"^[a-z][a-z0-9_]{0,31}$")
+    label: str = Field(min_length=1, max_length=100)
+    short_label: str | None = Field(default=None, min_length=1, max_length=24)
+    mount: dict[str, str] = Field(default_factory=dict, max_length=8)
+
+
+class CameraServiceSettings(BaseModel):
+    """RealSense cameras owned by the standalone SDL camera service.
+
+    service_file names the private {"url", "token", "cameras"} JSON the xArm
+    reads from XARM_CAMERA_SERVICE_CONFIG, relative to this config; the token
+    never sits in this file. cameras must list exactly the ids it names.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    service_file: str = Field(min_length=1)
+    cameras: tuple[StereoCameraSettings, ...] = Field(min_length=1, max_length=8)
+
+    @field_validator("cameras")
+    @classmethod
+    def unique_ids(cls, cameras):
+        if len({camera.id for camera in cameras}) != len(cameras):
+            raise ValueError("Camera ids must be unique")
+        return cameras
+
+
 class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     equipment_id: str = Field(
@@ -92,6 +141,10 @@ class Settings(BaseModel):
     # the same robot. Even then only bounded single-joint steps exist.
     control_enabled: bool = False
     control: ControlSettings | None = None
+    # Optional cameras for the shared panel's Tapo and Stereo tiles. Looking
+    # is not actuation: neither block touches the robot or its control gates.
+    lab_camera: LabCameraSettings | None = None
+    camera_service: CameraServiceSettings | None = None
 
     @model_validator(mode="after")
     def coherent(self):
@@ -130,4 +183,9 @@ def load_settings(path: Path | None) -> Settings:
             update={"audit_file": beside_config(settings.control.audit_file)}
         )
         settings = settings.model_copy(update={"control": control})
+    if settings.camera_service:
+        service = settings.camera_service.model_copy(
+            update={"service_file": beside_config(settings.camera_service.service_file)}
+        )
+        settings = settings.model_copy(update={"camera_service": service})
     return settings

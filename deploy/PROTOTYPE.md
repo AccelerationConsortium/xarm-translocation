@@ -27,6 +27,15 @@ It binds only the selected Tailnet IP; its firewall rule admits Tailnet IPv4
 clients only. There is no public edge route. Logs rotate online at 10 MiB.
 The script refuses occupied ports and pre-existing service names.
 
+Cameras are optional config blocks (see the agent guide's Cameras section).
+lab_camera names the dashboard origin and the camera's equipment id; it needs
+no credential. For RealSense, run the SDL camera service as its own NSSM
+service on this PC, bound to 127.0.0.1, with the camera's serial and a token
+scoped to its alias; keep its config, logs and captures in that checkout's
+gitignored local/. robot-motion reads the matching url/token/cameras JSON from
+.state (camera_service.service_file). That token is admin for its alias only,
+because the camera service's per-camera /stop is admin-gated.
+
 Verify /health, /status, /drivers, /web/, /graph, /docs and /agent-docs from
 the deployment PC and the aggregator. A healthy process does not imply a
 reachable or commissioned robot. No /control endpoints are present in this
