@@ -1,4 +1,4 @@
-# Robotiq gripper — offline-tested, not commissioned
+# Robotiq gripper — commissioned on ligand_ur5e (2F-140, 2026-10-07)
 
 `drivers/robotiq.py` drives a Robotiq adaptive gripper (2F-85, 2F-140 or
 Hand-E) through the Robotiq Gripper URCap's socket server on the UR
@@ -33,7 +33,9 @@ A top-level `gripper` block in the local config:
   250 mm/s.
 - **Opening:** the stroke in mm is a linear estimate from the position
   register using `open_raw` / `closed_raw` (defaults 0 / 255). Measure the
-  real fingers before trusting it for anything other than display.
+  real fingers before trusting it for anything other than display. A 2F
+  gripper stops short of the register ends (the UR5e's opens to 3) and
+  still reports "at requested position".
 
 ## Routes
 
@@ -76,7 +78,7 @@ Every command needs the edge identity, a listed operator and the held claim
 
 Every command, refusal and failure is an audit event (`control.audit_file`).
 
-## Before the first live command
+## Commissioning a gripper
 
 1. Confirm the model and that the fingers and any fingertip pads are clear.
 2. Pick `max_force_pct` for what the gripper will hold; start low.
@@ -86,4 +88,23 @@ Every command, refusal and failure is an audit event (`control.audit_file`).
 4. Record the measured open/closed register values and set `open_raw` /
    `closed_raw` if the mm display should be accurate.
 
-No physical gripper motion was performed as part of this implementation.
+## ligand_ur5e commissioning record (2026-10-07)
+
+Supervised by the operator at the robot, through the dashboard edge, speed
+30 %, force 10 % (cap 20 %), with a 25 ms GET-only register log alongside:
+
+- Every `SET` was acknowledged; open, close, a 70 mm stroke move and re-open
+  all completed (full stroke about 1.6-1.8 s at 30 % speed, roughly 170 raw
+  counts per second).
+- STOP during a 1 %-speed close cancelled it 1 s in; `GTO 0` was acknowledged
+  and the close answered 500 "move cancelled by stop" about 13 ms after the
+  stop request.
+- Contact: three closes on a held object at 10 % force stopped at raw 99-105
+  with `OBJ 2` (`contact_closing`); re-closing on an already held object
+  returns after the 0.3 s persistence window without moving.
+- The URCap's status registers change about every 100 ms. `OBJ` stayed 0
+  throughout every logged move and turned non-zero only once the fingers had
+  stopped, so a move is not reported finished while the fingers still travel.
+- Open settles at raw 3. Two closes on nothing reported raw 227 and 255 (both
+  `OBJ 3`); `closed_raw` stays at the 255 default until a measured close on
+  nothing confirms the real end.
