@@ -135,6 +135,36 @@ def test_single_joint_degrees_to_radians_and_measured_completion(rig):
     assert not control.stops
 
 
+def test_tolerance_must_exceed_measured_encoder_noise(rig):
+    """Live UR5e noise at rest reached 0.0068 deg peak-to-peak (2026-10-07).
+
+    With the old 0.005 deg tolerance that noise alone refuses preflight; at
+    0.01 deg the same noise still completes a 0.1 deg step.
+    """
+    executor, state = rig[0], rig[4]
+    flip = {"sign": 1}
+
+    def noisy(value):
+        flip["sign"] = -flip["sign"]
+        value["joints_deg"] = tuple(q + flip["sign"] * 0.0034 for q in value["joints_deg"])
+        return value
+
+    state["mutate"] = noisy
+    with pytest.raises(JointStepRefused, match="changed position during preflight"):
+        execute(rig)
+    assert rig[1].moves == []
+
+    widened = JointStepExecutor(
+        control=executor.control, read_feedback=executor.read_feedback,
+        claims=executor.claims, authorize=executor.authorize,
+        limits={**executor.limits.model_dump(), "position_tolerance_deg": 0.01},
+        clock=executor.clock, sleep=executor.sleep,
+    )
+    result = widened.execute(step(), claim_token=rig[3])
+    assert result["completed"] is True
+    assert result["target_deg"][1] == pytest.approx(0.1, abs=0.0035)
+
+
 def test_negative_joint_step_does_not_wrap_angles(rig):
     result = execute(rig, JointStep(request_id=uuid4(), joint=6, delta_deg=-0.1))
     assert result["target_deg"] == pytest.approx([0, 0, 0, 0, 0, -0.1])
@@ -148,7 +178,7 @@ def test_negative_joint_step_does_not_wrap_angles(rig):
         {"acceleration_deg_s2": 2.1},
         {"session_travel_deg": 1.1},
         {"feedback_max_age_s": 0.21},
-        {"position_tolerance_deg": 0.01},
+        {"position_tolerance_deg": 0.011},
         {"commissioning_id": ""},
         {"lower_deg": (2.0,) * 6},
         {"upper_deg": (0.0,) * 5},

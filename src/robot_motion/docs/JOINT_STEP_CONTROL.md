@@ -113,7 +113,13 @@ supervised step on the UR5e:
    connected without running a program is invisible to it. Confirm on the
    pendant that nothing else (LLE demo, another ur_rtde client) is attached
    before connecting. Never treat `/connect` as passive.
-3. Validation of the feedback stamp: the reader stamps a packet when ur_rtde's
+3. Feedback measured on the live UR5e (2026-10-07, receive-only, sdl2-pc-05):
+   packets advance every ~16 ms (Windows timer granularity), sample age at
+   read <= 16 ms (bound 200 ms), modes decode as RUNNING/NORMAL, and joint
+   noise at rest reaches 0.0068 deg peak-to-peak. Commission with
+   `position_tolerance_deg: 0.01` (the cap); the 0.005 default refuses on
+   noise alone. Re-run `.state/measure_control_feedback.py` on the day.
+   Validation of the feedback stamp: the reader stamps a packet when ur_rtde's
    cached timestamp advances, polled at twice the stream rate. Measure the
    real stamp error on the deployment PC (Windows timer granularity is ~15 ms)
    before trusting `feedback_max_age_s` as a bound.

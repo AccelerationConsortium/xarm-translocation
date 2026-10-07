@@ -52,7 +52,12 @@ class JointStepLimits(BaseModel):
     speed_deg_s: Number = Field(default=0.5, gt=0, le=1)
     acceleration_deg_s2: Number = Field(default=1.0, gt=0, le=2)
     session_travel_deg: Number = Field(default=0.5, ge=0.02, le=1)
-    position_tolerance_deg: Number = Field(default=0.005, gt=0, le=0.005)
+    # Must exceed the encoder noise between samples or preflight refuses and a
+    # dispatched step latches as "left the segment". The live UR5e measured
+    # up to 0.0068 deg peak-to-peak at rest (2026-10-07), so 0.005 is too
+    # tight there. The cap stays at half the 0.02 deg minimum step, so an arm
+    # that never moved still cannot read as completed.
+    position_tolerance_deg: Number = Field(default=0.005, gt=0, le=0.01)
     stationary_speed_deg_s: Number = Field(default=0.02, gt=0, le=0.05)
     feedback_max_age_s: Number = Field(default=0.2, gt=0, le=0.2)
     timeout_s: Number = Field(default=5.0, gt=0, le=10)
