@@ -1,13 +1,18 @@
-"""Config-gated claim surface and bounded joint-step control routes.
+"""Config-gated claim surface and the arm and gripper control routes.
 
 Installed only when Settings.control_enabled is true. Identity is the
 dashboard edge's (X-Auth-User plus X-Edge-Auth matching
 ROBOT_MOTION_EDGE_SHARED_SECRET); without a configured secret every control
 route refuses, so a directly reachable service never trusts client headers.
-Hard claims (core.claims) gate /connect, /disconnect, /control/joint_step and
-the gripper commands (gripper.py); /control/stop needs identity only. The arm
-routes exist only with joint_step limits, the gripper routes only with a
-gripper block. Nothing here is a safety-rated stop.
+Hard claims (core.claims) gate /connect, /disconnect, every arm move and the
+gripper commands (gripper.py); /control/stop needs identity only.
+
+The arm runs in one of two modes, chosen by the control block: joint_step
+(single tiny steps, the first commissioning primitive) or motion (joint and
+Cartesian moves and jogs inside commissioned limits, drivers/ur_motion.py).
+The gripper routes exist only with a gripper block. arm_block() is the one
+precondition helper behind both the arm routes and allowed_actions
+(STATUS_SPEC section 6.2). Nothing here is a safety-rated stop.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from datetime import datetime, timezone
 
 from fastapi import Depends, Header, HTTPException, Request, Response
@@ -29,7 +35,19 @@ from .drivers.joint_step import (
     JointStepFailed,
     JointStepRefused,
 )
+from .drivers.lle_rtde import tcp_to_mm_deg
 from .drivers.ur_control import ControlSession
+from .drivers.ur_motion import (
+    JOINT_ACTIONS,
+    MOVE_ACTIONS,
+    JointJog,
+    JointMove,
+    LinearJog,
+    LinearMove,
+    MotionExecutor,
+    MotionFailed,
+    MotionRefused,
+)
 from .edge import SECRET_ENV, configured_secret, edge_identity
 
 log = logging.getLogger(__name__)
@@ -46,6 +64,13 @@ class URControl:
     def __init__(self, settings, *, session_factory=None, edge_secret=None, observe=None, gripper=None):
         self.settings = settings
         self.config = settings.control
+        # joint_step or motion limits, whichever the config names (never both).
+        self.arm_limits = self.config.arm
+        self.arm_mode = (
+            "joint_step" if self.config.joint_step is not None
+            else "motion" if self.config.motion is not None
+            else None
+        )
         self.gripper_control = None
         if gripper is not None:
             from .gripper import GripperControl
@@ -60,6 +85,7 @@ class URControl:
         self._lock = threading.Lock()
         self.session = None
         self.executor = None
+        self.tcp_offset = None
         self.last_event = None
 
     # ── identity and gates ──────────────────────────────────────────
@@ -114,13 +140,13 @@ class URControl:
             )
 
     def authorize(self, request, target, commissioning_id):
-        # Rechecked by the executor before dispatch, at the exact target, and
+        # Rechecked by the executors before dispatch, at the exact target, and
         # on every feedback sample: the holder must still be a listed operator
-        # and the session the step started under must still be the open one.
+        # and the session the move started under must still be the open one.
         holder = self.claims.claimed_by()
         return (
-            self.config.joint_step is not None
-            and commissioning_id == self.config.joint_step.commissioning_id
+            self.arm_limits is not None
+            and commissioning_id == self.arm_limits.commissioning_id
             and holder is not None
             and holder["owner"] in self.config.authorized_operators
             and self.session is not None
@@ -133,23 +159,33 @@ class URControl:
         Uploading the control script takes the controller's program slot, so
         the robot must be observed idle first: controller RUNNING, safety
         NORMAL and no program PLAYING or PAUSED (an LLE demo, a pendant
-        program or another ur_rtde client would show as PLAYING). A stale or
-        failed observation refuses too; "unknown" is not "idle".
+        program or another ur_rtde client would show as PLAYING). An e-Series
+        must also be in Remote Control, or the controller refuses the script.
+        A stale or failed observation refuses too; "unknown" is not "idle".
         """
         current, stale = self._observe()
         details = (current or {}).get("details") or {}
         if stale or not details.get("robotmode"):
             return {
                 "error": "observation_unavailable",
-                "hint": "No fresh Dashboard observation; cannot verify the robot is idle",
+                "reason": "No fresh Dashboard observation; cannot verify the robot is idle",
+                "hint": "Wait for the next observation or check the controller connection",
             }
         observed = {key: details.get(key) for key in IDLE_STATE}
         if observed != IDLE_STATE:
             return {
                 "error": "robot_not_idle",
+                "reason": "The robot is not idle (RUNNING, safety NORMAL, no program)",
                 "observed": observed,
                 "required": IDLE_STATE,
                 "hint": "Stop the running program / other client on the pendant before connecting",
+            }
+        if details.get("remote_control") is False:
+            return {
+                "error": "remote_control_off",
+                "reason": "The controller is in Local Control; external control is refused",
+                "operational_mode": details.get("operational_mode"),
+                "hint": "Switch the teach pendant to Remote Control (top-right icon) before connecting",
             }
         return None
 
@@ -182,6 +218,112 @@ class URControl:
             }
         return observed, None
 
+    def arm_actions(self):
+        """Arm actions in allowed_actions order for the configured mode."""
+        if self.arm_mode == "joint_step":
+            return ("connect", "disconnect", "control.joint_step")
+        if self.arm_mode == "motion":
+            return ("connect", "disconnect", *MOVE_ACTIONS, "control.reset", "arm.zero_force_sensor")
+        return ()
+
+    def arm_block(self, action):
+        """(HTTP status, body) for why `action` cannot run now, or None.
+
+        The single precondition helper behind the arm routes and
+        allowed_actions. 409 is a state conflict (no session, a move running),
+        412 a precondition (STATUS_SPEC section 6.1). Request-specific limits
+        (a target outside the envelope, a speed over the cap) are 422s decided
+        per request and are not part of this.
+        """
+        if action == "connect":
+            if self.session_open:
+                return 409, {
+                    "error": "control_session_open",
+                    "reason": "An arm session is already open",
+                    "hint": "POST /disconnect first",
+                }
+            problem = self.connect_preconditions()
+            return (412, problem) if problem is not None else None
+        # Read the session's parts once: a concurrent disconnect clears them.
+        session, executor = self.session, self.executor
+        control = getattr(session, "control", None)
+        feedback = getattr(session, "feedback", None)
+        if executor is None or control is None or feedback is None:
+            return 409, {
+                "error": "no_control_session",
+                "reason": "No arm session; Connect first",
+                "hint": "POST /connect under your claim first",
+            }
+        busy = getattr(executor, "busy", False)
+        if action == "disconnect":
+            if busy:
+                return 409, {
+                    "error": "motion_in_progress",
+                    "reason": "An arm move is running; STOP it first",
+                }
+            return None
+        if action == "control.joint_step":
+            if executor.latched is not None or not session.watchdog_ok:
+                return 412, {
+                    "error": "joint_step_refused",
+                    "reason": executor.latched or f"Control link fault: {session.watchdog_error}",
+                }
+            return None
+        if busy:
+            return 409, {
+                "error": "motion_busy",
+                "reason": "Another arm move is running; commands are not queued",
+            }
+        if action == "control.reset":
+            return self._reset_block(session, control, feedback)
+        if action == "arm.zero_force_sensor":
+            if not session.watchdog_ok:
+                return 412, {"error": "control_link_down", "reason": f"Control link fault: {session.watchdog_error}"}
+            sample = feedback.latest()
+            if sample is None or not self._still(sample):
+                return 412, {"error": "robot_moving", "reason": "Zero the sensor only with the arm still"}
+            return None
+        refusal = executor.state_block(feedback.latest())
+        return (refusal.status, refusal.body()) if refusal is not None else None
+
+    def _still(self, sample):
+        limit = self.arm_limits.stationary_speed_deg_s
+        return all(abs(v) <= limit for v in sample["velocities_deg_s"])
+
+    def _reset_block(self, session, control, feedback):
+        if not session.watchdog_ok:
+            return 412, {
+                "error": "control_link_down",
+                "reason": f"Control link fault: {session.watchdog_error}",
+                "hint": "Disconnect and Connect to start a new session",
+            }
+        if control.isProgramRunning() is not True:
+            return 412, {
+                "error": "control_script_stopped",
+                "reason": "The control script is not running (for example after a protective stop)",
+                "hint": "Clear the stop on the pendant, then Disconnect and Connect",
+            }
+        sample = feedback.latest()
+        if (
+            sample is None
+            or time.monotonic() - sample["received_monotonic_s"] > 1.0
+            or sample["robot_mode"] != "RUNNING"
+            or sample["safety_mode"] != "NORMAL"
+        ):
+            return 412, {
+                "error": "robot_not_ready",
+                "reason": "Controller must be RUNNING with safety NORMAL and fresh feedback",
+            }
+        if not self._still(sample):
+            return 412, {"error": "robot_moving", "reason": "The arm is moving; wait until it is still"}
+        return None
+
+    def _refuse(self, identity, action, blocked):
+        status, body = blocked
+        kind = "connect_refused" if action == "connect" else "arm_refused"
+        self.event(kind, identity, action=action, reason=body.get("error"))
+        raise HTTPException(status_code=status, detail=body)
+
     def event(self, kind, identity, **extra):
         self.last_event = {
             "kind": kind,
@@ -200,27 +342,42 @@ class URControl:
 
     # ── state for /status ───────────────────────────────────────────
     def state(self):
-        session_open = self.session_open
-        latched = self.executor.latched if self.executor is not None else None
-        limits = self.config.joint_step
+        session = self.session
+        session_open = session is not None and session.is_open
+        executor = self.executor
+        latched = executor.latched if executor is not None else None
+        limits = self.arm_limits
         allowed = ["control.stop"]
-        if limits is not None:
-            if session_open and latched is None and self.session.watchdog_ok:
-                allowed.append("control.joint_step")
-            if not session_open:
-                allowed.append("connect")
+        move_block = None
+        if self.arm_mode == "motion":
+            # The four moves share one state check; ask once.
+            move_block = self.arm_block(MOVE_ACTIONS[0])
+        for action in self.arm_actions():
+            if action in MOVE_ACTIONS:
+                blocked = move_block
+            elif action == "control.reset" and latched is None:
+                continue  # nothing to clear
+            else:
+                blocked = self.arm_block(action)
+            if blocked is None:
+                allowed.append(action)
         if self.gripper_control is not None:
             allowed += self.gripper_control.allowed_actions()
         return {
             "claimed_by": self.claims.claimed_by(),
             "control_session": {
                 "arm_control": limits is not None,
+                "mode": self.arm_mode,
                 "open": session_open,
+                "busy": bool(getattr(executor, "busy", False)),
+                "active_move": getattr(executor, "active", None),
                 "latched": latched,
-                "watchdog_ok": self.session.watchdog_ok if session_open else None,
-                "watchdog_error": self.session.watchdog_error if session_open else None,
+                "watchdog_ok": session.watchdog_ok if session_open else None,
+                "watchdog_error": session.watchdog_error if session_open else None,
                 "commissioning_id": limits.commissioning_id if limits else None,
-                "max_step_deg": limits.max_step_deg if limits else None,
+                "max_step_deg": self.config.joint_step.max_step_deg if self.config.joint_step else None,
+                "limits": self.config.motion.summary() if self.config.motion else None,
+                "tcp_offset_mm_rpy_deg": self.tcp_offset if session_open else None,
                 "last_event": self.last_event,
             },
             "allowed_actions": allowed,
@@ -228,15 +385,35 @@ class URControl:
 
     def shutdown(self):
         with self._lock:
-            session, self.session, self.executor = self.session, None, None
+            session, executor = self.session, self.executor
+            self.session = self.executor = None
+        if executor is not None:
+            executor.request_stop()
         if session is not None:
+            # Service stopping: halt any move before the script goes, rather
+            # than leaving it to the controller watchdog.
+            try:
+                session.stop(self._stop_joint_decel())
+            except Exception:
+                log.exception("Stop at shutdown failed")
             session.close()
+
+    def _new_executor(self, session, seen=None):
+        common = dict(
+            control=session.control,
+            read_feedback=session.feedback.read,
+            claims=self.claims,
+            authorize=self.authorize,
+            limits=self.arm_limits,
+        )
+        if self.arm_mode == "motion":
+            return MotionExecutor(**common, seen=seen)
+        return JointStepExecutor(**common)
 
     # ── routes ──────────────────────────────────────────────────────
     def install(self, app):
         login = Depends(self.require_login)
         claim = Depends(self.require_claim)
-        limits = self.config.joint_step
 
         @app.post("/control/claim", responses={409: {"model": ClaimRejection}}, tags=["control"])
         def acquire_claim(request: ClaimRequest, identity: dict = login):
@@ -273,11 +450,18 @@ class URControl:
 
         @app.post("/control/release", status_code=204, tags=["control"])
         def release(x_claim_token: str = Header(...)):
-            self.claims.release(token=x_claim_token)
+            # Token-only route: the audit operator is the holder being released.
+            holder = self.claims.claimed_by()
+            if self.claims.release(token=x_claim_token) and holder is not None:
+                self.event("release", {"email": holder["owner"]}, session_id=holder["session_id"])
             return Response(status_code=204)
 
-        if limits is not None:
-            self._install_arm(app, login, claim, limits)
+        if self.arm_limits is not None:
+            self._install_session(app, login, claim)
+        if self.arm_mode == "joint_step":
+            self._install_joint_step(app, login, claim, self.arm_limits)
+        if self.arm_mode == "motion":
+            self._install_motion(app, login, claim)
         if self.gripper_control is not None:
             self.gripper_control.install(app, login, claim)
 
@@ -288,11 +472,18 @@ class URControl:
             executor, session = self.executor, self.session
             requested, error = False, None
             if executor is not None:
+                # Returns only after any dispatch in progress, so the stop
+                # below can never land before the move it should stop.
                 executor.request_stop()
                 requested = True
+            linear = getattr(executor, "active_kind", None) == "linear"
             if session is not None and session.is_open:
                 try:
-                    requested = session.stop(limits.stop_deceleration_deg_s2) or requested
+                    if linear:
+                        stopped = session.stop_linear(self.arm_limits.stop_linear_decel_mm_s2)
+                    else:
+                        stopped = session.stop(self._stop_joint_decel())
+                    requested = stopped or requested
                 except Exception as exc:
                     error = str(exc)
             gripper_stopped = False
@@ -306,25 +497,25 @@ class URControl:
                 "stop_error": error,
                 "gripper_stop_requested": gripper_stopped,
                 "control_session": session is not None and session.is_open,
+                "message": "Stop requested" if requested else "Nothing to stop",
                 "notice": STOP_NOTICE,
             }
 
         return self
 
-    def _install_arm(self, app, login, claim, limits):
+    def _stop_joint_decel(self):
+        if self.arm_mode == "motion":
+            return self.arm_limits.stop_joint_decel_deg_s2
+        return self.arm_limits.stop_deceleration_deg_s2
+
+    def _install_session(self, app, login, claim):
         @app.post("/connect", tags=["control"], dependencies=[claim])
         def connect(identity: dict = login):
             """Open the owned RTDE control session (uploads the control script)."""
             with self._lock:
-                if self.session is not None and self.session.is_open:
-                    raise HTTPException(
-                        status_code=409,
-                        detail={"error": "control_session_open", "hint": "POST /disconnect first"},
-                    )
-                problem = self.connect_preconditions()
-                if problem is not None:
-                    self.event("connect_refused", identity, **problem)
-                    raise HTTPException(status_code=409, detail=problem)
+                blocked = self.arm_block("connect")
+                if blocked is not None:
+                    self._refuse(identity, "connect", blocked)
                 session = self._session_factory()
                 try:
                     session.open()
@@ -336,25 +527,37 @@ class URControl:
                     )
                 self.session = session
                 # A fresh executor per session: latches clear only by this
-                # explicit, claimed and identified reconnect.
-                self.executor = JointStepExecutor(
-                    control=session.control,
-                    read_feedback=session.feedback.read,
-                    claims=self.claims,
-                    authorize=self.authorize,
-                    limits=limits,
-                )
-            self.event("connect", identity)
+                # explicit, claimed and identified reconnect (or, for motion,
+                # the claimed /control/reset).
+                self.executor = self._new_executor(session)
+                self.tcp_offset = None
+                if self.arm_mode == "motion":
+                    try:
+                        self.tcp_offset = [round(v, 3) for v in tcp_to_mm_deg(session.control.getTCPOffset())]
+                    except Exception:
+                        log.exception("Could not read the active TCP offset")
+            self.event("connect", identity, tcp_offset_mm_rpy_deg=self.tcp_offset)
             return {
                 "connected": True,
-                "commissioning_id": limits.commissioning_id,
+                "message": "Arm session open",
+                "commissioning_id": self.arm_limits.commissioning_id,
+                "tcp_offset_mm_rpy_deg": self.tcp_offset,
                 "notice": "RTDE control script uploaded; the controller program slot is owned by this service",
             }
 
         @app.post("/disconnect", tags=["control"], dependencies=[claim])
         def disconnect(identity: dict = login):
             with self._lock:
+                # Closing mid-move would end the control script under the
+                # arm; STOP first. Without a session this is a harmless no-op.
+                retire = getattr(self.executor, "retire", None)
+                if retire is not None and not retire():  # holds the move lock if free
+                    self._refuse(identity, "disconnect", (409, {
+                        "error": "motion_in_progress",
+                        "reason": "An arm move is running; STOP it first",
+                    }))
                 session, self.session, self.executor = self.session, None, None
+                self.tcp_offset = None
             error = None
             if session is not None:
                 try:
@@ -362,8 +565,9 @@ class URControl:
                 except Exception as exc:
                     error = str(exc)
             self.event("disconnect", identity, error=error)
-            return {"connected": False, "close_error": error}
+            return {"connected": False, "close_error": error, "message": "Arm session closed"}
 
+    def _install_joint_step(self, app, login, claim, limits):
         @app.post("/control/joint_step", tags=["control"], dependencies=[claim])
         async def joint_step(
             request: JointStep,
@@ -406,3 +610,120 @@ class URControl:
                 "commissioning_id": limits.commissioning_id,
             }
 
+    # ── arm motion (ur_motion.py) ───────────────────────────────────
+    async def _run_motion(self, identity, action, body, token):
+        blocked = await asyncio.to_thread(self.arm_block, action)
+        if blocked is not None:
+            self._refuse(identity, action, blocked)
+        limits = self.arm_limits
+        joint = action in JOINT_ACTIONS
+        unit = "deg/s" if joint else "mm/s"
+        default = limits.joint_speed_default if joint else limits.linear_speed_default
+        cap = limits.max_joint_speed_deg_s if joint else limits.max_linear_speed_mm_s
+        speed = body.speed if body.speed is not None else default
+        if speed > cap:
+            self.event("arm_refused", identity, action=action, reason="above_commissioned_limit")
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "above_commissioned_limit",
+                    "reason": f"Speed {speed:g} {unit} exceeds the commissioned {cap:g} {unit}",
+                    "requested": speed,
+                    "limit": cap,
+                    "units": unit,
+                },
+            )
+        executor = self.executor
+        self.event(action, identity, **{**body.model_dump(mode="json", exclude_none=True), "speed": speed})
+        try:
+            result = await asyncio.to_thread(executor.execute, action, body, claim_token=token, speed=speed)
+        except MotionRefused as exc:
+            self.event("arm_refused", identity, action=action, reason=exc.error)
+            raise HTTPException(status_code=exc.status, detail=exc.body())
+        except MotionFailed as exc:
+            self.event("arm_failed", identity, action=action, reason=str(exc), stop_error=exc.stop_error)
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": "arm_move_failed",
+                    "reason": str(exc),
+                    "stop_attempted": exc.stop_attempted,
+                    "stop_confirmed": exc.stop_confirmed,
+                    "stop_error": exc.stop_error,
+                    "latched": True,
+                    "hint": "Check the arm on the pendant, then Clear errors (POST /control/reset) "
+                    "before the next move",
+                },
+            )
+        self.event(
+            f"{action}_done",
+            identity,
+            moved=result["moved"],
+            measured_joints_deg=[round(q, 3) for q in result["measured_joints_deg"]],
+            measured_tcp_mm_rpy_deg=[round(v, 2) for v in result["measured_tcp_mm_rpy_deg"]],
+            peak_force_change_n=result["peak_force_change_n"],
+            elapsed_s=result["elapsed_s"],
+        )
+        message = "Move complete" if result["moved"] else "Already at the target"
+        return {"ok": True, "action": action, "message": message, **result}
+
+    def _install_motion(self, app, login, claim):
+        tags = ["arm"]
+
+        @app.post("/control/freehand/joints", tags=tags, dependencies=[claim])
+        async def move_joints(
+            body: JointMove, identity: dict = login, x_claim_token: str | None = Header(default=None)
+        ):
+            """moveJ to absolute angles for all six joints (degrees; speed deg/s)."""
+            return await self._run_motion(identity, "arm.move_joints", body, x_claim_token)
+
+        @app.post("/control/freehand/joint_jog", tags=tags, dependencies=[claim])
+        async def jog_joint(
+            body: JointJog, identity: dict = login, x_claim_token: str | None = Header(default=None)
+        ):
+            """moveJ one joint by a signed delta (degrees; speed deg/s)."""
+            return await self._run_motion(identity, "arm.jog_joint", body, x_claim_token)
+
+        @app.post("/control/freehand/relative", tags=tags, dependencies=[claim])
+        async def jog_linear(
+            body: LinearJog, identity: dict = login, x_claim_token: str | None = Header(default=None)
+        ):
+            """moveL by dx/dy/dz in the base frame, orientation kept (mm; speed mm/s)."""
+            return await self._run_motion(identity, "arm.jog_linear", body, x_claim_token)
+
+        @app.post("/control/freehand/linear", tags=tags, dependencies=[claim])
+        async def move_linear(
+            body: LinearMove, identity: dict = login, x_claim_token: str | None = Header(default=None)
+        ):
+            """moveL to an absolute TCP pose (mm and roll/pitch/yaw degrees; speed mm/s)."""
+            return await self._run_motion(identity, "arm.move_linear", body, x_claim_token)
+
+        @app.post("/control/reset", tags=tags, dependencies=[claim])
+        @app.post("/clear/errors", tags=tags, dependencies=[claim])
+        def reset(identity: dict = login):
+            """Clear a stop/fault latch once the arm is still and the control
+            script is running. The panel's Clear errors button calls this."""
+            with self._lock:
+                if self.executor is not None and self.executor.latched is None:
+                    return {"ok": True, "reset": False, "message": "Nothing to clear"}
+                blocked = self.arm_block("control.reset")
+                if blocked is not None:
+                    self._refuse(identity, "control.reset", blocked)
+                cleared = self.executor.latched
+                self.executor = self._new_executor(self.session, seen=self.executor.seen)
+            self.event("reset", identity, cleared=cleared)
+            return {"ok": True, "reset": True, "cleared": cleared, "message": "Arm moves re-enabled"}
+
+        @app.post("/control/force/zero", tags=tags, dependencies=[claim])
+        async def zero_force_sensor(identity: dict = login):
+            """Zero the flange force/torque sensor (the arm must be still and
+            hold nothing it should weigh). Moves nothing."""
+            blocked = await asyncio.to_thread(self.arm_block, "arm.zero_force_sensor")
+            if blocked is not None:
+                self._refuse(identity, "arm.zero_force_sensor", blocked)
+            try:
+                await asyncio.to_thread(self.session.control.zeroFtSensor)
+            except Exception as exc:
+                raise HTTPException(status_code=502, detail={"error": "zero_failed", "reason": str(exc)})
+            self.event("force_zero", identity)
+            return {"ok": True, "message": "Force/torque sensor zeroed"}

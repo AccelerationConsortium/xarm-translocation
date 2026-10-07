@@ -316,17 +316,19 @@ class FakeSocket:
 
 
 @pytest.mark.parametrize(
-    "model,safety",
+    "model,safety,extra,remote,operational",
     [
-        ("ur5e", b"Safetystatus: NORMAL\n"),
-        ("ur5_cb3", b"Command not found\nSafetymode: NORMAL\n"),
+        ("ur5e", b"Safetystatus: NORMAL\n", b"false\nMANUAL\n", False, "MANUAL"),
+        ("ur5e", b"Safetystatus: NORMAL\n", b"true\nweird reply\n", True, None),
+        ("ur5_cb3", b"Command not found\nSafetymode: NORMAL\n", b"", None, None),
     ],
 )
-def test_readonly_queries_and_cb3_fallback(model, safety):
+def test_readonly_queries_and_cb3_fallback(model, safety, extra, remote, operational):
     sock = FakeSocket(
         b"Connected: Universal Robots Dashboard Server\nRobotmode: RUNNING\n"
         + safety
         + b"PLAYING private-program.urp\n"
+        + extra
     )
     settings = Settings(driver="ur", model=model, robot_host="example.invalid")
     observer = URObserver(settings, connector=lambda *_a, **_k: sock)
@@ -335,11 +337,15 @@ def test_readonly_queries_and_cb3_fallback(model, safety):
     assert observation["activity"] == "running"
     assert observation["details"]["program_state"] == "PLAYING"
     assert b"private-program" not in str(observation).encode()
+    assert observation["details"]["remote_control"] is remote
+    assert observation["details"]["operational_mode"] == operational
     assert set(sock.sent) <= {
         b"robotmode\n",
         b"safetystatus\n",
         b"safetymode\n",
         b"programState\n",
+        b"is in remote control\n",
+        b"get operational mode\n",
     }
     assert sock.data.closed
 

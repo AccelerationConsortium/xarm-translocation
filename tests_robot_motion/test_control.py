@@ -266,6 +266,7 @@ def test_identity_is_edge_verified_and_allowlisted():
 def test_claim_lifecycle_with_hard_enforcement():
     rig = Rig(settings())
     with rig.client() as client:
+        wait_observed(client)
         status = client.get("/status").json()
         assert status["details"]["control_enabled"] is True
         assert status["details"]["monitoring_only"] is False
@@ -312,7 +313,7 @@ def test_connect_step_stop_and_disconnect_round_trip():
         ]
         assert client.post("/connect", headers=held).status_code == 409
         status = client.get("/status").json()
-        assert status["allowed_actions"] == ["control.stop", "control.joint_step"]
+        assert status["allowed_actions"] == ["control.stop", "disconnect", "control.joint_step"]
         assert status["details"]["control_session"]["open"] is True
         assert status["details"]["control_session"]["latched"] is None
 
@@ -349,7 +350,7 @@ def test_connect_step_stop_and_disconnect_round_trip():
         assert latched.status_code == 412
         assert "latched" in latched.json()["detail"]["reason"]
         status = client.get("/status").json()
-        assert status["allowed_actions"] == ["control.stop"]
+        assert status["allowed_actions"] == ["control.stop", "disconnect"]
         assert status["details"]["control_session"]["latched"]
         last_event = status["details"]["control_session"]["last_event"]
         assert last_event["kind"] == "joint_step_refused"
@@ -359,7 +360,7 @@ def test_connect_step_stop_and_disconnect_round_trip():
         assert client.post("/move/stop", headers=HEADERS).status_code == 200
         disconnected = client.post("/disconnect", headers=held)
         assert disconnected.status_code == 200
-        assert disconnected.json() == {"connected": False, "close_error": None}
+        assert disconnected.json() == {"connected": False, "close_error": None, "message": "Arm session closed"}
         assert rig.control.disconnections == 1 and rig.receiver.disconnections == 1
         assert client.get("/status").json()["allowed_actions"] == ["control.stop", "connect"]
         assert client.post("/control/joint_step", json=step(), headers=held).status_code == 409
@@ -404,14 +405,15 @@ def test_connect_refuses_unless_the_robot_is_observed_idle():
     with rig.client() as client:
         held = claim(client)
         refused = client.post("/connect", headers=held)
-        assert refused.status_code == 409
+        assert refused.status_code == 412
         detail = refused.json()["detail"]
         assert detail["error"] == "robot_not_idle"
         assert detail["observed"]["program_state"] == "PLAYING"
         assert rig.control_calls == [] and rig.receiver_calls == []
         status = client.get("/status").json()
         assert status["details"]["control_session"]["last_event"]["kind"] == "connect_refused"
-        assert status["allowed_actions"] == ["control.stop", "connect"]
+        # STATUS_SPEC 6.2: an action that would 412 is not offered.
+        assert status["allowed_actions"] == ["control.stop"]
     # PAUSED is not idle either: the paused program still owns the robot.
     paused = Rig(settings())
     paused.observer.program_state = "PAUSED"
@@ -429,7 +431,7 @@ def test_connect_refuses_unless_the_robot_is_observed_idle():
             headers=HEADERS,
         ).json()["claim_token"]
         refused = client.post("/connect", headers={**HEADERS, "X-Claim-Token": token})
-        assert refused.status_code == 409
+        assert refused.status_code == 412
         assert refused.json()["detail"]["error"] == "observation_unavailable"
         assert fresh.control_calls == []
 
@@ -491,9 +493,13 @@ def test_audit_file_records_every_control_event(tmp_path):
         assert client.post("/control/joint_step", json=request, headers=held).status_code == 200
         assert client.post("/control/stop", headers=HEADERS).status_code == 200
         assert client.post("/disconnect", headers=held).status_code == 200
+        assert client.post("/control/release", headers=held).status_code == 204
+        # A second release (token already gone) is still 204 but not audited.
+        assert client.post("/control/release", headers=held).status_code == 204
     events = [json.loads(line) for line in audit.read_text(encoding="utf-8").splitlines()]
-    assert [e["kind"] for e in events] == ["claim", "connect", "joint_step", "stop", "disconnect"]
+    assert [e["kind"] for e in events] == ["claim", "connect", "joint_step", "stop", "disconnect", "release"]
     assert all(e["operator"] == OPERATOR for e in events)
+    assert events[5]["session_id"] == "session-a"
     assert events[2]["request_id"] == request["request_id"]
     assert events[3]["requested"] is True
 

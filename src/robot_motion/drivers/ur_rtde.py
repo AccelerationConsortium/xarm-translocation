@@ -11,7 +11,13 @@ log = logging.getLogger(__name__)
 
 
 class URRTDEObserver:
+    """read() is the combined snapshot. The service reads the two halves on
+    their own cadences: read_dashboard() for controller/safety/program state
+    (slow), read_telemetry() for joints, TCP and force (fast)."""
+
     def __init__(self, settings, *, arm=None, dashboard=None):
+        from ..config import MODELS
+
         self.dashboard = dashboard if dashboard is not None else URObserver(settings)
         self.arm = (
             arm
@@ -19,8 +25,15 @@ class URRTDEObserver:
             else URArm(
                 settings.robot_host,
                 timeout=settings.timeout_s,
+                payload=MODELS[settings.model]["generation"] == "e_series",
             )
         )
+
+    def read_dashboard(self):
+        return self.dashboard.read()
+
+    def read_telemetry(self):
+        return self.arm.read()
 
     def read(self):
         # Retain established safety and program-state interpretation. A missing

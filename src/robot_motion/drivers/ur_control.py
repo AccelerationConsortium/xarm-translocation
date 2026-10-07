@@ -1,4 +1,4 @@
-"""Owned RTDE control session and fresh feedback for the joint-step routes.
+"""Owned RTDE control session and fresh feedback for the arm routes.
 
 Nothing here runs at import or at service start. ControlSession.open() is the
 one place that constructs RTDEControlInterface, which uploads ur_rtde's control
@@ -46,6 +46,13 @@ SAFETY_MODES = {
     13: "SYSTEM_THREE_POSITION_ENABLING_STOP",
 }
 FEEDBACK_VARIABLES = ["timestamp", "actual_q", "actual_qd", "robot_mode", "safety_mode"]
+# Arm motion also watches the TCP (workspace box, straight-line path), the
+# flange force sensor (optional force guard) and the pendant speed slider.
+MOTION_FEEDBACK_VARIABLES = FEEDBACK_VARIABLES + [
+    "actual_TCP_pose",
+    "actual_TCP_force",
+    "target_speed_fraction",
+]
 
 
 def mode_name(table, value):
@@ -66,9 +73,10 @@ class ControlFeedback:
     timestamp advances. That bounds the stamp error to one poll interval.
     """
 
-    def __init__(self, receiver, *, frequency_hz, clock=time.monotonic, sleep=time.sleep):
+    def __init__(self, receiver, *, frequency_hz, clock=time.monotonic, sleep=time.sleep, extended=False):
         self.receiver = receiver
         self.frequency_hz = frequency_hz
+        self.extended = extended
         self.clock = clock
         self.sleep = sleep
         self._lock = threading.Lock()
@@ -96,6 +104,13 @@ class ControlFeedback:
             "robot_mode": mode_name(ROBOT_MODES, receiver.getRobotMode()),
             "safety_mode": mode_name(SAFETY_MODES, receiver.getSafetyMode()),
         }
+        if self.extended:
+            sample["tcp_pose"] = tuple(vector6(receiver.getActualTCPPose()))
+            sample["tcp_force"] = tuple(vector6(receiver.getActualTCPForce()))
+            fraction = float(receiver.getTargetSpeedFraction())
+            if not math.isfinite(fraction) or not 0 <= fraction <= 1:
+                raise ValueError(f"Invalid speed slider fraction {fraction!r}")
+            sample["speed_fraction"] = fraction
         with self._lock:
             self._latest = sample
             self._error = None
@@ -144,6 +159,11 @@ class ControlFeedback:
             self._served = latest["controller_timestamp_s"]
             return dict(latest)
 
+    def latest(self):
+        """The newest packet without marking it served (for /status)."""
+        with self._lock:
+            return dict(self._latest) if self._latest is not None else None
+
     def close(self):
         self._stop.set()
         if self._thread is not None:
@@ -186,6 +206,50 @@ class _SerializedControl:
         with self._lock:
             return self._control.stopJ(deceleration)
 
+    # Arm motion (ur_motion.py). Kinematics and safety-limit queries run on
+    # the controller with its active TCP; none of them moves the arm.
+    def moveL(self, pose, speed, acceleration, asynchronous):
+        with self._lock:
+            return self._control.moveL(pose, speed, acceleration, asynchronous)
+
+    def stopL(self, deceleration):
+        with self._lock:
+            return self._control.stopL(deceleration)
+
+    def getForwardKinematics(self, q):
+        with self._lock:
+            return self._control.getForwardKinematics(q)
+
+    def getInverseKinematics(self, pose, qnear):
+        with self._lock:
+            return self._control.getInverseKinematics(pose, qnear)
+
+    def getInverseKinematicsHasSolution(self, pose, qnear):
+        with self._lock:
+            return self._control.getInverseKinematicsHasSolution(pose, qnear)
+
+    def isPoseWithinSafetyLimits(self, pose):
+        with self._lock:
+            return self._control.isPoseWithinSafetyLimits(pose)
+
+    def isJointsWithinSafetyLimits(self, q):
+        with self._lock:
+            return self._control.isJointsWithinSafetyLimits(q)
+
+    def isProgramRunning(self):
+        if self.fault is not None:
+            return False
+        with self._lock:
+            return bool(self._control.isProgramRunning())
+
+    def getTCPOffset(self):
+        with self._lock:
+            return self._control.getTCPOffset()
+
+    def zeroFtSensor(self):
+        with self._lock:
+            return self._control.zeroFtSensor()
+
     def disconnect(self):
         with self._lock:
             return self._control.disconnect()
@@ -218,6 +282,7 @@ class ControlSession:
         self._kicker = None
         self._kick_stop = threading.Event()
         self.watchdog_error = None
+        self.extended = getattr(settings.control, "motion", None) is not None
 
     @property
     def is_open(self):
@@ -247,10 +312,13 @@ class ControlSession:
                 raise RuntimeError("Control session already open")
             frequency = self.settings.control.feedback_frequency_hz
             watchdog_hz = self.settings.control.watchdog_hz
+            variables = MOTION_FEEDBACK_VARIABLES if self.extended else FEEDBACK_VARIABLES
             receiver = self._receiver_factory(
-                self.settings.robot_host, frequency=frequency, variables=list(FEEDBACK_VARIABLES)
+                self.settings.robot_host, frequency=frequency, variables=list(variables)
             )
-            feedback = ControlFeedback(receiver, frequency_hz=frequency, clock=self.clock)
+            feedback = ControlFeedback(
+                receiver, frequency_hz=frequency, clock=self.clock, extended=self.extended
+            )
             feedback.start()
             try:
                 control = self._control_factory(self.settings.robot_host)
@@ -280,6 +348,13 @@ class ControlSession:
             if self.control is None:
                 return False
             self.control.stopJ(math.radians(deceleration_deg_s2))
+            return True
+
+    def stop_linear(self, deceleration_mm_s2):
+        with self._lock:
+            if self.control is None:
+                return False
+            self.control.stopL(deceleration_mm_s2 / 1000)
             return True
 
     def close(self):

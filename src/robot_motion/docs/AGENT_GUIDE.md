@@ -9,18 +9,23 @@ Importing the package and listing drivers never connect to equipment.
 - xArm5: existing xArm application preserved through pyxarm and the explicit
   robot-motion legacy-xarm command. Its API, claims and graph interlocks remain
   unchanged. No migration of an existing service is implied.
-- UR3e, UR5e, UR5-CB3: read-only Dashboard status plus opt-in RTDE joint/TCP
-  observation using the adapted automated-lle URArm wrapper (see LLE_RTDE.md).
+- UR3e, UR5e, UR5-CB3: read-only Dashboard status plus opt-in RTDE joint, TCP
+  and TCP-force observation using the adapted automated-lle URArm wrapper (see
+  LLE_RTDE.md). With RTDE the telemetry refreshes every telemetry_interval_s
+  (0.5 s) while the Dashboard poll stays slow. On e-Series the Dashboard also
+  reports remote_control and operational_mode.
   By default no RTDE control interface, program upload, motion, recovery,
   power, brake, gripper or IO command is instantiated or exposed.
 - UR control: a local config may enable config-gated, identity-checked,
-  hard-claimed single-joint steps (0.1 deg default, 0.5 deg ceiling) through
-  /connect, /control/joint_step and /control/stop; see JOINT_STEP_CONTROL.md.
-  This is commissioning scaffolding, not an approved motion capability.
+  hard-claimed arm motion in one of two modes. `motion`: joint moves and jogs
+  and Cartesian moves and jogs, inside a commissioned joint envelope, TCP
+  workspace box and speed caps, with an optional force guard (ARM_MOTION.md).
+  `joint_step`: single-joint steps of 0.1 deg by default, 0.5 deg ceiling
+  (JOINT_STEP_CONTROL.md). Neither is commissioned on the UR5e yet.
 - UR gripper: an optional `gripper` block reads a Robotiq gripper's status
   through its URCap (read-only); under control_enabled the same identity and
   claim gates allow open, close, stroke, force and activation. See
-  GRIPPER_CONTROL.md. Not yet commissioned on the UR5e.
+  GRIPPER_CONTROL.md. Commissioned on the UR5e (2F-140) on 2026-10-07.
 - MG400: reserved optional extra and model metadata only; no hardware driver yet.
 
 ## Contract and safety
@@ -29,9 +34,9 @@ Without control_enabled the service conforms to STATUS_SPEC v1.2's read-only
 profile: the /control surface, claims, and mutation-refusal semantics are N/A
 and allowed_actions is empty. With control enabled, /control/claim,
 /control/heartbeat and /control/release hold a hard-enforced single claim;
-/connect, /disconnect, /control/joint_step and the gripper commands refuse
-423 without its token, 412 when a precondition fails, and /control/stop
-needs identity only.
+/connect, /disconnect, the arm moves and the gripper commands refuse 423
+without its token, 412 when a precondition fails, 422 when a request exceeds
+the commissioned limits, and /control/stop needs identity only.
 allowed_actions then lists exactly what a POST will honor.
 Primary operation for UR observation means the controller program is PLAYING;
 it does not mean the physical arm is moving. Failed/stale observations are unknown,
@@ -46,8 +51,8 @@ must use lab-skills, claims, interlocks, and validated human-approved plans.
 Use a gitignored *.local.json config, passed with --config. Robot addresses,
 deployment paths and calibration stay local. Observation requires observe=true,
 driver=ur, an explicit model, and robot_host. control_enabled defaults to false
-and is rejected unless a complete control block (authorized_operators, all
-joint_step limits, commissioning_id) accompanies it on an RTDE-observed robot;
+and is rejected unless a complete control block (authorized_operators plus
+joint_step or motion limits, or a gripper) accompanies it on an RTDE-observed robot;
 the edge secret comes from ROBOT_MOTION_EDGE_SHARED_SECRET in the service
 environment, never from the config file. Optional control settings:
 watchdog_hz (controller-side watchdog rate, default 10) and audit_file
@@ -87,7 +92,8 @@ The page is written against the xArm API and renders here as a read-only
 panel. /status fills current_joints and current_position only from a valid
 RTDE receive sample (otherwise null, never zero), num_joints from the model
 profile, and connection_details when observation is enabled. /ws pushes the
-same cached envelope at the poll cadence and acts on no browser message. The
+same cached envelope at the telemetry cadence (RTDE) or the poll cadence and
+acts on no browser message. The
 page's other load-time reads (/graph/layout, /locations, /track/locations,
 /interlocks/sash, /auth/config, /auth/me, /assistant/status,
 /api/configurations) answer that the feature is absent, so the page renders
@@ -98,8 +104,10 @@ Without control enabled, Take Control, Connect, STOP, recovery, gripper, rail,
 graph-edit and motion buttons send their requests to routes this service does
 not have and receive 404; allowed_actions stays empty regardless of what the
 page shows. With control enabled, Take Control, Connect and STOP reach the
-claim, /connect and /control/stop routes (identity permitting), while the
-panel's own jog and graph buttons still have no routes here. In every case the
+claim, /connect and /control/stop routes (identity permitting). In motion
+mode, Move Joints, the XYZ jog buttons and Clear errors reach the arm routes,
+and the panel gates Connect, Disconnect and those buttons on allowed_actions.
+The graph and named-location buttons still have no routes here. In every case the
 displayed STOP button is a software request, not a safety-rated stop: use the
 established operator controls.
 
@@ -163,7 +171,10 @@ when the service has no secret.
   /camera/config, /camera/ptz, /camera/preset, /camera/follow (409), and
   /realsense/<id>/{status,start,stop,snapshot.jpg,depth.png,stream.mjpg,depth,intrinsics}
 - control tagged routes (only with control_enabled): /control/claim, heartbeat,
-  release; /connect, /disconnect; /control/joint_step; /control/stop (/move/stop)
+  release; /connect, /disconnect; /control/stop (/move/stop); joint_step mode:
+  /control/joint_step
+- arm tagged routes (motion mode): /control/freehand/joints, joint_jog,
+  relative, linear; /control/reset (/clear/errors); /control/force/zero
 - /docs, /openapi.json: generated API documentation
 - /agent-docs/api-reference: generated readable route/schema reference
 - /llms.txt: documentation index
@@ -172,5 +183,5 @@ The read-only routes have no authentication because they mutate nothing. The
 control routes trust only the dashboard edge's shared-secret identity headers
 and refuse entirely when that secret is unset. Serve the process only on the
 loopback or explicitly firewalled Tailnet interface; never expose it publicly.
-Commissioning the control routes on the physical robot remains outstanding;
-see JOINT_STEP_CONTROL.md for the list.
+Commissioning arm motion on the physical robot remains outstanding; see the
+checklist in ARM_MOTION.md.

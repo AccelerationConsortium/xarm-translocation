@@ -1,5 +1,10 @@
 # Small joint-step executor — offline-tested, not commissioned
 
+> Superseded for operator use by the `motion` mode (ARM_MOTION.md). A config
+> names `joint_step` or `motion`, never both. Connect precondition refusals
+> are now 412, and `allowed_actions` offers `connect` only when it would
+> succeed.
+
 `drivers/joint_step.py` implements the control primitive for one finite,
 single-joint `moveJ`, followed by measured completion checks. The executor
 itself has no robot address, SDK constructor, script upload, linear move,

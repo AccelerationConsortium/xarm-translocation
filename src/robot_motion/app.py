@@ -14,7 +14,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
-from sdl_lab_contract import EquipmentStatus, HealthResponse, ProbeResponse
+from sdl_lab_contract import ComponentStatus, EquipmentStatus, HealthResponse, ProbeResponse
 from core.motion_graph import GraphError
 
 from . import __version__
@@ -46,10 +46,11 @@ SHARED_UI_FILES = {
 NOT_PRESENT = "Not present on this service; shared UI compatibility answer only."
 NOTICE = (
     "Prototype only. UR physical control is limited to config-gated, claimed, "
-    "identity-checked single-joint steps and Robotiq gripper commands under "
-    "commissioning and is absent unless the local config enables it. MG400 support "
-    "is planned. Existing xArm control uses the legacy application."
+    "identity-checked arm moves inside commissioned joint and workspace limits "
+    "and Robotiq gripper commands, and is absent unless the local config enables "
+    "it. MG400 support is planned. Existing xArm control uses the legacy application."
 )
+TELEMETRY_UNAVAILABLE = {"valid": False, "source": "rtde_receive"}
 SAFETY = (
     "Topology preview only: no collision, reachability, joint-limit, payload, "
     "TCP calibration, gripper, or physical clearance validation; not executable authorization."
@@ -88,19 +89,32 @@ def create_app(
             observer = URRTDEObserver(settings)
         else:
             observer = URObserver(settings)
+    # RTDE observers split the read: Dashboard state on the slow poll, joints,
+    # TCP and force on a fast one, so live values do not wait 10 s.
+    fast_telemetry = (
+        settings.observe
+        and settings.ur_transport == "rtde"
+        and callable(getattr(observer, "read_telemetry", None))
+        and callable(getattr(observer, "read_dashboard", None))
+    )
+    telemetry = {"sample": None, "error": None, "at": None}
+
+    async def threaded(read):
+        task = asyncio.create_task(asyncio.to_thread(read))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # Cancelling to_thread does not stop the native SDK call.
+            # Drain it before disconnecting the receiver at shutdown.
+            await asyncio.gather(task, return_exceptions=True)
+            raise
 
     async def poll():
         nonlocal observation, observed_at, observed_time, activity_since, previous_activity
+        read = observer.read_dashboard if fast_telemetry else observer.read
         while True:
             try:
-                read_task = asyncio.create_task(asyncio.to_thread(observer.read))
-                try:
-                    result = await asyncio.shield(read_task)
-                except asyncio.CancelledError:
-                    # Cancelling to_thread does not stop the native SDK call.
-                    # Drain it before disconnecting the receiver at shutdown.
-                    await asyncio.gather(read_task, return_exceptions=True)
-                    raise
+                result = await threaded(read)
             except Exception:
                 log.exception("Read-only robot observation failed")
                 result = {
@@ -118,6 +132,40 @@ def create_app(
             observed_time = now
             await asyncio.sleep(settings.poll_interval_s)
 
+    async def poll_telemetry():
+        while True:
+            try:
+                sample, error = await threaded(observer.read_telemetry), None
+            except Exception as exc:  # noqa: BLE001 - a broken stream reads as absent
+                sample, error = None, str(exc)
+                if error != telemetry["error"]:
+                    log.exception("RTDE receive-only telemetry unavailable")
+            if error is None and telemetry["error"] is not None:
+                log.info("RTDE receive-only telemetry restored")
+            telemetry.update(sample=sample, error=error, at=time.monotonic())
+            await asyncio.sleep(settings.telemetry_interval_s)
+
+    def with_telemetry(current, stale):
+        """Overlay the fast sample on the Dashboard observation. A missing or
+        old sample is reported as unavailable, never as the last position."""
+        if not fast_telemetry or stale:
+            return current
+        age_limit = max(3 * settings.telemetry_interval_s, 2.0)
+        fresh = telemetry["at"] is not None and time.monotonic() - telemetry["at"] <= age_limit
+        sample = telemetry["sample"] if fresh else None
+        component = (
+            ComponentStatus(connected=True, state="receiving")
+            if sample
+            else ComponentStatus(
+                connected=False, state="unknown", message="RTDE telemetry unavailable; see service log"
+            )
+        )
+        return {
+            **current,
+            "components": {**current["components"], "telemetry": component},
+            "details": {**current["details"], "telemetry": sample or dict(TELEMETRY_UNAVAILABLE)},
+        }
+
     cameras = Cameras(
         settings, edge_secret=edge_secret, stereo=stereo_cameras, transport=camera_transport
     )
@@ -129,6 +177,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app):
         task = asyncio.create_task(poll()) if settings.observe else None
+        telemetry_task = asyncio.create_task(poll_telemetry()) if fast_telemetry else None
         # Camera telemetry is polled on its own thread; /status only reads it.
         cameras.start()
         if gripper is not None:
@@ -136,12 +185,13 @@ def create_app(
         try:
             yield
         finally:
-            if task:
-                task.cancel()
-                try:
-                    await task
-                except asyncio.CancelledError:
-                    pass
+            for running in (task, telemetry_task):
+                if running:
+                    running.cancel()
+                    try:
+                        await running
+                    except asyncio.CancelledError:
+                        pass
             if observer is not None and callable(getattr(observer, "close", None)):
                 await asyncio.to_thread(observer.close)
             if control is not None:
@@ -238,6 +288,7 @@ def create_app(
     @app.get("/status", response_model=EquipmentStatus)
     def status():
         current, stale = current_observation()
+        current = with_telemetry(current, stale)
         control_state = control.state() if control is not None else None
         return EquipmentStatus(
             protocol_version="1.2",
@@ -273,6 +324,7 @@ def create_app(
                         part
                         for part, present in (
                             ("joint_step", settings.control.joint_step is not None),
+                            ("motion", settings.control.motion is not None),
                             ("gripper", gripper is not None),
                         )
                         if present
@@ -418,22 +470,29 @@ def create_app(
         # The value is the model id; main.js maps it to a display label.
         return [settings.model] if settings.model else []
 
+    # With fast telemetry the push follows it, so the panel's joint and TCP
+    # read-outs move live (fresh pushes also stand down its HTTP polling).
+    push_interval = settings.telemetry_interval_s if fast_telemetry else settings.poll_interval_s
+
     @app.websocket("/ws")
     async def status_push(websocket: WebSocket):
-        # Same cached envelope as /status, pushed at the poll cadence. Browser
+        # Same cached envelope as /status, pushed at the push cadence. Browser
         # messages are drained only to notice the disconnect; none is acted on.
         await websocket.accept()
 
         async def push():
             try:
                 while True:
+                    # status() can wait on the control SDK lock: never on the loop.
+                    envelope = await asyncio.to_thread(status)
                     await websocket.send_text(
-                        json.dumps(
-                            {"type": "status_update", "data": status().model_dump(mode="json")}
-                        )
+                        json.dumps({"type": "status_update", "data": envelope.model_dump(mode="json")})
                     )
-                    await asyncio.sleep(settings.poll_interval_s)
+                    await asyncio.sleep(push_interval)
             except (WebSocketDisconnect, RuntimeError):
+                return
+            except Exception:
+                log.exception("Status push stopped")
                 return
 
         pusher = asyncio.create_task(push())

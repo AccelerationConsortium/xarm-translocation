@@ -4,6 +4,8 @@ Source: components/robot_move/ur5_rtde_gripper.py at 83a5169630793e45499de7b0043
 See docs/LLE_RTDE.md and docs/APACHE-2.0.md for provenance and license.
 Modified: lazy receive-only connection, validated samples, no control/gripper
 construction, no LLE positions, global component manager, or homing routines.
+Added: the controller's TCP force (flange sensor on e-Series) and, on
+e-Series, the configured payload, so an operator can check both.
 """
 
 from __future__ import annotations
@@ -42,7 +44,7 @@ class URArm:
     All operations are serialized, including shutdown and failure cleanup.
     """
 
-    def __init__(self, robot_ip, *, frequency=50.0, timeout=2.0, receiver_factory=None):
+    def __init__(self, robot_ip, *, frequency=50.0, timeout=2.0, receiver_factory=None, payload=False):
         if not robot_ip or not math.isfinite(frequency) or not 1 <= frequency <= 50:
             raise ValueError("Explicit host and receive frequency 1..50 Hz required")
         if not math.isfinite(timeout) or not 0.1 <= timeout <= 5:
@@ -51,6 +53,8 @@ class URArm:
         self.frequency = frequency
         self.timeout = timeout
         self._factory = receiver_factory
+        # payload / payload_cog are RTDE outputs on e-Series (PolyScope 5).
+        self.payload = payload
         self.rtde_r = None
         self._last_timestamp = None
         self._lock = threading.RLock()
@@ -64,11 +68,10 @@ class URArm:
                 from rtde_receive import RTDEReceiveInterface
 
                 factory = RTDEReceiveInterface
-            self.rtde_r = factory(
-                self.robot_ip,
-                frequency=self.frequency,
-                variables=["timestamp", "actual_q", "actual_TCP_pose"],
-            )
+            variables = ["timestamp", "actual_q", "actual_TCP_pose", "actual_TCP_force"]
+            if self.payload:
+                variables += ["payload", "payload_cog"]
+            self.rtde_r = factory(self.robot_ip, frequency=self.frequency, variables=variables)
             self._last_timestamp = None
 
     def _connected(self):
@@ -119,6 +122,14 @@ class URArm:
                 joints = self.get_joints()
                 raw_pose = vector6(self.rtde_r.getActualTCPPose())
                 pose = tcp_to_mm_deg(raw_pose)
+                wrench = vector6(self.rtde_r.getActualTCPForce())
+                payload = None
+                if self.payload:
+                    mass = float(self.rtde_r.getPayload())
+                    cog = [float(v) for v in self.rtde_r.getPayloadCog()]
+                    if not math.isfinite(mass) or len(cog) != 3 or not all(map(math.isfinite, cog)):
+                        raise ValueError("Invalid RTDE payload")
+                    payload = {"mass_kg": mass, "cog_mm": [v * 1000 for v in cog]}
                 self._connected()
                 end_timestamp = self._timestamp()
                 if (
@@ -129,14 +140,26 @@ class URArm:
                         "RTDE sample changed clock or exceeded read window"
                     )
                 self._last_timestamp = end_timestamp
-                return {
+                sample = {
                     "valid": True,
                     "source": "rtde_receive",
                     "controller_timestamp_s": timestamp,
                     "joints_deg": vector6(joints),
                     "tcp_mm_rpy_deg": vector6(pose),
                     "tcp_m_rotvec_rad": raw_pose,
+                    # actual_TCP_force: base-frame force/torque at the TCP,
+                    # compensated by the controller for the configured
+                    # payload. Not zeroed by this service.
+                    "tcp_force": {
+                        "force_n": wrench[:3],
+                        "torque_nm": wrench[3:],
+                        "force_magnitude_n": math.sqrt(sum(f * f for f in wrench[:3])),
+                        "frame": "base",
+                    },
                 }
+                if payload is not None:
+                    sample["payload"] = payload
+                return sample
             except Exception:
                 self.disconnect()
                 raise

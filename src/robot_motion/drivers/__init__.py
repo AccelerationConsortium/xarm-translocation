@@ -22,7 +22,7 @@ def inventory():
                 "implementation": "observe",
                 "observation_transports": ["dashboard", "rtde_receive"],
                 "rtde_wrapper": "automated-lle URArm adaptation",
-                "control": "joint_step (config-gated; not commissioned)",
+                "control": "joint_step or motion (config-gated; not commissioned)",
             },
             "mg400": {
                 "extra": "mg400",

@@ -24,6 +24,9 @@ class Receiver:
         self.disconnections = 0
         self.joints = [0, math.pi / 2, -math.pi / 2, math.pi, 0.1, -0.2]
         self.pose = [0.1, -0.2, 0.3, 0, 0, math.pi / 2]
+        self.wrench = [3.0, -4.0, 12.0, 0.1, -0.2, 0.3]
+        self.payload = 1.0
+        self.cog = [0.0, 0.0, 0.06]
 
     def isConnected(self):
         return self.connected
@@ -38,6 +41,15 @@ class Receiver:
 
     def getActualTCPPose(self):
         return self.pose
+
+    def getActualTCPForce(self):
+        return self.wrench
+
+    def getPayload(self):
+        return self.payload
+
+    def getPayloadCog(self):
+        return self.cog
 
     def disconnect(self):
         self.disconnections += 1
@@ -76,7 +88,7 @@ from robot_motion.drivers import inventory
 from robot_motion.drivers.lle_rtde import URArm
 URArm('robot.invalid')
 create_app(Settings(driver='ur', model='ur5e', observe=True, robot_host='robot.invalid', ur_transport='rtde'))
-assert inventory()['drivers']['ur']['control'] == 'joint_step (config-gated; not commissioned)'
+assert inventory()['drivers']['ur']['control'] == 'joint_step or motion (config-gated; not commissioned)'
 """
     completed = subprocess.run(
         [sys.executable, "-c", script], capture_output=True, text=True, timeout=15
@@ -105,7 +117,7 @@ def test_only_receive_interface_is_constructed(monkeypatch):
             ("robot.invalid",),
             {
                 "frequency": 50.0,
-                "variables": ["timestamp", "actual_q", "actual_TCP_pose"],
+                "variables": ["timestamp", "actual_q", "actual_TCP_pose", "actual_TCP_force"],
             },
         )
     ]
@@ -128,6 +140,29 @@ def test_lle_unit_conventions_and_persistent_receive_connection(arm):
     assert first["tcp_m_rotvec_rad"] == receiver.pose
     assert wrapper.joint_positions == first["joints_deg"]
     assert wrapper.get_tcp_pose() == first["tcp_mm_rpy_deg"]
+    force = first["tcp_force"]
+    assert force["force_n"] == [3.0, -4.0, 12.0] and force["torque_nm"] == [0.1, -0.2, 0.3]
+    assert force["force_magnitude_n"] == pytest.approx(13.0)
+    assert force["frame"] == "base"
+    assert "payload" not in first  # opt-in (e-Series only)
+
+
+def test_payload_is_read_when_enabled_and_invalid_force_fails_the_sample():
+    pytest.importorskip("scipy")
+    receiver, calls = Receiver(), []
+    arm = URArm(
+        "robot.invalid", timeout=0.1, payload=True,
+        receiver_factory=lambda host, **kw: calls.append(kw) or receiver,
+    )
+    sample = arm.read()
+    assert calls[0]["variables"] == [
+        "timestamp", "actual_q", "actual_TCP_pose", "actual_TCP_force", "payload", "payload_cog",
+    ]
+    assert sample["payload"] == {"mass_kg": 1.0, "cog_mm": [0.0, 0.0, 60.0]}
+    receiver.wrench = [float("nan")] * 6
+    with pytest.raises(ValueError):
+        arm.read()
+    assert receiver.disconnections == 1  # a bad sample drops the stream
 
 
 def test_nontrivial_rotation_is_not_componentwise_degrees():
@@ -234,6 +269,7 @@ def settings():
         robot_host="robot.invalid",
         ur_transport="rtde",
         poll_interval_s=5,
+        telemetry_interval_s=5,
     )
 
 

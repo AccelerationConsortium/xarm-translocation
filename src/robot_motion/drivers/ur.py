@@ -13,9 +13,20 @@ from datetime import datetime, timezone
 
 from sdl_lab_contract import ComponentStatus, ErrorInfo
 
-from ..config import Settings
+from ..config import MODELS, Settings
 
-READ_COMMANDS = frozenset({"robotmode", "safetystatus", "safetymode", "programState"})
+READ_COMMANDS = frozenset(
+    {
+        "robotmode",
+        "safetystatus",
+        "safetymode",
+        "programState",
+        # e-Series only (PolyScope 5): whether external control is allowed at
+        # all, and MANUAL/AUTOMATIC. Read-only, like the rest.
+        "is in remote control",
+        "get operational mode",
+    }
+)
 
 
 def _readline(stream):
@@ -66,10 +77,16 @@ class URObserver:
             program = query("programState").split(" ", 1)[0].upper()
             if program not in {"PLAYING", "PAUSED", "STOPPED"}:
                 raise OSError("Unrecognized UR program state")
-        return interpret(mode, safety, program, source)
+            remote = operational = None
+            if MODELS[self.settings.model]["generation"] == "e_series":
+                remote = {"true": True, "false": False}.get(query("is in remote control").strip().lower())
+                operational = query("get operational mode").strip().upper()
+                if operational not in {"MANUAL", "AUTOMATIC", "NONE"}:
+                    operational = None
+        return interpret(mode, safety, program, source, remote_control=remote, operational_mode=operational)
 
 
-def interpret(mode, safety, program, safety_source="safetystatus"):
+def interpret(mode, safety, program, safety_source="safetystatus", *, remote_control=None, operational_mode=None):
     state, activity = "unknown", "unknown"
     message = "Unrecognized UR controller state"
     fault = None
@@ -139,5 +156,8 @@ def interpret(mode, safety, program, safety_source="safetystatus"):
             "safetystatus": safety,
             "program_state": program,
             "safety_source": safety_source,
+            # None: not reported (CB3, or an unrecognized reply).
+            "remote_control": remote_control,
+            "operational_mode": operational_mode,
         },
     }

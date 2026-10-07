@@ -70,6 +70,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Tracks connection state so updateTakeControlBtn() can layer the login
     // gate on top of the connection gate (setControlsState owns connection).
     let controllerConnected = false;
+    // Last UR status applied by applyArmSessionGates (null for the xArm).
+    let lastArmGateData = null;
     const CLAIM_OWNER = 'human@xarm-web';
     // Prefer the signed-in identity from the shared auth banner
     // (/auth/banner.js, served by ac_auth) so details.claimed_by and the lab
@@ -420,6 +422,9 @@ document.addEventListener('DOMContentLoaded', () => {
             manual_mode: details.manual_mode === true,
             claimed_by: details.claimed_by || null,
             sash_interlock: (details.interlocks || {}).fume_hood_sash || null,
+            // UR robot-motion only: its arm session and server-side gates.
+            control_session: details.control_session || null,
+            allowed_actions: Array.isArray(envelope.allowed_actions) ? envelope.allowed_actions : [],
         };
     }
 
@@ -930,6 +935,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 // enabling. STOP / Clear Errors are never claim-locked.
                 applyClaimLock(claimToken !== null);
                 updateClaimIndicator(data.claimed_by);
+                // UR arm session gates layer on top (no-op for the xArm).
+                applyArmSessionGates(data);
                 // Re-assert the moving lock after the other locks have settled
                 // moveJointsBtn's disabled state (which it mirrors).
                 applyMovingLock(isRobotMoving);
@@ -1942,6 +1949,43 @@ document.addEventListener('DOMContentLoaded', () => {
         addLogEntry('Claim lost (expired or held elsewhere)', 'error');
     }
 
+    // UR robot-motion: "connected" above means the controller is observed
+    // ready, but the arm only moves inside a claimed session (/connect opens
+    // it). So Connect, Disconnect and the motion buttons follow the server's
+    // allowed_actions, which already fold in the claim-free preconditions
+    // (Remote Control, workspace, latched stop, a move in progress). Only
+    // disables what the server would refuse; never enables a claim-locked
+    // control. xArm statuses carry no control_session.arm_control: no-op.
+    function applyArmSessionGates(data) {
+        const session = data && data.control_session;
+        if (!session || session.arm_control !== true) return;
+        lastArmGateData = data;
+        const allowed = new Set(data.allowed_actions || []);
+        const locked = loginRequiredButNotSignedIn();
+        const held = claimToken !== null;
+        const needClaim = 'Take Control first';
+        if (connectBtn) {
+            connectBtn.disabled = locked || !held || !allowed.has('connect');
+            connectBtn.title = !held ? needClaim : (allowed.has('connect') ? '' : 'Not available now (see status)');
+        }
+        if (disconnectBtn) {
+            disconnectBtn.disabled = locked || !held || !allowed.has('disconnect');
+        }
+        const gate = (el, action) => { if (el && !allowed.has(action)) el.disabled = true; };
+        gate(moveJointsBtn, 'arm.move_joints');
+        // Move Joints sends all six boxes; without live joints they may hold
+        // stale angles that would drive the other joints back.
+        if (moveJointsBtn && !Array.isArray(data.current_joints)) moveJointsBtn.disabled = true;
+        jogBtnIds.forEach(id => gate(document.getElementById(id), 'arm.jog_linear'));
+        // Clear errors clears this service's stop latch (claimed): offer it
+        // only to the holder, and only when there is a latch to clear.
+        if (clearErrorsBtn && (!held || !allowed.has('control.reset'))) clearErrorsBtn.disabled = true;
+        // No named locations on this service.
+        [movePredefinedBtn, moveLinearBtn, predefinedPositionSelect].forEach(el => {
+            if (el) el.disabled = true;
+        });
+    }
+
     function setControlsState(enabled) {
         // Enable/disable control buttons based on connection state.
         // takeControlBtn is NOT in this list: acquiring a claim needs a
@@ -2017,6 +2061,9 @@ document.addEventListener('DOMContentLoaded', () => {
         // Reconcile the Take Control button now that connection is recorded
         // (layers the login gate on top of the connection gate).
         updateTakeControlBtn();
+        // UR arm gates from the last status, so a sign-in change or claim
+        // update between polls cannot re-enable what the server would refuse.
+        if (lastArmGateData) applyArmSessionGates(lastArmGateData);
     }
 
     // Gripper / Linear Track lock bubbles: visible only while those

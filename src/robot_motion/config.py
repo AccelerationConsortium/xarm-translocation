@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .drivers.joint_step import JointStepLimits
 from .drivers.robotiq import GripperSettings
+from .drivers.ur_motion import MotionLimits
 
 MODELS = {
     "xarm5": {
@@ -51,13 +52,16 @@ class ControlSettings(BaseModel):
     Nothing here is guessed: the operator allowlist, every joint bound, the
     stop deceleration and the commissioning reference come from the local
     config. The dashboard edge's shared secret comes from the environment.
-    joint_step is optional so the gripper can be commissioned on its own;
-    without it there is no arm session (/connect) or arm motion route.
+    The arm is driven by at most one of joint_step (single tiny steps, the
+    first commissioning primitive) or motion (joint and Cartesian moves and
+    jogs, ur_motion.py). Both are optional so the gripper can be commissioned
+    on its own; without either there is no arm session (/connect) or motion.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     authorized_operators: tuple[str, ...] = Field(min_length=1, max_length=50)
     joint_step: JointStepLimits | None = None
+    motion: MotionLimits | None = None
     # Dedicated receive stream for control feedback; the UI poll is too old.
     feedback_frequency_hz: float = Field(default=125, ge=50, le=500, allow_inf_nan=False)
     # ur_rtde communication watchdog: the controller stops the control script
@@ -73,6 +77,17 @@ class ControlSettings(BaseModel):
         if any(not o or "@" not in o or " " in o for o in normalized):
             raise ValueError("Authorized operators are e-mail identities")
         return normalized
+
+    @model_validator(mode="after")
+    def one_arm_mode(self):
+        if self.joint_step is not None and self.motion is not None:
+            raise ValueError("Configure joint_step or motion for the arm, not both")
+        return self
+
+    @property
+    def arm(self):
+        """The arm limits in force (joint_step or motion), or None."""
+        return self.joint_step or self.motion
 
 
 class LabCameraSettings(BaseModel):
@@ -137,11 +152,14 @@ class Settings(BaseModel):
     # Opt in explicitly; existing deployments keep their Dashboard-only reads.
     ur_transport: Literal["dashboard", "rtde"] = "dashboard"
     poll_interval_s: float = Field(default=10, ge=5, le=300, allow_inf_nan=False)
+    # RTDE transport only: joints, TCP and TCP force are sampled this often for
+    # /status (the Dashboard poll above stays slow).
+    telemetry_interval_s: float = Field(default=0.5, ge=0.1, le=10, allow_inf_nan=False)
     timeout_s: float = Field(default=2, ge=0.1, le=5, allow_inf_nan=False)
     graph_file: str | None = None
     # Physical control cannot be switched on by a UI toggle or a lone flag:
     # it needs this flag AND a complete control block AND RTDE observation of
-    # the same robot. Even then only bounded single-joint steps exist.
+    # the same robot. Even then only the moves its limits allow exist.
     control_enabled: bool = False
     control: ControlSettings | None = None
     # Optional cameras for the shared panel's Tapo and Stereo tiles. Looking
@@ -159,8 +177,8 @@ class Settings(BaseModel):
                 raise ValueError("control_enabled requires an explicit control block")
             if not (self.driver == "ur" and self.observe and self.ur_transport == "rtde"):
                 raise ValueError("Control requires RTDE observation of the same UR robot")
-            if self.control.joint_step is None and self.gripper is None:
-                raise ValueError("control_enabled needs joint_step limits or a gripper to control")
+            if self.control.arm is None and self.gripper is None:
+                raise ValueError("control_enabled needs joint_step or motion limits, or a gripper, to control")
         if self.gripper is not None and not (self.driver == "ur" and self.observe):
             raise ValueError("A gripper needs an observed UR robot (it is reached through its controller)")
         if self.ur_transport == "rtde" and self.driver != "ur":
