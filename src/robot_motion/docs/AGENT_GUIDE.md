@@ -17,6 +17,10 @@ Importing the package and listing drivers never connect to equipment.
   hard-claimed single-joint steps (0.1 deg default, 0.5 deg ceiling) through
   /connect, /control/joint_step and /control/stop; see JOINT_STEP_CONTROL.md.
   This is commissioning scaffolding, not an approved motion capability.
+- UR gripper: an optional `gripper` block reads a Robotiq gripper's status
+  through its URCap (read-only); under control_enabled the same identity and
+  claim gates allow open, close, stroke, force and activation. See
+  GRIPPER_CONTROL.md. Not yet commissioned on the UR5e.
 - MG400: reserved optional extra and model metadata only; no hardware driver yet.
 
 ## Contract and safety
@@ -25,8 +29,9 @@ Without control_enabled the service conforms to STATUS_SPEC v1.2's read-only
 profile: the /control surface, claims, and mutation-refusal semantics are N/A
 and allowed_actions is empty. With control enabled, /control/claim,
 /control/heartbeat and /control/release hold a hard-enforced single claim;
-/connect, /disconnect and /control/joint_step refuse 423 without its token,
-412 when the executor refuses, and /control/stop needs identity only.
+/connect, /disconnect, /control/joint_step and the gripper commands refuse
+423 without its token, 412 when a precondition fails, and /control/stop
+needs identity only.
 allowed_actions then lists exactly what a POST will honor.
 Primary operation for UR observation means the controller program is PLAYING;
 it does not mean the physical arm is moving. Failed/stale observations are unknown,

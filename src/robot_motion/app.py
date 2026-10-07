@@ -24,6 +24,7 @@ from .drivers import inventory
 from .drivers.ur import URObserver
 from .edge import configured_secret, edge_identity
 from .graph import Graph, PreviewRequest
+from .gripper import component_status as gripper_component
 
 log = logging.getLogger(__name__)
 # The shared xArm web UI (src/web) is served byte-for-byte from this allowlist.
@@ -45,9 +46,9 @@ SHARED_UI_FILES = {
 NOT_PRESENT = "Not present on this service; shared UI compatibility answer only."
 NOTICE = (
     "Prototype only. UR physical control is limited to config-gated, claimed, "
-    "identity-checked single-joint steps under commissioning and is absent unless "
-    "the local config enables it. MG400 support is planned. Existing xArm control "
-    "uses the legacy application."
+    "identity-checked single-joint steps and Robotiq gripper commands under "
+    "commissioning and is absent unless the local config enables it. MG400 support "
+    "is planned. Existing xArm control uses the legacy application."
 )
 SAFETY = (
     "Topology preview only: no collision, reachability, joint-limit, payload, "
@@ -63,6 +64,7 @@ def create_app(
     edge_secret=None,
     stereo_cameras=None,
     camera_transport=None,
+    gripper=None,
 ):
     settings = settings or Settings()
     observation = None
@@ -119,12 +121,18 @@ def create_app(
     cameras = Cameras(
         settings, edge_secret=edge_secret, stereo=stereo_cameras, transport=camera_transport
     )
+    if gripper is None and settings.gripper is not None:
+        from .drivers.robotiq import RobotiqGripper
+
+        gripper = RobotiqGripper(settings.gripper, settings.robot_host)
 
     @asynccontextmanager
     async def lifespan(_app):
         task = asyncio.create_task(poll()) if settings.observe else None
         # Camera telemetry is polled on its own thread; /status only reads it.
         cameras.start()
+        if gripper is not None:
+            gripper.start()
         try:
             yield
         finally:
@@ -139,6 +147,8 @@ def create_app(
             if control is not None:
                 await asyncio.to_thread(control.shutdown)
             await asyncio.to_thread(cameras.close)
+            if gripper is not None:
+                await asyncio.to_thread(gripper.close)
 
     app = FastAPI(
         title="Robot Motion", version=__version__, lifespan=lifespan, description=NOTICE
@@ -176,6 +186,7 @@ def create_app(
             session_factory=control_session_factory,
             edge_secret=edge_secret,
             observe=current_observation,
+            gripper=gripper,
         ).install(app)
 
     @app.get("/", response_model=ProbeResponse)
@@ -189,6 +200,19 @@ def create_app(
     @app.get("/health", response_model=HealthResponse)
     def health():
         return HealthResponse(status="healthy")
+
+    def gripper_details():
+        # Cached by the driver's poll; never a request to the gripper here.
+        if gripper is None:
+            return {}
+        from .gripper import connection_details
+
+        force = (
+            control.gripper_control.force_pct
+            if control is not None and control.gripper_control is not None
+            else gripper.settings.default_force_pct
+        )
+        return connection_details(gripper, force)
 
     def measured(details):
         # The shared UI reads xArm-named keys. Fill them only from a valid RTDE
@@ -204,6 +228,7 @@ def create_app(
                     "host": settings.robot_host,
                     "port": 30004 if settings.ur_transport == "rtde" else 29999,
                     "profile_name": settings.model,
+                    **gripper_details(),
                 }
                 if settings.observe
                 else None
@@ -229,16 +254,32 @@ def create_app(
             message=current["message"],
             # Cameras are components, not state inputs: arm observation does
             # not depend on them, so an outage never moves equipment_status.
-            components={**cameras.components(), **current["components"]},
+            components={
+                **cameras.components(),
+                **current["components"],
+                **({"gripper": gripper_component(gripper)} if gripper is not None else {}),
+            },
             last_error=current.get("last_error"),
             allowed_actions=control_state["allowed_actions"] if control_state else [],
             details={
                 **cameras.details(),
                 **current["details"],
                 **measured(current["details"]),
+                **({"gripper": gripper.summary()} if gripper is not None else {}),
                 "monitoring_only": control is None,
                 "control_enabled": control is not None,
-                "control_implementation": "joint_step" if control is not None else "not_implemented",
+                "control_implementation": (
+                    "+".join(
+                        part
+                        for part, present in (
+                            ("joint_step", settings.control.joint_step is not None),
+                            ("gripper", gripper is not None),
+                        )
+                        if present
+                    )
+                    if control is not None
+                    else "not_implemented"
+                ),
                 "claimed_by": control_state["claimed_by"] if control_state else None,
                 "control_session": control_state["control_session"] if control_state else None,
                 "driver": settings.driver,

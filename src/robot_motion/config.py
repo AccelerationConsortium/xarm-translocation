@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .drivers.joint_step import JointStepLimits
+from .drivers.robotiq import GripperSettings
 
 MODELS = {
     "xarm5": {
@@ -45,16 +46,18 @@ MODELS = {
 
 
 class ControlSettings(BaseModel):
-    """Explicit commissioning inputs for the joint-step control routes.
+    """Explicit commissioning inputs for the control routes.
 
     Nothing here is guessed: the operator allowlist, every joint bound, the
     stop deceleration and the commissioning reference come from the local
     config. The dashboard edge's shared secret comes from the environment.
+    joint_step is optional so the gripper can be commissioned on its own;
+    without it there is no arm session (/connect) or arm motion route.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     authorized_operators: tuple[str, ...] = Field(min_length=1, max_length=50)
-    joint_step: JointStepLimits
+    joint_step: JointStepLimits | None = None
     # Dedicated receive stream for control feedback; the UI poll is too old.
     feedback_frequency_hz: float = Field(default=125, ge=50, le=500, allow_inf_nan=False)
     # ur_rtde communication watchdog: the controller stops the control script
@@ -145,6 +148,9 @@ class Settings(BaseModel):
     # is not actuation: neither block touches the robot or its control gates.
     lab_camera: LabCameraSettings | None = None
     camera_service: CameraServiceSettings | None = None
+    # Tool-flange gripper. Status is read (GET only) whenever the robot is
+    # observed; commands exist only under control_enabled.
+    gripper: GripperSettings | None = None
 
     @model_validator(mode="after")
     def coherent(self):
@@ -153,6 +159,10 @@ class Settings(BaseModel):
                 raise ValueError("control_enabled requires an explicit control block")
             if not (self.driver == "ur" and self.observe and self.ur_transport == "rtde"):
                 raise ValueError("Control requires RTDE observation of the same UR robot")
+            if self.control.joint_step is None and self.gripper is None:
+                raise ValueError("control_enabled needs joint_step limits or a gripper to control")
+        if self.gripper is not None and not (self.driver == "ur" and self.observe):
+            raise ValueError("A gripper needs an observed UR robot (it is reached through its controller)")
         if self.ur_transport == "rtde" and self.driver != "ur":
             raise ValueError("RTDE transport requires a UR driver")
         if self.driver == "none":

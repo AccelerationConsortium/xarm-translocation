@@ -4,8 +4,10 @@ Installed only when Settings.control_enabled is true. Identity is the
 dashboard edge's (X-Auth-User plus X-Edge-Auth matching
 ROBOT_MOTION_EDGE_SHARED_SECRET); without a configured secret every control
 route refuses, so a directly reachable service never trusts client headers.
-Hard claims (core.claims) gate /connect, /disconnect and /control/joint_step;
-/control/stop needs identity only. Nothing here is a safety-rated stop.
+Hard claims (core.claims) gate /connect, /disconnect, /control/joint_step and
+the gripper commands (gripper.py); /control/stop needs identity only. The arm
+routes exist only with joint_step limits, the gripper routes only with a
+gripper block. Nothing here is a safety-rated stop.
 """
 
 from __future__ import annotations
@@ -41,9 +43,14 @@ IDLE_STATE = {"robotmode": "RUNNING", "safetystatus": "NORMAL", "program_state":
 
 
 class URControl:
-    def __init__(self, settings, *, session_factory=None, edge_secret=None, observe=None):
+    def __init__(self, settings, *, session_factory=None, edge_secret=None, observe=None, gripper=None):
         self.settings = settings
         self.config = settings.control
+        self.gripper_control = None
+        if gripper is not None:
+            from .gripper import GripperControl
+
+            self.gripper_control = GripperControl(self, gripper)
         # Latest cached Dashboard observation: (observation, stale). Used to
         # refuse /connect while anything else runs or owns the robot.
         self._observe = observe or (lambda: (None, True))
@@ -112,7 +119,8 @@ class URControl:
         # and the session the step started under must still be the open one.
         holder = self.claims.claimed_by()
         return (
-            commissioning_id == self.config.joint_step.commissioning_id
+            self.config.joint_step is not None
+            and commissioning_id == self.config.joint_step.commissioning_id
             and holder is not None
             and holder["owner"] in self.config.authorized_operators
             and self.session is not None
@@ -145,6 +153,35 @@ class URControl:
             }
         return None
 
+    @property
+    def session_open(self):
+        return self.session is not None and self.session.is_open
+
+    def observed_robot(self):
+        """(observed idle-state dict, problem body or None) from the cached
+        Dashboard observation. Our own open control session counts as idle:
+        its script is the program the controller reports."""
+        current, stale = self._observe()
+        details = (current or {}).get("details") or {}
+        if stale or not details.get("robotmode"):
+            return None, {
+                "detail": "No fresh robot observation; cannot verify the robot is idle",
+                "error": "observation_unavailable",
+            }
+        observed = {key: details.get(key) for key in IDLE_STATE}
+        required = dict(IDLE_STATE)
+        if self.session_open:
+            observed.pop("program_state")
+            required.pop("program_state")
+        if observed != required:
+            return observed, {
+                "detail": "Robot is not idle under this service",
+                "error": "robot_not_idle",
+                "observed": observed,
+                "required": required,
+            }
+        return observed, None
+
     def event(self, kind, identity, **extra):
         self.last_event = {
             "kind": kind,
@@ -163,22 +200,27 @@ class URControl:
 
     # ── state for /status ───────────────────────────────────────────
     def state(self):
-        session_open = self.session is not None and self.session.is_open
+        session_open = self.session_open
         latched = self.executor.latched if self.executor is not None else None
+        limits = self.config.joint_step
         allowed = ["control.stop"]
-        if session_open and latched is None and self.session.watchdog_ok:
-            allowed.append("control.joint_step")
-        if not session_open:
-            allowed.append("connect")
+        if limits is not None:
+            if session_open and latched is None and self.session.watchdog_ok:
+                allowed.append("control.joint_step")
+            if not session_open:
+                allowed.append("connect")
+        if self.gripper_control is not None:
+            allowed += self.gripper_control.allowed_actions()
         return {
             "claimed_by": self.claims.claimed_by(),
             "control_session": {
+                "arm_control": limits is not None,
                 "open": session_open,
                 "latched": latched,
                 "watchdog_ok": self.session.watchdog_ok if session_open else None,
                 "watchdog_error": self.session.watchdog_error if session_open else None,
-                "commissioning_id": self.config.joint_step.commissioning_id,
-                "max_step_deg": self.config.joint_step.max_step_deg,
+                "commissioning_id": limits.commissioning_id if limits else None,
+                "max_step_deg": limits.max_step_deg if limits else None,
                 "last_event": self.last_event,
             },
             "allowed_actions": allowed,
@@ -234,6 +276,42 @@ class URControl:
             self.claims.release(token=x_claim_token)
             return Response(status_code=204)
 
+        if limits is not None:
+            self._install_arm(app, login, claim, limits)
+        if self.gripper_control is not None:
+            self.gripper_control.install(app, login, claim)
+
+        @app.post("/control/stop", tags=["control"])
+        @app.post("/move/stop", tags=["control"])
+        def stop(identity: dict = login):
+            """Identity-gated safety floor: no claim needed to ask for a stop."""
+            executor, session = self.executor, self.session
+            requested, error = False, None
+            if executor is not None:
+                executor.request_stop()
+                requested = True
+            if session is not None and session.is_open:
+                try:
+                    requested = session.stop(limits.stop_deceleration_deg_s2) or requested
+                except Exception as exc:
+                    error = str(exc)
+            gripper_stopped = False
+            if self.gripper_control is not None:
+                gripper_stopped = self.gripper_control.gripper.request_stop()
+                requested = requested or gripper_stopped
+            self.event("stop", identity, requested=requested, gripper=gripper_stopped, error=error)
+            return {
+                "stop_requested": requested,
+                "stop_confirmed": False,
+                "stop_error": error,
+                "gripper_stop_requested": gripper_stopped,
+                "control_session": session is not None and session.is_open,
+                "notice": STOP_NOTICE,
+            }
+
+        return self
+
+    def _install_arm(self, app, login, claim, limits):
         @app.post("/connect", tags=["control"], dependencies=[claim])
         def connect(identity: dict = login):
             """Open the owned RTDE control session (uploads the control script)."""
@@ -328,27 +406,3 @@ class URControl:
                 "commissioning_id": limits.commissioning_id,
             }
 
-        @app.post("/control/stop", tags=["control"])
-        @app.post("/move/stop", tags=["control"])
-        def stop(identity: dict = login):
-            """Identity-gated safety floor: no claim needed to ask for a stop."""
-            executor, session = self.executor, self.session
-            requested, error = False, None
-            if executor is not None:
-                executor.request_stop()
-                requested = True
-            if session is not None and session.is_open:
-                try:
-                    requested = session.stop(limits.stop_deceleration_deg_s2) or requested
-                except Exception as exc:
-                    error = str(exc)
-            self.event("stop", identity, requested=requested, error=error)
-            return {
-                "stop_requested": requested,
-                "stop_confirmed": False,
-                "stop_error": error,
-                "control_session": session is not None and session.is_open,
-                "notice": STOP_NOTICE,
-            }
-
-        return self

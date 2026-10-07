@@ -762,7 +762,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     
                     if (gripperStrokeInput) {
                         gripperStrokeInput.disabled = false;
-                        gripperStrokeInput.placeholder = "";
+                        // Backends that name their units (UR Robotiq: mm opening)
+                        // show the range; the xArm reports none and stays blank.
+                        gripperStrokeInput.placeholder = gripperConfig.stroke_units
+                            ? `${minStroke}–${maxStroke} ${gripperConfig.stroke_units}` : "";
                         gripperStrokeInput.min = minStroke.toString();
                         gripperStrokeInput.max = maxStroke.toString();
                     }
@@ -794,7 +797,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     if (gripperForceInput) {
                         gripperForceInput.disabled = false;
-                        gripperForceInput.placeholder = "";
+                        gripperForceInput.placeholder = gripperConfig.force_units
+                            ? `${minForce}–${maxForce} %` : "";
+                        gripperForceInput.title = gripperConfig.force_units || "";
                         gripperForceInput.min = minForce.toString();
                         gripperForceInput.max = maxForce.toString();
                         if (!gripperForceInput.value && gripperConfig.force) {
