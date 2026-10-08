@@ -1,21 +1,38 @@
-# Robot Motion — development branch
+# Robot Motion
 
 Installs as robot-motion with the API and the shared web UI (src/web) included
 by default. Optional extras are [xarm], [ur], and [mg400] (reserved; MG400 is
-not implemented yet). Run robot-motion serve for the observation/graph-preview
-prototype, or robot-motion drivers for an offline capability inventory. UR
-model profiles are ur3e, ur5e and ur5_cb3. The UR service has no UI of its
-own: it serves the shared xArm panel read-only and maps RTDE telemetry into
-the status keys that panel reads. Physical UR control is limited to
-config-gated, identity-checked, hard-claimed single-joint steps that are not
-yet commissioned (see the packaged JOINT_STEP_CONTROL.md); without that local
-config the service has no /control routes. Machine configuration, control
-limits and calibrated graphs belong in *.local.json.
+not implemented yet). Run robot-motion serve for the UR service, or
+robot-motion drivers for an offline capability inventory. UR model profiles
+are ur3e, ur5e and ur5_cb3. The UR service serves the shared panel and maps
+RTDE telemetry into the status keys that panel reads. Physical UR control (arm
+motion, the Robotiq gripper, manual mode and force zeroing) is config-gated,
+identity-checked and hard-claimed; without the local control config the
+service has no /control routes (see the packaged ARM_MOTION.md and
+GRIPPER_CONTROL.md). Machine configuration, control limits and calibrated
+graphs belong in *.local.json.
 
 The existing xArm5 application remains available through pyxarm and the explicit
 robot-motion legacy-xarm command after installing [xarm]. Its controller,
-API, hard claims, UI, graph interlocks and settings are unchanged. Existing
-xArm services must stay on their pinned release until a separate reviewed migration.
+API, hard claims, UI, graph interlocks and settings are unchanged.
+
+### Branches and deployments
+
+main carries the unified UI and API. Each deployed robot runs its own branch,
+and main reaches a robot only when it is merged into that branch with someone
+at the robot.
+
+| Branch | Robot | Checkout and service |
+|---|---|---|
+| debug-xarm5 | xArm5 on sdl2-pc-03-cytation | `C:\Users\sdl2\Projects\xarm-translocation`, NSSM `xarm` |
+| debug-ur5e | ligand_ur5e on sdl2-pc-05 | `C:\Users\sdl2\Projects\robot-motion`, NSSM `robot-motion-prototype` |
+
+xarm-python-sdk is in the [xarm] extra. A service started with `uv run`
+re-syncs the environment on every start and removes extras it was not asked
+for, so when debug-xarm5 first takes this layout, the `xarm` service's
+AppParameters must change from `run pyxarm web` to
+`run --extra xarm pyxarm web`. The UR service runs the checkout's Python
+directly and does not re-sync.
 
 See [the packaged operator guide](src/robot_motion/docs/AGENT_GUIDE.md).
 This prototype implements the STATUS_SPEC v1.2 read-only profile; the legacy

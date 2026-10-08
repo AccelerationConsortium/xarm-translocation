@@ -57,6 +57,8 @@ cover/
 .env
 *.local.json
 .state/
+# Vendor manuals are linked from docs/vendor/README.md, not committed.
+docs/vendor/*.pdf
 .venv
 env/
 venv/
