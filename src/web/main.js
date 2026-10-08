@@ -35,6 +35,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const stopBtn = document.getElementById('stop-btn');
     const clearErrorsBtn = document.getElementById('clear-errors-btn');
+    const zeroForceBtn = document.getElementById('zero-force-btn');
+    const forceZeroRow = document.getElementById('force-zero-row');
+    const tcpForceReadout = document.getElementById('tcp-force-readout');
 
     const openGripperBtn = document.getElementById('open-gripper-btn');
     const closeGripperBtn = document.getElementById('close-gripper-btn');
@@ -70,6 +73,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Tracks connection state so updateTakeControlBtn() can layer the login
     // gate on top of the connection gate (setControlsState owns connection).
     let controllerConnected = false;
+    // Last UR status applied by applyArmSessionGates (null for the xArm).
+    let lastArmGateData = null;
+    let lastHasTrack = null;
     const CLAIM_OWNER = 'human@xarm-web';
     // Prefer the signed-in identity from the shared auth banner
     // (/auth/banner.js, served by ac_auth) so details.claimed_by and the lab
@@ -416,10 +422,17 @@ document.addEventListener('DOMContentLoaded', () => {
             current_joints: details.current_joints,
             num_joints: details.num_joints || null,
             track_position: trackMetric ? trackMetric.value : null,
+            // A status without a track component has no rail (the UR, or an
+            // xArm connected without one); a disconnected xArm still lists it.
+            has_track: !!components.track,
             motion_graph: details.motion_graph || null,
             manual_mode: details.manual_mode === true,
             claimed_by: details.claimed_by || null,
             sash_interlock: (details.interlocks || {}).fume_hood_sash || null,
+            // UR robot-motion only: its arm session and server-side gates.
+            control_session: details.control_session || null,
+            tcp_force: (details.telemetry && details.telemetry.tcp_force) || null,
+            allowed_actions: Array.isArray(envelope.allowed_actions) ? envelope.allowed_actions : [],
         };
     }
 
@@ -762,7 +775,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     
                     if (gripperStrokeInput) {
                         gripperStrokeInput.disabled = false;
-                        gripperStrokeInput.placeholder = "";
+                        // Backends that name their units (UR Robotiq: mm opening)
+                        // show the range; the xArm reports none and stays blank.
+                        gripperStrokeInput.placeholder = gripperConfig.stroke_units
+                            ? `${minStroke}–${maxStroke} ${gripperConfig.stroke_units}` : "";
                         gripperStrokeInput.min = minStroke.toString();
                         gripperStrokeInput.max = maxStroke.toString();
                     }
@@ -794,7 +810,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                     if (gripperForceInput) {
                         gripperForceInput.disabled = false;
-                        gripperForceInput.placeholder = "";
+                        gripperForceInput.placeholder = gripperConfig.force_units
+                            ? `${minForce}–${maxForce} %` : "";
+                        gripperForceInput.title = gripperConfig.force_units || "";
                         gripperForceInput.min = minForce.toString();
                         gripperForceInput.max = maxForce.toString();
                         if (!gripperForceInput.value && gripperConfig.force) {
@@ -925,6 +943,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 // enabling. STOP / Clear Errors are never claim-locked.
                 applyClaimLock(claimToken !== null);
                 updateClaimIndicator(data.claimed_by);
+                // UR arm session gates layer on top (no-op for the xArm).
+                applyArmSessionGates(data);
+                lastHasTrack = data.has_track;
+                applyRailAvailability(data.has_track);
+                // Only the UR service reports a control_session.
+                applyUrConnectOptions(!!data.control_session);
                 // Re-assert the moving lock after the other locks have settled
                 // moveJointsBtn's disabled state (which it mirrors).
                 applyMovingLock(isRobotMoving);
@@ -1937,6 +1961,133 @@ document.addEventListener('DOMContentLoaded', () => {
         addLogEntry('Claim lost (expired or held elsewhere)', 'error');
     }
 
+    // UR robot-motion: "connected" above means the controller is observed
+    // ready, but the arm only moves inside a session (/connect opens it). So
+    // Connect, Disconnect and the motion buttons follow the server's
+    // allowed_actions, which already fold in the claim-free preconditions
+    // (Remote Control, workspace, latched stop, a move in progress). Like the
+    // xArm, Connect/Disconnect need no claim, only that nobody else holds
+    // control; moves still do. Only disables what the server would refuse;
+    // never enables a claim-locked control. xArm statuses carry no
+    // control_session.arm_control: no-op.
+    function applyArmSessionGates(data) {
+        const session = data && data.control_session;
+        if (!session || session.arm_control !== true) return;
+        lastArmGateData = data;
+        const allowed = new Set(data.allowed_actions || []);
+        const locked = loginRequiredButNotSignedIn();
+        const held = claimToken !== null;
+        const holder = data.claimed_by;
+        const heldElsewhere = !held && !!holder;
+        const elsewhereTitle = heldElsewhere ? `Controlled by ${holder.owner}` : '';
+        if (connectBtn) {
+            connectBtn.disabled = locked || heldElsewhere || !allowed.has('connect');
+            connectBtn.title = elsewhereTitle || (allowed.has('connect') ? '' : 'Not available now (see status)');
+        }
+        if (disconnectBtn) {
+            disconnectBtn.disabled = locked || heldElsewhere || !allowed.has('disconnect');
+            disconnectBtn.title = elsewhereTitle;
+        }
+        const gate = (el, action) => { if (el && !allowed.has(action)) el.disabled = true; };
+        gate(moveJointsBtn, 'arm.move_joints');
+        // Move Joints sends all six boxes; without live joints they may hold
+        // stale angles that would drive the other joints back.
+        if (moveJointsBtn && !Array.isArray(data.current_joints)) moveJointsBtn.disabled = true;
+        jogBtnIds.forEach(id => gate(document.getElementById(id), 'arm.jog_linear'));
+        // Manual (teach) mode: the holder may turn it on when the service
+        // offers it, and off whenever it is on (offered then too).
+        if (manualModeCheckbox) {
+            const canToggle = !locked && held && allowed.has('arm.manual_mode');
+            manualModeCheckbox.disabled = !canToggle;
+            if (manualModeSwitch) {
+                manualModeSwitch.classList.toggle('is-disabled', !canToggle);
+                manualModeSwitch.title = canToggle
+                    ? 'Teach mode: guide the arm by hand. Moves are locked while it is on; STOP or Disconnect also turn it off.'
+                    : (held ? 'Not available now: connect, and the arm must be still with no stop latched'
+                            : (elsewhereTitle || 'Take Control first'));
+            }
+        }
+        // Clear errors clears this service's stop latch (claimed): offer it
+        // only to the holder, and only when there is a latch to clear.
+        if (clearErrorsBtn && (!held || !allowed.has('control.reset'))) clearErrorsBtn.disabled = true;
+        // Zero force: shown only while the arm session is open, offered to the
+        // holder while the service allows it (arm still, Manual off).
+        if (forceZeroRow) {
+            forceZeroRow.hidden = session.open !== true;
+            const magnitude = data.tcp_force && data.tcp_force.force_magnitude_n;
+            if (tcpForceReadout) {
+                tcpForceReadout.textContent = Number.isFinite(magnitude) ? `${magnitude.toFixed(1)} N` : '—';
+            }
+        }
+        if (zeroForceBtn) {
+            const canZero = controllerConnected && !locked && held && allowed.has('arm.zero_force_sensor');
+            zeroForceBtn.disabled = !canZero;
+            zeroForceBtn.title = canZero
+                ? 'Make the current force reading zero. Keep the arm still and the gripper empty.'
+                : !held ? (elsewhereTitle || 'Take Control first')
+                : data.manual_mode ? 'Turn Manual off first'
+                : controllerConnected ? 'Not available now: the arm must be still' : 'Not available now';
+        }
+        // No named locations on this service.
+        [movePredefinedBtn, moveLinearBtn, predefinedPositionSelect].forEach(el => {
+            if (el) el.disabled = true;
+        });
+    }
+
+    // No rail: show N/A instead of a speed and range that do not exist, and
+    // grey the rail controls. Restores the operator's speed if a rail appears.
+    function applyRailAvailability(hasTrack) {
+        const range = document.getElementById('track-range-display');
+        if (!hasTrack) {
+            if (trackSpeedInput && trackSpeedInput.dataset.noRail !== '1') {
+                trackSpeedInput.dataset.noRail = '1';
+                trackSpeedInput.dataset.savedValue = trackSpeedInput.value;
+                trackSpeedInput.dataset.savedPlaceholder = trackSpeedInput.placeholder;
+                trackSpeedInput.value = '';
+                trackSpeedInput.placeholder = 'N/A';
+                if (range) {
+                    range.dataset.savedText = range.textContent;
+                    range.textContent = 'N/A';
+                }
+            }
+            [trackSpeedInput, trackLocationSelect, moveTrackLocBtn].forEach(el => {
+                if (el) {
+                    el.disabled = true;
+                    el.title = 'No rail on this robot';
+                }
+            });
+            return;
+        }
+        if (trackSpeedInput && trackSpeedInput.dataset.noRail === '1') {
+            trackSpeedInput.dataset.noRail = '';
+            trackSpeedInput.value = trackSpeedInput.dataset.savedValue || '';
+            trackSpeedInput.placeholder = trackSpeedInput.dataset.savedPlaceholder || '';
+            if (range && range.dataset.savedText) range.textContent = range.dataset.savedText;
+            [trackSpeedInput, trackLocationSelect, moveTrackLocBtn].forEach(el => {
+                if (el && el.title === 'No rail on this robot') el.title = '';
+            });
+        }
+    }
+
+    // The UR service ignores the xArm's connect options (its speed caps come
+    // from its config), so show N/A instead of a choice that does nothing.
+    function applyUrConnectOptions(isUr) {
+        if (!safetyLevelSelect || safetyLevelSelect.dataset.ur === (isUr ? '1' : '')) return;
+        safetyLevelSelect.dataset.ur = isUr ? '1' : '';
+        if (isUr) {
+            safetyLevelSelect.dataset.savedHtml = safetyLevelSelect.innerHTML;
+            safetyLevelSelect.innerHTML = '<option value="">N/A</option>';
+        } else if (safetyLevelSelect.dataset.savedHtml) {
+            safetyLevelSelect.innerHTML = safetyLevelSelect.dataset.savedHtml;
+        }
+        safetyLevelSelect.disabled = isUr;
+        safetyLevelSelect.title = isUr ? 'Not used on the UR: its speed caps come from the service config' : '';
+        if (configSelect) {
+            configSelect.disabled = isUr;
+            configSelect.title = isUr ? 'This service drives one robot' : '';
+        }
+    }
+
     function setControlsState(enabled) {
         // Enable/disable control buttons based on connection state.
         // takeControlBtn is NOT in this list: acquiring a claim needs a
@@ -2012,6 +2163,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // Reconcile the Take Control button now that connection is recorded
         // (layers the login gate on top of the connection gate).
         updateTakeControlBtn();
+        // UR arm gates from the last status, so a sign-in change or claim
+        // update between polls cannot re-enable what the server would refuse.
+        if (lastArmGateData) applyArmSessionGates(lastArmGateData);
+        if (lastHasTrack !== null) applyRailAvailability(lastHasTrack);
     }
 
     // Gripper / Linear Track lock bubbles: visible only while those
@@ -2235,7 +2390,11 @@ document.addEventListener('DOMContentLoaded', () => {
             // Friendly display names for known profiles; fall back to a humanized
             // version of the raw profile name. Option values stay the raw profile
             // name so /connect keeps receiving robot / docker.
-            const profileLabels = { robot: 'Robot', docker: 'Docker' };
+            const profileLabels = {
+                robot: 'Robot', docker: 'Docker',
+                // robot-motion UR profiles (values are its model ids)
+                ur3e: 'UR-3e', ur5e: 'UR-5e', ur5_cb3: 'UR5 CB3',
+            };
             const label = p => profileLabels[p] || p.replace(/_/g, ' ').toUpperCase();
             configSelect.innerHTML = profiles.map(p =>
                 `<option value="${p}"${p === 'robot' ? ' selected' : ''}>${label(p)}</option>`
@@ -2358,6 +2517,15 @@ document.addEventListener('DOMContentLoaded', () => {
     clearErrorsBtn.addEventListener('click', () => {
         apiRequest('/clear/errors', 'POST');
     });
+    if (zeroForceBtn) {
+        zeroForceBtn.addEventListener('click', () => {
+            const prompt = 'Zero the force sensor?\n\n' +
+                'Whatever it feels now becomes zero, so keep the arm still ' +
+                'and the gripper empty.';
+            if (!confirm(prompt)) return;
+            apiRequest('/control/force/zero', 'POST');
+        });
+    }
 
     // Sash interlock banner controls. Wired unconditionally (the buttons live
     // in a hidden banner and renderSashBanner decides when each is shown).
@@ -2373,13 +2541,21 @@ document.addEventListener('DOMContentLoaded', () => {
     if (manualModeCheckbox) {
         manualModeCheckbox.addEventListener('change', () => {
             const enable = manualModeCheckbox.checked;
-            if (enable && !confirm(
-                'Enable Manual Mode?\n\n' +
-                'This releases the joint brakes so the arm can be moved by hand. ' +
-                'Support the arm before continuing — it may sag under its own ' +
-                'weight or payload.\n\n' +
-                'XYZ and joint controls are locked while manual mode is on.'
-            )) {
+            // UR teach mode holds the arm against gravity using the payload
+            // set on the pendant; the xArm releases its brakes.
+            const prompt = lastArmGateData
+                ? 'Enable Manual Mode?\n\n' +
+                  'Teach mode: the arm can be pushed by hand. It holds itself up ' +
+                  'using the payload set on the pendant; if that payload is wrong ' +
+                  'the arm drifts, so keep a hand on it.\n\n' +
+                  'Moves are locked while manual mode is on. Turn it off here; ' +
+                  'STOP or Disconnect also turn it off.'
+                : 'Enable Manual Mode?\n\n' +
+                  'This releases the joint brakes so the arm can be moved by hand. ' +
+                  'Support the arm before continuing — it may sag under its own ' +
+                  'weight or payload.\n\n' +
+                  'XYZ and joint controls are locked while manual mode is on.';
+            if (enable && !confirm(prompt)) {
                 // User backed out — revert the optimistic flip immediately;
                 // the next /status poll would also correct it.
                 manualModeCheckbox.checked = false;

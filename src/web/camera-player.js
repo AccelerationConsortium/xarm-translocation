@@ -381,6 +381,9 @@
                 configured = true;
                 connected = !!data.connected;
                 card.hidden = false;
+                // A service with no motion-graph runner (robot_motion's UR
+                // panel) cannot follow the arm: drop the toggle, keep the video.
+                sw.hidden = data.follow_supported === false;
 
                 // Follow toggle is only actionable with a connected controller
                 // (POST /camera/follow needs one). Reflect the reported state.

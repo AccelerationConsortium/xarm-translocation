@@ -1,0 +1,35 @@
+"""Driver discovery is metadata-only; vendor SDKs load only on explicit use."""
+
+from importlib.util import find_spec
+
+
+def inventory():
+    # Imported here: config imports drivers.joint_step for its control block.
+    from ..config import MODELS
+
+    return {
+        "ui_included": True,
+        "drivers": {
+            "xarm": {
+                "extra": "xarm",
+                "sdk_installed": find_spec("xarm") is not None,
+                "implementation": "legacy",
+                "control": "existing xArm application only",
+            },
+            "ur": {
+                "extra": "ur",
+                "sdk_installed": find_spec("rtde_receive") is not None,
+                "implementation": "observe",
+                "observation_transports": ["dashboard", "rtde_receive"],
+                "rtde_wrapper": "automated-lle URArm adaptation",
+                "control": "joint_step or motion (config-gated; not commissioned)",
+            },
+            "mg400": {
+                "extra": "mg400",
+                "sdk_installed": False,
+                "implementation": "planned",
+                "control": "not yet implemented",
+            },
+        },
+        "models": MODELS,
+    }

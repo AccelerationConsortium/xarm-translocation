@@ -39,7 +39,7 @@
         if (embedded) setInterval(applyTheme, 1000);
       })();
     </script>
-    <link rel="stylesheet" href="style.css?v=20260930-camera-controls">
+    <link rel="stylesheet" href="style.css?v=20261008-ur-force-zero">
     <link rel="stylesheet" href="graph.css?v=20260930-camera-controls">
     <link rel="stylesheet" href="workspace.css?v=20260930-joint-readings">
 </head>
@@ -467,6 +467,12 @@
                                     <input type="number" id="jog-step" value="10" min="1" max="500" class="inline-input" disabled>
                                     <span class="inline-unit">mm</span>
                                 </div>
+                                <!-- UR only: shown while an arm session is open. -->
+                                <div class="force-zero-row" id="force-zero-row" hidden>
+                                    <span class="inline-label">Force</span>
+                                    <span class="force-readout" id="tcp-force-readout">—</span>
+                                    <button id="zero-force-btn" class="btn" disabled>Zero force</button>
+                                </div>
                             </div>
                         </div>
                     </div><!-- /pane-arm-grid -->
@@ -714,9 +720,9 @@
         document.body.appendChild(_b);
       }
     </script>
-    <script src="camera-player.js?v=20260930-camera-controls"></script>
+    <script src="camera-player.js?v=20261007-follow-supported"></script>
     <script src="realsense-card.js?v=20260930-camera-controls"></script>
-    <script src="main.js?v=20260930-clean-labels"></script>
+    <script src="main.js?v=20261008-ur-force-zero"></script>
     <script src="cytoscape.min.js"></script>
     <script src="graph.js?v=20260930-camera-controls"></script>
     <script src="workspace.js?v=20260930-node-pill"></script>

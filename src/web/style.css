@@ -2007,6 +2007,19 @@ input#linear-speed {
     color: var(--ink-muted);
 }
 
+.force-zero-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--ink-muted);
+}
+
+.force-readout {
+    min-width: 4.5em;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+}
+
 /* ── Horizontal Joint Angles card ───────────────────────────────────── */
 
 .panel-unit {
