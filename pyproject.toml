@@ -50,7 +50,7 @@ dependencies = [
 sdl-lab-contract = { git = "https://github.com/AccelerationConsortium/sdl-lab-contract", tag = "v1.2.0" }
 
 [project.optional-dependencies]
-xarm = ["xarm-python-sdk>=1.13.0"]
+xarm = ["xarm-python-sdk>=1.18.4"]
 ur = ["ur-rtde>=1.6,<2", "scipy>=1.11"]
 # Reserved for future MG400 support. Installing it does not add a driver yet.
 mg400 = []
