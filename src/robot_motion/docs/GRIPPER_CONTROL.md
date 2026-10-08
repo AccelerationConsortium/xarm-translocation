@@ -108,3 +108,16 @@ Supervised by the operator at the robot, through the dashboard edge, speed
 - Open settles at raw 3. Two closes on nothing reported raw 227 and 255 (both
   `OBJ 3`); `closed_raw` stays at the 255 default until a measured close on
   nothing confirms the real end.
+
+Stroke calibration (2026-10-08, operator at the robot, 30 % speed, 10 % force,
+25 ms GET-only register log):
+
+- Five closes on nothing all stopped at raw 227-228 with `OBJ 3`, and every
+  open settled at raw 3. The single 255 from 2026-10-07 did not recur.
+- A 70 mm stroke move under the default mapping (0 / 255) went to raw 128,
+  and the operator measured a 62 mm finger gap. A linear map with raw 3 as
+  140 mm and raw 228 as 0 mm predicts 62.2 mm there.
+- The pc-05 config now sets `open_raw: 3` and `closed_raw: 228`, so Open and
+  Close command those registers, the panel reads 140 / 0 mm at the ends, and
+  a 70 mm move goes to raw 116 (69.7 mm predicted). Backup:
+  `.state/robot-motion.local.json.bak-20261008-pre-gripper-cal`.
