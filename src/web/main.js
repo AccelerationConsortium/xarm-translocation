@@ -72,6 +72,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let controllerConnected = false;
     // Last UR status applied by applyArmSessionGates (null for the xArm).
     let lastArmGateData = null;
+    let lastHasTrack = null;
     const CLAIM_OWNER = 'human@xarm-web';
     // Prefer the signed-in identity from the shared auth banner
     // (/auth/banner.js, served by ac_auth) so details.claimed_by and the lab
@@ -418,6 +419,9 @@ document.addEventListener('DOMContentLoaded', () => {
             current_joints: details.current_joints,
             num_joints: details.num_joints || null,
             track_position: trackMetric ? trackMetric.value : null,
+            // A status without a track component has no rail (the UR, or an
+            // xArm connected without one); a disconnected xArm still lists it.
+            has_track: !!components.track,
             motion_graph: details.motion_graph || null,
             manual_mode: details.manual_mode === true,
             claimed_by: details.claimed_by || null,
@@ -937,6 +941,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateClaimIndicator(data.claimed_by);
                 // UR arm session gates layer on top (no-op for the xArm).
                 applyArmSessionGates(data);
+                lastHasTrack = data.has_track;
+                applyRailAvailability(data.has_track);
+                // Only the UR service reports a control_session.
+                applyUrConnectOptions(!!data.control_session);
                 // Re-assert the moving lock after the other locks have settled
                 // moveJointsBtn's disabled state (which it mirrors).
                 applyMovingLock(isRobotMoving);
@@ -1991,6 +1999,60 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // No rail: show N/A instead of a speed and range that do not exist, and
+    // grey the rail controls. Restores the operator's speed if a rail appears.
+    function applyRailAvailability(hasTrack) {
+        const range = document.getElementById('track-range-display');
+        if (!hasTrack) {
+            if (trackSpeedInput && trackSpeedInput.dataset.noRail !== '1') {
+                trackSpeedInput.dataset.noRail = '1';
+                trackSpeedInput.dataset.savedValue = trackSpeedInput.value;
+                trackSpeedInput.dataset.savedPlaceholder = trackSpeedInput.placeholder;
+                trackSpeedInput.value = '';
+                trackSpeedInput.placeholder = 'N/A';
+                if (range) {
+                    range.dataset.savedText = range.textContent;
+                    range.textContent = 'N/A';
+                }
+            }
+            [trackSpeedInput, trackLocationSelect, moveTrackLocBtn].forEach(el => {
+                if (el) {
+                    el.disabled = true;
+                    el.title = 'No rail on this robot';
+                }
+            });
+            return;
+        }
+        if (trackSpeedInput && trackSpeedInput.dataset.noRail === '1') {
+            trackSpeedInput.dataset.noRail = '';
+            trackSpeedInput.value = trackSpeedInput.dataset.savedValue || '';
+            trackSpeedInput.placeholder = trackSpeedInput.dataset.savedPlaceholder || '';
+            if (range && range.dataset.savedText) range.textContent = range.dataset.savedText;
+            [trackSpeedInput, trackLocationSelect, moveTrackLocBtn].forEach(el => {
+                if (el && el.title === 'No rail on this robot') el.title = '';
+            });
+        }
+    }
+
+    // The UR service ignores the xArm's connect options (its speed caps come
+    // from its config), so show N/A instead of a choice that does nothing.
+    function applyUrConnectOptions(isUr) {
+        if (!safetyLevelSelect || safetyLevelSelect.dataset.ur === (isUr ? '1' : '')) return;
+        safetyLevelSelect.dataset.ur = isUr ? '1' : '';
+        if (isUr) {
+            safetyLevelSelect.dataset.savedHtml = safetyLevelSelect.innerHTML;
+            safetyLevelSelect.innerHTML = '<option value="">N/A</option>';
+        } else if (safetyLevelSelect.dataset.savedHtml) {
+            safetyLevelSelect.innerHTML = safetyLevelSelect.dataset.savedHtml;
+        }
+        safetyLevelSelect.disabled = isUr;
+        safetyLevelSelect.title = isUr ? 'Not used on the UR: its speed caps come from the service config' : '';
+        if (configSelect) {
+            configSelect.disabled = isUr;
+            configSelect.title = isUr ? 'This service drives one robot' : '';
+        }
+    }
+
     function setControlsState(enabled) {
         // Enable/disable control buttons based on connection state.
         // takeControlBtn is NOT in this list: acquiring a claim needs a
@@ -2069,6 +2131,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // UR arm gates from the last status, so a sign-in change or claim
         // update between polls cannot re-enable what the server would refuse.
         if (lastArmGateData) applyArmSessionGates(lastArmGateData);
+        if (lastHasTrack !== null) applyRailAvailability(lastHasTrack);
     }
 
     // Gripper / Linear Track lock bubbles: visible only while those

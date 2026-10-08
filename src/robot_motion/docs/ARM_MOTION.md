@@ -202,9 +202,12 @@ stop on the pendant, then Disconnect and Connect.
 For UR the panel's Connect and Disconnect follow `allowed_actions` instead of
 "controller ready". Neither needs Take Control, but both are disabled while
 someone else holds control. Move Joints and the XYZ jog buttons are enabled
-only while the moves are offered, and Clear errors only while latched. Named-location moves do not exist here and stay disabled. The
-joint inputs take absolute degrees; the jog step is in mm; the speed boxes
-are deg/s and mm/s, refused above the caps.
+only while the moves are offered, and Clear errors only while latched.
+Named-location moves do not exist here and stay disabled. The rail controls
+read N/A and stay disabled (there is no rail), as do Safety level and Connect
+to: the speed caps come from the config, not the panel. The joint inputs take
+absolute degrees; the jog step is in mm; the speed boxes are deg/s and mm/s,
+refused above the caps.
 
 ## Before the first live move
 
