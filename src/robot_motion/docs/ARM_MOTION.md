@@ -252,7 +252,10 @@ For UR the panel's Connect and Disconnect follow `allowed_actions` instead of
 someone else holds control. Move Joints and the XYZ jog buttons are enabled
 only while the moves are offered, and Clear errors only while latched.
 The Manual switch follows `arm.manual_mode`, for the claim holder only, and
-shows "Manual (drag)" while on. Named-location moves do not exist here and
+shows "Manual (drag)" while on. Zero force, under the jog step, appears
+only while the arm session is open. It shows the TCP force magnitude and is
+enabled for the claim holder while `arm.zero_force_sensor` is offered (arm
+still, Manual off). Named-location moves do not exist here and
 stay disabled. The rail controls
 read N/A and stay disabled (there is no rail), as do Safety level and Connect
 to: the speed caps come from the config, not the panel. The joint inputs take

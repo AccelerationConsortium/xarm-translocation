@@ -35,6 +35,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const stopBtn = document.getElementById('stop-btn');
     const clearErrorsBtn = document.getElementById('clear-errors-btn');
+    const zeroForceBtn = document.getElementById('zero-force-btn');
+    const forceZeroRow = document.getElementById('force-zero-row');
+    const tcpForceReadout = document.getElementById('tcp-force-readout');
 
     const openGripperBtn = document.getElementById('open-gripper-btn');
     const closeGripperBtn = document.getElementById('close-gripper-btn');
@@ -428,6 +431,7 @@ document.addEventListener('DOMContentLoaded', () => {
             sash_interlock: (details.interlocks || {}).fume_hood_sash || null,
             // UR robot-motion only: its arm session and server-side gates.
             control_session: details.control_session || null,
+            tcp_force: (details.telemetry && details.telemetry.tcp_force) || null,
             allowed_actions: Array.isArray(envelope.allowed_actions) ? envelope.allowed_actions : [],
         };
     }
@@ -2006,6 +2010,24 @@ document.addEventListener('DOMContentLoaded', () => {
         // Clear errors clears this service's stop latch (claimed): offer it
         // only to the holder, and only when there is a latch to clear.
         if (clearErrorsBtn && (!held || !allowed.has('control.reset'))) clearErrorsBtn.disabled = true;
+        // Zero force: shown only while the arm session is open, offered to the
+        // holder while the service allows it (arm still, Manual off).
+        if (forceZeroRow) {
+            forceZeroRow.hidden = session.open !== true;
+            const magnitude = data.tcp_force && data.tcp_force.force_magnitude_n;
+            if (tcpForceReadout) {
+                tcpForceReadout.textContent = Number.isFinite(magnitude) ? `${magnitude.toFixed(1)} N` : '—';
+            }
+        }
+        if (zeroForceBtn) {
+            const canZero = controllerConnected && !locked && held && allowed.has('arm.zero_force_sensor');
+            zeroForceBtn.disabled = !canZero;
+            zeroForceBtn.title = canZero
+                ? 'Make the current force reading zero. Keep the arm still and the gripper empty.'
+                : !held ? (elsewhereTitle || 'Take Control first')
+                : data.manual_mode ? 'Turn Manual off first'
+                : controllerConnected ? 'Not available now: the arm must be still' : 'Not available now';
+        }
         // No named locations on this service.
         [movePredefinedBtn, moveLinearBtn, predefinedPositionSelect].forEach(el => {
             if (el) el.disabled = true;
@@ -2495,6 +2517,15 @@ document.addEventListener('DOMContentLoaded', () => {
     clearErrorsBtn.addEventListener('click', () => {
         apiRequest('/clear/errors', 'POST');
     });
+    if (zeroForceBtn) {
+        zeroForceBtn.addEventListener('click', () => {
+            const prompt = 'Zero the force sensor?\n\n' +
+                'Whatever it feels now becomes zero, so keep the arm still ' +
+                'and the gripper empty.';
+            if (!confirm(prompt)) return;
+            apiRequest('/control/force/zero', 'POST');
+        });
+    }
 
     // Sash interlock banner controls. Wired unconditionally (the buttons live
     // in a hidden banner and renderSashBanner decides when each is shown).
