@@ -162,10 +162,16 @@ twice.
 A STOP (even with the arm idle), or any failure after dispatch, latches the
 session: moves answer 412 `motion_latched`, and `allowed_actions` offers
 `control.reset`. Request ids that already ran stay remembered across a reset.
-Stopping the service stops an in-flight move before closing the session. Reset (the
-panel's Clear errors) needs a running control script, RUNNING/NORMAL and a
-still arm. After a protective stop the controller ends the script. Clear the
-stop on the pendant, then Disconnect and Connect.
+Reset (the panel's Clear errors) needs a running control script,
+RUNNING/NORMAL and a still arm. After a protective stop the controller ends
+the script. Clear the stop on the pendant, then Disconnect and Connect.
+
+Stopping the service stops an in-flight move and closes the session before
+anything else shuts down. This needs time: open connections get at most 3 s,
+and NSSM must allow the shutdown to finish (`AppStopMethodConsole` 15000 ms;
+the 1.5 s default killed the process mid-shutdown on 2026-10-08). A process
+killed with a session open leaves the stop to the controller's watchdog, and
+that left the arm in a protective stop. Disconnect before a planned restart.
 
 ## Status
 

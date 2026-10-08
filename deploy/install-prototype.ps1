@@ -65,6 +65,9 @@ Invoke-Nssm -Arguments @('set',$serviceName,'Description','Read-only UR observat
 Invoke-Nssm -Arguments @('set',$serviceName,'Start','SERVICE_AUTO_START')
 Invoke-Nssm -Arguments @('set',$serviceName,'AppExit','Default','Restart')
 Invoke-Nssm -Arguments @('set',$serviceName,'AppRestartDelay','5000')
+# Ctrl+C, then up to 15 s for the app's shutdown (it stops and closes an arm
+# session) before NSSM escalates. The 1.5 s default killed it mid-shutdown.
+Invoke-Nssm -Arguments @('set',$serviceName,'AppStopMethodConsole','15000')
 Invoke-Nssm -Arguments @('set',$serviceName,'AppStdout',(Join-Path $logs 'stdout.log'))
 Invoke-Nssm -Arguments @('set',$serviceName,'AppStderr',(Join-Path $logs 'stderr.log'))
 Invoke-Nssm -Arguments @('set',$serviceName,'AppRotateFiles','1')

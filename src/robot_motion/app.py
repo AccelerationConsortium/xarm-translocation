@@ -185,6 +185,10 @@ def create_app(
         try:
             yield
         finally:
+            # The arm first: stop any move and close its session while the
+            # service manager's shutdown allowance is still running.
+            if control is not None:
+                await asyncio.to_thread(control.shutdown)
             for running in (task, telemetry_task):
                 if running:
                     running.cancel()
@@ -194,8 +198,6 @@ def create_app(
                         pass
             if observer is not None and callable(getattr(observer, "close", None)):
                 await asyncio.to_thread(observer.close)
-            if control is not None:
-                await asyncio.to_thread(control.shutdown)
             await asyncio.to_thread(cameras.close)
             if gripper is not None:
                 await asyncio.to_thread(gripper.close)

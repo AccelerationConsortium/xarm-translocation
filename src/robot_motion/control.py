@@ -406,6 +406,7 @@ class URControl:
             except Exception:
                 log.exception("Stop at shutdown failed")
             session.close()
+            log.info("Arm session stopped and closed at shutdown")
 
     def _new_executor(self, session, seen=None):
         common = dict(

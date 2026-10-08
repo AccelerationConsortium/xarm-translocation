@@ -41,7 +41,10 @@ def main():
         app = create_app(load_settings(args.config))
     import uvicorn
 
-    uvicorn.run(app, host=args.host, port=args.port, workers=1)
+    # Bound the wait for open connections (camera streams, the status push)
+    # so the app's shutdown, which stops and closes an arm session, always
+    # runs before the service manager gives up and kills the process.
+    uvicorn.run(app, host=args.host, port=args.port, workers=1, timeout_graceful_shutdown=3)
 
 
 if __name__ == "__main__":
