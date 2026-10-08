@@ -300,6 +300,29 @@ def test_claim_lifecycle_with_hard_enforcement():
     assert rig.control_calls == [] and rig.control.moves == []
 
 
+def test_session_routes_need_no_claim_until_someone_holds_one():
+    # The xArm order: Connect, then Take Control. Never against another holder.
+    rig = Rig(settings())
+    with rig.client() as client:
+        wait_observed(client)
+        connected = client.post("/connect", headers=HEADERS)
+        assert connected.status_code == 200, connected.text
+        # The session opens, but moving still needs the claim.
+        assert client.post("/control/joint_step", json=step(), headers=HEADERS).status_code == 423
+        assert client.post("/disconnect", headers=HEADERS).status_code == 200
+
+        held = claim(client)
+        refused = client.post("/connect", headers=HEADERS)
+        assert refused.status_code == 423
+        assert refused.json()["detail"]["claimed_by"]["owner"] == OPERATOR
+        assert client.post("/connect", headers={**HEADERS, "X-Claim-Token": "stale"}).status_code == 423
+        assert client.post("/connect", headers=held).status_code == 200
+        assert client.post("/disconnect", headers=HEADERS).status_code == 423
+        assert client.get("/status").json()["details"]["control_session"]["open"] is True
+        assert client.post("/disconnect", headers=held).status_code == 200
+    assert rig.control.moves == []
+
+
 def test_connect_step_stop_and_disconnect_round_trip():
     rig = Rig(settings())
     with rig.client() as client:

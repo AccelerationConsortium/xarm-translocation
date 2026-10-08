@@ -4,8 +4,10 @@ Installed only when Settings.control_enabled is true. Identity is the
 dashboard edge's (X-Auth-User plus X-Edge-Auth matching
 ROBOT_MOTION_EDGE_SHARED_SECRET); without a configured secret every control
 route refuses, so a directly reachable service never trusts client headers.
-Hard claims (core.claims) gate /connect, /disconnect, every arm move and the
-gripper commands (gripper.py); /control/stop needs identity only.
+Hard claims (core.claims) gate every arm move and the gripper commands
+(gripper.py). /connect and /disconnect follow the xArm order (Connect, then
+Take Control): any listed operator may call them while nobody holds control,
+but never against someone else's claim. /control/stop needs identity only.
 
 The arm runs in one of two modes, chosen by the control block: joint_step
 (single tiny steps, the first commissioning primitive) or motion (joint and
@@ -139,6 +141,13 @@ class URControl:
                 },
             )
 
+    def require_claim_if_held(self, x_claim_token: str | None = Header(default=None)):
+        # Session routes: open to any listed operator while control is free,
+        # the holder's token only once someone holds it. Opening a session
+        # moves nothing; every move still needs the claim.
+        if self.claims.claimed_by() is not None:
+            self.require_claim(x_claim_token)
+
     def authorize(self, request, target, commissioning_id):
         # Rechecked by the executors before dispatch, at the exact target, and
         # on every feedback sample: the holder must still be a listed operator
@@ -252,7 +261,7 @@ class URControl:
             return 409, {
                 "error": "no_control_session",
                 "reason": "No arm session; Connect first",
-                "hint": "POST /connect under your claim first",
+                "hint": "POST /connect first",
             }
         busy = getattr(executor, "busy", False)
         if action == "disconnect":
@@ -414,6 +423,7 @@ class URControl:
     def install(self, app):
         login = Depends(self.require_login)
         claim = Depends(self.require_claim)
+        claim_if_held = Depends(self.require_claim_if_held)
 
         @app.post("/control/claim", responses={409: {"model": ClaimRejection}}, tags=["control"])
         def acquire_claim(request: ClaimRequest, identity: dict = login):
@@ -457,7 +467,7 @@ class URControl:
             return Response(status_code=204)
 
         if self.arm_limits is not None:
-            self._install_session(app, login, claim)
+            self._install_session(app, login, claim_if_held)
         if self.arm_mode == "joint_step":
             self._install_joint_step(app, login, claim, self.arm_limits)
         if self.arm_mode == "motion":
@@ -508,8 +518,8 @@ class URControl:
             return self.arm_limits.stop_joint_decel_deg_s2
         return self.arm_limits.stop_deceleration_deg_s2
 
-    def _install_session(self, app, login, claim):
-        @app.post("/connect", tags=["control"], dependencies=[claim])
+    def _install_session(self, app, login, claim_if_held):
+        @app.post("/connect", tags=["control"], dependencies=[claim_if_held])
         def connect(identity: dict = login):
             """Open the owned RTDE control session (uploads the control script)."""
             with self._lock:
@@ -527,8 +537,8 @@ class URControl:
                     )
                 self.session = session
                 # A fresh executor per session: latches clear only by this
-                # explicit, claimed and identified reconnect (or, for motion,
-                # the claimed /control/reset).
+                # explicit, identified reconnect (or, for motion, the claimed
+                # /control/reset).
                 self.executor = self._new_executor(session)
                 self.tcp_offset = None
                 if self.arm_mode == "motion":
@@ -545,7 +555,7 @@ class URControl:
                 "notice": "RTDE control script uploaded; the controller program slot is owned by this service",
             }
 
-        @app.post("/disconnect", tags=["control"], dependencies=[claim])
+        @app.post("/disconnect", tags=["control"], dependencies=[claim_if_held])
         def disconnect(identity: dict = login):
             with self._lock:
                 # Closing mid-move would end the control script under the
@@ -578,7 +588,7 @@ class URControl:
             if executor is None:
                 raise HTTPException(
                     status_code=409,
-                    detail={"error": "no_control_session", "hint": "POST /connect under your claim first"},
+                    detail={"error": "no_control_session", "hint": "POST /connect first"},
                 )
             self.event("joint_step", identity, request_id=str(request.request_id), joint=request.joint, delta_deg=request.delta_deg)
             try:

@@ -57,7 +57,10 @@ required; nothing is guessed:
 
 ## Routes
 
-Every route needs the edge identity, a listed operator and the held claim.
+Every route needs the edge identity and a listed operator. The moves, reset
+and force zero also need the held claim. Connect and Disconnect follow the
+xArm order (Connect, then Take Control): they need no claim while nobody holds
+one, but once someone does, only that holder may call them (423 otherwise).
 The paths are the ones the shared panel already calls:
 
 | Route | Body | Motion |
@@ -197,9 +200,9 @@ stop on the pendant, then Disconnect and Connect.
 ## Panel
 
 For UR the panel's Connect and Disconnect follow `allowed_actions` instead of
-"controller ready". Both need Take Control first. Move Joints and the XYZ jog
-buttons are enabled only while the moves are offered, and Clear errors only
-while latched. Named-location moves do not exist here and stay disabled. The
+"controller ready". Neither needs Take Control, but both are disabled while
+someone else holds control. Move Joints and the XYZ jog buttons are enabled
+only while the moves are offered, and Clear errors only while latched. Named-location moves do not exist here and stay disabled. The
 joint inputs take absolute degrees; the jog step is in mm; the speed boxes
 are deg/s and mm/s, refused above the caps.
 

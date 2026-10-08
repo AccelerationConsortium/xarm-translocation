@@ -1950,12 +1950,14 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // UR robot-motion: "connected" above means the controller is observed
-    // ready, but the arm only moves inside a claimed session (/connect opens
-    // it). So Connect, Disconnect and the motion buttons follow the server's
+    // ready, but the arm only moves inside a session (/connect opens it). So
+    // Connect, Disconnect and the motion buttons follow the server's
     // allowed_actions, which already fold in the claim-free preconditions
-    // (Remote Control, workspace, latched stop, a move in progress). Only
-    // disables what the server would refuse; never enables a claim-locked
-    // control. xArm statuses carry no control_session.arm_control: no-op.
+    // (Remote Control, workspace, latched stop, a move in progress). Like the
+    // xArm, Connect/Disconnect need no claim, only that nobody else holds
+    // control; moves still do. Only disables what the server would refuse;
+    // never enables a claim-locked control. xArm statuses carry no
+    // control_session.arm_control: no-op.
     function applyArmSessionGates(data) {
         const session = data && data.control_session;
         if (!session || session.arm_control !== true) return;
@@ -1963,13 +1965,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const allowed = new Set(data.allowed_actions || []);
         const locked = loginRequiredButNotSignedIn();
         const held = claimToken !== null;
-        const needClaim = 'Take Control first';
+        const holder = data.claimed_by;
+        const heldElsewhere = !held && !!holder;
+        const elsewhereTitle = heldElsewhere ? `Controlled by ${holder.owner}` : '';
         if (connectBtn) {
-            connectBtn.disabled = locked || !held || !allowed.has('connect');
-            connectBtn.title = !held ? needClaim : (allowed.has('connect') ? '' : 'Not available now (see status)');
+            connectBtn.disabled = locked || heldElsewhere || !allowed.has('connect');
+            connectBtn.title = elsewhereTitle || (allowed.has('connect') ? '' : 'Not available now (see status)');
         }
         if (disconnectBtn) {
-            disconnectBtn.disabled = locked || !held || !allowed.has('disconnect');
+            disconnectBtn.disabled = locked || heldElsewhere || !allowed.has('disconnect');
+            disconnectBtn.title = elsewhereTitle;
         }
         const gate = (el, action) => { if (el && !allowed.has(action)) el.disabled = true; };
         gate(moveJointsBtn, 'arm.move_joints');

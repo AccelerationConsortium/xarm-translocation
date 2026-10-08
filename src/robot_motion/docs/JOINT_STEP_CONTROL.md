@@ -27,9 +27,11 @@ already observes the same UR robot over RTDE. A lone flag is rejected.
   verified callers outside `authorized_operators` get 403. The verified
   e-mail, never the client's `owner` field, becomes the claim holder.
 - Claims: `POST /control/claim`, `/control/heartbeat`, `/control/release`
-  reuse `core.claims.ClaimManager` under hard enforcement. `/connect`,
-  `/disconnect` and `/control/joint_step` require the held `X-Claim-Token`
-  (423 otherwise, including when nobody holds a claim).
+  reuse `core.claims.ClaimManager` under hard enforcement.
+  `/control/joint_step` requires the held `X-Claim-Token` (423 otherwise,
+  including when nobody holds a claim). `/connect` and `/disconnect` follow
+  the xArm order: any listed operator may call them while nobody holds a
+  claim, but once someone does, only with that holder's token (423).
 - `POST /connect` first requires a fresh Dashboard observation showing the
   robot idle: controller RUNNING, safety NORMAL, program STOPPED. PLAYING or
   PAUSED means another program or client (LLE demo, pendant, other ur_rtde
@@ -54,7 +56,7 @@ already observes the same UR robot over RTDE. A lone flag is rejected.
 - `POST /control/joint_step` runs the executor once; refusals are 412 with
   the executor's reason, a failed dispatch is 500 with `stop_attempted`,
   `stop_confirmed: false`, `stop_error` and `latched: true`. A latch clears
-  only through an explicit, claimed `/disconnect` then `/connect`.
+  only through an explicit, identified `/disconnect` then `/connect`.
 - `POST /control/stop` (alias `/move/stop`) needs identity but no claim: it
   wakes the executor's cancel latch and issues `stopJ` through the session's
   SDK lock. It is a software request, never confirmed by measurement and not
@@ -141,7 +143,7 @@ supervised step on the UR5e:
    hardware/operator stops.
 6. Record handling and reconciliation: the JSON-lines audit file is a local
    trail, not the lab's record system. Human reconciliation after a latch is
-   a claimed `/disconnect` + `/connect`; nothing verifies the arm's physical
+   an identified `/disconnect` + `/connect`; nothing verifies the arm's physical
    state for the operator. The dashboard proxy allowlist still exposes none of
    these routes; control traffic must come through the authenticated edge.
    No endpoint can enable control at runtime: it is a local config change plus
