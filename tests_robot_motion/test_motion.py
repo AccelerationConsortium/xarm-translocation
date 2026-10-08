@@ -927,7 +927,7 @@ def test_manual_mode_is_how_an_arm_outside_the_envelope_comes_back():
         assert manual(client, True, held).status_code == 200
         rig.world.q = [0.0] * 6  # guided back in by hand
         assert manual(client, False, held).status_code == 200
-        assert set(MOVE_ACTIONS) <= set(allowed(client))
+        wait_for(lambda: set(MOVE_ACTIONS) <= set(allowed(client)), what="moves offered again")
 
 
 @pytest.mark.parametrize("state", ["latched", "protective_stop", "script_stopped", "moving"])
