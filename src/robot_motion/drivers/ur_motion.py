@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
 from .lle_rtde import tcp_to_mm_deg, vector6
 
@@ -35,6 +35,8 @@ JOINT_ACTIONS = ("arm.move_joints", "arm.jog_joint")
 LINEAR_ACTIONS = ("arm.move_linear", "arm.jog_linear")
 MOVE_ACTIONS = JOINT_ACTIONS + LINEAR_ACTIONS
 MAX_PATH_SAMPLES = 200
+# How often teach mode rechecks the claim, the session and the controller.
+MANUAL_CHECK_INTERVAL_S = 0.1
 
 
 class Workspace(BaseModel):
@@ -211,6 +213,13 @@ class LinearMove(_Motion):
     yaw: Number
 
 
+class ManualMode(BaseModel):
+    """Teach mode on (the arm can be guided by hand) or off (position control)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    enable: StrictBool
+
+
 # ── outcomes ──────────────────────────────────────────────────────────
 class MotionRefused(Exception):
     """Nothing was sent to the robot.
@@ -308,9 +317,13 @@ class MotionExecutor:
 
     control must be an exclusively owned RTDE control interface (serialized
     by ur_control); read_feedback returns a new controller packet per call
-    with joints, velocities, modes, TCP pose and TCP force. authorize(request,
-    target, commissioning_id) must recheck that the claim holder and session
-    are still authorized; anything but True refuses or aborts.
+    with joints, velocities, modes, TCP pose and TCP force, and
+    latest_feedback (optional) the newest one without waiting. authorize(
+    request, target, commissioning_id) must recheck that the claim holder and
+    session are still authorized; anything but True refuses or aborts.
+
+    Manual (teach) mode is the other state: the arm can be guided by hand and
+    every move is refused until it is turned off.
     """
 
     def __init__(
@@ -324,9 +337,11 @@ class MotionExecutor:
         clock=time.monotonic,
         sleep=time.sleep,
         seen=None,
+        latest_feedback=None,
     ):
         self.control = control
         self.read_feedback = read_feedback
+        self.latest_feedback = latest_feedback or read_feedback
         self.claims = claims
         self.authorize = authorize
         self.limits = MotionLimits.model_validate(limits)
@@ -341,6 +356,11 @@ class MotionExecutor:
         # Request ids already run; handed on to the executor a reset creates.
         self._seen = seen if seen is not None else set()
         self.active = None
+        # Teach mode: on/off transitions, and the stop event of the watch
+        # thread for the current activation (a new one each time it turns on).
+        self._manual = False
+        self._manual_lock = threading.Lock()
+        self._manual_watch = None
 
     # ── state ───────────────────────────────────────────────────────
     def request_stop(self):
@@ -349,6 +369,9 @@ class MotionExecutor:
         # after this returns, so it can never precede a dispatch.
         with self._dispatch_lock:
             self._cancelled.set()
+        # A STOP also ends teach mode (through the serialized SDK; no move
+        # loop runs while it is on). It latches like any other STOP.
+        self.end_manual("Stop requested")
 
     def retire(self):
         """Take the move lock for good (disconnect): False if a move runs."""
@@ -373,6 +396,10 @@ class MotionExecutor:
         active = self.active
         return active["kind"] if active else None
 
+    @property
+    def manual(self):
+        return self._manual
+
     def state_block(self, sample, now=None):
         """MotionRefused for a state that refuses every move, or None.
 
@@ -380,6 +407,60 @@ class MotionExecutor:
         latest feedback packet and stays in step with the routes (STATUS_SPEC
         section 6.2). Request-specific limits are checked by the planner.
         """
+        block = self._ready_block(sample, now)
+        if block is not None:
+            return block
+        if self._manual:
+            return MotionRefused(
+                "manual_mode",
+                "Manual mode is on; the arm is free to guide by hand",
+                hint="Turn Manual mode off (POST /robot/manual {\"enable\": false}) before moving the arm",
+            )
+        fraction = sample.get("speed_fraction")
+        if fraction is not None and fraction < self.limits.min_speed_fraction:
+            return MotionRefused(
+                "speed_slider_low",
+                f"The pendant speed slider is at {fraction:.0%}; raise it to at least "
+                f"{self.limits.min_speed_fraction:.0%}",
+                speed_fraction=fraction,
+            )
+        if not self._stationary(sample):
+            return MotionRefused("robot_moving", "The arm is moving; wait until it is still")
+        joints = self._outside_envelope(sample["joints_deg"])
+        if joints:
+            return MotionRefused(
+                "outside_envelope",
+                f"Joints {joints} are outside the commissioned envelope; bring the arm back in Manual mode or with the pendant",
+                joints=joints,
+            )
+        point = [v * 1000 for v in sample["tcp_pose"][:3]]
+        axes = self.limits.workspace.outside(point)
+        if axes:
+            return MotionRefused(
+                "outside_workspace",
+                f"TCP is outside the workspace box on {''.join(axes)}; bring it back in Manual mode or with the pendant",
+                tcp_mm=point,
+                axes=axes,
+            )
+        return None
+
+    def manual_block(self, sample, now=None):
+        """MotionRefused for why teach mode cannot be turned on now, or None.
+
+        Narrower than state_block: no envelope, box or speed-slider check,
+        because guiding the arm by hand is how it gets back inside them. The
+        controller's own joint limits, planes and speed limits still apply.
+        """
+        block = self._ready_block(sample, now)
+        if block is not None:
+            return block
+        if not self._stationary(sample):
+            return MotionRefused("robot_moving", "The arm is moving; wait until it is still")
+        return None
+
+    def _ready_block(self, sample, now):
+        """The checks every arm command shares: no latch, a live control
+        link and script, fresh feedback, RUNNING with safety NORMAL."""
         if self.latched is not None:
             return MotionRefused(
                 "motion_latched",
@@ -408,32 +489,6 @@ class MotionExecutor:
                 "robot_not_ready",
                 "Controller must be RUNNING with safety NORMAL",
                 observed={"robot_mode": sample["robot_mode"], "safety_mode": sample["safety_mode"]},
-            )
-        fraction = sample.get("speed_fraction")
-        if fraction is not None and fraction < self.limits.min_speed_fraction:
-            return MotionRefused(
-                "speed_slider_low",
-                f"The pendant speed slider is at {fraction:.0%}; raise it to at least "
-                f"{self.limits.min_speed_fraction:.0%}",
-                speed_fraction=fraction,
-            )
-        if not self._stationary(sample):
-            return MotionRefused("robot_moving", "The arm is moving; wait until it is still")
-        joints = self._outside_envelope(sample["joints_deg"])
-        if joints:
-            return MotionRefused(
-                "outside_envelope",
-                f"Joints {joints} are outside the commissioned envelope; move the arm in with the pendant",
-                joints=joints,
-            )
-        point = [v * 1000 for v in sample["tcp_pose"][:3]]
-        axes = self.limits.workspace.outside(point)
-        if axes:
-            return MotionRefused(
-                "outside_workspace",
-                f"TCP is outside the workspace box on {''.join(axes)}; move it in with the pendant",
-                tcp_mm=point,
-                axes=axes,
             )
         return None
 
@@ -822,3 +877,114 @@ class MotionExecutor:
             "path_samples_checked": plan.samples,
             "elapsed_s": round(self.clock() - started, 3),
         }
+
+    # ── manual (teach) mode ─────────────────────────────────────────
+    def set_manual(self, enable, *, claim_token):
+        """Turn teach mode on or off; True if the mode changed.
+
+        On needs the claim, an authorized session and a ready, still arm, and
+        never overlaps a move. Off is allowed whenever it is on. While it is
+        on, a watch thread ends it the moment the claim, the session, the
+        control link or script, fresh feedback or RUNNING/NORMAL is lost.
+        """
+        if not self._lock.acquire(blocking=False):
+            raise MotionRefused(
+                "motion_busy", "An arm move is running; commands are not queued", status=409
+            )
+        try:
+            if not enable:
+                changed, error = self._end_manual(None)
+                if error is not None:
+                    raise MotionFailed("Teach mode did not end", stop_error=error)
+                return changed
+            if self._manual:
+                return False
+            self._gate(claim_token)
+            block = self.manual_block(self._sample())
+            if block is not None:
+                raise block
+            watch = threading.Event()
+            with self._manual_lock, self._dispatch_lock:
+                # A STOP that got here first: teach mode is not turned on.
+                self._require_claim_and_unlatched(claim_token)
+                try:
+                    accepted = self.control.teachMode()
+                except Exception as exc:  # noqa: BLE001 - it may still have reached the arm
+                    accepted = exc
+                # Marked on even if refused, so ending it takes the one path.
+                self._manual = True
+                self._manual_watch = watch
+            if accepted is not True:
+                reason = "The controller did not accept teach mode"
+                if isinstance(accepted, Exception):
+                    reason = f"{reason}: {accepted}"
+                _, error = self._end_manual(reason)
+                raise MotionFailed(reason, stop_error=error)
+            threading.Thread(
+                target=self._watch_manual, args=(claim_token, watch), name="ur-teach-watch", daemon=True
+            ).start()
+            return True
+        finally:
+            self._lock.release()
+
+    def end_manual(self, reason):
+        """End teach mode for a STOP, a disconnect or a shutdown; True if it
+        was on and is now off. Latches, like a failed move."""
+        return self._end_manual(reason)[0]
+
+    def _end_manual(self, reason, watch=None):
+        """(changed, error). reason None is the operator turning it off; any
+        other reason latches. If the controller does not confirm the end,
+        teach mode is still reported on (moves stay refused) and the session
+        latches: STOP, Disconnect (which ends the control script) or the
+        pendant remain."""
+        with self._manual_lock:
+            if not self._manual or (watch is not None and watch is not self._manual_watch):
+                return False, None
+            self._manual_watch.set()
+            error = None
+            try:
+                # With the script gone (a protective stop) teach mode has
+                # ended with it, and there is nothing to send.
+                if self.control.isProgramRunning() is True and self.control.endTeachMode() is not True:
+                    error = "The controller did not confirm the end of teach mode"
+            except Exception as exc:  # noqa: BLE001 - reported, never hidden
+                error = str(exc)
+            if error is not None:
+                self._fault = self._fault or f"Teach mode did not end: {error}"
+                return False, error
+            self._manual = False
+            self._manual_watch = None
+            if reason is not None:
+                self._fault = self._fault or f"Manual mode ended: {reason}"
+            return True, None
+
+    def _watch_manual(self, token, watch):
+        while not watch.wait(MANUAL_CHECK_INTERVAL_S):
+            try:
+                reason = self._manual_problem(token)
+            except Exception as exc:  # noqa: BLE001 - a failed check ends it too
+                reason = f"a state check failed: {exc}"
+            if reason is not None:
+                self._end_manual(reason, watch)
+                return
+
+    def _manual_problem(self, token):
+        try:
+            self.claims.verify_token(token)
+        except Exception:
+            return "the control claim was released or expired"
+        if self.authorize(None, None, self.limits.commissioning_id) is not True:
+            return "the operator or session is no longer authorized"
+        if not self.control.isConnected():
+            return "the control link was lost"
+        if self.control.isProgramRunning() is not True:
+            return "the control script stopped"
+        sample = self.latest_feedback()
+        if sample is None or not 0 <= self.clock() - sample["received_monotonic_s"] <= self.limits.feedback_max_age_s:
+            return "control feedback went stale"
+        if not sample["controller_connected"]:
+            return "the controller feedback link dropped"
+        if not (sample["robot_mode"] == "RUNNING" and sample["safety_mode"] == "NORMAL"):
+            return f"the controller went {sample['robot_mode']} / safety {sample['safety_mode']}"
+        return None

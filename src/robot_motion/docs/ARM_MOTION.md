@@ -3,7 +3,8 @@
 `drivers/ur_motion.py` moves the arm for a human operator in the shared panel:
 absolute joint moves and single-joint jogs (`moveJ`), Cartesian jogs and
 absolute TCP poses (`moveL`). Everything runs inside commissioned limits
-from the local config. It replaces the single-step `joint_step` mode on a
+from the local config. Manual (teach) mode lets the operator guide the arm by
+hand instead. It replaces the single-step `joint_step` mode on a
 deployment; a config names one or the other, never both.
 
 None of this is a safety-rated function. The controller's safety
@@ -71,6 +72,7 @@ The paths are the ones the shared panel already calls:
 | `POST /control/freehand/joint_jog` | `{joint, delta, speed?}` | moveJ one joint by delta |
 | `POST /control/freehand/relative` | `{dx, dy, dz, speed?}` mm, mm/s | moveL by a base-frame offset, orientation kept |
 | `POST /control/freehand/linear` | `{x, y, z, roll, pitch, yaw, speed?}` | moveL to an absolute pose (`current_position` convention) |
+| `POST /robot/manual` (alias `/control/manual`) | `{enable}` | manual (teach) mode on or off |
 | `POST /control/reset` (alias `/clear/errors`) | — | clear a stop/fault latch |
 | `POST /control/force/zero` | — | zero the flange force/torque sensor |
 | `POST /control/stop` (alias `/move/stop`) | — | identity only: stop the move (stopJ, or stopL during a linear move) |
@@ -140,6 +142,7 @@ twice.
   - `outside_envelope` / `outside_workspace`: move the arm in with the
     pendant
   - `remote_control_off`: on connect
+  - `manual_mode`: a move, reset or force zero while manual mode is on
 - **422:** the request cannot run under the limits:
   - `above_commissioned_limit`
   - `jog_too_large`
@@ -166,12 +169,49 @@ Reset (the panel's Clear errors) needs a running control script,
 RUNNING/NORMAL and a still arm. After a protective stop the controller ends
 the script. Clear the stop on the pendant, then Disconnect and Connect.
 
+Disconnect ends ur_rtde's control script (`stopScript`) before it closes the
+link. Until 2026-10-08 it only closed the link, which left the script running
+on the controller, holding the program slot, until the communication
+watchdog stopped it.
+
 Stopping the service stops an in-flight move and closes the session before
 anything else shuts down. This needs time: open connections get at most 3 s,
 and NSSM must allow the shutdown to finish (`AppStopMethodConsole` 15000 ms;
 the 1.5 s default killed the process mid-shutdown on 2026-10-08). A process
 killed with a session open leaves the stop to the controller's watchdog, and
 that left the arm in a protective stop. Disconnect before a planned restart.
+
+## Manual (teach) mode
+
+`POST /robot/manual {"enable": true}` puts the arm in teach mode (ur_rtde
+`teachMode`, URScript `teach_mode()`): it can be pushed by hand. The pendant's
+freedrive button does not work in Remote Control, so this is the way to
+hand-guide the arm while the service owns it.
+
+- **On** needs the claim, an open session with a running control script,
+  fresh feedback, RUNNING/NORMAL, a still arm and no latch. There is no
+  envelope, box or speed-slider check: guiding the arm by hand is how one
+  that is outside them gets back in. The controller's own joint limits,
+  safety planes and speed and force limits still apply.
+- The arm holds itself up using the **payload** and TCP set on the pendant.
+  A wrong payload makes it drift up or down, so keep a hand on it.
+- **While on:** every move, reset and force zero is refused with 412
+  `manual_mode`; `allowed_actions` offers `arm.manual_mode` (to turn it off),
+  `disconnect` and `control.stop`.
+- **Off** (`{"enable": false}`) returns to position control and does not
+  latch.
+- **It ends by itself, and latches,** within about 0.1 s when:
+  - the claim is released or expires;
+  - the operator or session is no longer authorized;
+  - the control link or script is lost;
+  - feedback goes stale, or the controller leaves RUNNING/NORMAL (a
+    protective stop).
+
+  STOP ends it and latches too; Disconnect ends it.
+- If the controller does not confirm the end, the route answers 500, the
+  session latches and manual mode stays reported on, so moves stay refused.
+  Clear errors is refused then. Use STOP, Disconnect (which ends the control
+  script, and teach mode with it) or the pendant.
 
 ## Status
 
@@ -180,12 +220,14 @@ that left the arm in a protective stop. Disconnect before a planned restart.
   - `connect`: only when idle and in Remote Control;
   - `disconnect`;
   - `arm.move_joints`, `arm.jog_joint`, `arm.move_linear`, `arm.jog_linear`;
+  - `arm.manual_mode`: to turn it on (arm ready and still) or off;
   - `control.reset`: only when latched;
   - `arm.zero_force_sensor`;
   - the gripper actions.
 - `details.control_session` contains:
   - `mode: "motion"`
-  - `open`, `busy`, `active_move`, `latched`
+  - `open`, `busy`, `active_move`, `latched`, `manual_mode` (also at
+    `details.manual_mode`, the field the panel's Manual switch reads)
   - `watchdog_ok`
   - `limits`: the envelope, box, caps and jog limits an operator or agent
     plans within
@@ -209,7 +251,9 @@ For UR the panel's Connect and Disconnect follow `allowed_actions` instead of
 "controller ready". Neither needs Take Control, but both are disabled while
 someone else holds control. Move Joints and the XYZ jog buttons are enabled
 only while the moves are offered, and Clear errors only while latched.
-Named-location moves do not exist here and stay disabled. The rail controls
+The Manual switch follows `arm.manual_mode`, for the claim holder only, and
+shows "Manual (drag)" while on. Named-location moves do not exist here and
+stay disabled. The rail controls
 read N/A and stay disabled (there is no rail), as do Safety level and Connect
 to: the speed caps come from the config, not the panel. The joint inputs take
 absolute degrees; the jog step is in mm; the speed boxes are deg/s and mm/s,

@@ -250,6 +250,25 @@ class _SerializedControl:
         with self._lock:
             return self._control.zeroFtSensor()
 
+    # Manual mode: the arm can be guided by hand until endTeachMode.
+    def teachMode(self):
+        with self._lock:
+            return self._control.teachMode()
+
+    def endTeachMode(self):
+        with self._lock:
+            return self._control.endTeachMode()
+
+    def stopScript(self):
+        """End the control script if it is still running; True if it was.
+        Asks the SDK directly, past any watchdog fault: a faulted link may
+        still have a running script behind it."""
+        with self._lock:
+            if self._control.isProgramRunning() is not True:
+                return False
+            self._control.stopScript()
+            return True
+
     def disconnect(self):
         with self._lock:
             return self._control.disconnect()
@@ -330,6 +349,11 @@ class ControlSession:
                 if proxy.setWatchdog(watchdog_hz) is not True:
                     raise RuntimeError("Controller refused the communication watchdog")
             except Exception:
+                # The script is already uploaded, and has no watchdog: end it.
+                try:
+                    proxy.stopScript()
+                except Exception:
+                    pass
                 proxy.disconnect()
                 feedback.close()
                 raise
@@ -361,10 +385,19 @@ class ControlSession:
         with self._lock:
             control, feedback, kicker = self.control, self.feedback, self._kicker
             self.control = self.feedback = self._kicker = None
+        errors = []
+        # End the control script before dropping the link: disconnect() alone
+        # leaves it running on the controller, holding the program slot (and
+        # any teach mode) until the communication watchdog stops it. The
+        # watchdog keeps being kicked until the script has gone.
+        if control is not None:
+            try:
+                control.stopScript()
+            except Exception as exc:
+                errors.append(f"stop script: {exc}")
         self._kick_stop.set()
         if kicker is not None:
             kicker.join(timeout=2)
-        errors = []
         for closer in (
             getattr(control, "disconnect", None),
             getattr(feedback, "close", None),

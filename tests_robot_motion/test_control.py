@@ -124,9 +124,18 @@ class Control:
         self.watchdog_accepted = True
         self.kicks = 0
         self.kick_ok = True
+        self.program_running = True
+        self.script_stops = 0
 
     def isConnected(self):
         return self.connected
+
+    def isProgramRunning(self):
+        return self.program_running
+
+    def stopScript(self):
+        self.script_stops += 1
+        self.program_running = False
 
     def setWatchdog(self, min_frequency):
         self.watchdogs.append(min_frequency)
@@ -385,6 +394,8 @@ def test_connect_step_stop_and_disconnect_round_trip():
         assert disconnected.status_code == 200
         assert disconnected.json() == {"connected": False, "close_error": None, "message": "Arm session closed"}
         assert rig.control.disconnections == 1 and rig.receiver.disconnections == 1
+        # The control script is ended, not left running for the watchdog.
+        assert rig.control.script_stops == 1
         assert client.get("/status").json()["allowed_actions"] == ["control.stop", "connect"]
         assert client.post("/control/joint_step", json=step(), headers=held).status_code == 409
 
@@ -499,6 +510,7 @@ def test_watchdog_is_armed_kicked_and_fails_closed():
         assert failed.status_code == 502
         assert "watchdog" in failed.json()["detail"]["message"].lower()
         assert rig.control.disconnections == 1 and rig.receiver.disconnections == 1
+        assert rig.control.script_stops == 1  # uploaded, so ended
         assert client.get("/status").json()["allowed_actions"] == ["control.stop", "connect"]
 
 

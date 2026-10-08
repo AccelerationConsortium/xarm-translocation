@@ -1990,6 +1990,19 @@ document.addEventListener('DOMContentLoaded', () => {
         // stale angles that would drive the other joints back.
         if (moveJointsBtn && !Array.isArray(data.current_joints)) moveJointsBtn.disabled = true;
         jogBtnIds.forEach(id => gate(document.getElementById(id), 'arm.jog_linear'));
+        // Manual (teach) mode: the holder may turn it on when the service
+        // offers it, and off whenever it is on (offered then too).
+        if (manualModeCheckbox) {
+            const canToggle = !locked && held && allowed.has('arm.manual_mode');
+            manualModeCheckbox.disabled = !canToggle;
+            if (manualModeSwitch) {
+                manualModeSwitch.classList.toggle('is-disabled', !canToggle);
+                manualModeSwitch.title = canToggle
+                    ? 'Teach mode: guide the arm by hand. Moves are locked while it is on; STOP or Disconnect also turn it off.'
+                    : (held ? 'Not available now: connect, and the arm must be still with no stop latched'
+                            : (elsewhereTitle || 'Take Control first'));
+            }
+        }
         // Clear errors clears this service's stop latch (claimed): offer it
         // only to the holder, and only when there is a latch to clear.
         if (clearErrorsBtn && (!held || !allowed.has('control.reset'))) clearErrorsBtn.disabled = true;
@@ -2497,13 +2510,21 @@ document.addEventListener('DOMContentLoaded', () => {
     if (manualModeCheckbox) {
         manualModeCheckbox.addEventListener('change', () => {
             const enable = manualModeCheckbox.checked;
-            if (enable && !confirm(
-                'Enable Manual Mode?\n\n' +
-                'This releases the joint brakes so the arm can be moved by hand. ' +
-                'Support the arm before continuing — it may sag under its own ' +
-                'weight or payload.\n\n' +
-                'XYZ and joint controls are locked while manual mode is on.'
-            )) {
+            // UR teach mode holds the arm against gravity using the payload
+            // set on the pendant; the xArm releases its brakes.
+            const prompt = lastArmGateData
+                ? 'Enable Manual Mode?\n\n' +
+                  'Teach mode: the arm can be pushed by hand. It holds itself up ' +
+                  'using the payload set on the pendant; if that payload is wrong ' +
+                  'the arm drifts, so keep a hand on it.\n\n' +
+                  'Moves are locked while manual mode is on. Turn it off here; ' +
+                  'STOP or Disconnect also turn it off.'
+                : 'Enable Manual Mode?\n\n' +
+                  'This releases the joint brakes so the arm can be moved by hand. ' +
+                  'Support the arm before continuing — it may sag under its own ' +
+                  'weight or payload.\n\n' +
+                  'XYZ and joint controls are locked while manual mode is on.';
+            if (enable && !confirm(prompt)) {
                 // User backed out — revert the optimistic flip immediately;
                 // the next /status poll would also correct it.
                 manualModeCheckbox.checked = false;

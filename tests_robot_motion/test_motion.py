@@ -179,9 +179,30 @@ class Control:
         self.program_running = True
         self.zeroed = 0
         self.disconnections = 0
+        self.script_stops = 0
+        self.teaching = False
+        self.teach_calls = []
+        self.teach_ok = True
+        self.end_teach_ok = True
 
     def isConnected(self):
         return self.connected
+
+    def teachMode(self):
+        self.teach_calls.append("on")
+        self.teaching = True
+        return self.teach_ok
+
+    def endTeachMode(self):
+        self.teach_calls.append("off")
+        if self.end_teach_ok:
+            self.teaching = False
+        return self.end_teach_ok
+
+    def stopScript(self):
+        self.script_stops += 1
+        self.program_running = False
+        self.teaching = False  # teach mode ends with the script
 
     def setWatchdog(self, _hz):
         return True
@@ -374,7 +395,7 @@ def test_connect_opens_a_motion_session_and_offers_the_moves():
         assert rig.receiver_calls == [{"frequency": 125, "variables": MOTION_FEEDBACK_VARIABLES}]
         status = client.get("/status").json()
         assert status["allowed_actions"] == [
-            "control.stop", "disconnect", *MOVE_ACTIONS, "arm.zero_force_sensor",
+            "control.stop", "disconnect", *MOVE_ACTIONS, "arm.manual_mode", "arm.zero_force_sensor",
         ]
         session = status["details"]["control_session"]
         assert session["mode"] == "motion" and session["open"] is True
@@ -382,8 +403,11 @@ def test_connect_opens_a_motion_session_and_offers_the_moves():
         assert session["limits"]["workspace_mm"]["x"] == [150, 450]
         assert session["limits"]["default_joint_speed_deg_s"] == 5  # a quarter of the cap
         assert status["details"]["control_implementation"] == "motion"
+        assert status["details"]["manual_mode"] is False
         assert client.post("/disconnect", headers=held).json()["message"] == "Arm session closed"
         assert allowed(client) == ["control.stop", "connect"]
+        # Disconnect ends the control script rather than leaving it to the watchdog.
+        assert rig.control.script_stops == 1 and rig.control.disconnections == 1
 
 
 def test_connect_refuses_in_local_control_and_does_not_offer_it():
@@ -849,3 +873,170 @@ def test_status_publishes_live_force_between_slow_dashboard_polls():
         status = client.get("/status").json()
         assert status["details"]["current_joints"] is None  # never the last position
         assert status["components"]["telemetry"]["connected"] is False
+
+
+# ── manual (teach) mode ──────────────────────────────────────────────
+def manual(client, enable, headers):
+    return client.post("/robot/manual", json={"enable": enable}, headers=headers)
+
+
+def session_state(client):
+    return client.get("/status").json()["details"]["control_session"]
+
+
+def test_manual_mode_frees_the_arm_refuses_moves_and_turns_off():
+    rig = Rig()
+    with rig.client() as client:
+        assert manual(client, True, HEADERS).status_code == 423  # the claim is needed
+        held = connected(client)
+        on = manual(client, True, held)
+        assert on.status_code == 200, on.text
+        assert on.json()["manual_mode"] is True and on.json()["changed"] is True
+        assert rig.control.teach_calls == ["on"] and rig.control.teaching
+        status = client.get("/status").json()
+        assert status["details"]["manual_mode"] is True
+        assert status["details"]["control_session"]["manual_mode"] is True
+        # Only turning it off, disconnecting and STOP are offered.
+        assert status["allowed_actions"] == ["control.stop", "disconnect", "arm.manual_mode"]
+        for path, body in MOVE_PATHS.values():
+            refused = client.post(path, json=body, headers=held)
+            assert refused.status_code == 412 and refused.json()["detail"]["error"] == "manual_mode"
+        zero = client.post("/control/force/zero", headers=held)
+        assert zero.status_code == 412 and zero.json()["detail"]["error"] == "manual_mode"
+        assert rig.control.moves == [] and rig.control.zeroed == 0
+        assert manual(client, True, held).json()["changed"] is False  # already on
+        off = client.post("/control/manual", json={"enable": False}, headers=held)  # the same route
+        assert off.status_code == 200 and off.json() == {
+            "ok": True, "manual_mode": False, "changed": True, "message": "Manual mode off",
+        }
+        assert rig.control.teach_calls == ["on", "off"] and not rig.control.teaching
+        assert session_state(client)["latched"] is None  # turning it off is not a fault
+        assert set(MOVE_ACTIONS) <= set(allowed(client))
+        assert manual(client, False, held).json()["changed"] is False
+        assert client.post("/control/freehand/joint_jog", json={"joint": 1, "delta": 1}, headers=held).status_code == 200
+
+
+def test_manual_mode_is_how_an_arm_outside_the_envelope_comes_back():
+    rig = Rig()
+    with rig.client() as client:
+        held = connected(client)
+        rig.world.q = [math.radians(95), 0, 0, 0, 0, 0]  # J1 past the 90 deg fixture limit
+        time.sleep(0.05)
+        offered = allowed(client)
+        assert "arm.manual_mode" in offered and not set(MOVE_ACTIONS) & set(offered)
+        assert manual(client, True, held).status_code == 200
+        rig.world.q = [0.0] * 6  # guided back in by hand
+        assert manual(client, False, held).status_code == 200
+        assert set(MOVE_ACTIONS) <= set(allowed(client))
+
+
+@pytest.mark.parametrize("state", ["latched", "protective_stop", "script_stopped", "moving"])
+def test_manual_mode_needs_a_ready_still_arm(state):
+    rig = Rig()
+    with rig.client() as client:
+        held = connected(client)
+        if state == "latched":
+            client.post("/control/stop", headers=HEADERS)
+        elif state == "protective_stop":
+            rig.world.safety_mode = 3
+        elif state == "script_stopped":
+            rig.control.program_running = False
+        elif state == "moving":
+            rig.world.ticks_per_move = 5000
+            rig.world.command([0.5] + [0.0] * 5, 0.1)
+        time.sleep(0.05)
+        assert "arm.manual_mode" not in allowed(client)
+        refused = manual(client, True, held)
+        assert refused.status_code == 412, refused.text
+        assert rig.control.teach_calls == []
+
+
+def test_stop_ends_manual_mode_and_latches():
+    rig = Rig()
+    with rig.client() as client:
+        held = connected(client)
+        assert manual(client, True, held).status_code == 200
+        stopped = client.post("/move/stop", headers=HEADERS)  # no claim needed
+        assert stopped.status_code == 200 and stopped.json()["stop_requested"] is True
+        assert rig.control.teach_calls == ["on", "off"] and not rig.control.teaching
+        state = session_state(client)
+        assert state["manual_mode"] is False
+        assert state["latched"] == "Manual mode ended: Stop requested"
+        assert client.post("/clear/errors", headers=held).json()["reset"] is True
+        assert set(MOVE_ACTIONS) <= set(allowed(client))
+
+
+@pytest.mark.parametrize("cause", ["claim_released", "protective_stop", "script_stopped", "feedback_lost"])
+def test_manual_mode_ends_itself_when_its_conditions_go(cause):
+    rig = Rig()
+    with rig.client() as client:
+        held = connected(client)
+        assert manual(client, True, held).status_code == 200
+        if cause == "claim_released":
+            assert client.post("/control/release", headers=held).status_code == 204
+        elif cause == "protective_stop":
+            rig.world.safety_mode = 3
+        elif cause == "script_stopped":
+            rig.control.program_running = False
+        elif cause == "feedback_lost":
+            rig.receiver.connected = False
+        wait_for(lambda: not session_state(client)["manual_mode"], what="teach mode ending")
+        latched = session_state(client)["latched"]
+        assert latched.startswith("Manual mode ended:"), latched
+        expected = {
+            "claim_released": "claim",
+            "protective_stop": "PROTECTIVE_STOP",
+            "script_stopped": "script stopped",
+            "feedback_lost": "feedback link dropped",
+        }[cause]
+        assert expected in latched
+        if cause == "script_stopped":
+            # Teach mode ended with the script; there is nothing to send.
+            assert rig.control.teach_calls == ["on"]
+        else:
+            assert rig.control.teach_calls == ["on", "off"]
+
+
+def test_disconnect_ends_manual_mode_and_the_control_script():
+    rig = Rig()
+    with rig.client() as client:
+        held = connected(client)
+        assert manual(client, True, held).status_code == 200
+        assert client.post("/disconnect", headers=held).status_code == 200
+        assert rig.control.teach_calls == ["on", "off"]
+        assert rig.control.script_stops == 1 and not rig.control.teaching
+        assert client.get("/status").json()["details"]["manual_mode"] is False
+
+
+def test_a_teach_mode_the_controller_refuses_is_ended_and_latched():
+    rig = Rig()
+    rig.control.teach_ok = False
+    with rig.client() as client:
+        held = connected(client)
+        failed = manual(client, True, held)
+        assert failed.status_code == 500
+        body = failed.json()
+        assert body["error"] == "manual_mode_failed" and body["latched"] is True
+        assert body["manual_mode"] is False
+        assert rig.control.teach_calls == ["on", "off"]  # ended in case it took effect
+        assert "did not accept teach mode" in session_state(client)["latched"]
+
+
+def test_a_teach_mode_that_will_not_end_stays_reported_on():
+    rig = Rig()
+    with rig.client() as client:
+        held = connected(client)
+        assert manual(client, True, held).status_code == 200
+        rig.control.end_teach_ok = False
+        failed = manual(client, False, held)
+        assert failed.status_code == 500 and failed.json()["manual_mode"] is True
+        state = session_state(client)
+        assert state["manual_mode"] is True and "did not end" in state["latched"]
+        for path, body in MOVE_PATHS.values():
+            assert client.post(path, json=body, headers=held).status_code == 412
+        # Clear errors cannot swap the executor out from under teach mode.
+        reset = client.post("/clear/errors", headers=held)
+        assert reset.status_code == 412 and reset.json()["detail"]["error"] == "manual_mode"
+        # Disconnect still ends it, with the control script.
+        assert client.post("/disconnect", headers=held).status_code == 200
+        assert rig.control.script_stops == 1 and not rig.control.teaching

@@ -11,7 +11,8 @@ but never against someone else's claim. /control/stop needs identity only.
 
 The arm runs in one of two modes, chosen by the control block: joint_step
 (single tiny steps, the first commissioning primitive) or motion (joint and
-Cartesian moves and jogs inside commissioned limits, drivers/ur_motion.py).
+Cartesian moves and jogs inside commissioned limits, plus manual (teach) mode
+for guiding the arm by hand, drivers/ur_motion.py).
 The gripper routes exist only with a gripper block. arm_block() is the one
 precondition helper behind both the arm routes and allowed_actions
 (STATUS_SPEC section 6.2). Nothing here is a safety-rated stop.
@@ -46,6 +47,7 @@ from .drivers.ur_motion import (
     JointMove,
     LinearJog,
     LinearMove,
+    ManualMode,
     MotionExecutor,
     MotionFailed,
     MotionRefused,
@@ -232,7 +234,9 @@ class URControl:
         if self.arm_mode == "joint_step":
             return ("connect", "disconnect", "control.joint_step")
         if self.arm_mode == "motion":
-            return ("connect", "disconnect", *MOVE_ACTIONS, "control.reset", "arm.zero_force_sensor")
+            return (
+                "connect", "disconnect", *MOVE_ACTIONS, "arm.manual_mode", "control.reset", "arm.zero_force_sensor"
+            )
         return ()
 
     def arm_block(self, action):
@@ -282,6 +286,17 @@ class URControl:
             return 409, {
                 "error": "motion_busy",
                 "reason": "Another arm move is running; commands are not queued",
+            }
+        manual = getattr(executor, "manual", False)
+        if action == "arm.manual_mode":
+            if manual:
+                return None  # turning it off is always offered
+            refusal = executor.manual_block(feedback.latest())
+            return (refusal.status, refusal.body()) if refusal is not None else None
+        if manual and action in ("control.reset", "arm.zero_force_sensor"):
+            return 412, {
+                "error": "manual_mode",
+                "reason": "Manual mode is on; turn it off first",
             }
         if action == "control.reset":
             return self._reset_block(session, control, feedback)
@@ -380,6 +395,7 @@ class URControl:
                 "open": session_open,
                 "busy": bool(getattr(executor, "busy", False)),
                 "active_move": getattr(executor, "active", None),
+                "manual_mode": bool(getattr(executor, "manual", False)),
                 "latched": latched,
                 "watchdog_ok": session.watchdog_ok if session_open else None,
                 "watchdog_error": session.watchdog_error if session_open else None,
@@ -417,7 +433,7 @@ class URControl:
             limits=self.arm_limits,
         )
         if self.arm_mode == "motion":
-            return MotionExecutor(**common, seen=seen)
+            return MotionExecutor(**common, seen=seen, latest_feedback=session.feedback.latest)
         return JointStepExecutor(**common)
 
     # ── routes ──────────────────────────────────────────────────────
@@ -561,7 +577,8 @@ class URControl:
             with self._lock:
                 # Closing mid-move would end the control script under the
                 # arm; STOP first. Without a session this is a harmless no-op.
-                retire = getattr(self.executor, "retire", None)
+                executor = self.executor
+                retire = getattr(executor, "retire", None)
                 if retire is not None and not retire():  # holds the move lock if free
                     self._refuse(identity, "disconnect", (409, {
                         "error": "motion_in_progress",
@@ -569,6 +586,10 @@ class URControl:
                     }))
                 session, self.session, self.executor = self.session, None, None
                 self.tcp_offset = None
+            # Teach mode off before the script goes (closing ends it too).
+            end_manual = getattr(executor, "end_manual", None)
+            if end_manual is not None:
+                end_manual("Disconnected")
             error = None
             if session is not None:
                 try:
@@ -724,6 +745,52 @@ class URControl:
                 self.executor = self._new_executor(self.session, seen=self.executor.seen)
             self.event("reset", identity, cleared=cleared)
             return {"ok": True, "reset": True, "cleared": cleared, "message": "Arm moves re-enabled"}
+
+        @app.post("/control/manual", tags=tags, dependencies=[claim])
+        @app.post("/robot/manual", tags=tags, dependencies=[claim])
+        async def manual_mode(
+            body: ManualMode, identity: dict = login, x_claim_token: str | None = Header(default=None)
+        ):
+            """Manual (teach) mode. On: the arm can be guided by hand and every
+            move is refused. Off: position control again. STOP and Disconnect
+            also turn it off. The panel's Manual switch calls this."""
+            action = "arm.manual_mode"
+            executor = self.executor
+            if not body.enable and executor is not None and not executor.manual:
+                return {"ok": True, "manual_mode": False, "changed": False, "message": "Manual mode already off"}
+            blocked = await asyncio.to_thread(self.arm_block, action)
+            if blocked is not None:
+                self._refuse(identity, action, blocked)
+            executor = self.executor
+            if executor is None:  # disconnected meanwhile
+                self._refuse(identity, action, (409, {"error": "no_control_session", "hint": "POST /connect first"}))
+            self.event(action, identity, enable=body.enable)
+            try:
+                changed = await asyncio.to_thread(executor.set_manual, body.enable, claim_token=x_claim_token)
+            except MotionRefused as exc:
+                self.event("arm_refused", identity, action=action, reason=exc.error)
+                raise HTTPException(status_code=exc.status, detail=exc.body())
+            except MotionFailed as exc:
+                self.event("arm_failed", identity, action=action, reason=str(exc), stop_error=exc.stop_error)
+                return JSONResponse(
+                    status_code=500,
+                    content={
+                        "error": "manual_mode_failed",
+                        "reason": str(exc),
+                        "stop_error": exc.stop_error,
+                        "manual_mode": executor.manual,
+                        "latched": True,
+                        "hint": "Check the arm. If it can still be pushed by hand, press STOP or "
+                        "Disconnect (or use the pendant), then Clear errors",
+                    },
+                )
+            on = executor.manual
+            self.event(f"{action}_done", identity, manual_mode=on, changed=changed)
+            if not changed:
+                message = f"Manual mode already {'on' if on else 'off'}"
+            else:
+                message = "Manual mode on: guide the arm by hand" if on else "Manual mode off"
+            return {"ok": True, "manual_mode": on, "changed": changed, "message": message}
 
         @app.post("/control/force/zero", tags=tags, dependencies=[claim])
         async def zero_force_sensor(identity: dict = login):

@@ -336,6 +336,8 @@ def create_app(
                 ),
                 "claimed_by": control_state["claimed_by"] if control_state else None,
                 "control_session": control_state["control_session"] if control_state else None,
+                # The panel's Manual switch reads this (the xArm's field name).
+                "manual_mode": bool(control_state and control_state["control_session"].get("manual_mode")),
                 "driver": settings.driver,
                 "model": settings.model,
                 "primary_operation": "controller program playing; not proof of physical arm movement",
