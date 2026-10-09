@@ -5,6 +5,25 @@ applied to the code or the configuration yet. **Test first:** whether
 execution uses ServoJ (mode 1) or joint online planning (mode 6) is decided
 by measurements on the real arm before either is built (§2, §10 stage 0).
 
+**Astra's answers (2026-10-09):**
+- **Synchronisation:** the goal is to stay in sync with Astra's digital
+  twin. The twin runs on a workstation in the Sandford Fleming building
+  and reaches this server over HTTP through SSH.
+- **Two-way (closed-loop) sync** is not possible over that link, and is
+  out of scope.
+- **Upload:** sending the **whole trajectory, then one-way sync**, is
+  acceptable. The arm runs the twin's timed plan, and the twin aligns
+  to the start time and progress the server reports (§4, one-way sync).
+
+This sets the scope:
+- **Version 1** is the whole-trajectory path: create, one chunk with
+  `final: true`, validate, start.
+- **Chunked append during execution** (§10 stage 2) is **deferred** until
+  a use needs it. The contract below still covers it, so adding it later
+  changes no existing field.
+- Because exact plan timing is the point, the backend choice **leans to
+  mode 1**, subject to the stage 0b motion test.
+
 Requested by Astra: upload a joint trajectory over HTTP, either whole or as
 consecutive chunks, and have the device buffer, interpolate and execute it
 at a fixed rate with UFACTORY `set_servo_angle_j()` (ServoJ). Today every
@@ -292,7 +311,18 @@ servo            rate_hz_configured; period_ms {mean, p50, p99, max}; overruns;
                  round_trip_ms {p50, p99, max}; sdk_errors
 tracking         max_error_deg, last_error_deg (commanded versus reported)
 final            on exit: measured joints, error to the last target, settle time, mode restored
+started_at_utc   wall-clock time of τ = 0 (the first trajectory sample sent), from the PC clock
+measured         latest joints from the real-time report, with their receive time (UTC)
 ```
+
+**One-way sync.** `started_at_utc` and `executed.t_exec` let the twin
+play its copy of the plan aligned with the real arm. `measured` lets it
+draw the real arm beside it. The twin polls `GET …/{id}` (10–20 Hz is
+plenty), and the network delay only makes its picture slightly late.
+`started_at_utc` comes from the Cytation PC's clock. If the twin's clock
+is not synchronised with it, the twin should align to `t_exec` instead,
+which needs no shared clock. Afterwards, the session log (§8) gives the
+exact sent-versus-arrived timeline for comparing the plan with reality.
 
 The figures under `servo` are **measured** values, never the configured
 rate.
@@ -596,10 +626,10 @@ Offline tests that must exist before stage 3:
 
 ## 12. Open decisions
 
-1. **Backend:** mode 1 (ServoJ) or mode 6 (online planning). Decided by
-   the stage 0 tests together with Astra's answer: does the use need the
-   real arm to match the planned timing exactly, or only smooth motion
-   through the points?
+1. **Backend:** mode 1 (ServoJ) or mode 6 (online planning). Astra wants
+   the arm in sync with the digital twin, which needs exact plan timing,
+   so mode 1 is preferred. Stage 0b confirms whether its motion is smooth
+   on the arm; mode 6 is the fallback.
 2. **Rate:** the default rate and the cap. For mode 1, 100 Hz is
    proposed; for mode 6, 20–50 Hz. Both are settled by measurement.
 3. **Acceleration limit:** for streaming (500 deg/s² proposed). Also
@@ -608,8 +638,9 @@ Offline tests that must exist before stage 3:
    lead-in length.
 5. **Interpolation:** whether to require velocities and accelerations from
    the planner (quintic only), or also accept positions only.
-6. **Network and buffer:** the network delay and jitter bounds to accept
-   against, and so the default `min_start_buffer_s` and stop margin.
+6. **Network and buffer:** not needed for version 1. With a whole
+   trajectory uploaded before start, the network plays no part in
+   execution. The bounds come back only if chunked append is built.
 7. **Resume:** whether an underrun may resume in place in a later version,
    instead of ending the session.
 8. **Records:** how long session logs are kept.
