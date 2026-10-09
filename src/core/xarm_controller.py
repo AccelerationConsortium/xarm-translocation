@@ -1576,6 +1576,11 @@ class XArmController:
 
     def stop_motion(self):
         """Stop all motion immediately."""
+        # A streaming joint trajectory must send nothing after a STOP. Set
+        # its hard-stop flag first; the emergency stop below follows.
+        trajectory = getattr(self, "_trajectory_manager", None)
+        if trajectory is not None and hasattr(trajectory, "notify_hard_stop"):
+            trajectory.notify_hard_stop("stop")
         # After an emergency stop, the arm froze somewhere between named
         # poses. The graph must report unknown until re-pinned.
         self.last_arm_pose_name = None
@@ -3187,6 +3192,12 @@ class XArmController:
     def disconnect(self):
         """Disconnects from the robot arm."""
         print("Disconnecting Robot Arm...")
+        # Never drop the connection under a streaming joint trajectory: stop
+        # it (the executor emergency-stops on a disconnect) and let it end.
+        trajectory = getattr(self, "_trajectory_manager", None)
+        if trajectory is not None and hasattr(trajectory, "notify_hard_stop"):
+            trajectory.notify_hard_stop("disconnect")
+            trajectory.wait_idle(3.0)
         # End ordinary claim-bound windows. The separate persistent admin
         # latch deliberately survives disconnect and is restored only by admin.
         self.restore_graph_mode("disconnect")

@@ -13,6 +13,7 @@ import hmac
 import json
 import logging
 import os
+import threading
 from collections import deque
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Any, Literal, Union
@@ -54,6 +55,10 @@ try:
     from . import kinematics
     from . import assistant_actions
     from . import assistant_llm
+    from .trajectory_executor import (
+        RealtimeJointMonitor, TrajectoryError, TrajectoryManager, TrajectorySettings, make_backend,
+    )
+    from .joint_trajectory import JointLimits, JointPoint, validate_joint_trajectory
 except ImportError:
     from core.xarm_controller import XArmController, SafetyLevel, ComponentState
     from core.xarm_utils import load_config
@@ -84,6 +89,10 @@ except ImportError:
     from core import kinematics
     from core import assistant_actions
     from core import assistant_llm
+    from core.trajectory_executor import (
+        RealtimeJointMonitor, TrajectoryError, TrajectoryManager, TrajectorySettings, make_backend,
+    )
+    from core.joint_trajectory import JointLimits, JointPoint, validate_joint_trajectory
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -264,6 +273,42 @@ class TrajectoryRequest(BaseModel):
     """
     waypoints: List[TrajectoryWaypoint] = Field(min_length=2)
     start_tolerance: TrajectoryStartTolerance = Field(default_factory=TrajectoryStartTolerance)
+
+class JointTrajectoryPoint(BaseModel):
+    """One point of a joint trajectory (xArm5: J1..J5). Units are fixed."""
+    t: FiniteFloat = Field(
+        ge=0, description="Seconds from the trajectory start (not the chunk start); strictly increasing.",
+    )
+    joints_deg: List[FiniteFloat] = Field(
+        min_length=1, max_length=7,
+        description="Joint angles in degrees, base to wrist; exactly as many as the arm has joints.",
+    )
+    velocities_deg_s: Optional[List[FiniteFloat]] = Field(
+        default=None, min_length=1, max_length=7,
+        description="Optional joint velocities, deg/s; give on every point or none.",
+    )
+    accelerations_deg_s2: Optional[List[FiniteFloat]] = Field(
+        default=None, min_length=1, max_length=7,
+        description="Optional joint accelerations, deg/s^2; only with velocities, on every point or none.",
+    )
+
+class JointTrajectoryValidateRequest(BaseModel):
+    """A whole joint trajectory to check without moving anything."""
+    points: List[JointTrajectoryPoint] = Field(min_length=2, max_length=60000)
+    rate_hz: Optional[FiniteFloat] = Field(default=None, description="Command rate to validate for; device default when omitted.")
+    start_tolerance_deg: Optional[FiniteFloat] = Field(default=None, description="Start tolerance; device default when omitted.")
+
+class TrajectorySessionRequest(BaseModel):
+    """Open a joint-trajectory session (see src/docs/SERVOJ_TRAJECTORY_PLAN.md)."""
+    rate_hz: Optional[FiniteFloat] = Field(default=None, description="Command rate in Hz; device default when omitted.")
+    start_tolerance_deg: Optional[FiniteFloat] = Field(
+        default=None, description="How far the measured start may be from the first point; at most the device default.",
+    )
+
+class TrajectoryChunkRequest(BaseModel):
+    """Consecutive points of the session's trajectory."""
+    points: List[JointTrajectoryPoint] = Field(min_length=1, max_length=5000)
+    final: bool = Field(default=False, description="True on the last chunk; start is refused until it arrives.")
 
 class GripperRequest(BaseModel):
     """Request model for gripper operations."""
@@ -711,6 +756,65 @@ async def require_claim(x_claim_token: Optional[str] = Header(default=None)):
                     "this endpoint is gated by an active claim; "
                     "POST /control/claim to acquire it, or include the "
                     "holder's X-Claim-Token header"
+                ),
+            },
+        )
+
+
+# Joint trajectories (src/docs/SERVOJ_TRAJECTORY_PLAN.md). One manager per
+# controller, created on first use. Settings come from
+# src/settings/trajectory.yaml and default to disabled; a broken file
+# disables the feature rather than stopping the service.
+_trajectory_settings_cache: Optional[TrajectorySettings] = None
+# Set while a force-torque service tare is reading the sensor in the background.
+_ft_tare_busy = threading.Event()
+_trajectory_settings_error: Optional[str] = None
+
+
+def _trajectory_settings() -> TrajectorySettings:
+    global _trajectory_settings_cache, _trajectory_settings_error
+    if _trajectory_settings_cache is None:
+        try:
+            _trajectory_settings_cache = TrajectorySettings.load()
+        except Exception as exc:  # noqa: BLE001 - a bad file must not stop the service
+            _trajectory_settings_error = str(exc)
+            logger.error(f"[trajectory] settings rejected, feature disabled: {exc}")
+            _trajectory_settings_cache = TrajectorySettings()
+    return _trajectory_settings_cache
+
+
+def _existing_trajectory_manager(c) -> Optional[TrajectoryManager]:
+    mgr = getattr(c, "_trajectory_manager", None) if c is not None else None
+    return mgr if isinstance(mgr, TrajectoryManager) else None
+
+
+def get_trajectory_manager(c) -> TrajectoryManager:
+    mgr = _existing_trajectory_manager(c)
+    if mgr is None:
+        mgr = TrajectoryManager(_trajectory_settings())
+        c._trajectory_manager = mgr
+    return mgr
+
+
+def trajectory_running(c=None) -> bool:
+    mgr = _existing_trajectory_manager(c if c is not None else controller)
+    return mgr is not None and mgr.running
+
+
+# While a trajectory streams, nothing else may use the controller's command
+# channel: stage 0a showed the service's own background reads stall commands
+# by up to 27 ms. The same routes would also change mode or actuate
+# mid-stream. STOP (/control/stop) is deliberately NOT gated.
+async def require_no_trajectory_running():
+    if trajectory_running():
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "trajectory_running",
+                "message": (
+                    "A joint trajectory is streaming; this action would disturb it. "
+                    "Cancel it (POST /control/freehand/trajectory/{id}/cancel) or "
+                    "POST /control/stop, then retry."
                 ),
             },
         )
@@ -1281,8 +1385,10 @@ def reserve_motion() -> XArmController:
 # landed 2025-07-13 in 0.2.5; the first ``/control/*`` route arrived 2026-05-23
 # with STATUS_SPEC v1.1), so the family that most needs to look dangerous was
 # the one family whose URLs did not say so. ``/control/freehand/*`` groups by
-# permission model, not by subject: every path under it is refused by
-# ``strict_graph_guard`` in STRICT, which is now legible from the URL alone.
+# permission model, not by subject: every path under it that can move the
+# arm is refused by ``strict_graph_guard`` in STRICT, which is now legible
+# from the URL alone. (The joint-trajectory validate, status, log and cancel
+# routes are the exceptions: they move nothing, and cancel must always work.)
 # Note that means the rail (``/track/move``) and the gripper belong here too --
 # "freehand" is "bypasses the motion graph", not "Cartesian".
 #
@@ -1534,7 +1640,10 @@ async def telemetry_loop():
                 continue
             if not manager.active_connections:
                 continue
-            await asyncio.to_thread(_refresh, c)
+            # A streaming trajectory owns the command channel. The executor
+            # keeps last_joints current from the real-time report instead.
+            if not trajectory_running(c):
+                await asyncio.to_thread(_refresh, c)
             await broadcast_telemetry()
         except asyncio.CancelledError:
             break
@@ -1557,6 +1666,10 @@ async def gripper_status_loop():
             # Faults can make is_alive false; keep reading diagnostics as
             # long as the hardware connection itself remains available.
             if c is None or c.arm is None or not c.arm.connected:
+                continue
+            # Gripper status is a Modbus read through the control box; it
+            # must not land on the command channel mid-trajectory.
+            if trajectory_running(c):
                 continue
             await asyncio.to_thread(c.refresh_gripper_status)
         except asyncio.CancelledError:
@@ -1602,7 +1715,7 @@ async def get_configurations():
     raise HTTPException(status_code=404, detail="Main xarm_config.yaml not found in any expected location.")
 
 
-@app.post("/connect", dependencies=[Depends(require_login)])
+@app.post("/connect", dependencies=[Depends(require_no_trajectory_running), Depends(require_login)])
 async def connect_robot(request: ConnectionRequest, background_tasks: BackgroundTasks):
     """Connect to the robot controller.
 
@@ -1717,7 +1830,7 @@ async def get_status() -> EquipmentStatus:
     """
     return build_status(controller)
 
-@app.get("/positions")
+@app.get("/positions", dependencies=[Depends(require_no_trajectory_running)])
 async def get_all_positions():
     """Read-only snapshot of every position sensor: joints, Cartesian pose,
     linear track, and gripper — no movement is performed."""
@@ -1785,24 +1898,24 @@ def _kinematics_arm():
     return arm
 
 
-@app.get("/kinematics/config", tags=["kinematics"], summary="Read controller coordinate configuration and DH parameters")
+@app.get("/kinematics/config", tags=["kinematics"], summary="Read controller coordinate configuration and DH parameters", dependencies=[Depends(require_no_trajectory_running)])
 async def kinematics_config():
     return await asyncio.to_thread(kinematics.configuration, _kinematics_arm())
 
 
-@app.get("/kinematics/limits", tags=["kinematics"], summary="Read reduced limits and ordinary-limit availability")
+@app.get("/kinematics/limits", tags=["kinematics"], summary="Read reduced limits and ordinary-limit availability", dependencies=[Depends(require_no_trajectory_running)])
 async def kinematics_limits():
     return await asyncio.to_thread(kinematics.limits, _kinematics_arm())
 
 
-@app.post("/kinematics/fk", tags=["kinematics"], summary="Read-only controller forward kinematics; no motion")
+@app.post("/kinematics/fk", tags=["kinematics"], summary="Read-only controller forward kinematics; no motion", dependencies=[Depends(require_no_trajectory_running)])
 async def kinematics_fk(request: ForwardKinematicsRequest):
     arm = _kinematics_arm()
     joints = kinematics.validate_joints(request.joints, arm.axis)
     return await asyncio.to_thread(kinematics.forward, arm, joints)
 
 
-@app.post("/kinematics/ik", tags=["kinematics"], summary="Read-only controller inverse kinematics with reference angles; no motion")
+@app.post("/kinematics/ik", tags=["kinematics"], summary="Read-only controller inverse kinematics with reference angles; no motion", dependencies=[Depends(require_no_trajectory_running)])
 async def kinematics_ik(request: InverseKinematicsRequest):
     arm = _kinematics_arm()
     ref = request.reference_angles
@@ -2070,8 +2183,8 @@ async def stop_movement(request: Request, background_tasks: BackgroundTasks):
 # registry's do_not_call_connect forbids generic clients from composing it,
 # and the operator paths — /web/ panel, dashboard /device/* proxy — use the
 # root /connect route.)
-@app.post("/control/clear_errors", dependencies=[Depends(require_login)])
-@app.post("/clear/errors", dependencies=[Depends(require_login)])
+@app.post("/control/clear_errors", dependencies=[Depends(require_no_trajectory_running), Depends(require_login)])
+@app.post("/clear/errors", dependencies=[Depends(require_no_trajectory_running), Depends(require_login)])
 async def clear_errors(background_tasks: BackgroundTasks):
     """Clear faults, re-enable the arm, and verify controller recovery."""
     ctrl = get_controller()
@@ -2094,7 +2207,7 @@ async def clear_errors(background_tasks: BackgroundTasks):
         logger.error(f"Clear errors failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Clear errors failed: {str(e)}")
 
-@app.post("/robot/enable", dependencies=[Depends(require_claim)])
+@app.post("/robot/enable", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def enable_robot():
     """Re-enable robot motion after emergency stop."""
     c = get_controller()
@@ -2128,7 +2241,7 @@ async def enable_robot():
     await broadcast_status_update()
     return {"message": "Robot motion enabled successfully."}
 
-@app.post("/robot/manual", dependencies=[Depends(require_claim)])
+@app.post("/robot/manual", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def set_manual_mode(request: ManualModeRequest):
     """Toggle manual (drag/teach) mode -- mirrors the factory UI's Manual button.
 
@@ -2151,7 +2264,7 @@ async def set_manual_mode(request: ManualModeRequest):
         "manual_mode": request.enable,
     }
 
-@app.post("/component/enable", dependencies=[Depends(require_claim)])
+@app.post("/component/enable", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def enable_component(request: ComponentRequest):
     """Enable a specific component (gripper, track, or force_torque)."""
     c = get_controller()
@@ -2172,7 +2285,7 @@ async def enable_component(request: ComponentRequest):
     else:
         raise HTTPException(status_code=500, detail=f"Failed to enable component '{component}'.")
 
-@app.post("/component/disable", dependencies=[Depends(require_claim)])
+@app.post("/component/disable", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def disable_component(request: ComponentRequest):
     """Disable a specific component (gripper, track, or force_torque)."""
     c = get_controller()
@@ -2193,8 +2306,8 @@ async def disable_component(request: ComponentRequest):
     else:
         raise HTTPException(status_code=500, detail=f"Failed to disable component '{component}'.")
 
-@app.post("/control/freehand/velocity", dependencies=[Depends(require_claim)])
-@app.post("/velocity/cartesian", dependencies=[Depends(require_claim)])
+@app.post("/control/freehand/velocity", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
+@app.post("/velocity/cartesian", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def set_cartesian_velocity(request: VelocityRequest):
     """Set the Cartesian velocity of the robot arm.
 
@@ -2237,7 +2350,7 @@ async def _graph_routed_gripper(c: "XArmController", state_name: str, verb: str)
         "gripper_state": c.current_gripper_state,
     }
 
-@app.post("/gripper/open", dependencies=[Depends(require_claim)])
+@app.post("/gripper/open", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def open_gripper(request: Optional[GripperRequest] = None):
     """Open the attached gripper.
 
@@ -2266,7 +2379,7 @@ async def open_gripper(request: Optional[GripperRequest] = None):
         logger.error(f"Open gripper failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Open gripper failed: {str(e)}")
 
-@app.post("/gripper/close", dependencies=[Depends(require_claim)])
+@app.post("/gripper/close", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def close_gripper(request: Optional[GripperRequest] = None):
     """Close the attached gripper.
 
@@ -2311,8 +2424,8 @@ async def close_gripper(request: Optional[GripperRequest] = None):
         logger.error(f"Close gripper failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Close gripper failed: {str(e)}")
 
-@app.post("/control/freehand/gripper/stroke", dependencies=[Depends(require_claim)])
-@app.post("/gripper/move/stroke", dependencies=[Depends(require_claim)])
+@app.post("/control/freehand/gripper/stroke", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
+@app.post("/gripper/move/stroke", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def move_gripper_stroke(request: GripperStrokeRequest):
     """Move gripper to a specific stroke position.
 
@@ -2341,8 +2454,8 @@ async def move_gripper_stroke(request: GripperStrokeRequest):
         logger.error(f"Move gripper to stroke failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Move gripper to stroke failed: {str(e)}")
 
-@app.post("/control/freehand/gripper/force", dependencies=[Depends(require_claim)])
-@app.post("/gripper/force", dependencies=[Depends(require_claim)])
+@app.post("/control/freehand/gripper/force", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
+@app.post("/gripper/force", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def set_gripper_force(request: GripperForceRequest):
     """Set gripping force for grippers that support force control.
 
@@ -2357,7 +2470,7 @@ async def set_gripper_force(request: GripperForceRequest):
     await broadcast_status_update()
     return {"message": f"Gripper force set to {request.force}."}
 
-@app.get("/gripper/position")
+@app.get("/gripper/position", dependencies=[Depends(require_no_trajectory_running)])
 async def get_gripper_position():
     """Get gripper stroke/position when supported by the installed gripper."""
     c = get_controller()
@@ -2434,7 +2547,7 @@ async def move_track_to_location(request: TrackLocationRequest, background_tasks
         )
     return {"message": f"Moved track to '{request.location_name}'."}
 
-@app.get("/track/position")
+@app.get("/track/position", dependencies=[Depends(require_no_trajectory_running)])
 async def get_track_position():
     """Get current linear track position"""
     c = get_controller()
@@ -2443,7 +2556,7 @@ async def get_track_position():
         raise HTTPException(status_code=400, detail="Linear track is not enabled.")
     return {"position": await asyncio.to_thread(c.get_track_position)}
 
-@app.post("/control/trajectory/validate", dependencies=[Depends(require_login)])
+@app.post("/control/trajectory/validate", dependencies=[Depends(require_no_trajectory_running), Depends(require_login)])
 async def validate_trajectory(request: TrajectoryRequest):
     """Validate a coordinated rail + arm trajectory. Moves nothing.
 
@@ -2478,6 +2591,329 @@ async def validate_trajectory(request: TrajectoryRequest):
         )
     return report
 
+# ── Joint trajectories ───────────────────────────────────────────────
+#
+# Upload a joint trajectory (whole, or in chunks ending with ``final``),
+# then start it: the service streams it to the arm at a fixed rate on its
+# own clock (ServoJ, or mode 6 online planning; see trajectory.yaml). The
+# create, chunk and start routes are freehand actions, refused in STRICT
+# like every other /control/freehand path. validate, status, log and cancel
+# are not: the first three move nothing, and cancel must always work.
+# Version 1 runs only complete trajectories. Disabled unless
+# src/settings/trajectory.yaml says ``enabled: true``. Sessions belong to
+# the claim (its session_id) that created them, and need hard claim
+# enforcement, so that a vanished client's claim expiry stops its run.
+
+
+def _trajectory_enabled_guard() -> TrajectorySettings:
+    settings = _trajectory_settings()
+    if not settings.enabled:
+        message = ("Joint-trajectory execution is disabled on this device "
+                   "(src/settings/trajectory.yaml, enabled: false).")
+        if _trajectory_settings_error:
+            message += f" The settings file was rejected: {_trajectory_settings_error}"
+        raise HTTPException(status_code=412, detail={"error": "trajectory_disabled", "message": message})
+    return settings
+
+
+def _trajectory_http(exc: TrajectoryError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+def _trajectory_session(mgr: TrajectoryManager, session_id: str):
+    try:
+        return mgr.get(session_id)
+    except TrajectoryError as exc:
+        raise _trajectory_http(exc)
+
+
+def _trajectory_claim(c) -> dict:
+    """The current claim holder, under hard enforcement only. require_claim
+    has already checked the caller's token against it."""
+    claims = c.claim_manager
+    if not claims.enforced:
+        raise HTTPException(status_code=412, detail={
+            "error": "claim_enforcement_off",
+            "message": ("Joint trajectories need hard claim enforcement, so a client that "
+                        "disappears loses its claim and its run stops.")})
+    holder = claims.claimed_by()
+    if not isinstance(holder, dict) or not holder.get("session_id"):
+        raise HTTPException(status_code=423, detail={"error": "claim_required", "claimed_by": None})
+    return holder
+
+
+def _graph_override_covers(c, session) -> None:
+    """Refuse a start when a timed graph-mode override would lapse back to
+    STRICT before the trajectory ends (the executor would then stop it
+    halfway). The persistent admin latch never lapses."""
+    snapshot_fn = getattr(c, "graph_mode_override_snapshot", None)
+    snapshot = snapshot_fn() if callable(snapshot_fn) else None
+    if not isinstance(snapshot, dict) or not snapshot.get("active") or snapshot.get("persistent"):
+        return
+    remaining = snapshot.get("remaining_seconds")
+    if not isinstance(remaining, (int, float)):
+        return
+    planned = float(session.raw_points[-1]["t"]) if session.raw_points else 0.0
+    needed = planned + 10.0  # lead-in, settle and margin
+    if remaining < needed:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "graph_mode_override_expiring",
+                "message": (
+                    f"The graph-mode override ends in {remaining:.0f} s, but this trajectory needs "
+                    f"about {needed:.0f} s. Extend the override first."
+                ),
+                "remaining_seconds": remaining,
+                "needed_seconds": needed,
+            },
+        )
+
+
+@app.post("/control/freehand/trajectory/validate",
+          dependencies=[Depends(require_login), Depends(require_no_trajectory_running)])
+async def validate_joint_trajectory_route(request: JointTrajectoryValidateRequest):
+    """Validate a whole joint trajectory against this arm. Moves nothing.
+
+    Checks shape, timing, joint limits, the interpolant's speed and
+    acceleration at the command rate, and the measured start. Works while
+    execution is disabled and in any graph mode. 200 with the report, or
+    422 ``trajectory_invalid`` with it under ``detail.report``.
+    """
+    c = get_controller()
+    settings = _trajectory_settings()
+    rate = float(request.rate_hz) if request.rate_hz is not None else settings.default_rate()
+    lo, hi = settings.rate_range()
+    if not lo <= rate <= hi:
+        raise HTTPException(status_code=422, detail={
+            "error": "rate_out_of_range",
+            "message": f"rate_hz {rate} is outside {lo:g}-{hi:g} Hz for the {settings.backend} backend"})
+    tolerance = (float(request.start_tolerance_deg) if request.start_tolerance_deg is not None
+                 else settings.start_tolerance_deg)
+    if not 0 < tolerance <= settings.start_tolerance_deg:
+        raise HTTPException(status_code=422, detail={
+            "error": "start_tolerance_out_of_range",
+            "message": f"start_tolerance_deg must be within (0, {settings.start_tolerance_deg}]"})
+    limits = JointLimits(
+        joint_limits_deg=list(c.joint_limits),
+        max_joint_speed_deg_s=float(c.max_joint_speed),
+        max_joint_acc_deg_s2=settings.max_joint_acc_deg_s2,
+        servo_rate_hz=rate if settings.backend == "servoj" else max(rate, 100.0),
+        max_duration_s=settings.max_duration_s,
+        max_points=settings.max_points,
+    )
+    points = [JointPoint.from_mapping(p.model_dump(exclude_none=True)) for p in request.points]
+    start = await asyncio.to_thread(c.get_current_joints)
+    report = await asyncio.to_thread(validate_joint_trajectory, points, limits, start, tolerance)
+    if not report.get("valid"):
+        raise HTTPException(status_code=422, detail={
+            "error": "trajectory_invalid",
+            "message": f"{len(report.get('errors', []))} violation(s); see report.errors",
+            "report": report})
+    return report
+
+
+@app.post("/control/freehand/trajectory", status_code=201, dependencies=[Depends(require_claim)])
+async def create_trajectory_session(request: Optional[TrajectorySessionRequest] = None):
+    """Open a joint-trajectory session bound to the caller's claim.
+
+    One open session per arm. 412 ``trajectory_disabled`` unless enabled,
+    412 ``claim_enforcement_off`` without hard claim enforcement, 409
+    ``graph_mode_strict`` in STRICT, 409 ``session_open`` while another
+    session is open, 422 for an out-of-range rate or tolerance.
+    """
+    _trajectory_enabled_guard()
+    strict_graph_guard("trajectory.create")
+    c = get_controller()
+    holder = _trajectory_claim(c)
+    mgr = get_trajectory_manager(c)
+    request = request or TrajectorySessionRequest()
+    try:
+        session = mgr.create(
+            key=holder["session_id"],
+            owner=holder.get("owner"),
+            num_joints=int(c.num_joints),
+            rate_hz=request.rate_hz,
+            start_tolerance_deg=request.start_tolerance_deg,
+        )
+    except TrajectoryError as exc:
+        raise _trajectory_http(exc)
+    return session.status()
+
+
+@app.put("/control/freehand/trajectory/{session_id}/chunks/{seq}", dependencies=[Depends(require_claim)])
+async def put_trajectory_chunk(session_id: str, seq: int, request: TrajectoryChunkRequest):
+    """Upload chunk ``seq`` (0, 1, 2, ...) of the session's trajectory.
+
+    Re-sending a chunk with identical content is acknowledged as a
+    duplicate and never applied twice. Different content under a known
+    ``seq`` is 409 ``chunk_conflict``; a gap is 409 ``chunk_out_of_order``
+    with ``expected_seq``; anything after the final chunk is 409
+    ``session_closed``; invalid content is 422 with the report.
+    """
+    _trajectory_enabled_guard()
+    strict_graph_guard("trajectory.chunk")
+    if seq < 0:
+        raise HTTPException(status_code=422, detail={"error": "chunk_out_of_order", "message": "seq starts at 0"})
+    c = get_controller()
+    holder = _trajectory_claim(c)
+    mgr = get_trajectory_manager(c)
+    session = _trajectory_session(mgr, session_id)
+    limits = mgr.validation_limits(session, c.joint_limits, c.max_joint_speed)
+    points = [p.model_dump(exclude_none=True) for p in request.points]
+    try:
+        return await asyncio.to_thread(
+            mgr.add_chunk, session_id, seq, holder["session_id"], points, request.final, limits,
+        )
+    except TrajectoryError as exc:
+        raise _trajectory_http(exc)
+
+
+@app.post("/control/freehand/trajectory/{session_id}/start", dependencies=[Depends(require_claim)])
+async def start_trajectory(session_id: str, request: Request):
+    """Start the session's complete trajectory.
+
+    Gates, in order: enabled, Studio-Sim box (412), STRICT (409), claim
+    enforcement and ownership, a timed graph override that would lapse
+    mid-run (409), the sash interlock (412), arm ready, still, without
+    errors or warnings and not in manual mode (412), no force-torque tare
+    running (409), and the single motion slot (409 ``motion_in_progress``).
+    The measured start must be within the session's tolerance (422). A
+    STOP that lands anywhere during this refuses the start (409
+    ``stopped_during_start``). The slot is held for the whole run, so
+    /status reports ``activity: running`` until the arm is back in mode 0.
+    """
+    c0 = get_controller()
+    mgr = get_trajectory_manager(c0)
+    # Captured before anything else: a STOP from here on cancels the start.
+    generation = mgr.stop_generation()
+    settings = _trajectory_enabled_guard()
+    box_sim_guard("trajectory.start")
+    strict_graph_guard("trajectory.start")
+    holder = _trajectory_claim(c0)
+    key = holder["session_id"]
+    session = _trajectory_session(mgr, session_id)
+    if session.owner_key != key:
+        raise HTTPException(status_code=423, detail={
+            "error": "session_owner_mismatch",
+            "message": "Only the claim that created this session may start it"})
+    _graph_override_covers(c0, session)
+    interlock_freehand_guard("trajectory.start")
+    arm = getattr(c0, "arm", None)
+    if not getattr(c0, "is_alive", False):
+        raise HTTPException(status_code=412, detail={
+            "error": "arm_not_ready", "message": "The arm is not ready; clear errors first"})
+    if getattr(arm, "error_code", 0) or getattr(arm, "warn_code", 0):
+        raise HTTPException(status_code=412, detail={
+            "error": "arm_not_ready",
+            "message": f"The arm reports error {getattr(arm, 'error_code', None)} / warning "
+                       f"{getattr(arm, 'warn_code', None)}; clear it first"})
+    if getattr(arm, "mode", None) == 2:
+        raise HTTPException(status_code=412, detail={
+            "error": "manual_mode", "message": "Turn manual mode off first"})
+    if getattr(arm, "state", None) != 2:
+        raise HTTPException(status_code=412, detail={
+            "error": "arm_not_idle",
+            "message": f"The arm must be ready and still (state 2), it reports {getattr(arm, 'state', None)}"})
+    if _ft_tare_busy.is_set():
+        raise HTTPException(status_code=409, detail={
+            "error": "force_torque_tare_running", "message": "Wait for the force-torque tare to finish"})
+
+    c = reserve_motion()
+    loop = asyncio.get_running_loop()
+    released = threading.Event()
+
+    def release(_session=None):
+        if released.is_set():
+            return
+        released.set()
+        c.exit_motion()
+        try:
+            loop.call_soon_threadsafe(lambda: asyncio.ensure_future(broadcast_status_update()))
+        except RuntimeError:
+            pass  # the loop is gone (shutdown)
+
+    def watch():
+        current = c.claim_manager.claimed_by()
+        if not isinstance(current, dict) or current.get("session_id") != key:
+            return "claim_lost"
+        if getattr(c, "graph_mode", None) == GraphMode.STRICT:
+            return "graph_mode_strict"
+        return None
+
+    def on_measured(joints):
+        previous = list(getattr(c, "last_joints", None) or [])
+        c.last_joints = list(joints) + previous[len(joints):]
+
+    try:
+        start_joints = await asyncio.to_thread(c.get_current_joints)
+        limits = mgr.validation_limits(session, c.joint_limits, c.max_joint_speed)
+        backend = make_backend(settings.backend, c.arm, settings.command_timeout_s)
+        monitor = RealtimeJointMonitor(c.host, int(c.num_joints)) if settings.realtime_report else None
+        status = await asyncio.to_thread(
+            mgr.start, session_id, key, limits=limits, start_joints=start_joints, backend=backend,
+            watch=watch, on_finish=release, monitor=monitor, on_measured=on_measured,
+            stop_generation=generation,
+        )
+    except TrajectoryError as exc:
+        release()
+        raise _trajectory_http(exc)
+    except Exception as exc:
+        release()
+        logger.error(f"[trajectory] start failed: {exc}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Trajectory start failed: {exc}")
+    # Freehand: the arm leaves its graph pose and stays unknown until re-pinned.
+    c.last_arm_pose_name = None
+    actor = getattr(request.state, "identity_email", None) or "unauthenticated"
+    logger.info(f"[trajectory] session {session_id} started by {actor} "
+                f"({session.backend}, {session.rate_hz:g} Hz, {status['executed']['duration_s']} s)")
+    await broadcast_status_update()
+    return status
+
+
+@app.post("/control/freehand/trajectory/{session_id}/cancel", dependencies=[Depends(require_claim)])
+async def cancel_trajectory(session_id: str):
+    """Cancel the session: before start it just closes; while running the
+    arm slows to a stop along the planned path, then mode 0 is restored.
+    Never refused for graph mode or a disabled feature. For an immediate
+    halt use POST /control/stop, which needs no claim."""
+    c = get_controller()
+    holder = _trajectory_claim(c)
+    mgr = get_trajectory_manager(c)
+    try:
+        return mgr.cancel(session_id, holder["session_id"])
+    except TrajectoryError as exc:
+        raise _trajectory_http(exc)
+
+
+@app.get("/control/freehand/trajectory/{session_id}", dependencies=[Depends(require_login)])
+async def get_trajectory_session(session_id: str):
+    """Session status: state, progress (``executed.t_exec``), the wall time
+    of t = 0 (``started_at_utc``) and the latest measured joints, for
+    one-way sync. Poll at 10-20 Hz at most."""
+    c = get_controller()
+    session = _trajectory_session(get_trajectory_manager(c), session_id)
+    status = session.status()
+    status["log_available"] = session.record is not None
+    return status
+
+
+@app.get("/control/freehand/trajectory/{session_id}/log",
+         dependencies=[Depends(require_login), Depends(require_no_trajectory_running)])
+async def get_trajectory_log(session_id: str):
+    """The finished session's record: every tick (scheduled, sent, round
+    trip, trajectory time, SDK code, commanded joints) and every reported
+    joint sample from the real-time stream, on one perf_counter clock.
+    Refused while a trajectory runs: encoding a long record would steal
+    CPU time from the executor."""
+    c = get_controller()
+    session = _trajectory_session(get_trajectory_manager(c), session_id)
+    if session.record is None:
+        raise HTTPException(status_code=409, detail={
+            "error": "log_not_ready", "message": f"Session is {session.state}; the log is written when it ends"})
+    body = await asyncio.to_thread(json.dumps, session.record)
+    return RawResponse(content=body, media_type="application/json")
+
 @app.get("/track/locations")
 async def get_track_locations():
     """Get a list of all available named locations for the linear track from its config file."""
@@ -2509,7 +2945,7 @@ async def get_track_locations():
         raise HTTPException(status_code=500, detail=f"Get track locations failed: {str(e)}")
 
 # Force Torque Sensor endpoints
-@app.post("/force-torque/enable", dependencies=[Depends(require_claim)])
+@app.post("/force-torque/enable", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def enable_force_torque_sensor():
     """Enable the 6-axis force torque sensor."""
     c = get_controller()
@@ -2525,7 +2961,7 @@ async def enable_force_torque_sensor():
     else:
         raise HTTPException(status_code=500, detail="Failed to enable force torque sensor.")
 
-@app.post("/force-torque/disable", dependencies=[Depends(require_claim)])
+@app.post("/force-torque/disable", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def disable_force_torque_sensor():
     """Disable the 6-axis force torque sensor."""
     c = get_controller()
@@ -2538,25 +2974,32 @@ async def disable_force_torque_sensor():
     else:
         raise HTTPException(status_code=500, detail="Failed to disable force torque sensor.")
 
-@app.post("/force-torque/calibrate", dependencies=[Depends(require_claim)])
+@app.post("/force-torque/calibrate", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def calibrate_force_torque_sensor(request: ForceTorqueCalibrationRequest, background_tasks: BackgroundTasks):
     """Compute a fixed service tare from the compensated controller channel."""
     c = get_controller()
 
     async def calibration_task():
-        success = await asyncio.to_thread(
-            c.calibrate_force_torque_sensor,
-            samples=request.samples,
-            delay=request.delay,
-        )
+        # The tare reads the sensor for several seconds after this route
+        # returns; a trajectory must not start while it does.
+        _ft_tare_busy.set()
+        try:
+            success = await asyncio.to_thread(
+                c.calibrate_force_torque_sensor,
+                samples=request.samples,
+                delay=request.delay,
+            )
+        finally:
+            _ft_tare_busy.clear()
         if not success:
             logger.error("Failed to compute force torque service tare.")
         await broadcast_status_update()
 
+    _ft_tare_busy.set()
     background_tasks.add_task(calibration_task)
     return {"message": "Force torque service tare started."}
 
-@app.get("/force-torque/data")
+@app.get("/force-torque/data", dependencies=[Depends(require_no_trajectory_running)])
 async def get_force_torque_data():
     """Get current force torque sensor data."""
     c = get_controller()
@@ -2580,14 +3023,14 @@ async def get_force_torque_config(revision: Optional[str] = None):
     return config
 
 
-@app.get("/force-torque/status")
+@app.get("/force-torque/status", dependencies=[Depends(require_no_trajectory_running)])
 async def get_force_torque_status():
     """Get comprehensive force torque sensor status."""
     c = get_controller()
     
     return await asyncio.to_thread(c.get_force_torque_status)
 
-@app.post("/force-torque/check-safety", dependencies=[Depends(require_claim)])
+@app.post("/force-torque/check-safety", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def check_force_torque_safety():
     """Check if force/torque exceeds safety thresholds and trigger alerts."""
     c = get_controller()
@@ -4220,7 +4663,7 @@ async def assistant_execute(request: AssistantExecuteRequest, background_tasks: 
         c.exit_motion()
 
 
-@app.get("/graph/nearest")
+@app.get("/graph/nearest", dependencies=[Depends(require_no_trajectory_running)])
 async def get_nearest_node(joint_tolerance_deg: float = 10.0, rail_tolerance_mm: float = 2.0):
     """Nearest-node detection: which graph node best matches the
     controller's physical state right now?
@@ -4260,7 +4703,7 @@ async def get_nearest_node(joint_tolerance_deg: float = 10.0, rail_tolerance_mm:
     }
 
 
-@app.post("/control/graph/recover_to", dependencies=[Depends(require_claim)])
+@app.post("/control/graph/recover_to", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def recover_to_node(request: GraphRecoverRequest):
     """Operator-declared re-pin to a known node after off-grid travel.
 
@@ -4306,7 +4749,7 @@ async def recover_to_node(request: GraphRecoverRequest):
     return result
 
 
-@app.post("/control/graph/gripper", dependencies=[Depends(require_claim)])
+@app.post("/control/graph/gripper", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def set_gripper_state(request: GraphGripperRequest, background_tasks: BackgroundTasks):
     """Change the gripper state while parked at the current node.
 
@@ -4910,7 +5353,7 @@ async def create_graph_node(request: GraphNodeCreateRequest):
     }
 
 
-@app.post("/control/graph/pose", dependencies=[Depends(require_claim)])
+@app.post("/control/graph/pose", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def save_graph_pose(request: PoseSaveRequest):
     """Write a named arm pose into joint_config.yaml.
 

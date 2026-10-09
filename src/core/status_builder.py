@@ -375,6 +375,11 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         # the toggle lives on POST /robot/manual.
         "manual_mode": getattr(getattr(controller, "arm", None), "mode", None) == 2,
     }
+    # Joint-trajectory session, when the API has created a manager. Checked
+    # by class name so a mock controller's auto-attribute is never read.
+    trajectory_manager = getattr(controller, "_trajectory_manager", None)
+    if type(trajectory_manager).__name__ == "TrajectoryManager":
+        details["trajectory"] = trajectory_manager.summary()
     if simulated:
         # Machine-readable twin of the dry_run state / message prefix. The
         # panel keys its banner on this; workflows can branch on it without
