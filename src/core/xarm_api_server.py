@@ -2766,8 +2766,12 @@ async def create_trajectory_session(request: Optional[TrajectorySessionRequest] 
 
 
 @app.put("/control/freehand/trajectory/{session_id}/chunks/{seq}", dependencies=[Depends(require_claim)])
+@app.post("/control/freehand/trajectory/{session_id}/chunks/{seq}", dependencies=[Depends(require_claim)])
 async def put_trajectory_chunk(session_id: str, seq: int, request: TrajectoryChunkRequest):
     """Upload chunk ``seq`` (0, 1, 2, ...) of the session's trajectory.
+
+    PUT and POST are the same handler: the dashboard's /control proxy
+    forwards GET/POST/DELETE only.
 
     Re-sending a chunk with identical content is acknowledged as a
     duplicate and never applied twice. Different content under a known

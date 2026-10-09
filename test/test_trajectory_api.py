@@ -353,3 +353,10 @@ def test_graph_reads_connect_and_log_are_refused_during_a_run(client, headers, m
     client.post(f"/control/freehand/trajectory/{sid}/cancel", headers=headers)
     backend.gate.set()
     wait_state(client, sid, {"cancelled", "failed", "completed"})
+
+
+def test_chunk_upload_also_answers_post_for_the_dashboard_proxy(client, headers):
+    sid = client.post("/control/freehand/trajectory", json={}, headers=headers).json()["session_id"]
+    resp = client.post(f"/control/freehand/trajectory/{sid}/chunks/0",
+                       json={"points": points_j1(), "final": True}, headers=headers)
+    assert resp.status_code == 200 and resp.json()["accepted"]

@@ -53,7 +53,7 @@ All are under `/control/freehand/trajectory`.
 |---|---|
 | `POST /validate {points, rate_hz?}` | Check a whole trajectory against the arm and its measured pose. Moves nothing; needs no claim. 200 with the report, or 422 `trajectory_invalid` with `detail.report.errors` |
 | `POST {rate_hz?}` | Open a session; 201 with `session_id`. One open session per arm (409 `session_open`) |
-| `PUT /{id}/chunks/{seq} {points, final}` | Upload chunk 0, 1, 2… The last one carries `"final": true`. Re-sending identical content is a harmless duplicate. Errors: 409 `chunk_conflict`, `chunk_out_of_order` (with `expected_seq`), `session_closed`; 422 with the report |
+| `PUT` (or `POST`) `/{id}/chunks/{seq} {points, final}` | Upload chunk 0, 1, 2… The last one carries `"final": true`. Re-sending identical content is a harmless duplicate. Errors: 409 `chunk_conflict`, `chunk_out_of_order` (with `expected_seq`), `session_closed`; 422 with the report |
 | `POST /{id}/start` | Start the complete trajectory. 412 if the arm is not ready or still, or in manual mode. 409 `motion_in_progress` or `stopped_during_start`. 422 if the arm moved away from the first point |
 | `GET /{id}` | Status, for one-way sync. Poll at 10–20 Hz at most |
 | `POST /{id}/cancel` | Constrained stop along the path, then mode 0 |
