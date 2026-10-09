@@ -653,6 +653,14 @@ class XArmController:
                             except Exception as e:  # noqa: BLE001
                                 print(f"Force torque auto-enable failed: {e}")
 
+                    # Check again at the very end: on 2026-10-09 the arm was
+                    # ready after the enable above but in state 5 once Connect
+                    # had finished (most likely from a component enable, the
+                    # force-torque one being the prime suspect).
+                    if not self._ensure_ready_state():
+                        print("Warning: the arm is still not enabled (state 4/5) after connect; "
+                              "Clear errors will re-enable it")
+
                     print("xArm Controller Initialized")
                     self._emit_event("startup", message="Controller connected and enabled")
                     self._emit_state_transition("ready", message="Controller initialized")
