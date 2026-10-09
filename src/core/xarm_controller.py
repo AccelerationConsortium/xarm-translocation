@@ -1586,20 +1586,40 @@ class XArmController:
         code = self.arm.vc_set_joint_velocity(velocities)
         return self.check_code(code, f'set_joint_velocity')
 
-    def _ensure_ready_state(self, attempts: int = 3, wait_s: float = 0.3) -> bool:
-        """Re-send set_state(0) while the arm still reports state 4 or 5.
+    def _ensure_ready_state(self, settle_s: float = 0.6, timeout_s: float = 3.0,
+                            poll_s: float = 0.1, max_resends: int = 5) -> bool:
+        """Make the arm stay enabled after a mode change.
 
-        Only used on the connect path, which already sets state 0 once; this
-        just makes that stick. Returns whether the arm left 4/5."""
-        for _ in range(attempts):
-            state = getattr(self.arm, "state", None)
-            if not isinstance(state, int) or state not in (4, 5):
-                return True
-            print(f"Arm still in state {state} after enabling; re-sending set_state(0)")
-            self.arm.set_state(0)
-            time.sleep(wait_s)
-        state = getattr(self.arm, "state", None)
-        return not isinstance(state, int) or state not in (4, 5)
+        On 2026-10-09 the arm read ready straight after set_state(0), then
+        fell back to state 5 about 0.8 s later, when the mode change from
+        set_mode(0) completed. So: query the real state (not the cached
+        report) until it has read 1 or 2 for ``settle_s`` without a break,
+        re-sending set_state(0) whenever it reads 4 or 5. Only used on the
+        connect path, which already sets state 0. Returns whether it held.
+        """
+        deadline = time.monotonic() + timeout_s
+        ready_since = None
+        resends = 0
+        state = None
+        while True:
+            now = time.monotonic()
+            try:
+                code, state = self.arm.get_state()
+            except Exception:  # noqa: BLE001 - fall back to the cached value
+                code, state = 0, getattr(self.arm, "state", None)
+            if code == 0 and state in (4, 5):
+                ready_since = None
+                if resends < max_resends:
+                    print(f"Arm in state {state} after enabling; re-sending set_state(0)")
+                    self.arm.set_state(0)
+                    resends += 1
+            elif code == 0 and state in (1, 2):
+                ready_since = ready_since if ready_since is not None else now
+                if now - ready_since >= settle_s:
+                    return True
+            if now >= deadline:
+                return code == 0 and state in (1, 2)
+            time.sleep(poll_s)
 
     def stop_motion(self):
         """Stop all motion immediately."""

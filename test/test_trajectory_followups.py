@@ -52,21 +52,38 @@ def test_request_code_uses_auth_login_and_falls_back_on_404(monkeypatch):
 # 2a. Connect re-asserts state 0 until the arm leaves state 4/5.
 
 
-def test_ensure_ready_state_resends_until_the_arm_is_ready(monkeypatch):
-    monkeypatch.setattr("src.core.xarm_controller.time.sleep", lambda s: None)
+def _clocked(monkeypatch):
+    now = {"t": 0.0}
+    monkeypatch.setattr("src.core.xarm_controller.time.monotonic", lambda: now["t"])
+    monkeypatch.setattr("src.core.xarm_controller.time.sleep", lambda s: now.__setitem__("t", now["t"] + s))
+
+
+def test_ensure_ready_state_catches_the_late_fall_back_to_state_5(monkeypatch):
+    # What the arm did on 2026-10-09: ready at first, state 5 once the mode
+    # change completed, ready again only after another set_state(0).
+    _clocked(monkeypatch)
     me = MagicMock()
-    states = iter([5, 5, 2])
-    type(me.arm).state = property(lambda self: next(states))
+    readings = iter([2, 2, 2, 5, 5])
+    me.arm.get_state.side_effect = lambda: (0, next(readings, 2 if me.arm.set_state.called else 5))
     assert XArmController._ensure_ready_state(me) is True
-    assert me.arm.set_state.call_count == 2
+    assert me.arm.set_state.call_count >= 1
 
 
-def test_ensure_ready_state_gives_up_after_its_attempts(monkeypatch):
-    monkeypatch.setattr("src.core.xarm_controller.time.sleep", lambda s: None)
+def test_ensure_ready_state_gives_up_and_says_so(monkeypatch):
+    _clocked(monkeypatch)
     me = MagicMock()
-    me.arm.state = 5
-    assert XArmController._ensure_ready_state(me, attempts=3) is False
-    assert me.arm.set_state.call_count == 3
+    me.arm.get_state.return_value = (0, 5)
+    assert XArmController._ensure_ready_state(me, timeout_s=1.0) is False
+    assert me.arm.set_state.call_count == 5          # bounded re-sends
+
+
+def test_ensure_ready_state_needs_the_state_to_hold(monkeypatch):
+    _clocked(monkeypatch)
+    me = MagicMock()
+    me.arm.get_state.return_value = (0, 2)
+    assert XArmController._ensure_ready_state(me) is True
+    assert me.arm.get_state.call_count >= 6          # read ready for 0.6 s, not once
+    assert not me.arm.set_state.called
 
 
 # 2b. /status does not say "ready" for an arm in state 4 or 5.
