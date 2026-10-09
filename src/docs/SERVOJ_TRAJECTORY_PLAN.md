@@ -1,7 +1,10 @@
 # Chunked joint trajectories executed with ServoJ (or online planning) — plan
 
-Status (2026-10-09): **plan, not built.** Nothing in this document has been
-applied to the code or the configuration yet. **Test first:** whether
+Status (2026-10-09): **version 1 implemented on branch
+`feature/xarm-joint-trajectory`.** The executor has run on the arm through
+the stage 0b probe (§2); the HTTP routes have not yet run on the arm.
+It is disabled by default (`src/settings/trajectory.yaml`). See §13 for what
+was built and where it differs from this plan. **Test first:** whether
 execution uses ServoJ (mode 1) or joint online planning (mode 6) is decided
 by measurements on the real arm before either is built (§2, §10 stage 0).
 
@@ -170,6 +173,61 @@ still for stage 0b to show.
 
 So the design keeps two backends behind one interface, and stage 0b picks
 one.
+
+### Stage 0b results (2026-10-09 13:39–14:29 UTC, on the arm)
+
+Run with `tools/servo_mode_probe.py` on the Cytation PC, with the user at
+the robot and the `xarm` service disconnected from the arm. The arm started
+at home, `[0, -45, 0, 45, 90]`. Each run was J1 ±5° and J5 ±10°, two cycles,
+peak 20°/s, 7.5 s. Records are in `logs/servo_mode_probe/` on this machine.
+
+| | ServoJ 100 Hz | ServoJ 200 Hz | Mode 6, 20 Hz | Mode 6, 50 Hz |
+|---|---|---|---|---|
+| Send lateness, max | 1.1 ms | 1.2 ms | 1.0 ms | 1.1 ms |
+| Command round trip, max | 3.2 ms | 3.1 ms | 3.2 ms | 3.3 ms |
+| Lag behind the commands (upper bound; includes report delivery) | 15 ms | 10 ms | 95 ms | 65–70 ms |
+| Tracking error after that lag (max) | 0.10–0.11° | 0.07–0.11° | 0.76° | 0.73–0.75° |
+| End: error to the last command | <0.001° | <0.001° | 0.19° | 0.16° |
+| Smoothness over 50 ms (acc p99) | 93 deg/s² | 64–73 deg/s² | 97 deg/s² | 88 deg/s² |
+
+**Stops at 20°/s, mid-swing:**
+- **Cancel (constrained stop):** rest along the path in 50–60 ms, averaging
+  about 400 deg/s², under the 500 deg/s² limit.
+- **STOP:** nothing was sent after it. The arm reported state 4 26–41 ms
+  after the last command. ServoJ stopped exactly at the last commanded
+  pose; mode 6 stopped 1° short of it, because of its lag.
+- **Recovery** (as Clear errors does) worked every time.
+- The user saw all runs as smooth.
+
+**Found on the arm, and fixed the same day:**
+- **Lead-in starved the stop.** A lead-in sized to the full acceleration
+  limit left no budget for a constrained stop, which then fell back to a
+  2 s ramp. Lead-ins are now sized at half the limits, and the stop rate
+  follows the phase the arm is in.
+- **Garbage-collection stalls.** Two 29–40 ms command stalls in one run,
+  with nothing else on the controller; most likely a garbage-collection
+  pause. The collector now pauses while streaming. The confirmation run
+  had none (worst round trip 3.2 ms over six runs).
+
+**Behaviour to know:**
+- **State 5 at mode changes.** The arm reports state 5 around every mode
+  change, before `set_state(0)`. Because reports arrive in bursts, one such
+  frame can arrive after streaming has begun. The executor ignores report
+  frames until it has seen the streaming mode in a healthy state, so this
+  caused no false fault.
+- **States 1 and 2 alternate in ServoJ.** The reported state flips between
+  1 (moving) and 2 (ready) while streaming, including long stretches of 2
+  while the arm follows. Both are treated as healthy.
+- **Mode 6 overruns.** It keeps moving for 0.3–0.5 s after the last
+  command, and ends 0.15–0.2° short.
+- **ServoJ holds.** 1–4 single 10 ms report frames per run show a held
+  joint (10 during the cancel run), which isn't visible.
+
+**Decision: mode 1 (ServoJ), at 100 Hz by default.** It follows the plan to
+about 0.1° with a constant 10–15 ms lag, which suits Astra's one-way sync.
+Mode 6 is roughly seven times less accurate and lags 65–95 ms. 200 Hz was
+slightly tighter than 100 Hz, and stays available within
+`max_servo_rate_hz`.
 
 | | Mode 1, ServoJ (`set_servo_angle_j`) | Mode 6, joint online planning (`set_servo_angle`, `wait=False`) |
 |---|---|---|
@@ -472,7 +530,7 @@ the stop path) between the first and last send.
 
 ## 8. Records (sent versus arrived)
 
-Each session writes `logs/trajectory/<session_id>.jsonl`, and
+Each session writes `logs/trajectory/<session_id>.json`, and
 `GET …/log` serves it.
 
 - **Per tick:** `k`, scheduled time, actual send start, round-trip time,
@@ -626,10 +684,9 @@ Offline tests that must exist before stage 3:
 
 ## 12. Open decisions
 
-1. **Backend:** mode 1 (ServoJ) or mode 6 (online planning). Astra wants
-   the arm in sync with the digital twin, which needs exact plan timing,
-   so mode 1 is preferred. Stage 0b confirms whether its motion is smooth
-   on the arm; mode 6 is the fallback.
+1. **Backend:** decided 2026-10-09 by stage 0b: mode 1 (ServoJ). It tracks
+   the plan to about 0.1° with a 10–15 ms lag, against mode 6's 0.75° and
+   65–95 ms. Mode 6 stays available as a setting.
 2. **Rate:** the default rate and the cap. For mode 1, 100 Hz is
    proposed; for mode 6, 20–50 Hz. Both are settled by measurement.
 3. **Acceleration limit:** for streaming (500 deg/s² proposed). Also
@@ -649,3 +706,100 @@ The session and chunk contract, the interpolants and the stop ramp are
 written so they don't depend on the robot. A later UR5e executor could
 reuse them with `ur_rtde`'s `servoJ`, and only the backend that sends the
 commands would change.
+
+---
+
+## 13. Version 1 as built (2026-10-09)
+
+**Files:**
+- `src/core/joint_trajectory.py`: pure interpolation, validation, lead-in
+  and stop-ramp maths.
+- `src/core/trajectory_executor.py`: settings, the two xArm backends, the
+  real-time report reader, sessions and the executor thread.
+- The routes and guards in `src/core/xarm_api_server.py`, and the STOP and
+  disconnect hooks in `src/core/xarm_controller.py`.
+- `details.trajectory` in `/status`.
+- `src/settings/trajectory.yaml`, with `enabled: false`.
+- `tools/servo_mode_probe.py` for stage 0b.
+
+**Tests:** 79 new offline tests, against a fake SDK backend and a fake
+clock, stable across 15 repeats. The full suites pass: 999 xArm and 160 UR,
+plus 15 UR tests skipped here because `scipy` isn't installed.
+
+**Review.** An independent safety review on 2026-10-09 found one critical
+race and several high and medium issues. All are fixed, and each has a
+regression test:
+
+| Finding | Fix |
+|---|---|
+| A STOP during start-up was lost: the executor's own `set_state(0)` then cleared it, and the arm ran the whole trajectory | Stops are counted (a stop generation) and never cleared. A start captures the count before its gates and refuses (409 `stopped_during_start`) if it changed. The run checks it before and after `set_mode`, before `set_state(0)`, before every send, before settling and around the mode restore. A STOP racing the run's own `set_state(0)` is re-issued |
+| A STOP during settle or the mode restore was undone | As above: no settle or restore after a STOP |
+| A cancel during start-up was overwritten | New `starting` state; a cancel then refuses the start (409 `session_cancelled`) |
+| Arm reads and gripper actuation not paused during a run | Also guarded: `/graph/nearest`, `/control/graph/recover_to`, `/control/graph/gripper`, `/control/graph/pose`, `/connect` and the log route. A force-torque tare in progress refuses a start |
+| A paused arm (state 3) was not a fault | Only states 1 (moving) and 2 (ready) are healthy, in both the SDK cache and the real-time report |
+| The start pose was stale; the first sample went unchecked | The arm is re-measured after entering the mode, and the lead-in is planned from that. The run fails before moving if the arm is out of tolerance. The first step is checked, and every sample also gets an acceleration bound. Start needs the arm idle (state 2) with no error or warning |
+| The log route blocked the event loop | Encoded off the loop, and refused while a run streams |
+| The probe lost its results; `--yes` auto-recovered real faults | It waits for the executor thread. `--yes` is removed. It stops after any unplanned outcome, and checks the return move |
+| Finalisation could leave a session active forever | Finalisation now runs in try/finally: the slot is always released and a terminal state always set |
+| Sleep wasn't interruptible | Sleeps run in 5 ms slices, re-checking for a STOP right before each send |
+| A claim token rotation orphaned the session; with enforcement off, nothing ended a run if the client vanished | Sessions are bound to the claim's `session_id`, and trajectories require hard claim enforcement (412 `claim_enforcement_off`) |
+| Upload size and validation memory | Pydantic length caps; errors capped while collected; setting types and ranges checked |
+| A NaN from the real-time report | Frames with non-finite or absurd angles are dropped |
+
+**Routes:** all under `/control/freehand/trajectory`.
+
+| Route | Gate |
+|---|---|
+| `POST /validate` | login. Works while disabled and in any graph mode |
+| `POST` (create) | claim with enforcement on; refused in STRICT; 412 `trajectory_disabled` unless enabled |
+| `PUT /{id}/chunks/{seq}` | the creating claim; refused in STRICT |
+| `POST /{id}/start` | the creating claim, then the §7.1 gates. Also: arm idle with no error or warning, and no force-torque tare running |
+| `POST /{id}/cancel` | the creating claim. Never refused for graph mode or a disabled feature |
+| `GET /{id}` | login |
+| `GET /{id}/log` | login; refused while a run streams |
+
+**Other differences from the plan above:**
+- **Complete trajectories only.** Start is refused until the final chunk is
+  in (409 `trajectory_incomplete`). An append while running gets 409
+  `session_running`. So there is no underrun path yet; the §6 underrun
+  trigger is not built.
+- **Late ticks delay rather than burst.** A late tick re-anchors the
+  schedule, so the arm never catches up in a burst. The lost time is
+  reported as `servo.cumulative_delay_ms`; for one-way sync, align to
+  `executed.t_exec`.
+- **Any controller warning is a hard fault** (emergency stop). This may
+  prove too strict on the arm.
+- **Traffic guard.** 35 route paths answer 409 `trajectory_running` while a run
+  is active, from start to the release of the slot. The telemetry and
+  gripper polling loops pause. `/control/stop` is never gated.
+- **Order at the end of a run:** the mode is restored, then the slot is
+  released, then the terminal state is reported, then the record is
+  written (`log_available` follows).
+
+**Known limits of version 1:**
+- **Sash watchdog.** It decides "inside the hood region" from the graph
+  pins, which any freehand move clears. During a trajectory it therefore
+  may not treat the arm as inside. That's the same as every other freehand
+  move today; the sash gate applies at start only.
+- **No panel controls.**
+- **Tracking error includes report latency.** Reports arrive in about 50 ms
+  bursts, so up to about 50 ms of latency is mixed in.
+
+**Stage 0b with the probe.** Run it with the `xarm` service stopped, or
+disconnected from the arm in the panel, and someone at the robot. It drives
+the same executor through the real backends, with no claim and no graph or
+sash interlock. Without `--execute` it only reads the pose and validates
+every run. With `--execute` it always asks for a typed YES, then runs:
+- ServoJ at 100 and 200 Hz;
+- mode 6 at 20 and 50 Hz;
+- one cancel and one STOP per mode.
+
+Each run is J1 ±5° and J5 ±10° at 20°/s around the current pose. Recovery
+after the planned STOP needs another typed YES. Any other failure ends the
+probe without clearing it. It writes the full records and reports, for each
+run:
+- send timing;
+- path deviation;
+- timing drift;
+- peak acceleration;
+- stalls.

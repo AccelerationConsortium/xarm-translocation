@@ -109,3 +109,8 @@ site/
 
 # Claude settings
 .claude/settings.local.json
+
+# Joint-trajectory session records (src/settings/trajectory.yaml log_dir)
+logs/trajectory/
+# Stage 0b probe records (tools/servo_mode_probe.py --out)
+logs/servo_mode_probe/

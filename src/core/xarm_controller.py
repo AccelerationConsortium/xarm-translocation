@@ -609,6 +609,10 @@ class XArmController:
                     self.arm.set_mode(0)
                     self.arm.set_state(0)
                     time.sleep(1)
+                    # A set_state(0) that lands while the mode is still
+                    # switching is ignored, leaving the arm in state 5 (seen
+                    # 2026-10-09). Re-assert it until the arm is ready.
+                    self._ensure_ready_state()
 
                     # Register callbacks for monitoring
                     self.arm.register_error_warn_changed_callback(self._error_warn_callback)
@@ -648,6 +652,14 @@ class XArmController:
                                 self.enable_force_torque_sensor()
                             except Exception as e:  # noqa: BLE001
                                 print(f"Force torque auto-enable failed: {e}")
+
+                    # Check again at the very end: on 2026-10-09 the arm was
+                    # ready after the enable above but in state 5 once Connect
+                    # had finished (most likely from a component enable, the
+                    # force-torque one being the prime suspect).
+                    if not self._ensure_ready_state():
+                        print("Warning: the arm is still not enabled (state 4/5) after connect; "
+                              "Clear errors will re-enable it")
 
                     print("xArm Controller Initialized")
                     self._emit_event("startup", message="Controller connected and enabled")
@@ -1574,8 +1586,48 @@ class XArmController:
         code = self.arm.vc_set_joint_velocity(velocities)
         return self.check_code(code, f'set_joint_velocity')
 
+    def _ensure_ready_state(self, settle_s: float = 0.6, timeout_s: float = 3.0,
+                            poll_s: float = 0.1, max_resends: int = 5) -> bool:
+        """Make the arm stay enabled after a mode change.
+
+        On 2026-10-09 the arm read ready straight after set_state(0), then
+        fell back to state 5 about 0.8 s later, when the mode change from
+        set_mode(0) completed. So: query the real state (not the cached
+        report) until it has read 1 or 2 for ``settle_s`` without a break,
+        re-sending set_state(0) whenever it reads 4 or 5. Only used on the
+        connect path, which already sets state 0. Returns whether it held.
+        """
+        deadline = time.monotonic() + timeout_s
+        ready_since = None
+        resends = 0
+        state = None
+        while True:
+            now = time.monotonic()
+            try:
+                code, state = self.arm.get_state()
+            except Exception:  # noqa: BLE001 - fall back to the cached value
+                code, state = 0, getattr(self.arm, "state", None)
+            if code == 0 and state in (4, 5):
+                ready_since = None
+                if resends < max_resends:
+                    print(f"Arm in state {state} after enabling; re-sending set_state(0)")
+                    self.arm.set_state(0)
+                    resends += 1
+            elif code == 0 and state in (1, 2):
+                ready_since = ready_since if ready_since is not None else now
+                if now - ready_since >= settle_s:
+                    return True
+            if now >= deadline:
+                return code == 0 and state in (1, 2)
+            time.sleep(poll_s)
+
     def stop_motion(self):
         """Stop all motion immediately."""
+        # A streaming joint trajectory must send nothing after a STOP. Set
+        # its hard-stop flag first; the emergency stop below follows.
+        trajectory = getattr(self, "_trajectory_manager", None)
+        if trajectory is not None and hasattr(trajectory, "notify_hard_stop"):
+            trajectory.notify_hard_stop("stop")
         # After an emergency stop, the arm froze somewhere between named
         # poses. The graph must report unknown until re-pinned.
         self.last_arm_pose_name = None
@@ -3187,6 +3239,12 @@ class XArmController:
     def disconnect(self):
         """Disconnects from the robot arm."""
         print("Disconnecting Robot Arm...")
+        # Never drop the connection under a streaming joint trajectory: stop
+        # it (the executor emergency-stops on a disconnect) and let it end.
+        trajectory = getattr(self, "_trajectory_manager", None)
+        if trajectory is not None and hasattr(trajectory, "notify_hard_stop"):
+            trajectory.notify_hard_stop("disconnect")
+            trajectory.wait_idle(3.0)
         # End ordinary claim-bound windows. The separate persistent admin
         # latch deliberately survives disconnect and is restored only by admin.
         self.restore_graph_mode("disconnect")

@@ -1,0 +1,63 @@
+# Joint-trajectory execution (POST /control/freehand/trajectory...).
+# See src/docs/SERVOJ_TRAJECTORY_PLAN.md. Every key is optional; the values
+# below are the defaults. Unknown keys or out-of-range values disable the
+# feature and are reported by the routes (412 trajectory_disabled).
+
+# Off until it has been commissioned on this arm with someone present.
+enabled: false
+
+# servoj (mode 1, set_servo_angle_j: exact timing, the executor shapes all
+# motion) or online_planning (mode 6, set_servo_angle wait=False: the
+# controller replans to each target; tolerant of timing jitter).
+backend: servoj
+
+# Command rate for servoj, Hz (50 to max_servo_rate_hz). Stage 0a measured
+# no late tick at 100 or 200 Hz with background polling suspended.
+servo_rate_hz: 100.0
+max_servo_rate_hz: 200.0
+
+# Command rate for online_planning, Hz (5-100), and how far ahead of the
+# trajectory clock each target is sampled, in command periods.
+online_rate_hz: 50.0
+online_lookahead_periods: 2.0
+
+# Interpolant acceleration limit, deg/s^2 (speed uses the safety level's
+# max_joint_speed). 500 matches angle_acc in xarm_config.yaml.
+max_joint_acc_deg_s2: 500.0
+
+# Largest allowed distance between the measured pose and the first point;
+# a smooth lead-in covers it. A session may ask for less, never more.
+start_tolerance_deg: 0.5
+
+# SDK command timeout while streaming, s (at most 1). Bounds how long a
+# STOP can wait behind a stuck command; the default SDK timeout is 2 s.
+command_timeout_s: 0.1
+
+# A tick later than this many periods triggers a constrained stop.
+max_lateness_periods: 5.0
+
+# After the last command: wait until the arm is within this of the final
+# target (or the timeout), then return to mode 0.
+settle_tolerance_deg: 0.2
+settle_timeout_s: 3.0
+
+# Longest constrained stop, s.
+max_stop_s: 2.0
+
+# Sessions that are never started expire after this, s.
+unstarted_ttl_s: 300.0
+
+# Upload limits.
+max_points: 60000
+max_points_per_chunk: 5000
+max_duration_s: 600.0
+
+# How often the claim and graph mode are re-checked while running, s.
+watch_interval_s: 0.1
+
+# Session records (JSON per session), relative to the service directory.
+log_dir: logs/trajectory
+
+# Record the arm's reported joints from the 100 Hz real-time report
+# (port 30003, read-only) alongside what was sent.
+realtime_report: true
