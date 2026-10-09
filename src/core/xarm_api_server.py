@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import threading
+import time
 from collections import deque
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Any, Literal, Union
@@ -1232,10 +1233,17 @@ async def auth_users():
 async def auth_request_code(body: AuthEmailIn):
     if not AUTH_SIDECAR_URL:
         raise HTTPException(status_code=501, detail="Auth not configured on this device.")
+    # The shared sign-in service (ac_auth) sends codes from POST /auth/login;
+    # its old /auth/request-code path is gone (404 on 2026-10-09). Fall back
+    # to the old path only for a sidecar that predates the rename.
     try:
         status, payload, _ = await asyncio.to_thread(
-            _auth_sidecar_call, "POST", "/auth/request-code", {"email": body.email}, None
+            _auth_sidecar_call, "POST", "/auth/login", {"email": body.email}, None
         )
+        if status == 404:
+            status, payload, _ = await asyncio.to_thread(
+                _auth_sidecar_call, "POST", "/auth/request-code", {"email": body.email}, None
+            )
     except Exception:
         raise HTTPException(status_code=502, detail="Auth service unreachable.")
     return _auth_passthrough(status, payload)
@@ -2642,6 +2650,22 @@ def _trajectory_claim(c) -> dict:
     return holder
 
 
+async def _wait_arm_idle(c, timeout_s: float = 1.0, poll_s: float = 0.05) -> bool:
+    """True once the arm reports state 2 (ready, still). The SDK caches the
+    state from a 5 Hz report, so right after a move ends it can still read
+    1 (moving) for up to ~200 ms; wait that out, but only when no motion of
+    ours is in flight, and never for other states."""
+    arm = getattr(c, "arm", None)
+    deadline = time.monotonic() + timeout_s
+    while True:
+        state = getattr(arm, "state", None)
+        if state == 2:
+            return True
+        if state != 1 or getattr(c, "_motion_in_progress", False) or time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(poll_s)
+
+
 def _graph_override_covers(c, session) -> None:
     """Refuse a start when a timed graph-mode override would lapse back to
     STRICT before the trajectory ends (the executor would then stop it
@@ -2811,7 +2835,7 @@ async def start_trajectory(session_id: str, request: Request):
     if getattr(arm, "mode", None) == 2:
         raise HTTPException(status_code=412, detail={
             "error": "manual_mode", "message": "Turn manual mode off first"})
-    if getattr(arm, "state", None) != 2:
+    if not await _wait_arm_idle(c0):
         raise HTTPException(status_code=412, detail={
             "error": "arm_not_idle",
             "message": f"The arm must be ready and still (state 2), it reports {getattr(arm, 'state', None)}"})

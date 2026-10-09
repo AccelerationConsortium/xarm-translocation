@@ -609,6 +609,10 @@ class XArmController:
                     self.arm.set_mode(0)
                     self.arm.set_state(0)
                     time.sleep(1)
+                    # A set_state(0) that lands while the mode is still
+                    # switching is ignored, leaving the arm in state 5 (seen
+                    # 2026-10-09). Re-assert it until the arm is ready.
+                    self._ensure_ready_state()
 
                     # Register callbacks for monitoring
                     self.arm.register_error_warn_changed_callback(self._error_warn_callback)
@@ -1573,6 +1577,21 @@ class XArmController:
 
         code = self.arm.vc_set_joint_velocity(velocities)
         return self.check_code(code, f'set_joint_velocity')
+
+    def _ensure_ready_state(self, attempts: int = 3, wait_s: float = 0.3) -> bool:
+        """Re-send set_state(0) while the arm still reports state 4 or 5.
+
+        Only used on the connect path, which already sets state 0 once; this
+        just makes that stick. Returns whether the arm left 4/5."""
+        for _ in range(attempts):
+            state = getattr(self.arm, "state", None)
+            if not isinstance(state, int) or state not in (4, 5):
+                return True
+            print(f"Arm still in state {state} after enabling; re-sending set_state(0)")
+            self.arm.set_state(0)
+            time.sleep(wait_s)
+        state = getattr(self.arm, "state", None)
+        return not isinstance(state, int) or state not in (4, 5)
 
     def stop_motion(self):
         """Stop all motion immediately."""

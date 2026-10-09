@@ -211,6 +211,10 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         last_error_text = None
 
     activity, activity_since = _observe_activity(controller)
+    # The controller's own state: 4/5 (stopping/stopped, or not yet enabled
+    # after a mode change) cannot move, however healthy the service is.
+    raw_arm_state = getattr(getattr(controller, "arm", None), "state", None)
+    halted_state = raw_arm_state if isinstance(raw_arm_state, int) and raw_arm_state in (4, 5) else None
     recovering = getattr(controller, "_recovering", False) is True
     alive = bool(getattr(controller, "alive", False)) and not recovering
     health_failure = getattr(controller, "health_failure", None)
@@ -243,7 +247,7 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         # mid-move can leave the motion flag latched; a move that can no
         # longer be executing must not be reported as a run.
         activity, activity_since = "idle", None
-    elif alive and arm_state == "enabled":
+    elif alive and arm_state == "enabled" and halted_state is None:
         # Healthy. §2.3 makes ``busy`` definitionally healthy + running, so
         # deriving it here from the observed activity keeps both invariants
         # (busy ⇒ running, ready ⇒ idle) true by construction.
@@ -262,6 +266,10 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         message = "Controller connected but not fully alive."
         if recovering:
             message = "Controller recovery in progress; readiness not yet verified."
+        if halted_state is not None:
+            message = (f"Arm is not enabled (controller state {halted_state}); "
+                       "clear errors to re-enable it.")
+            required_actions = ["clear_errors"]
         if health_failure:
             message += (
                 f" {health_failure['operation']}: {health_failure['reason']}"

@@ -658,6 +658,11 @@ class TrajectoryManager:
         with self._lock:
             self._expire_unstarted()
             current = self._sessions.get(self._current) if self._current else None
+            if current is not None and current.state == CREATED and current.owner_key != key:
+                # Only the claim holder can create, so a never-started session
+                # of another owner belongs to a claim that has ended.
+                current.state, current.reason = EXPIRED, "abandoned: its claim ended"
+                current.event("expired", reason="abandoned")
             if current is not None and current.state not in TERMINAL:
                 raise TrajectoryError(
                     409, "session_open",
