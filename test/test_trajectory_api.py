@@ -360,3 +360,13 @@ def test_chunk_upload_also_answers_post_for_the_dashboard_proxy(client, headers)
     resp = client.post(f"/control/freehand/trajectory/{sid}/chunks/0",
                        json={"points": points_j1(), "final": True}, headers=headers)
     assert resp.status_code == 200 and resp.json()["accepted"]
+
+
+def test_limits_endpoint_lists_live_limits_before_validation(client, mock_controller):
+    from src.core.xarm_controller import SafetyLevel
+    mock_controller.safety_level = SafetyLevel.MEDIUM
+    body = client.get("/control/freehand/trajectory/limits").json()
+    assert body["joint_limits_deg"][1] == [-118, 120] and body["num_joints"] == 5
+    assert body["max_joint_speed_deg_s"] == 60.0 and body["safety_level"] == "MEDIUM"
+    assert body["max_joint_acc_deg_s2"] == 500.0 and body["rate_hz"]["default"] == 100.0
+    assert body["min_point_spacing_s"] == 0.01 and body["start_tolerance_deg"] == 0.5

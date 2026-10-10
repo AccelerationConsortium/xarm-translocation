@@ -2699,6 +2699,9 @@ def _graph_override_covers(c, session) -> None:
 async def validate_joint_trajectory_route(request: JointTrajectoryValidateRequest):
     """Validate a whole joint trajectory against this arm. Moves nothing.
 
+    The limits it checks are listed, live, at GET
+    /control/freehand/trajectory/limits; read them before planning.
+
     Checks shape, timing, joint limits, the interpolant's speed and
     acceleration at the command rate, and the measured start. Works while
     execution is disabled and in any graph mode. 200 with the report, or
@@ -2912,6 +2915,44 @@ async def cancel_trajectory(session_id: str):
         return mgr.cancel(session_id, holder["session_id"])
     except TrajectoryError as exc:
         raise _trajectory_http(exc)
+
+
+@app.get("/control/freehand/trajectory/limits", dependencies=[Depends(require_login)])
+async def get_trajectory_limits():
+    """The limits a joint trajectory must meet on this arm right now.
+
+    Read this before planning. Speed depends on the safety level chosen at
+    Connect, so it is read live; the rest comes from the device settings.
+    Every limit is checked on the interpolated path at the command rate,
+    not just at the points. Moves nothing and makes no controller calls.
+    """
+    c = get_controller()
+    settings = _trajectory_settings()
+    lo, hi = settings.rate_range()
+    level = getattr(getattr(c, "safety_level", None), "name", None)
+    return {
+        "enabled": settings.enabled,
+        "backend": settings.backend,
+        "units": {"t": "s", "joints": "deg", "velocities": "deg/s", "accelerations": "deg/s^2"},
+        "num_joints": int(c.num_joints),
+        "joint_limits_deg": [list(r) for r in c.joint_limits],
+        "max_joint_speed_deg_s": float(c.max_joint_speed),
+        "safety_level": level,
+        "max_joint_acc_deg_s2": settings.max_joint_acc_deg_s2,
+        "max_duration_s": settings.max_duration_s,
+        "max_points": settings.max_points,
+        "max_points_per_chunk": settings.max_points_per_chunk,
+        "rate_hz": {"default": settings.default_rate(), "min": lo, "max": hi},
+        "min_point_spacing_s": round(1.0 / settings.default_rate(), 6),
+        "start_tolerance_deg": settings.start_tolerance_deg,
+        "rules": [
+            "t starts at 0 and strictly increases; points at least one command period apart",
+            "first and last points at rest (zero velocity and acceleration)",
+            "first point within start_tolerance_deg of the arm's measured pose",
+            "velocities and accelerations optional, on every point or none (both give a quintic)",
+            "no collision checking: the planner owns it",
+        ],
+    }
 
 
 @app.get("/control/freehand/trajectory/{session_id}", dependencies=[Depends(require_login)])

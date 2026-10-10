@@ -45,7 +45,8 @@ are in [`SERVOJ_TRAJECTORY_PLAN.md`](SERVOJ_TRAJECTORY_PLAN.md).
 
 ## Limits
 
-These are checked on the interpolated path at the command rate, not just at
+`GET /control/freehand/trajectory/limits` returns these live; the speed
+depends on the safety level chosen at Connect. They are checked on the interpolated path at the command rate, not just at
 the points.
 
 | | Value | Source |
@@ -78,6 +79,7 @@ All are under `/control/freehand/trajectory`.
 
 | Call | Purpose |
 |---|---|
+| `GET /limits` | **Read first.** The limits in force right now: joint ranges, joint speed at the current safety level, acceleration, duration, points, rate, start tolerance and the rules. Needs sign-in but no claim |
 | `POST /validate {points, rate_hz?}` | Check a whole trajectory against the arm and its measured pose. Moves nothing; needs no claim. 200 with the report, or 422 `trajectory_invalid` with `detail.report.errors` |
 | `POST {rate_hz?}` | Open a session; 201 with `session_id`. One open session per arm (409 `session_open`) |
 | `PUT` (or `POST`) `/{id}/chunks/{seq} {points, final}` | Upload chunk 0, 1, 2… The last one carries `"final": true`. Re-sending identical content is a harmless duplicate. Errors: 409 `chunk_conflict`, `chunk_out_of_order` (with `expected_seq`), `session_closed`; 422 with the report |
@@ -100,8 +102,8 @@ All are under `/control/freehand/trajectory`.
 
 ## Syncing a digital twin (one-way)
 
-1. Validate, create, upload the whole trajectory as one or more chunks,
-   then start.
+1. Read `GET /limits` and plan within them. Then validate, create, upload
+   the whole trajectory as one or more chunks, and start.
 2. Poll `GET /{id}`. Play the twin's copy at `executed.t_exec`; this needs
    no shared clock. Use `started_at_utc` only if both clocks are
    synchronised. Draw `measured.joints_deg` as the real arm.
