@@ -39,11 +39,38 @@ are in [`SERVOJ_TRAJECTORY_PLAN.md`](SERVOJ_TRAJECTORY_PLAN.md).
 - **Rest:** the first and last points must be at rest.
 - **Start:** the first point must be within 0.5° of the arm's measured
   pose; a short lead-in closes the gap.
-- **Limits:** joint limits, the safety level's joint speed, 500 deg/s²,
-  600 s, 60 000 points (5000 per chunk). They are checked on the
-  interpolated path, not just at the points.
+- **Limits:** see [Limits](#limits).
 - **No collision checking.** Passing validation is not a collision-safety
   proof; the planner owns collision checking.
+
+## Limits
+
+These are checked on the interpolated path at the command rate, not just at
+the points.
+
+| | Value | Source |
+|---|---|---|
+| J1 | −360 to +360° | `src/settings/safety.yaml` (model 5) |
+| J2 | −118 to +120° | same |
+| J3 | −225 to +11° | same |
+| J4 | −97 to +180° | same |
+| J5 | −360 to +360° | same |
+| Joint speed | 180°/s × the safety-level factor: LOW 1.0, MEDIUM 0.5, HIGH 0.25, EMERGENCY 0.1. MEDIUM, the default at Connect, gives **90°/s** | `max_joint_speed` in `safety.yaml` |
+| Joint acceleration | 500 deg/s² | `max_joint_acc_deg_s2` in `src/settings/trajectory.yaml` |
+| Duration | at most 600 s | `trajectory.yaml` |
+| Points | at most 60 000 per trajectory, 5000 per chunk; at least 10 ms apart (one period at 100 Hz) | `trajectory.yaml` |
+| Start | the first point within 0.5° of the measured pose | `trajectory.yaml` |
+| Command rate | 100 Hz by default; a session may ask for 50–200 Hz | `trajectory.yaml` |
+
+The controller enforces its own limits underneath. On 2026-10-10 it
+reported 180°/s and 1000 mm/s, no TCP boundary, and joint ranges slightly
+inside the table: J2 −117 to +116°, J3 −219 to +10°. Stay inside those.
+
+Trajectories are joint-space only. For reference, the arm's other
+(Cartesian) moves are limited to:
+- x ±700, y ±700, z −250 to +700 mm;
+- 1000 mm/s × the safety-level factor (500 mm/s at MEDIUM);
+- an acceleration cap of 50 000 mm/s².
 
 ## Endpoints
 
