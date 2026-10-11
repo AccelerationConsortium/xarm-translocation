@@ -1518,6 +1518,36 @@ def interlock_freehand_guard(action: str) -> None:
     )
 
 
+def gripper_capability_guard(feature: str, action: str) -> None:
+    """Refuse a stroke/force gripper command the active gripper config turns off.
+
+    ``has_stroke_control`` / ``has_force_control`` in gripper_config.yaml are
+    operator switches (both off since 2026-10-11 on the lab BioGripper Gen2,
+    leaving open/close only). The controller already returns False for such
+    commands; surfacing that as a generic 500 made agents retry a request that
+    can never succeed. 409: the request conflicts with the current device
+    configuration, and nothing the caller does short of an operator flipping
+    the switch changes that.
+    """
+    c = get_controller()
+    config = getattr(c, "current_gripper_config", {}) or {}
+    if not config.get(f"has_{feature}_control", False):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": f"gripper_{feature}_control_disabled",
+                "action": action,
+                "message": (
+                    f"The configured gripper has {feature} control turned off "
+                    f"(gripper_config.yaml has_{feature}_control: false); "
+                    "'{0}' cannot be executed. Only /gripper/open and "
+                    "/gripper/close, and the graph gripper state 'empty', "
+                    "move the jaws until an operator turns it back on."
+                ).format(action),
+            },
+        )
+
+
 def box_sim_guard(action: str) -> None:
     """Refuse an actuating action while the real control box is in Sim mode.
 
@@ -2454,6 +2484,7 @@ async def move_gripper_stroke(request: GripperStrokeRequest):
     bypasses the catalog gripper states; use /control/graph/gripper.
     """
     strict_graph_guard("gripper.move_stroke")
+    gripper_capability_guard("stroke", "gripper.move_stroke")
     box_sim_guard("gripper.move_stroke")
     c = get_controller()
 
@@ -2484,6 +2515,7 @@ async def set_gripper_force(request: GripperForceRequest):
     change can undermine a graph grasp's verification.
     """
     strict_graph_guard("gripper.force")
+    gripper_capability_guard("force", "gripper.force")
     box_sim_guard("gripper.force")
     c = get_controller()
     if not await asyncio.to_thread(c.set_gripper_force, request.force):
@@ -4858,6 +4890,10 @@ async def set_gripper_state(request: GraphGripperRequest, background_tasks: Back
             status_code=422,
             detail=f"unknown gripper state: {request.state!r}",
         )
+    # Every catalog state except 'empty' is actuated as a stroke move
+    # (XArmController.set_gripper_state), so it needs stroke control.
+    if request.state != "empty":
+        gripper_capability_guard("stroke", "graph.gripper")
 
     try:
         success = await asyncio.to_thread(c.set_gripper_state, request.state)

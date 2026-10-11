@@ -216,6 +216,20 @@ All under `/control/freehand/trajectory`. Login on every call; the claim
 
 ## BioGripper Gen2: raw stroke and force
 
+> **Since 2026-10-11 the gripper is open/close only.** The operator turned
+> stroke and force control off in `gripper_config.yaml`
+> (`has_stroke_control: false`, `has_force_control: false`) after a collision;
+> `POST /connect` and `details.connection_details.gripper_config.capabilities`
+> report `["open_close"]` only. While this holds, raw stroke returns **409**
+> `gripper_stroke_control_disabled`, raw force returns **409**
+> `gripper_force_control_disabled`, and `POST /control/graph/gripper` accepts
+> only `{"state":"empty"}`; every other catalog state (`grip_120`, `reach_90`)
+> returns **409** `gripper_stroke_control_disabled` because it is actuated as a
+> stroke move. Only `/gripper/open` and `/gripper/close` move the jaws. Do not
+> retry a 409 of this kind: it clears only when the operator restores the
+> config and reconnects. The rest of this section describes the full feature
+> set for when it is restored.
+
 The installed gripper is a BioGripper Gen2. A stroke command supplies an
 absolute **jaw opening in mm**, a vendor **force percentage setting**, and
 optionally a vendor speed setting. `force: 50` means 50 on the gripper's
@@ -468,7 +482,7 @@ lab data server, mirroring the source layout.
 | 401 | login required |
 | 403 | verified identity does not have the required admin role |
 | 404 | no camera configured, unknown camera id, or unknown capture |
-| 409 | motion in flight, camera pipeline stopped, or `admin_graph_off` blocks ordinary mode changes |
+| 409 | motion in flight, camera pipeline stopped, `admin_graph_off` blocks ordinary mode changes, or `gripper_stroke_control_disabled` / `gripper_force_control_disabled` (gripper is open/close only since 2026-10-11) |
 | 412 | safety gate: sash not parked, simulator guard, vision rejected |
 | 422 | target not whitelisted from the current node, invalid graph override reason, or unsupported admin OFF fields |
 | 423 | claim required, or held by another session |

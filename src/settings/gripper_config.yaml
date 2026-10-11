@@ -11,8 +11,9 @@
 bio_gen2:
   name: "BioGripper Gen2"
   type: "bio_gen2"
-  has_stroke_control: true
-  has_force_control: true
+  # 2026-10-11: operator turned stroke and force control off; open/close only.
+  has_stroke_control: false
+  has_force_control: false
   speed: 1000          # default movement speed (0–4000)
   force: 50            # default gripping force % (1–100)
   timeout: 5           # seconds to wait for motion completion
@@ -40,9 +41,9 @@ bio_gen2:
   position_tolerance: 3
   capabilities:
     - "open_close"
-    - "stroke_control"
-    - "force_control"
-  description: "UFACTORY BioGripper Gen2 with stroke distance and force control"
+    # - "stroke_control"   # off since 2026-10-11
+    # - "force_control"    # off since 2026-10-11
+  description: "UFACTORY BioGripper Gen2, open/close only"
 
 # Standard Gripper Configuration  
 standard:

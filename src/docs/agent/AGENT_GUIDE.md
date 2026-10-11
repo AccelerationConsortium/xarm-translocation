@@ -124,6 +124,25 @@ The dashboard API Reference lists `freehand.position` (absolute TCP pose),
 Coordinates and displacements are in mm; angles are in degrees. The live
 OpenAPI document supplies the request schemas.
 
+### Gripper is open/close only since 2026-10-11
+
+The operator turned the BioGripper Gen2's stroke and force control off in
+`gripper_config.yaml` after a collision, pending a hardware check. Until it is
+restored and the service reconnected, `capabilities` on `/connect` and in
+`details.connection_details.gripper_config` list only `open_close`, and:
+
+- `graph.gripper` works only for the state `empty` (fully open). Every other
+  catalog state (`grip_120`, `reach_90`) is a stroke move and returns **409**
+  `gripper_stroke_control_disabled`. Plate pickups that depend on those
+  states cannot run; report this, do not retry.
+- Raw `/control/freehand/gripper/stroke` and `/control/freehand/gripper/force`
+  return **409** `gripper_stroke_control_disabled` /
+  `gripper_force_control_disabled` even when the graph is OFF.
+- `/gripper/open` and `/gripper/close` still move the jaws (close goes to
+  the configured 71 mm) and `GET /gripper/position` still reads the opening.
+
+The sections below describe the full feature set for when it is restored.
+
 ### Raw BioGripper Gen2 stroke when the graph is OFF
 
 When an administrator has enabled graph OFF, use the claimed
