@@ -23,6 +23,32 @@ are in [`SERVOJ_TRAJECTORY_PLAN.md`](SERVOJ_TRAJECTORY_PLAN.md).
 - **Graph mode:** these are freehand routes, so they are refused while the
   arm's graph mode is STRICT (`409 graph_mode_strict`).
 
+## UR5e (ligand_ur5e)
+
+The same contract runs on the UR5e (tested on the arm 2026-10-11: servoJ at
+125 Hz, about 40 ms lag, tracking within about 0.03° rms). Differences:
+
+- **Base URL:** `http://100.64.254.6/ur5e` (the lab edge). Every call goes
+  through it; the edge checks the sign-in cookie and adds the operator
+  identity the UR requires. The robot's own port refuses control.
+- **Sign-in:** `POST http://100.64.254.6/auth/login {email}` sends a code;
+  `POST http://100.64.254.6/auth/verify-code {email, code}` returns the
+  `ac_auth_session` cookie. The address must be on the UR's operator list.
+- **Claim:** `POST /ur5e/control/claim`, then `X-Claim-Token` on every call
+  and `POST /ur5e/control/heartbeat` every ~10 s, as on the xArm.
+- **Six joints,** J1..J6 base to wrist.
+- **Limits** come from the UR's commissioned motion block (read them at
+  `GET /ur5e/control/freehand/trajectory/limits`): joint ranges, speed,
+  acceleration and a TCP workspace box, which the whole path must stay
+  inside. Today they are a placeholder: 10 deg/s, 30 deg/s².
+- **Before start:** an operator must Connect the arm in the panel, and the
+  pendant speed slider must be at 100 %. `POST /validate` needs the arm
+  connected (it uses the measured pose and the controller's kinematics).
+- **Command rate:** 125 Hz by default, 50–250 Hz allowed.
+- **STOP:** `POST /ur5e/control/stop`; afterwards `POST
+  /ur5e/control/reset` (Clear errors) re-enables moves.
+- **Graph mode:** the UR has none, so there is no `graph_mode_strict`.
+
 ## Trajectory format
 
 ```json

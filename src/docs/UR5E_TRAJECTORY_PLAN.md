@@ -1,6 +1,6 @@
 # Joint trajectories on the UR5e (ligand_ur5e) — plan
 
-Status (2026-10-11): **built; stages 0a and 0b done on pc-05.** See
+Status (2026-10-11): **built; stages 0a, 0b and 3 passed on pc-05.** See
 [section 5](#5-what-is-built-stage-1). The xArm5 version is built,
 tested on the arm and deployed (see
 [`SERVOJ_TRAJECTORY_PLAN.md`](SERVOJ_TRAJECTORY_PLAN.md) and the client
@@ -235,6 +235,39 @@ deg/s, 10.6 deg/s², 9.4 s; placeholder limits (10 deg/s, 30 deg/s²).
     1 / (2 × max speed / stop deceleration): 4.5 Hz for the placeholder;
     pc-05 runs 2 Hz. Other stops are sent without waiting.
 
-**Still to do:** a STOP re-test on the arm with servoStop, the real
+- **STOP re-test with servoStop (fd841ed):** the control script and the
+  watchdog were still up 0.5 s and 2 s after a STOP at peak speed; the arm
+  drove back and a full run followed on the same session (lag 42 ms,
+  tracking 0.025° rms, 0 late ticks, lateness max 0.9 ms). **Stage 0b
+  passed.**
+
+## 8. Stage 3 result (2026-10-11, on the arm, through the edge)
+
+`tools/ur_trajectory_http_check.py` on pc-05, as a remote client: emailed
+sign-in at the edge, then every call through `http://100.64.254.6/ur5e/`
+(Caddy checks the cookie and adds the operator identity and the device
+edge secret; the client's `X-Claim-Token` passes through). Claim,
+heartbeats, `GET /limits`, validate (with the workspace check), create,
+chunk upload (POST), start, status, cancel, STOP, Clear errors, log,
+release. Wiggle as in stage 0b, 125 Hz, 0.03 / 1000.
+
+| Run | Result | Lag | Tracking rms | Late ticks |
+|---|---|---|---|---|
+| full | completed, 0.014° from the target | 40 ms | 0.027° | 0 |
+| cancel at 50 % (twice) | cancelled, on the path | 40–42 ms | 0.029–0.030° | 0 |
+| STOP at 50 % | stopped; session open, watchdog OK, moves latched until Clear errors | 40 ms | 0.029° | 0 |
+
+During a run, status `measured` was live (2.7–13 ms old), `/status` showed
+the session running and the arm busy, and `arm.move_joints` was not
+offered. A moveJ sent 0.1 s after a cancel was refused as `robot_moving`
+while the arm settled; the backend now waits until the arm is still before
+freeing the move slot. **Stage 3 passed.**
+
+The dashboard API proxy (`/api/equipment/ligand_ur5e/control/*`) is not
+the client route for the UR: its registry entry has no `edge_secret_env`,
+so it sends the global edge secret, which the UR refuses (401). The edge's
+`/ur5e/` route is the one the panel and clients use.
+
+**Still to do:** the real
 motion limits, a UR column in `TRAJECTORY_API.md`, and registering the
 dashboard skills for `ligand_ur5e`.

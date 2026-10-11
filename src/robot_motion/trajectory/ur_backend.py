@@ -85,7 +85,9 @@ class URServoJBackend:
     def __init__(self, control, feedback, *, period_s: float, num_joints: int = 6,
                  lookahead_s: float = 0.1, gain: float = 300.0, stop_decel_deg_s2: float = 90.0,
                  emergency_decel_deg_s2: float = 720.0, max_feedback_age_s: float = 0.2,
-                 guard=None, clock: Callable[[], float] = time.monotonic):
+                 guard=None, clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], None] = time.sleep, still_deg_s: float = 0.05,
+                 still_timeout_s: float = 1.0):
         if not 0.03 <= lookahead_s <= 0.2:
             raise ValueError("lookahead_s must be within 0.03-0.2 s (ur_rtde servoJ)")
         if not 100 <= gain <= 2000:
@@ -103,6 +105,9 @@ class URServoJBackend:
         self.force_baseline = None
         self.peak_force_change_n = 0.0
         self.clock = clock
+        self.sleep = sleep
+        self.still_deg_s = still_deg_s
+        self.still_timeout_s = still_timeout_s
         self.streaming = False
         self.mode_changed = False   # nothing to restore on a failed prepare
 
@@ -160,6 +165,22 @@ class URServoJBackend:
         if self.streaming:
             self.control.servoStop(self.stop_decel)
             self.streaming = False
+        self._wait_still()
+
+    def _wait_still(self) -> None:
+        """Hold the run (and so the move slot) until the arm is still, so a
+        client's next move is not refused as robot_moving (seen in stage 3:
+        a moveJ 0.1 s after a cancel). Gives up after still_timeout_s; the
+        move check still refuses a moving arm then."""
+        deadline = self.clock() + self.still_timeout_s
+        quiet = 0
+        while self.clock() < deadline:
+            sample = self._sample() or {}
+            speeds = [abs(float(v)) for v in sample.get("velocities_deg_s") or ()]
+            quiet = quiet + 1 if speeds and max(speeds) <= self.still_deg_s else 0
+            if quiet >= 3:
+                return
+            self.sleep(0.02)
 
     def restore(self) -> None:
         pass

@@ -197,3 +197,21 @@ def test_stop_during_a_ur_run_sends_nothing_more(tmp_path):
     assert session.state == STOPPED
     assert len([c for c in control.calls if c[0] == "servoJ"]) == 31
     assert "servoStop" not in [c[0] for c in control.calls]   # the service's STOP stops the arm
+
+
+def test_finish_waits_until_the_arm_is_still():
+    backend, control, feedback, clock = make()
+    backend.streaming = True
+    speeds = iter([0.4, 0.2, 0.06, 0.01, 0.01, 0.01, 0.01])
+    reads = []
+
+    def latest():
+        v = next(speeds, 0.0)
+        reads.append(v)
+        return {**feedback.sample, "velocities_deg_s": (v, 0, 0, 0, 0, 0)}
+
+    feedback.latest = latest
+    backend.sleep = lambda s: None
+    backend.finish()
+    assert control.calls[-1][0] == "servoStop"
+    assert reads[:6] == [0.4, 0.2, 0.06, 0.01, 0.01, 0.01]   # three quiet samples in a row
