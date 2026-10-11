@@ -10,11 +10,14 @@ fakes; the vendor SDK is imported only inside the default factories.
 
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
 
 from .lle_rtde import vector6
+
+log = logging.getLogger(__name__)
 
 # UR controller enumerations as delivered by the RTDE robot_mode/safety_mode
 # outputs. Unknown values are reported, never mapped onto a permissive name.
@@ -183,6 +186,14 @@ class _SerializedControl:
         self._control = control
         self._lock = lock
         self.fault = None
+        # Forward kinematics needs the active TCP offset passed explicitly:
+        # ur_rtde 1.6.5 getForwardKinematics(q) returns a wrong pose, and
+        # getForwardKinematics(q, all zeros) ends the control script with a
+        # protective stop (both seen on the UR5e, 2026-10-11). verify_kinematics()
+        # sets tcp_offset once FK matches the measured pose; until then, or
+        # if it never does, FK refuses (kinematics_error says why).
+        self.tcp_offset = None
+        self.kinematics_error = "forward kinematics not verified yet"
 
     def isConnected(self):
         if self.fault is not None:
@@ -227,8 +238,36 @@ class _SerializedControl:
             return self._control.stopL(deceleration)
 
     def getForwardKinematics(self, q):
+        offset = self.tcp_offset
+        if offset is None:
+            raise RuntimeError(f"Forward kinematics unavailable: {self.kinematics_error}")
         with self._lock:
-            return self._control.getForwardKinematics(q)
+            return self._control.getForwardKinematics(list(q), list(offset))
+
+    def verify_kinematics(self, measured_q_rad, measured_pose, tolerance_m=0.002):
+        """Enable FK when FK(measured joints, active TCP offset) matches the
+        measured TCP position. Returns the error string, or None when usable."""
+        self.tcp_offset = None
+        try:
+            with self._lock:
+                offset = [float(v) for v in self._control.getTCPOffset()]
+            if len(offset) != 6 or all(v == 0.0 for v in offset):
+                # An all-zero offset is the call that ends the script; refuse it.
+                raise RuntimeError("the active TCP offset is all zeros; FK with it stops the control script")
+            with self._lock:
+                pose = list(self._control.getForwardKinematics(list(measured_q_rad), offset))
+            error = math.dist(pose[:3], list(measured_pose)[:3])
+            if not error <= tolerance_m:
+                raise RuntimeError(
+                    f"FK of the measured joints is {error * 1000:.1f} mm from the measured TCP "
+                    f"(limit {tolerance_m * 1000:.0f} mm)"
+                )
+        except Exception as exc:
+            self.kinematics_error = str(exc)
+            return self.kinematics_error
+        self.tcp_offset = offset
+        self.kinematics_error = None
+        return None
 
     def getInverseKinematics(self, pose, qnear):
         with self._lock:
@@ -376,6 +415,21 @@ class ControlSession:
             self._kicker.start()
             self.feedback = feedback
             self.control = proxy
+            if self.extended:
+                self._verify_kinematics(feedback, proxy)
+
+    def _verify_kinematics(self, feedback, proxy, wait_s=1.0):
+        deadline = time.monotonic() + wait_s
+        sample = feedback.latest()
+        while (sample is None or "tcp_pose" not in sample) and time.monotonic() < deadline:
+            time.sleep(0.02)
+            sample = feedback.latest()
+        if sample is None or "tcp_pose" not in sample:
+            proxy.kinematics_error = "no control feedback to verify forward kinematics against"
+        else:
+            proxy.verify_kinematics([math.radians(v) for v in sample["joints_deg"]], sample["tcp_pose"])
+        if proxy.kinematics_error:
+            log.warning("UR forward kinematics disabled: %s", proxy.kinematics_error)
 
     def stop(self, deceleration_deg_s2):
         with self._lock:

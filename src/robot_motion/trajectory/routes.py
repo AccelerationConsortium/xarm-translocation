@@ -31,7 +31,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from .executor import TrajectoryError, TrajectoryManager, TrajectorySettings
 from .joint_trajectory import JointLimits, JointPoint, JointTrajectory, validate_joint_trajectory
-from .ur_backend import URServoJBackend, path_errors
+from .ur_backend import FeedbackMonitor, URServoJBackend, path_errors
 
 log = logging.getLogger(__name__)
 PREFIX = "/control/freehand/trajectory"
@@ -166,6 +166,12 @@ class URTrajectory:
         )
 
     def _path_errors(self, control, points, rate):
+        unverified = getattr(control, "kinematics_error", None)
+        if unverified:
+            raise HTTPException(status_code=412, detail={
+                "error": "kinematics_unverified",
+                "message": f"The workspace check needs forward kinematics, which is unavailable: {unverified}",
+                "hint": "Disconnect and Connect again; check the TCP offset on the pendant"})
         trajectory = JointTrajectory(points)
         return path_errors(trajectory, control, self.motion, step_deg=self.config.path_check_step_deg,
                            max_checks=self.config.max_fk_checks, rate_hz=rate)
@@ -226,6 +232,8 @@ class URTrajectory:
         points = [JointPoint.from_mapping(p) for p in traj.raw_points]
         try:
             errors = self._path_errors(session.control, points, traj.rate_hz)
+        except HTTPException:
+            raise
         except Exception as exc:  # a kinematics query failed; nothing was sent
             raise HTTPException(status_code=502, detail={
                 "error": "planning_failed", "message": f"Controller kinematics query failed: {exc}"})
@@ -269,6 +277,7 @@ class URTrajectory:
             status = mgr.start(
                 session_id, key, limits=self._limits(traj.rate_hz), start_joints=start_joints,
                 backend=backend, watch=watch, on_finish=release, stop_generation=generation,
+                monitor=FeedbackMonitor(session.feedback, self.num_joints),
             )
         except TrajectoryError as exc:
             release()
@@ -314,6 +323,8 @@ class URTrajectory:
             if report.get("valid"):
                 try:
                     errors = await asyncio.to_thread(self._path_errors, session.control, points, rate)
+                except HTTPException:
+                    raise
                 except Exception as exc:
                     raise HTTPException(status_code=502, detail={
                         "error": "planning_failed", "message": f"Controller kinematics query failed: {exc}"})

@@ -18,10 +18,63 @@ the workspace box with the controller's forward kinematics before a start.
 from __future__ import annotations
 
 import math
+import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from .executor import BackendError, StopRequested
+
+
+class FeedbackMonitor:
+    """The executor's real-time monitor for a UR, fed by the service's own
+    feedback sampler (no extra connection). Each new controller packet is
+    kept as (perf_counter receipt time, joints_deg, robot_mode,
+    safety_mode), the same shape as the xArm's port-30003 monitor, so status
+    ``measured``, tracking statistics and the session log work unchanged."""
+
+    def __init__(self, feedback, num_joints: int = 6, poll_s: float = 0.002, keep: int = 200000):
+        self.feedback = feedback
+        self.num_joints = num_joints
+        self.poll_s = poll_s
+        self._keep = keep
+        self.latest: Optional[tuple] = None
+        self.samples: List[tuple] = []
+        self.dropped = 0
+        self.error: Optional[str] = None
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, name="ur-trajectory-monitor", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        last = None
+        try:
+            while not self._stop.wait(self.poll_s):
+                sample = self.feedback.latest()
+                if not isinstance(sample, dict):
+                    continue
+                stamp = sample.get("controller_timestamp_s", sample.get("received_monotonic_s"))
+                if stamp == last:
+                    continue
+                last = stamp
+                age = time.monotonic() - float(sample["received_monotonic_s"])
+                joints = [float(v) for v in sample["joints_deg"]][: self.num_joints]
+                entry = (time.perf_counter() - max(0.0, age), joints,
+                         sample.get("robot_mode"), sample.get("safety_mode"))
+                self.latest = entry
+                if len(self.samples) < self._keep:
+                    self.samples.append(entry)
+                else:
+                    self.dropped += 1
+        except Exception as exc:  # noqa: BLE001 - monitoring only; fault() still guards
+            self.error = str(exc)
 
 
 class URServoJBackend:

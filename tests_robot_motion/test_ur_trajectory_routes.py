@@ -156,6 +156,8 @@ def test_a_run_streams_servoj_and_frees_the_arm(rig):
         body = client.get(f"{BASE}/{sid}", headers=HEADERS).json()
         assert body["state"] == "completed", body
         assert body["log_available"] is True
+        assert body["measured"]["joints_deg"][0] == pytest.approx(3.0, abs=0.05)
+        assert body["tracking"]["samples"] > 10
         status = client.get("/status").json()
         assert status["details"]["trajectory"]["session"]["state"] == "completed"
         assert "arm.move_joints" in status["allowed_actions"]
@@ -234,3 +236,16 @@ def test_force_guard_stops_the_run(tmp_path):
         assert rig.control.stops   # emergency stopJ, before shutdown
     assert body["state"] == "failed", body
     assert "force guard" in body["reason"]
+
+
+def test_trajectories_are_refused_when_kinematics_cannot_be_verified(rig):
+    rig.control.getTCPOffset = lambda: [0.0] * 6
+    with rig.client() as client:
+        held = connected(client)
+        check = client.post(f"{BASE}/validate", json={"points": ramp()}, headers=held)
+        assert check.status_code == 412
+        assert check.json()["detail"]["error"] == "kinematics_unverified"
+        _, started = run(client, held, ramp())
+        assert started.status_code == 412
+        assert started.json()["detail"]["error"] == "kinematics_unverified"
+    assert not rig.control.servo

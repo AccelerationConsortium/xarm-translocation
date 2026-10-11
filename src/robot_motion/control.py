@@ -409,6 +409,7 @@ class URControl:
                 "max_step_deg": self.config.joint_step.max_step_deg if self.config.joint_step else None,
                 "limits": self.config.motion.summary() if self.config.motion else None,
                 "tcp_offset_mm_rpy_deg": self.tcp_offset if session_open else None,
+                "kinematics_error": getattr(session.control, "kinematics_error", None) if session_open else None,
                 "last_event": self.last_event,
             },
             "allowed_actions": allowed,

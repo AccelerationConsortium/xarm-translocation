@@ -228,7 +228,10 @@ class Control:
         self.stops.append(("stopL", deceleration))
         self.world.halt()
 
-    def getForwardKinematics(self, q):
+    def getForwardKinematics(self, q, tcp_offset=None):
+        # The real ur_rtde 1.6.5 answers wrongly without the offset and ends
+        # the script with an all-zero one; the wrapper must always pass it.
+        assert tcp_offset is not None and any(tcp_offset), "FK called without a usable TCP offset"
         self.fk_calls += 1
         return self.fk(q)
 
@@ -440,11 +443,47 @@ def test_move_joints_checks_the_path_then_moves_and_verifies():
         assert kind == "moveJ" and asynchronous is True
         assert target == pytest.approx([math.radians(v) for v in (10, -5, 20, 0, 0, 0)])
         assert speed == pytest.approx(math.radians(5)) and acceleration == pytest.approx(math.radians(40))
-        assert rig.control.fk_calls == body["path_samples_checked"] == 11  # every 2 degrees of 20
+        # One FK at Connect (the kinematics check), then one every 2 degrees of 20.
+        assert rig.control.fk_calls - 1 == body["path_samples_checked"] == 11
         assert rig.control.stops == []
         # The same target again is a no-op, not a second move.
         again = client.post("/control/freehand/joints", json={"angles": [10, -5, 20, 0, 0, 0]}, headers=held)
         assert again.json()["moved"] is False and len(rig.control.moves) == 1
+
+
+def test_connect_verifies_forward_kinematics_against_the_measured_pose():
+    rig = Rig()
+    with rig.client() as client:
+        connected(client)
+        session = client.get("/status").json()["details"]["control_session"]
+    assert session["kinematics_error"] is None
+    assert rig.control.fk_calls == 1
+
+
+@pytest.mark.parametrize(
+    "break_it, reason",
+    [
+        ("offset", "all zeros"),
+        ("fk", "mm from the measured TCP"),
+    ],
+)
+def test_joint_moves_are_refused_when_kinematics_cannot_be_verified(break_it, reason):
+    rig = Rig()
+    if break_it == "offset":
+        rig.control.getTCPOffset = lambda: [0.0] * 6
+    else:
+        rig.control.fk = lambda q: [v + 0.5 for v in fk(q)]   # 0.87 m off, as ur_rtde without the offset
+    with rig.client() as client:
+        held = connected(client)
+        session = client.get("/status").json()["details"]["control_session"]
+        assert reason in session["kinematics_error"]
+        moved = client.post("/control/freehand/joints", json={"angles": [2, 0, 0, 0, 0, 0]}, headers=held)
+        assert moved.status_code == 412
+        assert moved.json()["detail"]["error"] == "kinematics_unverified"
+        # Linear moves plan with inverse kinematics and still run.
+        jog = client.post("/control/freehand/relative", json={"dx": 5}, headers=held)
+        assert jog.status_code == 200, jog.text
+    assert not [m for m in rig.control.moves if m[0] == "moveJ"]
 
 
 def test_joint_jog_is_relative_and_capped():

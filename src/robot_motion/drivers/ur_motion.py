@@ -602,6 +602,13 @@ class MotionExecutor:
 
     def _plan_joint(self, action, q0, target, p0, speed):
         lim = self.limits
+        unverified = getattr(self.control, "kinematics_error", None)
+        if unverified:
+            raise MotionRefused(
+                "kinematics_unverified",
+                f"Joint moves need the workspace check, and forward kinematics is unavailable: {unverified}",
+                hint="Disconnect and Connect again; check the TCP offset on the pendant",
+            )
         outside = self._outside_envelope(target)
         if outside:
             raise MotionRefused(
