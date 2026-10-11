@@ -91,6 +91,12 @@ class URControl:
         self.executor = None
         self.tcp_offset = None
         self.last_event = None
+        # Streamed joint trajectories (trajectory/routes.py): motion mode only.
+        self.trajectory = None
+        if self.arm_mode == "motion" and self.config.trajectory is not None:
+            from .trajectory.routes import URTrajectory
+
+            self.trajectory = URTrajectory(self)
 
     # ── identity and gates ──────────────────────────────────────────
     def identity(self, request):
@@ -406,12 +412,15 @@ class URControl:
                 "last_event": self.last_event,
             },
             "allowed_actions": allowed,
+            "trajectory": self.trajectory.summary() if self.trajectory is not None else None,
         }
 
     def shutdown(self):
         with self._lock:
             session, executor = self.session, self.executor
             self.session = self.executor = None
+        if self.trajectory is not None:
+            self.trajectory.hard_stop("disconnect")
         if executor is not None:
             executor.request_stop()
         if session is not None:
@@ -421,6 +430,8 @@ class URControl:
                 session.stop(self._stop_joint_decel())
             except Exception:
                 log.exception("Stop at shutdown failed")
+            if self.trajectory is not None and not self.trajectory.manager.wait_idle(2.0):
+                log.error("Trajectory streamer still running at shutdown")
             session.close()
             log.info("Arm session stopped and closed at shutdown")
 
@@ -489,6 +500,8 @@ class URControl:
             self._install_joint_step(app, login, claim, self.arm_limits)
         if self.arm_mode == "motion":
             self._install_motion(app, login, claim)
+        if self.trajectory is not None:
+            self.trajectory.install(app, login, claim)
         if self.gripper_control is not None:
             self.gripper_control.install(app, login, claim)
 
@@ -498,6 +511,10 @@ class URControl:
             """Identity-gated safety floor: no claim needed to ask for a stop."""
             executor, session = self.executor, self.session
             requested, error = False, None
+            if self.trajectory is not None:
+                # First, so the streamer sends nothing after this line.
+                requested = self.trajectory.running()
+                self.trajectory.hard_stop("stop")
             if executor is not None:
                 # Returns only after any dispatch in progress, so the stop
                 # below can never land before the move it should stop.

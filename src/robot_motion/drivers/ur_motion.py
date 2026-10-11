@@ -377,6 +377,19 @@ class MotionExecutor:
         """Take the move lock for good (disconnect): False if a move runs."""
         return self._lock.acquire(blocking=False)
 
+    def reserve(self, active):
+        """Hold the move slot for an outside streamer (a joint trajectory):
+        every move, manual mode, reset and disconnect then see busy. False if
+        a move runs. release() hands it back."""
+        if not self._lock.acquire(blocking=False):
+            return False
+        self.active = active
+        return True
+
+    def release(self):
+        self.active = None
+        self._lock.release()
+
     @property
     def seen(self):
         return self._seen

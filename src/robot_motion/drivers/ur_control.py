@@ -206,6 +206,16 @@ class _SerializedControl:
         with self._lock:
             return self._control.stopJ(deceleration)
 
+    # Streamed joint trajectories (robot_motion.trajectory.ur_backend): one
+    # servoJ per tick; servoStop leaves servo control with a deceleration.
+    def servoJ(self, q, speed, acceleration, time_s, lookahead_time, gain):
+        with self._lock:
+            return self._control.servoJ(q, speed, acceleration, time_s, lookahead_time, gain)
+
+    def servoStop(self, deceleration):
+        with self._lock:
+            return self._control.servoStop(deceleration)
+
     # Arm motion (ur_motion.py). Kinematics and safety-limit queries run on
     # the controller with its active TCP; none of them moves the arm.
     def moveL(self, pose, speed, acceleration, asynchronous):

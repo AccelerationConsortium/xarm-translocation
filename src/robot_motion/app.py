@@ -336,6 +336,8 @@ def create_app(
                 ),
                 "claimed_by": control_state["claimed_by"] if control_state else None,
                 "control_session": control_state["control_session"] if control_state else None,
+                # Joint-trajectory session (xArm field name); None without the block.
+                "trajectory": control_state.get("trajectory") if control_state else None,
                 # The panel's Manual switch reads this (the xArm's field name).
                 "manual_mode": bool(control_state and control_state["control_session"].get("manual_mode")),
                 "driver": settings.driver,
