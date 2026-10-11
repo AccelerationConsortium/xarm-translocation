@@ -1,6 +1,7 @@
 # Joint trajectories on the UR5e (ligand_ur5e) — plan
 
-Status (2026-10-11): **plan, not built.** The xArm5 version is built,
+Status (2026-10-11): **stage 1 (offline) built, not on the robot.** See
+[section 5](#5-what-is-built-stage-1). The xArm5 version is built,
 tested on the arm and deployed (see
 [`SERVOJ_TRAJECTORY_PLAN.md`](SERVOJ_TRAJECTORY_PLAN.md) and the client
 guide [`TRAJECTORY_API.md`](TRAJECTORY_API.md)). This plan ports it to the
@@ -81,8 +82,9 @@ The shared pieces move into the unified package, as
 `src/robot_motion/trajectory/` with interpolation, validation, sessions and
 the executor. Then:
 - the xArm service (`src/core`) imports them from there;
-- the UR backend lives in `src/robot_motion/drivers/ur_trajectory.py`;
-- the UR routes go into the UR service.
+- the UR backend lives in `src/robot_motion/trajectory/ur_backend.py`;
+- the UR routes live in `src/robot_motion/trajectory/routes.py`, installed
+  by the UR service (`control.py`).
 
 The xArm's behaviour stays identical, and its 1000+ tests guard the move.
 
@@ -121,3 +123,63 @@ The xArm's behaviour stays identical, and its 1000+ tests guard the move.
    the xArm's.
 4. **Dashboard:** whether the UR5e trajectory skills should appear on the
    dashboard straight away, or only after stage 3.
+
+---
+
+## 5. What is built (stage 1)
+
+On branch `feature/ur5e-trajectory`, offline only:
+- **Shared package.** `src/robot_motion/trajectory/` holds
+  `joint_trajectory.py` and `executor.py`; `src/core/joint_trajectory.py`
+  and `src/core/trajectory_executor.py` are alias shims, so the xArm
+  service is unchanged (its trajectory tests pass).
+- **Backend** (`ur_backend.py`, `URServoJBackend`):
+  - `servoJ(q_rad, 0, 0, 1/rate, lookahead, gain)`; `servoStop` at the
+    end; `servoStop` then `stopJ` on a hard stop;
+  - `prepare` refuses without fresh feedback, RUNNING/NORMAL, the script
+    running, the slider at 100 %, the arm still, and the commissioned
+    envelope and box;
+  - every tick holds the feedback to the envelope (plus
+    `path_tolerance_deg`), the workspace box (plus `path_tolerance_mm`),
+    1.25 × the speed cap, and the force guard: any is a hard stop;
+  - `path_errors` checks the planned path against the box and the
+    controller's safety limits with controller forward kinematics, every
+    `path_check_step_deg` (2°) of joint travel, before validate passes and
+    before start.
+- **Routes** (`routes.py`): the xArm contract, six joints:
+  - `GET /limits` (from `control.motion`, plus `workspace_mm`,
+    `force_guard_n`, `commissioning_id`);
+  - `POST /validate` (needs an open arm session for the measured pose and
+    the kinematics; no claim);
+  - create, chunks (PUT or POST), start, cancel, status and log.
+- **Gates.** Start uses the same `arm_block` as a moveJ (latch, link,
+  script, feedback, RUNNING/NORMAL, manual mode, slider, still, envelope,
+  box), then reserves the motion executor's move slot for the whole run.
+  While it runs, every move, manual mode, Clear errors, force zero and
+  Disconnect answer 409. The run watches the claim, the operator list, the
+  session and its RTDE watchdog every 100 ms (a constrained stop).
+- **STOP.** `/control/stop` bumps the trajectory stop generation first,
+  then latches the motion executor and sends `stopJ`; nothing is streamed
+  after it. Clear errors re-enables moves, as after any STOP. Service
+  shutdown stops a run the same way.
+- **Status.** `details.trajectory` in `/status`, as on the xArm.
+- **Tests.** `tests_robot_motion/test_ur_trajectory_backend.py` (14) and
+  `test_ur_trajectory_routes.py` (8): a full 125 Hz run, refusals in manual
+  mode and outside the box, moves and Disconnect refused while running,
+  STOP sends nothing more, and the force guard.
+
+**To enable it** on pc-05, add to the `control` block of the local config
+(off by default; the `motion` block's limits apply):
+
+```json
+"trajectory": {"enabled": true, "rate_hz": 125, "lookahead_s": 0.1, "gain": 300}
+```
+
+Other keys, all optional: `max_rate_hz` (125), `start_tolerance_deg`
+(0.5), `max_duration_s` (600), `max_points` (60000),
+`max_points_per_chunk` (5000), `path_check_step_deg` (2), `max_fk_checks`
+(3000), `log_dir` (`logs/trajectory`, beside the config).
+
+**Still to do:** stage 0a and 0b on pc-05 with you present, the real
+motion limits, a UR column in `TRAJECTORY_API.md`, and registering the
+dashboard skills for `ligand_ur5e`.

@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import src.core.trajectory_executor as executor_module
+import robot_motion.trajectory.executor as executor_module
 from src.core.joint_trajectory import JointLimits
 from src.core.trajectory_executor import (
     CANCELLED, COMPLETED, CREATED, EXPIRED, FAILED, STOPPED, BackendError, RealtimeJointMonitor,

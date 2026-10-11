@@ -46,6 +46,40 @@ MODELS = {
 }
 
 
+class TrajectoryConfig(BaseModel):
+    """Streamed joint trajectories (ur_rtde servoJ), the xArm's HTTP contract
+    (src/docs/UR5E_TRAJECTORY_PLAN.md). Off unless enabled, and only with a
+    motion block: joint bounds, speed and acceleration come from there. The
+    rate ceiling stays at 125 Hz until stage 0a on the PC has measured more.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    enabled: bool = False
+    rate_hz: float = Field(default=125, ge=50, le=250, allow_inf_nan=False)
+    max_rate_hz: float = Field(default=125, ge=50, le=250, allow_inf_nan=False)
+    # Controller-side servoj smoothing (ur_rtde ranges); tuned in stage 0b.
+    lookahead_s: float = Field(default=0.1, ge=0.03, le=0.2, allow_inf_nan=False)
+    gain: float = Field(default=300, ge=100, le=2000, allow_inf_nan=False)
+    start_tolerance_deg: float = Field(default=0.5, gt=0, le=5, allow_inf_nan=False)
+    max_duration_s: float = Field(default=600, gt=0, le=3600, allow_inf_nan=False)
+    max_points: int = Field(default=60000, ge=2, le=200000)
+    max_points_per_chunk: int = Field(default=5000, ge=1, le=200000)
+    # Planning resolution of the workspace check: controller forward
+    # kinematics wherever any joint has moved this far, at most max_fk_checks.
+    path_check_step_deg: float = Field(default=2.0, ge=0.5, le=10, allow_inf_nan=False)
+    max_fk_checks: int = Field(default=3000, ge=10, le=20000)
+    # Session records, relative to the config file.
+    log_dir: str = Field(default="logs/trajectory", min_length=1)
+
+    @model_validator(mode="after")
+    def coherent(self):
+        if self.rate_hz > self.max_rate_hz:
+            raise ValueError("rate_hz must not exceed max_rate_hz")
+        if self.max_points_per_chunk > self.max_points:
+            raise ValueError("max_points_per_chunk must not exceed max_points")
+        return self
+
+
 class ControlSettings(BaseModel):
     """Explicit commissioning inputs for the control routes.
 
@@ -69,6 +103,7 @@ class ControlSettings(BaseModel):
     watchdog_hz: float = Field(default=10, ge=1, le=50, allow_inf_nan=False)
     # JSON-lines audit of every control event; relative to the config file.
     audit_file: str | None = None
+    trajectory: TrajectoryConfig | None = None
 
     @field_validator("authorized_operators")
     @classmethod
@@ -82,6 +117,8 @@ class ControlSettings(BaseModel):
     def one_arm_mode(self):
         if self.joint_step is not None and self.motion is not None:
             raise ValueError("Configure joint_step or motion for the arm, not both")
+        if self.trajectory is not None and self.trajectory.enabled and self.motion is None:
+            raise ValueError("trajectory needs the motion block (its joint bounds, speed and acceleration)")
         return self
 
     @property
@@ -210,6 +247,11 @@ def load_settings(path: Path | None) -> Settings:
         control = settings.control.model_copy(
             update={"audit_file": beside_config(settings.control.audit_file)}
         )
+        settings = settings.model_copy(update={"control": control})
+    if settings.control and settings.control.trajectory:
+        trajectory = settings.control.trajectory
+        trajectory = trajectory.model_copy(update={"log_dir": beside_config(trajectory.log_dir)})
+        control = settings.control.model_copy(update={"trajectory": trajectory})
         settings = settings.model_copy(update={"control": control})
     if settings.camera_service:
         service = settings.camera_service.model_copy(
