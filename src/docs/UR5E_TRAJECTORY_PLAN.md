@@ -226,10 +226,15 @@ deg/s, 10.6 deg/s², 9.4 s; placeholder limits (10 deg/s, 30 deg/s²).
   - ur_rtde `getForwardKinematics(q)` returns a wrong pose, and with an
     all-zero TCP offset it ends the script (protective stop). FK now always
     passes the TCP offset verified at Connect (1550499).
-  - A blocking `stopJ` held the SDK lock while the arm braked; the watchdog
-    could not be kicked and the controller ended the control script after
-    a STOP. Stops are now sent without waiting.
+  - A STOP during a run ended the control script; the pendant said
+    "Another thread is already controlling the robot". ur_rtde runs
+    servoJ in its own script thread, so a `stopJ` is a second thread
+    commanding motion. While servoing, every stop is now a `servoStop`.
+    `servoStop` waits while the arm brakes under the SDK lock, so with
+    trajectories enabled the config requires `watchdog_hz` below
+    1 / (2 × max speed / stop deceleration): 4.5 Hz for the placeholder;
+    pc-05 runs 2 Hz. Other stops are sent without waiting.
 
-**Still to do:** a STOP re-test on the arm with the asynchronous stop, the real
+**Still to do:** a STOP re-test on the arm with servoStop, the real
 motion limits, a UR column in `TRAJECTORY_API.md`, and registering the
 dashboard skills for `ligand_ur5e`.

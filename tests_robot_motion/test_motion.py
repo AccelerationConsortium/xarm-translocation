@@ -1099,3 +1099,37 @@ def test_stops_never_wait_for_the_arm():
     proxy.stopJ(1.0)
     proxy.stopL(1.0)
     assert calls == [("stopJ", True), ("stopL", True)]
+
+
+def test_stops_while_servoing_are_servo_stops():
+    """A stopJ while servoJ runs aborts the ur_rtde script ("Another thread is
+    already controlling the robot"); the wrapper must send servoStop."""
+    from robot_motion.drivers.ur_control import _SerializedControl
+
+    calls = []
+
+    class Raw:
+        def servoJ(self, *args):
+            calls.append("servoJ")
+            return True
+
+        def servoStop(self, deceleration):
+            calls.append("servoStop")
+            return True
+
+        def stopJ(self, deceleration, asynchronous=False):
+            calls.append("stopJ")
+
+    proxy = _SerializedControl(Raw(), threading.RLock())
+    proxy.servoJ([0] * 6, 0, 0, 0.008, 0.03, 1000)
+    proxy.stopJ(1.0)
+    proxy.stopJ(1.0)   # servo mode has ended: an ordinary stopJ again
+    assert calls == ["servoJ", "servoStop", "stopJ"]
+
+
+def test_trajectories_need_a_watchdog_slower_than_braking():
+    control = {"authorized_operators": [OPERATOR], "motion": MOTION, "trajectory": {"enabled": True}}
+    # 20 deg/s at 90 deg/s^2 brakes for 0.22 s: the watchdog must be below 2.25 Hz.
+    with pytest.raises(ValidationError, match="watchdog_hz must be below 2.25"):
+        settings(control=control)
+    assert settings(control={**control, "watchdog_hz": 2}).control.trajectory.enabled

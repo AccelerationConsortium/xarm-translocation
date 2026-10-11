@@ -121,8 +121,18 @@ class ControlSettings(BaseModel):
     def one_arm_mode(self):
         if self.joint_step is not None and self.motion is not None:
             raise ValueError("Configure joint_step or motion for the arm, not both")
-        if self.trajectory is not None and self.trajectory.enabled and self.motion is None:
-            raise ValueError("trajectory needs the motion block (its joint bounds, speed and acceleration)")
+        if self.trajectory is not None and self.trajectory.enabled:
+            if self.motion is None:
+                raise ValueError("trajectory needs the motion block (its joint bounds, speed and acceleration)")
+            # A STOP during a trajectory is a servoStop, which holds the SDK
+            # lock while the arm brakes; the watchdog kicker (every half
+            # period) must still get in before the controller's deadline.
+            braking_s = self.motion.max_joint_speed_deg_s / self.motion.stop_joint_decel_deg_s2
+            if braking_s >= 1 / (2 * self.watchdog_hz):
+                raise ValueError(
+                    f"with trajectories, watchdog_hz must be below {1 / (2 * braking_s):.2f}: a STOP "
+                    f"brakes for up to {braking_s:.2f} s while the watchdog cannot be kicked"
+                )
         return self
 
     @property

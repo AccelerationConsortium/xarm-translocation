@@ -59,6 +59,9 @@ def config(tmp_path, **trajectory):
         control={
             "authorized_operators": [OPERATOR],
             "motion": MOTION,
+            # A STOP while servoing brakes under the SDK lock: 20 deg/s at
+            # 90 deg/s^2 needs a watchdog below 2.25 Hz (config rule).
+            "watchdog_hz": 2,
             "trajectory": {"enabled": True, "log_dir": str(tmp_path), **trajectory},
         },
     )
@@ -191,7 +194,8 @@ def test_moves_and_disconnect_are_refused_while_running_and_stop_halts_it(rig):
         time.sleep(0.1)
         assert len(rig.control.servo) == sent   # nothing after STOP
         assert state(client, sid) == "stopped"
-        assert rig.control.stops   # stopJ
+        # servoStop, never stopJ: a stopJ while servoing aborts the script.
+        assert rig.control.servo_stops and not rig.control.stops
         # STOP latches like any other: moves wait for Clear errors.
         status = client.get("/status").json()
         assert status["details"]["control_session"]["latched"] == "Stop requested"
@@ -233,7 +237,7 @@ def test_force_guard_stops_the_run(tmp_path):
         sid, started = run(client, held, ramp(3.0, 2.0))
         assert started.status_code == 200, started.text
         body = client.get(f"{BASE}/{sid}", headers=HEADERS).json()
-        assert rig.control.stops   # emergency stopJ, before shutdown
+        assert rig.control.servo_stops and not rig.control.stops   # emergency stop while servoing
     assert body["state"] == "failed", body
     assert "force guard" in body["reason"]
 

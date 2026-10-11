@@ -93,6 +93,15 @@ class Tee:
 
 
 def confirm(prompt):
+    # Discard keys pressed while the arm was moving (an Enter typed early
+    # answered the STOP prompt with '' twice on the arm).
+    try:
+        import msvcrt
+
+        while msvcrt.kbhit():
+            msvcrt.getwch()
+    except ImportError:
+        pass
     answer = input(prompt)
     print(f"[typed: {answer.strip()!r}]")
     return answer.strip().upper() == "YES"
@@ -344,6 +353,10 @@ def main():
             results.append(one_run(session, motion, cfg, settings, points, rate, scenario,
                                    args.stop_at, lookahead, gain, args.out_dir))
             if scenario == "stop":
+                for wait in (0.5, 1.5):
+                    time.sleep(wait)
+                    print(f"control script running {wait if wait == 0.5 else 2.0:g} s after STOP: "
+                          f"{session.control.isProgramRunning()}, watchdog ok: {session.watchdog_ok}")
                 if not confirm("STOP done. Check the arm. Type YES to drive back to the start pose: "):
                     print("Not confirmed; ending here.")
                     break

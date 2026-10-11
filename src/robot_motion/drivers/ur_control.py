@@ -194,6 +194,11 @@ class _SerializedControl:
         # if it never does, FK refuses (kinematics_error says why).
         self.tcp_offset = None
         self.kinematics_error = "forward kinematics not verified yet"
+        # True from the first servoJ until servoStop. ur_rtde runs servoJ in
+        # its own script thread; a stopJ/stopL then is a second thread
+        # commanding motion and the controller aborts the script ("Another
+        # thread is already controlling the robot", stage 0b 2026-10-11).
+        self.servoing = False
 
     def isConnected(self):
         if self.fault is not None:
@@ -213,12 +218,13 @@ class _SerializedControl:
         with self._lock:
             return self._control.moveJ(target, speed, acceleration, asynchronous)
 
-    # Stops never wait for the arm: a blocking stopJ/stopL holds this lock
-    # while the arm brakes, the watchdog kicker cannot get in, and the
-    # controller ends the control script (seen after a STOP in stage 0b,
-    # 2026-10-11). Nothing here relied on the wait; callers that need the
-    # arm still check the feedback.
+    # Stops: while servoing, stopJ/stopL become servoStop (see servoing).
+    # Otherwise they are sent without waiting, so this lock is not held while
+    # the arm brakes. servoStop does wait while the arm brakes; the watchdog
+    # period must cover that (config: watchdog_hz with trajectories).
     def stopJ(self, deceleration):
+        if self.servoing:
+            return self.servoStop(deceleration)
         with self._lock:
             return self._control.stopJ(deceleration, True)
 
@@ -226,11 +232,15 @@ class _SerializedControl:
     # servoJ per tick; servoStop leaves servo control with a deceleration.
     def servoJ(self, q, speed, acceleration, time_s, lookahead_time, gain):
         with self._lock:
+            self.servoing = True
             return self._control.servoJ(q, speed, acceleration, time_s, lookahead_time, gain)
 
     def servoStop(self, deceleration):
         with self._lock:
-            return self._control.servoStop(deceleration)
+            try:
+                return self._control.servoStop(deceleration)
+            finally:
+                self.servoing = False
 
     # Arm motion (ur_motion.py). Kinematics and safety-limit queries run on
     # the controller with its active TCP; none of them moves the arm.
@@ -239,6 +249,11 @@ class _SerializedControl:
             return self._control.moveL(pose, speed, acceleration, asynchronous)
 
     def stopL(self, deceleration):
+        if self.servoing:
+            # Not reached by STOP (a trajectory is a joint move, so it sends
+            # stopJ); a joint deceleration is needed, 90 deg/s^2 is the UR
+            # STOP default used in commissioning.
+            return self.servoStop(math.radians(90.0))
         with self._lock:
             return self._control.stopL(deceleration, True)
 
