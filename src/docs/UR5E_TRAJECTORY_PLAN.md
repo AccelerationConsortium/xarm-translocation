@@ -268,6 +268,6 @@ the client route for the UR: its registry entry has no `edge_secret_env`,
 so it sends the global edge secret, which the UR refuses (401). The edge's
 `/ur5e/` route is the one the panel and clients use.
 
-**Still to do:** the real
-motion limits, a UR column in `TRAJECTORY_API.md`, and registering the
-dashboard skills for `ligand_ur5e`.
+**Still to do:** the real motion limits, and registering the dashboard
+skills for `ligand_ur5e`. The UR column in `TRAJECTORY_API.md` was added
+on 2026-10-11.

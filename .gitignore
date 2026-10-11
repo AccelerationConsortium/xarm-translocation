@@ -114,3 +114,6 @@ site/
 logs/trajectory/
 # Stage 0b probe records (tools/servo_mode_probe.py --out)
 logs/servo_mode_probe/
+# UR5e trajectory commissioning scripts and probe output (2026-10-11), kept
+# off pc-05 after the stage 3 pass; the reusable probes live in tools/
+logs/ur5e-trajectory-2026-10-11/

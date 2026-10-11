@@ -1,4 +1,4 @@
-# Joint-trajectory API (xArm5): client guide
+# Joint-trajectory API (xArm5 and UR5e): client guide
 
 Upload a time-stamped joint trajectory, then start it. The xArm service
 plays it to the arm with ServoJ at 100 Hz on its own clock, so network
@@ -71,33 +71,49 @@ The same contract runs on the UR5e (tested on the arm 2026-10-11: servoJ at
 
 ## Limits
 
-`GET /control/freehand/trajectory/limits` returns these live; the speed
-depends on the safety level chosen at Connect. They are checked on the interpolated path at the command rate, not just at
-the points.
+`GET /control/freehand/trajectory/limits` returns these live; read them
+rather than this table. On the xArm the speed depends on the safety level
+chosen at Connect; on the UR5e the limits are the commissioned motion
+block. They are checked on the interpolated path at the command rate, not
+just at the points.
 
-| | Value | Source |
+| | xArm5 | UR5e (ligand_ur5e) |
 |---|---|---|
-| J1 | −360 to +360° | `src/settings/safety.yaml` (model 5) |
-| J2 | −118 to +120° | same |
-| J3 | −225 to +11° | same |
-| J4 | −97 to +180° | same |
-| J5 | −360 to +360° | same |
-| Joint speed | 180°/s × the safety-level factor: LOW 1.0, MEDIUM 0.5, HIGH 0.25, EMERGENCY 0.1. MEDIUM, the default at Connect, gives **90°/s** | `max_joint_speed` in `safety.yaml` |
-| Joint acceleration | 500 deg/s² | `max_joint_acc_deg_s2` in `src/settings/trajectory.yaml` |
-| Duration | at most 600 s | `trajectory.yaml` |
-| Points | at most 60 000 per trajectory, 5000 per chunk; at least 10 ms apart (one period at 100 Hz) | `trajectory.yaml` |
-| Start | the first point within 0.5° of the measured pose | `trajectory.yaml` |
-| Command rate | 100 Hz by default; a session may ask for 50–200 Hz | `trajectory.yaml` |
+| J1 | −360 to +360° | −360 to +360° (placeholder) |
+| J2 | −118 to +120° | −360 to +360° (placeholder) |
+| J3 | −225 to +11° | −360 to +360° (placeholder) |
+| J4 | −97 to +180° | −360 to +360° (placeholder) |
+| J5 | −360 to +360° | −360 to +360° (placeholder) |
+| J6 | — (5 joints) | −360 to +360° (placeholder) |
+| Joint speed | 180°/s × the safety-level factor: LOW 1.0, MEDIUM 0.5, HIGH 0.25, EMERGENCY 0.1. MEDIUM, the default at Connect, gives **90°/s** | **10°/s** (placeholder), no safety-level factor |
+| Joint acceleration | 500 deg/s² | 30 deg/s² (placeholder) |
+| TCP workspace box | none for trajectories | x, y, z ±1100 mm (placeholder, so no real box); the whole path must stay inside, checked with the controller's kinematics every 2° of joint motion |
+| Force guard | none | 30 N; a run aborts when the measured TCP force changes by more than that from its value at the start of the run |
+| Duration | at most 600 s | at most 600 s |
+| Points | at most 60 000 per trajectory, 5000 per chunk; at least 10 ms apart (one period at 100 Hz) | at most 60 000 per trajectory, 5000 per chunk; at least 8 ms apart (one period at 125 Hz) |
+| Start | the first point within 0.5° of the measured pose | the first point within 0.5° of the measured pose |
+| Command rate | 100 Hz by default; a session may ask for 50–200 Hz | 125 Hz by default; a session may ask for 50–250 Hz |
+| Servo smoothing | ServoJ, no controller-side filter | servoJ lookahead 0.03 s, gain 1000 (about 40 ms lag) |
+| Source | `src/settings/safety.yaml` (model 5) and `src/settings/trajectory.yaml` | `control.motion` and `control.trajectory` in pc-05's `.state\robot-motion.local.json`; defaults in `src/robot_motion/config.py` |
 
-The controller enforces its own limits underneath. On 2026-10-10 it
+The xArm controller enforces its own limits underneath. On 2026-10-10 it
 reported 180°/s and 1000 mm/s, no TCP boundary, and joint ranges slightly
 inside the table: J2 −117 to +116°, J3 −219 to +10°. Stay inside those.
 
-Trajectories are joint-space only. For reference, the arm's other
-(Cartesian) moves are limited to:
+The UR5e motion block is still the open placeholder of 2026-10-08
+(commissioning id `UR5E-ARM-2026-10-08-OPEN-PLACEHOLDER`): it was chosen to
+enable motion, not surveyed. The controller's own safety limits apply
+underneath it. When the real envelope, box and speed caps are commissioned,
+`GET /limits` changes and this column should follow.
+
+Trajectories are joint-space only on both arms. For reference, the xArm's
+other (Cartesian) moves are limited to:
 - x ±700, y ±700, z −250 to +700 mm;
 - 1000 mm/s × the safety-level factor (500 mm/s at MEDIUM);
 - an acceleration cap of 50 000 mm/s².
+
+The UR5e's other moves (jog, relative, linear) use the same motion block:
+50 mm/s and 250 mm/s² (placeholder) for linear moves.
 
 ## Endpoints
 
