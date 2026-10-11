@@ -49,7 +49,7 @@ class Control:
         self.target = tuple(math.degrees(q) for q in target)
         return self.accepted
 
-    def stopJ(self, deceleration):
+    def stopJ(self, deceleration, asynchronous=False):
         self.stops.append(deceleration)
         if self.stop_error:
             raise self.stop_error

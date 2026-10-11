@@ -1,6 +1,6 @@
 # Joint trajectories on the UR5e (ligand_ur5e) — plan
 
-Status (2026-10-11): **stage 1 (offline) built, not on the robot.** See
+Status (2026-10-11): **built; stages 0a and 0b done on pc-05.** See
 [section 5](#5-what-is-built-stage-1). The xArm5 version is built,
 tested on the arm and deployed (see
 [`SERVOJ_TRAJECTORY_PLAN.md`](SERVOJ_TRAJECTORY_PLAN.md) and the client
@@ -198,6 +198,38 @@ Start stage 0b at 125 Hz and try 250 Hz; leave 500 Hz off (the worst case
 is over half its 2 ms period). The probe ran in its own process, so 0b
 measures the timing inside the service.
 
-**Still to do:** stage 0b on pc-05 with you present, the real
+## 7. Stage 0b result (2026-10-11, pc-05, on the arm)
+
+`tools/ur_servo_probe.py`: the production code path without HTTP (the
+service's ControlSession, the shared executor, URServoJBackend with the
+commissioned limits as guards). Wiggle J1 ±5°, J6 ±10°, min-jerk, peak 8
+deg/s, 10.6 deg/s², 9.4 s; placeholder limits (10 deg/s, 30 deg/s²).
+
+| Rate | Lookahead / gain | Lag | Tracking rms / max (lag removed) | Following error max |
+|---|---|---|---|---|
+| 125 Hz | 0.1 / 300 | 110 ms | 0.028° / 0.12° | 0.95° |
+| 125 Hz | 0.05 / 600 | 60 ms | 0.029° / 0.12° | — |
+| 125 Hz | 0.03 / 1000 | 42 ms | 0.028° / 0.14° | — |
+| 250 Hz | 0.1 / 300 | 106 ms | 0.029° / 0.13° | 0.93° |
+| 250 Hz | 0.05 / 600 | 56 ms | 0.026° / 0.12° | 0.54° |
+| 250 Hz | 0.03 / 1000 | 36 ms | 0.027° / 0.11° | 0.37° |
+
+- **Timing:** zero late ticks in all 10 runs; lateness max 1.4 ms; a servoJ
+  call returns in at most 0.25 ms. Force change at most 2.1 N.
+- **Lag** is about the lookahead plus 6–12 ms; tracking does not change, so
+  the defaults are now **lookahead 0.03 s, gain 1000, 125 Hz** (250 Hz
+  allowed: only ~6 ms better).
+- **Cancel** at peak speed slowed to rest on the path. **STOP** at peak
+  speed stopped with ~0.8° overshoot on J6 (lag plus braking at 90 deg/s²);
+  nothing was sent after it.
+- **Found and fixed:**
+  - ur_rtde `getForwardKinematics(q)` returns a wrong pose, and with an
+    all-zero TCP offset it ends the script (protective stop). FK now always
+    passes the TCP offset verified at Connect (1550499).
+  - A blocking `stopJ` held the SDK lock while the arm braked; the watchdog
+    could not be kicked and the controller ended the control script after
+    a STOP. Stops are now sent without waiting.
+
+**Still to do:** a STOP re-test on the arm with the asynchronous stop, the real
 motion limits, a UR column in `TRAJECTORY_API.md`, and registering the
 dashboard skills for `ligand_ur5e`.

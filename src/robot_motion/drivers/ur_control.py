@@ -213,9 +213,14 @@ class _SerializedControl:
         with self._lock:
             return self._control.moveJ(target, speed, acceleration, asynchronous)
 
+    # Stops never wait for the arm: a blocking stopJ/stopL holds this lock
+    # while the arm brakes, the watchdog kicker cannot get in, and the
+    # controller ends the control script (seen after a STOP in stage 0b,
+    # 2026-10-11). Nothing here relied on the wait; callers that need the
+    # arm still check the feedback.
     def stopJ(self, deceleration):
         with self._lock:
-            return self._control.stopJ(deceleration)
+            return self._control.stopJ(deceleration, True)
 
     # Streamed joint trajectories (robot_motion.trajectory.ur_backend): one
     # servoJ per tick; servoStop leaves servo control with a deceleration.
@@ -235,7 +240,7 @@ class _SerializedControl:
 
     def stopL(self, deceleration):
         with self._lock:
-            return self._control.stopL(deceleration)
+            return self._control.stopL(deceleration, True)
 
     def getForwardKinematics(self, q):
         offset = self.tcp_offset

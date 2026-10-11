@@ -80,6 +80,7 @@ class FeedbackMonitor:
 class URServoJBackend:
     name = "ur_servoj"
     mode = None   # no controller mode switch on a UR
+    stop_note = "Clear errors (POST /control/reset) re-enables moves"
 
     def __init__(self, control, feedback, *, period_s: float, num_joints: int = 6,
                  lookahead_s: float = 0.1, gain: float = 300.0, stop_decel_deg_s2: float = 90.0,
@@ -164,12 +165,12 @@ class URServoJBackend:
         pass
 
     def emergency_stop(self) -> None:
-        for call in (lambda: self.control.servoStop(self.emergency_decel),
-                     lambda: self.control.stopJ(self.emergency_decel)):
-            try:
-                call()
-            except Exception:  # noqa: BLE001 - the stop path must not raise
-                pass
+        # stopJ without waiting ends servoing too (as STOP does); servoStop
+        # would block while the arm brakes and starve the watchdog.
+        try:
+            self.control.stopJ(self.emergency_decel)
+        except Exception:  # noqa: BLE001 - the stop path must not raise
+            pass
         self.streaming = False
 
     def read_joints(self, n: int) -> Optional[List[float]]:

@@ -184,9 +184,29 @@ def service_session_open(url):
         raise SystemExit(f"Cannot read the service status at {url} ({exc}); refusing to start")
 
 
-def move_home(session, q0, speed_deg_s, accel_deg_s2):
+def move_home(session, q0, speed_deg_s, accel_deg_s2, tolerance_deg=0.05):
+    """moveJ back to q0, asynchronous: a blocking moveJ holds the SDK lock,
+    starves the watchdog kicker, and the controller ends the script."""
     session.control.moveJ([math.radians(v) for v in q0], math.radians(speed_deg_s),
-                          math.radians(accel_deg_s2), False)
+                          math.radians(accel_deg_s2), True)
+    travel = max(abs(a - b) for a, b in zip(session.feedback.latest()["joints_deg"], q0))
+    deadline = time.monotonic() + 3.0 + 2.0 * travel / speed_deg_s
+    still_since = None
+    while time.monotonic() < deadline:
+        time.sleep(0.02)
+        sample = session.feedback.latest()
+        at = max(abs(a - b) for a, b in zip(sample["joints_deg"], q0)) <= tolerance_deg
+        still = max(abs(v) for v in sample["velocities_deg_s"]) <= 0.05
+        if at and still:
+            still_since = still_since or time.monotonic()
+            if time.monotonic() - still_since >= 0.2:
+                return
+        else:
+            still_since = None
+        if not session.control.isProgramRunning():
+            raise SystemExit("The control script stopped during the return; check the pendant")
+    session.stop(30.0)
+    raise SystemExit("The arm did not reach the start pose in time; stopped")
 
 
 def one_run(session, motion, cfg, settings, points, rate, scenario, stop_at, lookahead, gain, out_dir):
@@ -242,9 +262,11 @@ def main():
     parser.add_argument("--amp-j1", type=float, default=5.0)
     parser.add_argument("--amp-j6", type=float, default=10.0)
     parser.add_argument("--speed", type=float, default=8.0, help="peak speed of the leading joint, deg/s")
-    parser.add_argument("--stop-at", type=float, default=0.25)
-    parser.add_argument("--lookahead", type=float, default=None)
-    parser.add_argument("--gain", type=float, default=None)
+    parser.add_argument("--stop-at", type=float, default=0.5,
+                        help="fraction of the run for cancel/STOP; 0.5 is mid-swing at peak speed")
+    parser.add_argument("--servo", default="0.1:300,0.05:600,0.03:1000",
+                        help="lookahead_s:gain pairs; each gets a full run per rate, "
+                             "cancel and stop use the first")
     parser.add_argument("--status-url", default="http://100.64.254.18:8075/status")
     parser.add_argument("--out-dir", default=r"C:\Users\sdl2\ur_probe\logs")
     args = parser.parse_args()
@@ -257,8 +279,10 @@ def main():
     motion, cfg = settings_all.control.motion, settings_all.control.trajectory
     if motion is None or cfg is None:
         raise SystemExit("The config needs control.motion and control.trajectory")
-    lookahead = args.lookahead if args.lookahead is not None else cfg.lookahead_s
-    gain = args.gain if args.gain is not None else cfg.gain
+    servo = [tuple(float(x) for x in pair.split(":")) for pair in args.servo.split(",")]
+    for la, g in servo:
+        if not (0.03 <= la <= 0.2 and 100 <= g <= 2000):
+            raise SystemExit(f"servo pair {la}:{g} is outside ur_rtde's ranges")
     rates = [float(r) for r in args.rates.split(",")]
     if any(r > 250 for r in rates):
         raise SystemExit("Rates above 250 Hz are not part of stage 0b")
@@ -271,7 +295,7 @@ def main():
         raise SystemExit("The service has the arm session open. Press Disconnect in the panel first.")
     print(f"stage 0b probe  {time.strftime('%Y-%m-%d %H:%M:%S')}  robot {settings_all.robot_host}")
     print(f"limits {motion.commissioning_id}: {motion.max_joint_speed_deg_s} deg/s, "
-          f"{motion.joint_accel_deg_s2} deg/s^2; servoJ lookahead {lookahead} s, gain {gain}")
+          f"{motion.joint_accel_deg_s2} deg/s^2; servoJ (lookahead s, gain) {servo}")
 
     session = ControlSession(settings_all)
     session.open()
@@ -305,14 +329,18 @@ def main():
         print(f"wiggle: J1 +-{args.amp_j1} deg, J6 +-{args.amp_j6} deg, {s['duration_s']:.1f} s, "
               f"peak {s['max_joint_speed_deg_s']:.1f} deg/s, {s['max_joint_acc_deg_s2']:.1f} deg/s^2; "
               f"workspace box OK")
-        runs = [(r, sc) for r in rates for sc in args.scenarios.split(",")]
-        print("runs: " + ", ".join(f"{r:g} Hz {sc}" for r, sc in runs))
+        runs = []
+        for r in rates:
+            for sc in args.scenarios.split(","):
+                pairs = servo if sc == "full" else servo[:1]
+                runs += [(r, sc, la, g) for la, g in pairs]
+        print(f"{len(runs)} runs: " + ", ".join(f"{r:g} Hz {sc} {la:g}/{g:g}" for r, sc, la, g in runs))
         if not confirm("The arm will move. Type YES to start: "):
             print("Not confirmed; nothing moved.")
             return
         results = []
-        for rate, scenario in runs:
-            print(f"\n=== {rate:g} Hz  {scenario} ===")
+        for rate, scenario, lookahead, gain in runs:
+            print(f"\n=== {rate:g} Hz  {scenario}  lookahead {lookahead:g} s  gain {gain:g} ===")
             results.append(one_run(session, motion, cfg, settings, points, rate, scenario,
                                    args.stop_at, lookahead, gain, args.out_dir))
             if scenario == "stop":
@@ -327,7 +355,7 @@ def main():
         for r in results:
             a = r.get("analysis") or {}
             servo = r.get("servo") or {}
-            print(f"{r['rate_hz']:g} Hz {r['scenario']:6s} {r['state']:9s} lag {a.get('lag_ms')} ms  "
+            print(f"{r['rate_hz']:g} Hz {r['scenario']:6s} {r['lookahead_s']:g}/{r['gain']:g} {r['state']:9s} lag {a.get('lag_ms')} ms  "
                   f"tracking rms {a.get('tracking_rms_deg_at_lag')} max {a.get('tracking_max_deg_at_lag')} deg  "
                   f"late ticks {servo.get('late_ticks')}  lateness {servo.get('lateness_ms')}")
     finally:

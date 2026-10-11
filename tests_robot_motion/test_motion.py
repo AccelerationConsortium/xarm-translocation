@@ -220,11 +220,11 @@ class Control:
         self.world.command(ik(pose), speed / K)
         return True
 
-    def stopJ(self, deceleration):
+    def stopJ(self, deceleration, asynchronous=False):
         self.stops.append(("stopJ", deceleration))
         self.world.halt()
 
-    def stopL(self, deceleration):
+    def stopL(self, deceleration, asynchronous=False):
         self.stops.append(("stopL", deceleration))
         self.world.halt()
 
@@ -1079,3 +1079,23 @@ def test_a_teach_mode_that_will_not_end_stays_reported_on():
         # Disconnect still ends it, with the control script.
         assert client.post("/disconnect", headers=held).status_code == 200
         assert rig.control.script_stops == 1 and not rig.control.teaching
+
+
+def test_stops_never_wait_for_the_arm():
+    """A blocking stop holds the SDK lock while the arm brakes and starves
+    the watchdog kicker; the wrapper must send stops asynchronously."""
+    from robot_motion.drivers.ur_control import _SerializedControl
+
+    calls = []
+
+    class Raw:
+        def stopJ(self, deceleration, asynchronous=False):
+            calls.append(("stopJ", asynchronous))
+
+        def stopL(self, deceleration, asynchronous=False):
+            calls.append(("stopL", asynchronous))
+
+    proxy = _SerializedControl(Raw(), threading.RLock())
+    proxy.stopJ(1.0)
+    proxy.stopL(1.0)
+    assert calls == [("stopJ", True), ("stopL", True)]

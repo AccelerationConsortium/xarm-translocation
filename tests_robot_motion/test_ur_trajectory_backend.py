@@ -118,8 +118,11 @@ def test_finish_and_emergency_stop():
     backend.send(ZERO6, 1, 1)
     backend.finish()
     assert control.calls[-1] == ("servoStop", pytest.approx(math.radians(90)))
+    n = len(control.calls)
     backend.emergency_stop()
-    assert [c[0] for c in control.calls[-2:]] == ["servoStop", "stopJ"]
+    # stopJ only (the wrapper sends it without waiting); a blocking
+    # servoStop while braking would starve the watchdog.
+    assert [c[0] for c in control.calls[n:]] == ["stopJ"]
 
 
 def test_fault_reports_a_protective_stop_and_a_dead_script():

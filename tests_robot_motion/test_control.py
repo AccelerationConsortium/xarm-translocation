@@ -151,7 +151,7 @@ class Control:
             self.world.joints = list(target)
         return self.accepted
 
-    def stopJ(self, deceleration):
+    def stopJ(self, deceleration, asynchronous=False):
         self.stops.append(deceleration)
 
     def disconnect(self):

@@ -49,17 +49,21 @@ MODELS = {
 class TrajectoryConfig(BaseModel):
     """Streamed joint trajectories (ur_rtde servoJ), the xArm's HTTP contract
     (src/docs/UR5E_TRAJECTORY_PLAN.md). Off unless enabled, and only with a
-    motion block: joint bounds, speed and acceleration come from there. The
-    rate ceiling stays at 125 Hz until stage 0a on the PC has measured more.
+    motion block: joint bounds, speed and acceleration come from there. Rates
+    and servoJ defaults are the stage 0b measurements on pc-05.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     enabled: bool = False
+    # Stage 0b (2026-10-11): no late tick at 125 or 250 Hz; 250 Hz gains only
+    # ~6 ms of lag, so 125 is the default.
     rate_hz: float = Field(default=125, ge=50, le=250, allow_inf_nan=False)
-    max_rate_hz: float = Field(default=125, ge=50, le=250, allow_inf_nan=False)
-    # Controller-side servoj smoothing (ur_rtde ranges); tuned in stage 0b.
-    lookahead_s: float = Field(default=0.1, ge=0.03, le=0.2, allow_inf_nan=False)
-    gain: float = Field(default=300, ge=100, le=2000, allow_inf_nan=False)
+    max_rate_hz: float = Field(default=250, ge=50, le=250, allow_inf_nan=False)
+    # Controller-side servoj smoothing (ur_rtde ranges). The arm lags by
+    # about the lookahead plus 10 ms; tracking was the same at every pair
+    # tried, so the shortest lookahead wins (0.03/1000: 36-42 ms lag).
+    lookahead_s: float = Field(default=0.03, ge=0.03, le=0.2, allow_inf_nan=False)
+    gain: float = Field(default=1000, ge=100, le=2000, allow_inf_nan=False)
     start_tolerance_deg: float = Field(default=0.5, gt=0, le=5, allow_inf_nan=False)
     max_duration_s: float = Field(default=600, gt=0, le=3600, allow_inf_nan=False)
     max_points: int = Field(default=60000, ge=2, le=200000)

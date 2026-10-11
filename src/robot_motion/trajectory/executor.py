@@ -1137,7 +1137,8 @@ class TrajectoryManager:
                     "error_to_last_target_deg": final_error,
                     "settle_s": settle_s,
                     "mode_restored": mode_restored,
-                    "note": None if hard is None else "Clear errors restores mode 0 and state 0",
+                    "note": None if hard is None else getattr(
+                        backend, "stop_note", "Clear errors restores mode 0 and state 0"),
                 }
                 session.stats = self._stats(session, ticks, ctx, monitor)
             except Exception as exc:  # noqa: BLE001

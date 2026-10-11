@@ -112,7 +112,7 @@ def test_limits_come_from_the_motion_block(rig):
     assert body["joint_limits_deg"] == [[-90.0, 90.0]] * 6
     assert body["max_joint_speed_deg_s"] == 20 and body["max_joint_acc_deg_s2"] == 40
     assert body["workspace_mm"]["x"] == [150, 450]
-    assert body["rate_hz"] == {"default": 125.0, "min": 50.0, "max": 125.0}
+    assert body["rate_hz"] == {"default": 125.0, "min": 50.0, "max": 250.0}
 
 
 def test_disabled_block_refuses_create(tmp_path):
@@ -167,7 +167,7 @@ def test_a_run_streams_servoj_and_frees_the_arm(rig):
     servo = rig.control.servo
     assert 120 <= len(servo) <= 140   # 1 s at 125 Hz plus the end
     q, dt, lookahead, gain = servo[-1]
-    assert dt == pytest.approx(1 / 125) and lookahead == 0.1 and gain == 300
+    assert dt == pytest.approx(1 / 125) and lookahead == 0.03 and gain == 1000
     assert math.degrees(q[0]) == pytest.approx(3.0, abs=1e-6)
     assert rig.control.servo_stops   # left servo mode at the end
 
