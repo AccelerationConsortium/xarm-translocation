@@ -14,8 +14,14 @@ from src.core.xarm_controller import XArmController, ComponentState
 
 
 @pytest.fixture
-def mock_xarm_api():
+def mock_xarm_api(monkeypatch):
     """Create a mock XArmAPI for testing."""
+    # Connect (XArmController.initialize) waits, in real time and up to 3 s
+    # twice, for the arm to hold state 1/2 after the mode change; the mock
+    # never reports it, so every test paid ~7 s and recovery tests saw
+    # dozens of extra get_state calls. The wait itself is covered with a fake clock in
+    # test_trajectory_followups.py.
+    monkeypatch.setattr(XArmController, '_ensure_ready_state', lambda self, *a, **k: True)
     mock_arm = Mock()
     
     # Mock basic properties
