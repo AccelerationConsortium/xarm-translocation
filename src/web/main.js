@@ -371,7 +371,7 @@ document.addEventListener('DOMContentLoaded', () => {
             tlmLast.status = d.equipment_status;
             const alive = d.is_alive === true;
             updateStatusText(alive
-                ? (d.equipment_status ? `Connected (${d.equipment_status})` : 'Connected')
+                ? (d.equipment_status ? `Connected (${d.equipment_status})` : 'Connected') + urSessionSuffix(d)
                 : `Disconnected${d.equipment_status ? ` (${d.equipment_status})` : ''}`);
             setControlsState(alive);
             // setControlsState re-enables motion controls when alive; re-assert
@@ -432,6 +432,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // UR robot-motion only: its arm session and server-side gates.
             control_session: details.control_session || null,
             tcp_force: (details.telemetry && details.telemetry.tcp_force) || null,
+            // UR gripper moving (its socket is separate from the arm session).
+            gripper_busy: !!(details.gripper && details.gripper.busy === true),
             allowed_actions: Array.isArray(envelope.allowed_actions) ? envelope.allowed_actions : [],
         };
     }
@@ -713,7 +715,8 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 if (isConnected) {
                     // Surface the spec state in the title (e.g. "Connected (busy)").
-                    const label = equipmentStatus ? `Connected (${equipmentStatus})` : 'Connected';
+                    const label = (equipmentStatus ? `Connected (${equipmentStatus})` : 'Connected')
+                        + urSessionSuffix(data);
                     updateStatusText(label);
                     if (data.connection_details) {
                         const details = data.connection_details;
@@ -1773,6 +1776,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // " · arm session open/closed" for the UR, where "Connected" alone only
+    // says the controller is observed. Empty for the xArm.
+    function urSessionSuffix(data) {
+        const session = data && data.control_session;
+        if (!session || session.arm_control !== true) return '';
+        return session.open === true ? ' · arm session open' : ' · arm session closed';
+    }
+
     // Per-target connection lines. The service holds one global controller,
     // so exactly one of Hardware / Docker can be "Connected"; the other line
     // stays "Disconnected". The claim holder renders on the connected line so
@@ -1785,7 +1796,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const dkOwner = document.getElementById('conn-docker-owner');
         if (!hwState || !hwOwner || !dkState || !dkOwner) return;
 
-        const connected = data.is_alive === true;
+        // UR robot-motion: the line is the arm session (Connect opens it);
+        // observation alone keeps it "Disconnected". xArm statuses carry no
+        // control_session.arm_control, so they still follow is_alive.
+        const urSession = data.control_session && data.control_session.arm_control === true
+            ? data.control_session : null;
+        const connected = urSession ? urSession.open === true : data.is_alive === true;
         const sim = data.simulated === true;
 
         let ownerTxt = 'Control: —';
@@ -1846,9 +1862,19 @@ document.addEventListener('DOMContentLoaded', () => {
         // Releasing your own claim stays allowed even if the banner shows
         // signed-out; only *taking* control requires a connection + sign-in.
         const loginBlocked = !held && loginRequiredButNotSignedIn();
-        takeControlBtn.disabled = !controllerConnected || loginBlocked;
+        // UR robot-motion: "connected" above only means the controller is
+        // observed; the arm moves inside its session (Connect opens it), so
+        // a claim taken before Connect could drive nothing. A claim held by
+        // another browser is refused server-side (423), so grey it here too.
+        // No-op for the xArm (urArmGate reports nothing for it).
+        const ur = urArmGate();
+        const noSession = !held && ur.noSession;
+        const heldElsewhere = !held && ur.heldElsewhere;
+        takeControlBtn.disabled = !controllerConnected || loginBlocked || noSession || heldElsewhere;
         takeControlBtn.title = loginBlocked
             ? 'Sign in to take control'
+            : noSession ? 'Connect the arm first'
+            : heldElsewhere ? ur.elsewhereTitle
             : DEFAULT_TAKE_CONTROL_TITLE;
     }
 
@@ -1970,6 +1996,27 @@ document.addEventListener('DOMContentLoaded', () => {
     // control; moves still do. Only disables what the server would refuse;
     // never enables a claim-locked control. xArm statuses carry no
     // control_session.arm_control: no-op.
+    // What the last UR status means for the claim buttons. For the xArm
+    // (no control_session.arm_control) every flag is false, so the callers
+    // behave exactly as before.
+    function urArmGate() {
+        const data = lastArmGateData;
+        const session = data && data.control_session;
+        if (!session || session.arm_control !== true) {
+            return { ur: false, noSession: false, heldElsewhere: false, elsewhereTitle: '' };
+        }
+        const holder = data.claimed_by;
+        // A holder with our own session id is a stale report of a claim we
+        // just released or lost; never grey ourselves out on it.
+        const heldElsewhere = claimToken === null && !!holder && holder.session_id !== claimSessionId;
+        return {
+            ur: true,
+            noSession: session.open !== true,
+            heldElsewhere,
+            elsewhereTitle: heldElsewhere ? `Controlled by ${holder.owner}` : '',
+        };
+    }
+
     function applyArmSessionGates(data) {
         const session = data && data.control_session;
         if (!session || session.arm_control !== true) return;
@@ -1977,9 +2024,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const allowed = new Set(data.allowed_actions || []);
         const locked = loginRequiredButNotSignedIn();
         const held = claimToken !== null;
-        const holder = data.claimed_by;
-        const heldElsewhere = !held && !!holder;
-        const elsewhereTitle = heldElsewhere ? `Controlled by ${holder.owner}` : '';
+        const { heldElsewhere, elsewhereTitle } = urArmGate();
         if (connectBtn) {
             connectBtn.disabled = locked || heldElsewhere || !allowed.has('connect');
             connectBtn.title = elsewhereTitle || (allowed.has('connect') ? '' : 'Not available now (see status)');
@@ -1987,6 +2032,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (disconnectBtn) {
             disconnectBtn.disabled = locked || heldElsewhere || !allowed.has('disconnect');
             disconnectBtn.title = elsewhereTitle;
+        }
+        // Take Control needs the arm session (and nobody else's claim).
+        updateTakeControlBtn();
+        // STOP: before Connect there is no motion to stop, unless the gripper
+        // is moving (its socket is separate and it keeps going without an arm
+        // session). setControlsState already handled the signed-out case.
+        if (stopBtn && !locked) {
+            const stoppable = session.open === true || data.gripper_busy === true;
+            stopBtn.disabled = !stoppable;
+            stopBtn.title = stoppable ? '' : 'Nothing to stop: connect the arm first';
         }
         const gate = (el, action) => { if (el && !allowed.has(action)) el.disabled = true; };
         gate(moveJointsBtn, 'arm.move_joints');
