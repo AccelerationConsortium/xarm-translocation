@@ -414,7 +414,13 @@ def create_app(
 
     @app.get("/llms.txt", response_class=PlainTextResponse)
     def llms():
-        return "# Robot Motion\n\n- [Guide](/agent-docs)\n- [Reference](/agent-docs/api-reference)\n- [OpenAPI](/openapi.json)\n- [Status](/status)\n- [Drivers](/drivers)\n- [Cameras](/cameras)\n"
+        return (
+            "# Robot Motion\n\n- [Guide](/agent-docs)\n- [Reference](/agent-docs/api-reference)\n"
+            "- [OpenAPI](/openapi.json)\n- [Status](/status)\n- [Drivers](/drivers)\n- [Cameras](/cameras)\n"
+            "\n## Joint trajectories\n\nWith control.trajectory enabled: read "
+            "GET /control/freehand/trajectory/limits before planning; the workflow and the "
+            "client route (the lab edge, /ur5e/) are in the guide (Joint trajectories).\n"
+        )
 
     # Without control_enabled there are no /control routes: claims are N/A and
     # the shared UI's Take Control / motion buttons get 404s. The legacy xArm

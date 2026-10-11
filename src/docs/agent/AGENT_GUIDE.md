@@ -165,6 +165,46 @@ verified node. HTTP success acknowledges acceptance; poll status to observe
 completion and errors before issuing another move. A disconnected device
 must be connected by an authenticated operator; the SDK does not auto-connect.
 
+## Joint trajectories (ServoJ)
+
+Upload a whole time-stamped joint trajectory, then start it; the service
+plays it to the arm with ServoJ at 100 Hz on its own clock, so network
+delay does not shape the motion. Use it for smooth multi-point motion (a
+digital twin's plan); use the graph or freehand moves for single targets.
+
+1. **Read the limits first:** `GET /control/freehand/trajectory/limits`
+   (login, no claim) returns everything a plan must meet right now: joint
+   ranges, joint speed at the current safety level, acceleration, duration,
+   point counts and spacing, the command rate range and the start
+   tolerance, plus the rules. Do not guess them.
+2. **Plan within them.** Points are `{"t", "joints_deg", "velocities_deg_s"?,
+   "accelerations_deg_s2"?}`: `t` in seconds from 0, strictly increasing,
+   at least one command period apart; J1..J5 in degrees; first and last
+   point at rest; the first point within the start tolerance of the
+   measured pose. Limits are checked on the interpolated path, not just the
+   points. Validation is **not** a collision check.
+3. `POST /control/freehand/trajectory/validate {points}` (login, no claim)
+   moves nothing: 200 with the report, or 422 `trajectory_invalid` with
+   every violation in `detail.report.errors`.
+4. With the claim: `POST /control/freehand/trajectory` (201, `session_id`),
+   `POST /control/freehand/trajectory/{id}/chunks/{seq} {points, final}`
+   (0, 1, 2…; the last has `final: true`), then
+   `POST /control/freehand/trajectory/{id}/start`. Start means accepted,
+   not completed.
+5. Poll `GET /control/freehand/trajectory/{id}` at 10–20 Hz at most:
+   `state`, `executed.t_exec` (play a twin at this time; no shared clock
+   needed) and `measured.joints_deg` (the real arm). After a terminal
+   state, `GET …/{id}/log` has every command and measured pose.
+
+Gates: graph mode OFF or ADVISORY (STRICT refuses with 409
+`graph_mode_strict`), the claim, the arm ready and still, manual mode off,
+one open session per arm (409 `session_open`). A session belongs to the
+claim that created it; if the claim lapses the run slows to a stop.
+`POST …/{id}/cancel` slows to a stop along the path; `POST /control/stop`
+halts at once (then Clear errors). While a run is active the other arm and
+setup routes answer 409 `trajectory_running`, so do not poll `/positions`.
+The full client guide is `src/docs/TRAJECTORY_API.md` in the repository.
+
 ## The depth cameras
 
 The standalone SDL camera service owns the USB and RealSense devices, their

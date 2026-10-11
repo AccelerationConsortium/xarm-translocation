@@ -120,6 +120,57 @@ matches; otherwise they report no identity, and the panel still renders
 read-only. The earlier dashboard-side CSP proxy and its /utils/robot_motion
 page are retired; the direct port stays reachable only on the Tailnet.
 
+## Joint trajectories (servoJ)
+
+With `control.trajectory.enabled` in the local config (on for `ligand_ur5e`
+since 2026-10-11), the service runs the xArm's joint-trajectory contract
+for six joints: upload a whole time-stamped trajectory, start it, and the
+service streams it with ur_rtde `servoJ` at 125 Hz (50–250 allowed) on its
+own clock. Measured on the arm: about 40 ms lag, tracking within about
+0.03° rms.
+
+**Route for clients:** the lab edge, `http://100.64.254.6/ur5e/…`, never the
+raw port: the edge checks the sign-in cookie (emailed code via
+`POST /auth/login` and `POST /auth/verify-code` on the edge) and adds the
+operator identity. The operator must be on `authorized_operators`. The
+dashboard's `/api/equipment/ligand_ur5e/control/*` proxy is not the
+route (it cannot present this device's edge identity).
+
+1. **Read the limits first:** `GET /control/freehand/trajectory/limits`:
+   joint ranges, `max_joint_speed_deg_s`, `max_joint_acc_deg_s2` (the
+   commissioned motion block; today the placeholder, 10 deg/s and 30
+   deg/s²), the TCP `workspace_mm` box, `force_guard_n`, rates, point
+   limits, the start tolerance and the rules. Do not guess them.
+2. **Plan within them:** points `{"t", "joints_deg" (J1..J6),
+   "velocities_deg_s"?, "accelerations_deg_s2"?}`; `t` from 0, strictly
+   increasing, at least one period apart; first and last point at rest;
+   the first within the start tolerance of the measured pose; the TCP
+   inside the workspace box along the whole path. Not a collision check.
+3. `POST /control/freehand/trajectory/validate {points}` checks the
+   limits, the start and (with the controller's kinematics) the workspace
+   box. Needs the arm connected; no claim.
+4. With the claim (`POST /control/claim`, `X-Claim-Token` on every call,
+   `POST /control/heartbeat` every ~10 s): `POST …/trajectory` (201,
+   `session_id`), `POST …/{id}/chunks/{seq} {points, final}`, then
+   `POST …/{id}/start`.
+5. Poll `GET …/{id}` at 10–20 Hz at most: `state`, `executed.t_exec`,
+   `measured.joints_deg`. `GET …/{id}/log` after the run.
+
+Preconditions for start (the same as a moveJ): an operator has Connected
+the arm in the panel, Remote Control on, RUNNING with safety NORMAL, not
+latched, manual mode off, the arm still and inside the envelope and box.
+The pendant speed slider must be at 100 %: below it, start is accepted but
+the run fails at once (`state: failed`, `reason` names the slider) without
+moving. While a run is active every other arm
+move, manual mode, Clear errors, force zero and Disconnect answer 409.
+Every feedback packet is held to the envelope, the box, 1.25× the speed
+cap and the force guard. `POST …/{id}/cancel` slows to a stop on the path;
+`POST /control/stop` halts at once (servoStop); then `POST /control/reset`
+(Clear errors) re-enables moves. Errors to expect: 412
+`kinematics_unverified` (reconnect), `manual_mode`, `motion_latched`; 409 `motion_busy`, `session_open`; 422
+`trajectory_invalid` with `detail.report.errors` (including
+`path_leaves_workspace`). Client guide: `src/docs/TRAJECTORY_API.md`.
+
 ## Cameras
 
 The panel's camera tile has two optional views, each configured by a local

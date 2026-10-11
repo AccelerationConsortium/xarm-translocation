@@ -197,6 +197,23 @@ rail with the arm; the achievable model and its limits are documented in
 `src/docs/TRAJECTORY_PLAN.md`. When execute ships it will be a freehand
 action: refused in STRICT, claim required, one motion-slot operation.
 
+## Joint trajectories (ServoJ, executes)
+
+All under `/control/freehand/trajectory`. Login on every call; the claim
+(`X-Claim-Token`) on create, chunks, start and cancel. Client guide:
+`src/docs/TRAJECTORY_API.md`.
+
+| Call | Purpose and answers |
+|---|---|
+| `GET /limits` | The limits in force now: `num_joints`, `joint_limits_deg`, `max_joint_speed_deg_s` (by safety level), `max_joint_acc_deg_s2`, `max_duration_s`, `max_points`, `max_points_per_chunk`, `rate_hz {default,min,max}`, `min_point_spacing_s`, `start_tolerance_deg`, `rules`. No controller call |
+| `POST /validate {points, rate_hz?, start_tolerance_deg?}` | Moves nothing. 200 report; 422 `trajectory_invalid` (`detail.report.errors[]`: `code`, `message`), `rate_out_of_range`, `start_tolerance_out_of_range` |
+| `POST {rate_hz?, start_tolerance_deg?}` | 201 session status with `session_id`. 412 `trajectory_disabled`, `claim_enforcement_off`; 409 `graph_mode_strict`, `session_open`; 423 claim |
+| `PUT` or `POST /{id}/chunks/{seq} {points, final}` | 200 `{accepted, duplicate, seq, report, session}`. Identical re-send: `duplicate: true`. 409 `chunk_conflict`, `chunk_out_of_order` (`expected_seq`), `session_closed`, `session_running`; 422 with the report; 423 `session_owner_mismatch` |
+| `POST /{id}/start` | 200 status (`state: running`). 412 `arm_not_ready`, `arm_not_idle`, `manual_mode`; 409 `motion_in_progress`, `stopped_during_start`, `trajectory_incomplete`, `graph_mode_override_expiring`; 422 start too far from the first point |
+| `GET /{id}` | `state` (`created`, `starting`, `running`, `stopping`, `completed`, `cancelled`, `stopped`, `failed`, `expired`), `reason`, `executed {t_exec, duration_s, fraction}`, `started_at_utc`, `measured {joints_deg, age_ms}`, `servo` timing, `final`, `log_available` |
+| `POST /{id}/cancel` | Constrained stop along the path; before start it just closes |
+| `GET /{id}/log` | After the run: every tick and measured pose. 409 `log_not_ready`, `trajectory_running` |
+
 ## BioGripper Gen2: raw stroke and force
 
 The installed gripper is a BioGripper Gen2. A stroke command supplies an
