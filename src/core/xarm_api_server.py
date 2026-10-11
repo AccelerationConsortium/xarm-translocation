@@ -1734,7 +1734,20 @@ async def connect_robot(request: ConnectionRequest, background_tasks: Background
     
     if controller and controller.is_alive:
         raise HTTPException(status_code=400, detail="A robot is already connected. Please disconnect first.")
-    
+
+    # A controller that is instantiated but no longer alive (a health failure
+    # such as controller error 18 latched alive=False) still owns an SDK
+    # session to the control box. Replacing it without disconnecting leaks
+    # that session (port 502 control + 30002 report). On 2026-10-11 six such
+    # reconnects left five stale sessions, after which the box closed every
+    # new connection and /connect failed the version handshake until the
+    # service was restarted. Close it before building the replacement.
+    stale = controller
+    controller = None
+    if stale is not None:
+        logger.warning("Replacing a degraded controller: disconnecting its stale SDK session first")
+        await _safe_disconnect(stale)
+
     try:
         # Create and initialize the controller instance
         # Built in a worker thread: with auto_enable (the default) the

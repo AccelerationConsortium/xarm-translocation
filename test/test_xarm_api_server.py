@@ -208,3 +208,31 @@ def test_trajectory_validate_needs_neither_claim_nor_lowered_graph_mode(client, 
     r = client.post("/control/trajectory/validate", json=_trajectory_body())
     assert r.status_code == 200
     mock_controller.enter_motion.assert_not_called()
+
+
+def test_connect_replaces_degraded_controller_after_disconnecting_it(client, monkeypatch):
+    """A not-alive controller still holds an SDK session; /connect must close it.
+
+    Regression for 2026-10-11: repeated reconnects over a degraded controller
+    leaked one control-box session each until the box refused new ones.
+    """
+    stale = MagicMock()
+    stale.is_alive = False
+    monkeypatch.setattr('src.core.xarm_api_server.controller', stale)
+
+    with patch('src.core.xarm_api_server.XArmController') as MockController:
+        mock_instance = MockController.return_value
+        mock_instance.initialize.return_value = True
+        mock_instance.is_alive = True
+
+        response = client.post("/connect", json={"profile_name": "docker"})
+        assert response.status_code == 200
+        stale.disconnect.assert_called_once()
+        MockController.assert_called_once()
+
+
+def test_connect_refuses_while_controller_alive(client, mock_controller):
+    """An alive controller is never replaced or disconnected by /connect."""
+    response = client.post("/connect", json={"profile_name": "docker"})
+    assert response.status_code == 400
+    assert not mock_controller.disconnect.called
