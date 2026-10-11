@@ -25,6 +25,7 @@ from .models import (
 )
 
 from . import realsense_camera, realsense_captures
+from .xarm_utils import describe_controller_codes
 
 if TYPE_CHECKING:  # pragma: no cover - import-time only for type hints
     from .xarm_controller import XArmController
@@ -220,6 +221,12 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     health_failure = getattr(controller, "health_failure", None)
     if not isinstance(health_failure, dict):
         health_failure = None
+    # The SDK's cached report codes (no I/O), named from its own tables, so a
+    # reader can tell a latched warning from a fault without decoding codes.
+    controller_codes = describe_controller_codes(
+        getattr(getattr(controller, "arm", None), "error_code", None),
+        getattr(getattr(controller, "arm", None), "warn_code", None),
+    )
 
     # State derivation.
     last_error: ErrorInfo | None = None
@@ -274,6 +281,11 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
             message += (
                 f" {health_failure['operation']}: {health_failure['reason']}"
                 f" (code={health_failure['return_code']}, at {health_failure['timestamp']})."
+            )
+        if controller_codes["warn_code"]:
+            message += (
+                f" Controller warning W{controller_codes['warn_code']}:"
+                f" {controller_codes['warn_title'] or 'not in the SDK code table'}."
             )
 
     simulated = bool(getattr(controller, "is_simulated", False))
@@ -407,6 +419,7 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
     # Carry connection details for the local web UI's panel. Not contracted.
     details["connection_details"] = _build_connection_details(controller)
     details["health_failure"] = dict(health_failure) if health_failure else None
+    details["controller_codes"] = controller_codes
     # Motion-graph state (Phase 1: introspection only; absent when no graph
     # is loaded so the field doesn't pollute /status for unmigrated configs).
     motion_graph_block = _build_motion_graph_details(controller)

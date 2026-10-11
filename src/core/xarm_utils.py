@@ -14,6 +14,8 @@ import os
 from typing import Dict, List, Optional, Tuple, Any
 from enum import Enum
 
+from xarm.core.config.x_code import ControllerErrorCodeMap, ControllerWarnCodeMap
+
 
 class SafetyLevel(Enum):
     """Safety level definitions"""
@@ -590,3 +592,25 @@ def check_operation_result(code: int, operation_name: str, arm_state: Optional[i
         return True
 
     return check_return_code(code, operation_name, arm_state, error_code)
+
+
+def describe_controller_codes(error_code, warn_code) -> Dict[str, Any]:
+    """Name the controller's C/W codes from the SDK's own code tables.
+
+    Reads no hardware: the codes come from the SDK's cached report. A code
+    that is not an int (unknown) stays None, and a code missing from the
+    SDK's table gets a None title rather than a guessed one.
+    """
+    def known(code):
+        return code if isinstance(code, int) and not isinstance(code, bool) else None
+
+    def title(code_map, code):
+        return code_map.get(code, {}).get('en', {}).get('title') if code else None
+
+    error_code, warn_code = known(error_code), known(warn_code)
+    return {
+        "error_code": error_code,
+        "error_title": title(ControllerErrorCodeMap, error_code),
+        "warn_code": warn_code,
+        "warn_title": title(ControllerWarnCodeMap, warn_code),
+    }

@@ -14,13 +14,15 @@ from enum import Enum
 from typing import List, Optional
 
 from xarm.wrapper import XArmAPI
+from xarm.x3.code import APIState
 
 from core.xarm_utils import (
     SafetyLevel, load_config, get_default_config, validate_target_position,
     validate_joint_angles, validate_track_position, validate_track_speed,
     DEFAULT_SAFETY_BOUNDARIES, DEFAULT_COLLISION_SENSITIVITY,
     get_safety_speed_limits, apply_movement_parameter_limits,
-    get_joint_limits_for_model, check_operation_result, validate_and_apply_safety_config
+    get_joint_limits_for_model, check_operation_result, validate_and_apply_safety_config,
+    describe_controller_codes,
 )
 # Use relative-then-absolute fallback so the api_server's `from
 # .motion_graph` (resolving to src.core.motion_graph in test runs)
@@ -936,6 +938,9 @@ class XArmController:
         """Latch the first failure until verified recovery; never perform I/O."""
         self.alive = False
         if getattr(self, "health_failure", None) is None:
+            codes = describe_controller_codes(
+                getattr(self.arm, "error_code", None), getattr(self.arm, "warn_code", None),
+            )
             self.health_failure = {
                 "operation": operation,
                 "return_code": return_code,
@@ -943,6 +948,9 @@ class XArmController:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "controller_state": getattr(self.arm, "state", None),
                 "controller_error_code": getattr(self.arm, "error_code", None),
+                "controller_error_title": codes["error_title"],
+                "controller_warn_code": codes["warn_code"],
+                "controller_warn_title": codes["warn_title"],
             }
             print(f"Controller degraded: {self.health_failure}")
 
@@ -1228,21 +1236,30 @@ class XArmController:
 
         self._recovering = True
 
-        def checked(operation, call):
+        def checked(operation, call, accept=(None, 0)):
             # Recovery must work while alive is latched false. Check command
             # results here, then explicitly read back health before unlatching.
             code = call()
-            if code not in (None, 0):
+            if code not in accept:
                 self._record_health_failure(operation, code, "Recovery command failed")
                 return False
             return True
+
+        # The SDK returns HAS_WARN (2) from *any* command while a controller
+        # warning is latched — clean_error included — so treating it as a
+        # failure here stopped recovery before clean_warn, the one call that
+        # clears the warning: a latched warning (e.g. W14, no IK solution)
+        # made CLEAR ERRORS fail forever. Only the two clean calls tolerate
+        # it; every later command must return 0, and the readback below must
+        # still show no error and no warning before anything is unlatched.
+        clean_accept = (None, 0, APIState.HAS_WARN)
 
         try:
             for operation, call in (
                 ("clean_error", self.arm.clean_error),
                 ("clean_warn", self.arm.clean_warn),
             ):
-                if not checked(operation, call):
+                if not checked(operation, call, clean_accept):
                     return False
             if self.gripper_type in ('bio', 'bio_gen2'):
                 if not checked("clean_bio_gripper_error", self.arm.clean_bio_gripper_error):

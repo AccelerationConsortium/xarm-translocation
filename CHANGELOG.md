@@ -7,6 +7,25 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — CLEAR ERRORS no longer fails forever on a latched warning (2026-10-11)
+
+A controller warning (W14, "User instructions and parameters have no
+solution") latched on 2026-10-10. While any warning is latched the SDK
+returns `HAS_WARN` (2) from every command, `clean_error` included, and
+`clear_errors()` treated that as a failure before ever calling `clean_warn`,
+the call that clears the warning. Each CLEAR ERRORS click latched the arm
+`degraded` again; only a disconnect/reconnect got it back.
+
+- `clean_error` and `clean_warn` now accept `HAS_WARN`. Every later
+  recovery command must still return 0, and the existing readback must show
+  no error and no warning before the health latch is released.
+- `details.health_failure` now names the controller codes it observed
+  (`controller_error_title`, `controller_warn_code`,
+  `controller_warn_title`), and the new `details.controller_codes` carries
+  the SDK's current cached codes with titles from the SDK's code tables. A
+  degraded message names a latched warning. No hardware I/O is added to
+  `/status`.
+
 ### Added — coordinated rail + arm trajectory validation; STOP now reaches the rail (2026-10-06)
 
 A digital-twin planner asked for an endpoint that executes time-stamped
