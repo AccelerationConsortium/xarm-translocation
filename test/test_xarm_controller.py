@@ -574,6 +574,50 @@ class TestHealthRecovery:
         c.arm.get_state.assert_called_once()
         c.arm.get_err_warn_code.assert_called_once()
 
+    def test_latched_warning_does_not_block_recovery(self, initialized_controller):
+        """A latched controller warning makes the SDK return HAS_WARN (2)
+        from clean_error too (W14 on 2026-10-10); recovery must go on to
+        clean_warn instead of failing at clean_error forever."""
+        c = initialized_controller
+        c.arm.warn_code = 14
+        c.arm.clean_error.return_value = 2
+
+        def clean_warn():
+            c.arm.warn_code = 0
+            return 0
+        c.arm.clean_warn.side_effect = clean_warn
+        assert c.check_code(1, "earlier_failure") is False
+        assert c.clear_errors() is True
+        c.arm.clean_warn.assert_called_once()
+        assert c.alive is True
+        assert c.health_failure is None
+
+    def test_warning_that_survives_clean_warn_stays_unhealthy(self, initialized_controller):
+        c = initialized_controller
+        c.arm.warn_code = 14
+        c.arm.clean_error.return_value = 2
+        c.arm.clean_warn.return_value = 2
+        assert c.clear_errors() is False
+        assert c.alive is False
+        assert c.health_failure["operation"] == "recovery_readback"
+
+    @pytest.mark.parametrize("operation", ["clean_bio_gripper_error", "motion_enable", "set_mode", "set_state"])
+    def test_has_warn_after_clean_warn_is_a_failure(self, initialized_controller, operation):
+        c = initialized_controller
+        c.arm.__getattr__(operation).return_value = 2
+        assert c.clear_errors() is False
+        assert c.health_failure["operation"].startswith(operation.split("(")[0])
+        assert c.health_failure["return_code"] == 2
+
+    def test_health_failure_names_the_controller_warning(self, initialized_controller):
+        c = initialized_controller
+        c.arm.warn_code = 14
+        assert c.check_code(2, "ft_enable") is False
+        assert c.health_failure["controller_warn_code"] == 14
+        assert c.health_failure["controller_warn_title"] == (
+            "User instructions and parameters have no solution")
+        assert c.health_failure["controller_error_title"] is None
+
     def test_component_recovery_failure_does_not_report_ready(self, initialized_controller):
         c = initialized_controller
         c.arm.set_bio_gripper_enable.return_value = 1

@@ -993,6 +993,27 @@ def test_degradation_reason_is_exposed_without_sdk_io():
     c.arm.get_state.assert_not_called()
 
 
+def test_latched_warning_is_named_in_status():
+    c = _fake_controller(alive=False, health_failure=None)
+    c.arm.error_code, c.arm.warn_code = 0, 14
+    status = build_status(c)
+    assert status.equipment_status == "degraded"
+    assert "W14: User instructions and parameters have no solution" in status.message
+    assert status.details["controller_codes"] == {
+        "error_code": 0, "error_title": None,
+        "warn_code": 14, "warn_title": "User instructions and parameters have no solution",
+    }
+    c.arm.get_err_warn_code.assert_not_called()
+
+
+def test_unknown_codes_are_not_guessed():
+    c = _fake_controller()
+    status = build_status(c)  # MagicMock codes: not ints, so unknown
+    assert status.details["controller_codes"] == {
+        "error_code": None, "error_title": None, "warn_code": None, "warn_title": None,
+    }
+
+
 def test_recovery_cannot_report_ready_before_components_verified():
     c = _fake_controller(alive=True, _recovering=True)
     status = build_status(c)

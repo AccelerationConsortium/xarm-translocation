@@ -863,15 +863,28 @@ Establishes a WebSocket connection. Once connected, the server will push status 
 
 `GET /status` includes `details.health_failure` (null when no failure is
 recorded). A latched failure contains `operation`, `return_code` (null for
-callbacks or exceptions), `reason`, UTC `timestamp`, `controller_state`, and
-`controller_error_code`. These are values observed at the first failure, not a
-fresh hardware query. The first failure is retained until successful recovery
+callbacks or exceptions), `reason`, UTC `timestamp`, `controller_state`,
+`controller_error_code`, `controller_error_title`, `controller_warn_code`, and
+`controller_warn_title`. These are values observed at the first failure, not a
+fresh hardware query. Titles come from the SDK's own code tables and are null
+for code 0, an unknown code, or a code missing from the table.
+
+`details.controller_codes` carries the SDK's current cached error and warning
+codes with the same titles (`error_code`, `error_title`, `warn_code`,
+`warn_title`); a degraded message names a latched warning, e.g.
+`Controller warning W14: User instructions and parameters have no solution.`
+Reading it performs no hardware I/O. While any controller warning is latched
+the SDK returns code 2 (`HAS_WARN`) from every command, so a `return_code` of
+2 means "a warning was pending", not that the command itself failed. The first failure is retained until successful recovery
 or a new connection initialization. A degraded status message includes this
 reason so dashboard clients can display it without interpreting SDK codes.
 
 `POST /clear/errors` and `/control/clear_errors` are operator recovery actions:
 they clear faults **and re-enable the arm**, then check command results and
-read back controller state and error/warning codes. Failure returns HTTP 500
+read back controller state and error/warning codes. `clean_error` and
+`clean_warn` may return `HAS_WARN` (2) while a warning is still latched; every
+later recovery command must return 0, and the readback must show no error and
+no warning. Failure returns HTTP 500
 and preserves the health latch; success requires component recovery as well.
 This verifies controller readiness, not physical position, payload, or FT
 compensation. Neither status reads nor dashboard rendering invoke recovery.
