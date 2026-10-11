@@ -180,6 +180,24 @@ Other keys, all optional: `max_rate_hz` (125), `start_tolerance_deg`
 `max_points_per_chunk` (5000), `path_check_step_deg` (2), `max_fk_checks`
 (3000), `log_dir` (`logs/trajectory`, beside the config).
 
-**Still to do:** stage 0a and 0b on pc-05 with you present, the real
+## 6. Stage 0a result (2026-10-11, pc-05, no motion)
+
+`tools/ur_servo_timing_probe.py`, receive-only (no control interface), with
+the service up and its arm session open. Python 3.12.13 on Windows 10.
+
+- **RTDE receive:** 500 Hz; gaps between packets p50 2.05 ms, max 2.67 ms.
+- **Absolute-deadline loop** (the executor's pacing, GC off, 10 s each):
+
+| Rate | Late p50 | p99 | max | Late > 1 period |
+|---|---|---|---|---|
+| 125 Hz | 0.07 ms | 0.99 ms | 1.15 ms | 0 |
+| 250 Hz | 0.06 ms | 0.94 ms | 1.04 ms | 0 |
+| 500 Hz | 0.10 ms | 1.04 ms | 1.17 ms | 0 |
+
+Start stage 0b at 125 Hz and try 250 Hz; leave 500 Hz off (the worst case
+is over half its 2 ms period). The probe ran in its own process, so 0b
+measures the timing inside the service.
+
+**Still to do:** stage 0b on pc-05 with you present, the real
 motion limits, a UR column in `TRAJECTORY_API.md`, and registering the
 dashboard skills for `ligand_ur5e`.
