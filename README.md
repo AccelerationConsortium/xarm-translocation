@@ -26,6 +26,7 @@ at the robot.
 |---|---|---|
 | debug-xarm5 | xArm5 on sdl2-pc-03-cytation | `C:\Users\sdl2\Projects\xarm-translocation`, NSSM `xarm` |
 | debug-ur5e | ligand_ur5e on sdl2-pc-05 | `C:\Users\sdl2\Projects\robot-motion`, NSSM `robot-motion-prototype` |
+| debug-ur3e | gibbie_ur3e on sdl2-pc-04 (observer since 2026-10-12, `src/docs/UR3E_GIBBIE_PLAN.md`) | `C:\Users\sdl2\Projects\robot-motion`, NSSM `robot-motion-ur3e` |
 
 xarm-python-sdk is in the [xarm] extra. A service started with `uv run`
 re-syncs the environment on every start and removes extras it was not asked
