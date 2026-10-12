@@ -282,7 +282,11 @@ slipped") is kept in `details.gripper.fault_latched` and holds
 `equipment_status` at `degraded` with `required_actions: ["clear_errors"]`
 until `POST /control/clear_errors` succeeds, even after the register reads
 normal again; a reconnect does not release it, a service restart does.
-An agent may clear a slip (code 12) itself; the agent guide says when.
+A slip during `POST /gripper/open` or `/gripper/close` does not fail the
+call (until the gripper is replaced): it answers 200 with
+`gripper_fault: {"error_code": 12, "error_text": "object slipped"}` and the
+slip is latched as above. An agent may clear it itself and retry; the agent
+guide says when.
 Inspect the plate before lifting. Gripper force is unrelated to the wrist
 force/torque values used for pressing.
 

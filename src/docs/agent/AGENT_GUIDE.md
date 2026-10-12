@@ -157,12 +157,16 @@ normal again: `equipment_status` is `degraded`, `required_actions` contains
 `latched_at`. `allowed_actions` is unchanged, so skills stay available, but a
 slip means the labware may have moved or dropped.
 
-An agent may clear a slip (code 12) itself. Stop, report the slip with
-`error_code`, `error_text` and `latched_at`, then `POST /control/clear_errors`
-releases the latch. Before the next pick or place, confirm the labware is
-where the workflow expects it; if it is not, stop and report. Reconnecting
-does not release the latch. This covers the gripper latch only: if
-`details.health_failure` is also set or the arm is not enabled (for example
+Until the gripper is replaced, a slip (code 12) does not fail a jaw move and
+an agent may clear it and retry. When the jaws slip during `POST /gripper/open`
+or `POST /gripper/close`, the call still answers **200**; the body carries
+`gripper_fault: {"error_code": 12, "error_text": "object slipped"}` and the
+message says so. Report the slip with `error_code`, `error_text` and
+`latched_at`, `POST /control/clear_errors` to release the latch, then retry.
+Before the next pick or place, check the labware is where the workflow
+expects it. Reconnecting does not release the latch. This covers the gripper
+slip only: any other gripper fault still fails the move, and if
+`details.health_failure` is set or the arm is not enabled (for example
 controller error 19, End Effector Communication Error), leave recovery to the
 operator, since `clear_errors` would clear that controller fault too.
 

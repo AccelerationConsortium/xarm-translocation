@@ -521,6 +521,65 @@ class TestGripperStatusRegister:
         assert controller.last_gripper_object_detected is True
 
 
+class TestGripperSlipTolerated:
+    """Until the gripper is replaced, a slip (code 12) on a jaw move does not
+    fail the command or degrade the controller; it is only latched."""
+
+    def _closing_into_fault(self, mock_config_files, mock_xarm_api, monkeypatch, gripper_error):
+        monkeypatch.setattr('src.core.xarm_controller.XArmAPI', lambda *a, **k: mock_xarm_api)
+        controller = XArmController(profile_name='test_profile', gripper_type='bio_gen2',
+                                    auto_enable=False)
+        controller.states['gripper'] = ComponentState.ENABLED
+        mock_xarm_api.set_bio_gripper_g2_position.return_value = 102  # END_EFFECTOR_HAS_FAULT
+        mock_xarm_api._arm.bio_gripper_error_code = gripper_error
+        # The register already reads normal by the time the move returns.
+        mock_xarm_api.get_bio_gripper_status.return_value = (0, 0)
+        mock_xarm_api.get_bio_gripper_error.return_value = (0, 0)
+        return controller
+
+    def test_slip_on_close_succeeds_and_latches(self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._closing_into_fault(mock_config_files, mock_xarm_api, monkeypatch, 12)
+        assert c.close_gripper() is True
+        assert c.last_gripper_move_fault == {"error_code": 12, "error_text": "object slipped"}
+        assert c.health_failure is None
+        assert c.gripper_fault_latch["error_code"] == 12
+        assert c.last_gripper_position == 71
+
+    def test_latched_slip_is_released_and_the_next_close_can_slip_again(
+            self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._closing_into_fault(mock_config_files, mock_xarm_api, monkeypatch, 12)
+        assert c.close_gripper() is True
+        assert c.clear_errors() is True
+        assert c.gripper_fault_latch is None
+        assert c.close_gripper() is True
+        assert c.gripper_fault_latch["error_code"] == 12
+
+    def test_falls_back_to_reading_the_error_register(self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._closing_into_fault(mock_config_files, mock_xarm_api, monkeypatch, 0)
+        mock_xarm_api.get_bio_gripper_error.return_value = (0, 12)
+        assert c.close_gripper() is True
+        assert c.last_gripper_move_fault["error_code"] == 12
+
+    def test_a_clean_move_clears_the_previous_move_fault(self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._closing_into_fault(mock_config_files, mock_xarm_api, monkeypatch, 12)
+        assert c.close_gripper() is True
+        mock_xarm_api.set_bio_gripper_g2_position.return_value = 0
+        assert c.open_gripper() is True
+        assert c.last_gripper_move_fault is None
+
+    def test_other_gripper_faults_still_fail(self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._closing_into_fault(mock_config_files, mock_xarm_api, monkeypatch, 7)
+        assert c.close_gripper() is False
+        assert c.last_gripper_move_fault is None
+        assert c.health_failure["return_code"] == 102
+
+    def test_a_controller_error_still_fails(self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._closing_into_fault(mock_config_files, mock_xarm_api, monkeypatch, 12)
+        mock_xarm_api.error_code = 19  # end-effector communication
+        assert c.close_gripper() is False
+        assert c.last_gripper_move_fault is None
+
+
 class TestForceTorqueAutoEnable:
     """force_torque_config.yaml auto_enable_on_connect: F/T comes up with the arm."""
 

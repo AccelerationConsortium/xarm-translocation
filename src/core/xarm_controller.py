@@ -380,6 +380,9 @@ class XArmController:
         self.last_gripper_object_detected = None   # bool | None
         self.last_gripper_error_code = 0           # BIO register 0x0F; 0 == OK, 12 == object slipped
         self.last_gripper_error_text = None         # human-readable mapping of the code
+        # Set when the last jaw move ended in a tolerated gripper fault (a
+        # slip); the open/close routes report it in their 200 body.
+        self.last_gripper_move_fault = None
 
         # FT snapshots and their interpretation are published under one lock.
         self._ft_lock = threading.RLock()
@@ -1874,6 +1877,47 @@ class XArmController:
     _BIO_GRIPPER_ERROR_TEXT = {
         12: "object slipped",
     }
+    # SDK APIState.END_EFFECTOR_HAS_FAULT: a waited BIO jaw move saw the
+    # gripper report a fault.
+    _SDK_END_EFFECTOR_HAS_FAULT = 102
+    # Gripper faults a jaw move tolerates instead of failing. 2026-10-12,
+    # operator choice until the gripper is replaced: a slip must not fail
+    # open/close or degrade the controller, so an agent can clear and retry.
+    # It is still latched, so /status shows it and clear_errors releases it.
+    _BIO_GRIPPER_TOLERATED_MOVE_FAULTS = frozenset({12})
+
+    def _latch_gripper_fault(self, err_code, err_text):
+        """Keep the first gripper fault until clear_errors succeeds."""
+        if self.gripper_fault_latch is None:
+            self.gripper_fault_latch = {
+                "error_code": err_code,
+                "error_text": err_text,
+                "latched_at": datetime.now(timezone.utc).isoformat(),
+            }
+
+    def _tolerated_gripper_move_fault(self, code):
+        """Return ``{"error_code", "error_text"}`` when a jaw move's SDK
+        result is a tolerated gripper fault, else ``None``.
+
+        Only the gripper's own fault qualifies: with a controller error
+        (e.g. 19, end-effector communication) the move fails as before.
+        """
+        if code != self._SDK_END_EFFECTOR_HAS_FAULT:
+            return None
+        controller_error = getattr(self.arm, 'error_code', 0)
+        if isinstance(controller_error, int) and controller_error != 0:
+            return None
+        # The SDK caches the error it saw while waiting; the register can read
+        # normal again by the time we ask, so prefer the cached value.
+        err = getattr(getattr(self.arm, '_arm', None), 'bio_gripper_error_code', None)
+        if not (isinstance(err, int) and err > 0) and hasattr(self.arm, 'get_bio_gripper_error'):
+            ecode, evalue = self.arm.get_bio_gripper_error()
+            err = evalue if (ecode == 0 and isinstance(evalue, int)) else None
+        if err not in self._BIO_GRIPPER_TOLERATED_MOVE_FAULTS:
+            return None
+        text = self._BIO_GRIPPER_ERROR_TEXT.get(err, "fault")
+        self._latch_gripper_fault(err, text)
+        return {"error_code": err, "error_text": text}
 
     @property
     def gripper_fault_latch(self):
@@ -1919,13 +1963,9 @@ class XArmController:
                 self.last_gripper_error_text = self._BIO_GRIPPER_ERROR_TEXT.get(
                     err_code, "fault"
                 )
-                if err_code != 0 and self.gripper_fault_latch is None:
+                if err_code != 0:
                     # Keep the first fault: it is the one that needs the labware checked.
-                    self.gripper_fault_latch = {
-                        "error_code": err_code,
-                        "error_text": self.last_gripper_error_text,
-                        "latched_at": datetime.now(timezone.utc).isoformat(),
-                    }
+                    self._latch_gripper_fault(err_code, self.last_gripper_error_text)
             else:
                 self.last_gripper_error_code = 0
                 self.last_gripper_error_text = None
@@ -3374,6 +3414,11 @@ class XArmController:
         code = self.arm.set_bio_gripper_g2_position(
             position, speed=speed, force=force, wait=wait, timeout=timeout
         )
+        self.last_gripper_move_fault = self._tolerated_gripper_move_fault(code)
+        if self.last_gripper_move_fault is not None:
+            print(f"[gripper] set_bio_gripper_g2_position({position}) ended in a tolerated "
+                  f"fault: {self.last_gripper_move_fault}")
+            code = 0
         success = self.check_code(code, f'set_bio_gripper_g2_position({position})')
         if success:
             self.last_gripper_position = position

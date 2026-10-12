@@ -7,13 +7,20 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Changed — an agent may clear a gripper slip (2026-10-12)
+### Changed — a gripper slip no longer fails a jaw move; agents may clear it (2026-10-12)
 
-The agent guide told agents to leave a latched "object slipped" (code 12) to
-the operator. An agent may now report the slip, `POST /control/clear_errors`,
-and confirm the labware's position before the next pick or place. A
-controller fault that stops the arm (e.g. error 19, End Effector
-Communication Error) is still the operator's to clear.
+Until the gripper is replaced, a slip (BIO gripper error 12) during
+`/gripper/open` or `/gripper/close` made the SDK return 102
+(END_EFFECTOR_HAS_FAULT), which marked the controller degraded and answered a
+generic 500. An agent that cleared the slip and closed again hit the same 500.
+
+- A jaw move that ends in a slip now succeeds: no health failure, and the 200
+  body carries `gripper_fault` (`error_code`, `error_text`). The slip is
+  latched in `details.gripper.fault_latched` as before, until `clear_errors`.
+- Any other gripper fault, or a controller error (e.g. 19, End Effector
+  Communication Error), still fails the move.
+- The agent guide now lets an agent report the slip, clear it and retry. A
+  controller fault that stops the arm stays with the operator.
 
 ### Fixed — a no-solution IK query no longer blocks trajectory start (2026-10-12)
 

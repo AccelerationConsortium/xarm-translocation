@@ -2401,6 +2401,21 @@ async def _graph_routed_gripper(c: "XArmController", state_name: str, verb: str)
         "gripper_state": c.current_gripper_state,
     }
 
+def _gripper_move_response(c, message: str) -> dict:
+    """200 body for open/close. A slip during the move is tolerated (see
+    XArmController._BIO_GRIPPER_TOLERATED_MOVE_FAULTS) and reported here
+    rather than as an error; it stays latched until clear_errors."""
+    fault = getattr(c, "last_gripper_move_fault", None)
+    if not isinstance(fault, dict):
+        return {"message": message}
+    return {
+        "message": (
+            f"{message} The gripper reported {fault['error_text']} (code {fault['error_code']}); "
+            "it is latched until clear_errors."
+        ),
+        "gripper_fault": fault,
+    }
+
 @app.post("/gripper/open", dependencies=[Depends(require_no_trajectory_running), Depends(require_claim)])
 async def open_gripper(request: Optional[GripperRequest] = None):
     """Open the attached gripper.
@@ -2423,7 +2438,7 @@ async def open_gripper(request: Optional[GripperRequest] = None):
         await broadcast_status_update()
         if not success:
             raise HTTPException(status_code=500, detail="Failed to open gripper.")
-        return {"message": "Open gripper command completed."}
+        return _gripper_move_response(c, "Open gripper command completed.")
     except HTTPException:
         raise
     except Exception as e:
@@ -2468,7 +2483,7 @@ async def close_gripper(request: Optional[GripperRequest] = None):
         await broadcast_status_update()
         if not success:
             raise HTTPException(status_code=500, detail="Failed to close gripper.")
-        return {"message": "Close gripper command completed."}
+        return _gripper_move_response(c, "Close gripper command completed.")
     except HTTPException:
         raise
     except Exception as e:
