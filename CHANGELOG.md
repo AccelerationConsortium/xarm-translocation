@@ -7,6 +7,14 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — an agent may clear a gripper slip (2026-10-12)
+
+The agent guide told agents to leave a latched "object slipped" (code 12) to
+the operator. An agent may now report the slip, `POST /control/clear_errors`,
+and confirm the labware's position before the next pick or place. A
+controller fault that stops the arm (e.g. error 19, End Effector
+Communication Error) is still the operator's to clear.
+
 ### Fixed — a no-solution IK query no longer blocks trajectory start (2026-10-12)
 
 A `/kinematics/ik` query for an unreachable pose makes the controller latch
