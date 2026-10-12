@@ -17,7 +17,8 @@ remain authoritative. Transport documentation does not authorize hardware
 execution. Agent equipment use goes through the `lab-skills` SDK; a refusal
 must be reported, not worked around by lowering enforcement or switching
 endpoints. Ambiguous command outcomes require reconciliation before another
-physical action; recovery belongs to the operator.
+physical action; recovery belongs to the operator, except for a gripper slip
+(see "A gripper fault is latched until clear_errors" below).
 
 ## Access gates
 
@@ -154,9 +155,20 @@ normal again: `equipment_status` is `degraded`, `required_actions` contains
 `clear_errors`, the message names the fault, and
 `details.gripper.fault_latched` holds `error_code`, `error_text` and
 `latched_at`. `allowed_actions` is unchanged, so skills stay available, but a
-slip means the labware may have moved or dropped. Stop, report it, and leave
-recovery to the operator: someone checks the labware, then
-`POST /control/clear_errors` releases the latch. Reconnecting does not.
+slip means the labware may have moved or dropped.
+
+Until the gripper is replaced, a slip (code 12) does not fail a jaw move and
+an agent may clear it and retry. When the jaws slip during `POST /gripper/open`
+or `POST /gripper/close`, the call still answers **200**; the body carries
+`gripper_fault: {"error_code": 12, "error_text": "object slipped"}` and the
+message says so. Report the slip with `error_code`, `error_text` and
+`latched_at`, `POST /control/clear_errors` to release the latch, then retry.
+Before the next pick or place, check the labware is where the workflow
+expects it. Reconnecting does not release the latch. This covers the gripper
+slip only: any other gripper fault still fails the move, and if
+`details.health_failure` is set or the arm is not enabled (for example
+controller error 19, End Effector Communication Error), leave recovery to the
+operator, since `clear_errors` would clear that controller fault too.
 
 The sections below describe the full feature set for when it is restored.
 

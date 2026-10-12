@@ -4,6 +4,7 @@ Hardware paths are exercised against a mocked ``XArmAPI`` via the
 ``initialized_controller`` / ``mock_xarm_api`` fixtures in ``conftest.py``.
 """
 
+import logging
 import sys
 import os
 from unittest.mock import MagicMock, Mock
@@ -520,6 +521,117 @@ class TestGripperStatusRegister:
         assert controller.last_gripper_motion_state == 'object_detected'
         assert controller.last_gripper_object_detected is True
 
+    def test_event_log_records_command_state_and_latch(self, mock_config_files, mock_xarm_api,
+                                                       monkeypatch, caplog):
+        caplog.set_level(logging.INFO, logger="xarm.events")
+        mock_xarm_api.get_bio_gripper_status.return_value = (0, 0b10)
+        mock_xarm_api.get_bio_gripper_g2_position.return_value = (0, 81)
+        controller = self._bio_gen2_controller(mock_config_files, mock_xarm_api, monkeypatch)
+        controller.states['gripper'] = ComponentState.ENABLED
+        assert controller.close_gripper() is True
+        # The 1 Hz poll sees the same state again: not logged twice.
+        controller.refresh_gripper_status()
+        # The jaws move on while holding: the gripper reports a slip.
+        mock_xarm_api.get_bio_gripper_status.return_value = (0, 0b11)
+        mock_xarm_api.get_bio_gripper_error.return_value = (0, 12)
+        mock_xarm_api.get_bio_gripper_g2_position.return_value = (0, 74)
+        controller.refresh_gripper_status()
+        controller.refresh_gripper_status()
+
+        lines = [r.getMessage() for r in caplog.records if r.name == "xarm.events"]
+        assert lines[0].startswith("gripper.command target=71 speed=1000 force=50 wait=True")
+        assert lines[1].startswith("gripper.state None -> object_detected error_code=0 position=81 commanded=71")
+        assert lines[2].startswith("gripper.state object_detected -> fault error_code=12 position=74 commanded=71")
+        assert lines[3].startswith("gripper.fault_latched error_code=12 error_text='object slipped' latched_at=")
+        assert "since_command_s=" in lines[3]
+        assert len(lines) == 4
+        latched = [r for r in caplog.records if r.getMessage().startswith("gripper.fault_latched")]
+        assert latched[0].levelno == logging.WARNING
+
+    def test_latch_is_exported_to_the_dashboard(self, mock_config_files, mock_xarm_api, monkeypatch):
+        mock_xarm_api.get_bio_gripper_status.return_value = (0, 0b11)
+        mock_xarm_api.get_bio_gripper_error.return_value = (0, 12)
+        controller = self._bio_gen2_controller(mock_config_files, mock_xarm_api, monkeypatch)
+        controller._emit_event = MagicMock()
+        controller.refresh_gripper_status()
+        controller.refresh_gripper_status()
+        controller._emit_event.assert_called_once()
+        args, kwargs = controller._emit_event.call_args
+        assert args == ("error",)
+        assert kwargs["severity"] == "warning"
+        assert kwargs["gripper_error_code"] == 12
+        assert "object slipped" in kwargs["message"]
+
+
+class TestGripperSlipTolerated:
+    """Until the gripper is replaced, a slip (code 12) on a jaw move does not
+    fail the command or degrade the controller; it is only latched."""
+
+    def _closing_into_fault(self, mock_config_files, mock_xarm_api, monkeypatch, gripper_error):
+        monkeypatch.setattr('src.core.xarm_controller.XArmAPI', lambda *a, **k: mock_xarm_api)
+        controller = XArmController(profile_name='test_profile', gripper_type='bio_gen2',
+                                    auto_enable=False)
+        controller.states['gripper'] = ComponentState.ENABLED
+        mock_xarm_api.set_bio_gripper_g2_position.return_value = 102  # END_EFFECTOR_HAS_FAULT
+        mock_xarm_api._arm.bio_gripper_error_code = gripper_error
+        # The register already reads normal by the time the move returns.
+        mock_xarm_api.get_bio_gripper_status.return_value = (0, 0)
+        mock_xarm_api.get_bio_gripper_error.return_value = (0, 0)
+        return controller
+
+    def test_slip_on_close_succeeds_and_latches(self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._closing_into_fault(mock_config_files, mock_xarm_api, monkeypatch, 12)
+        assert c.close_gripper() is True
+        assert c.last_gripper_move_fault == {"error_code": 12, "error_text": "object slipped"}
+        assert c.health_failure is None
+        assert c.gripper_fault_latch["error_code"] == 12
+        assert c.last_gripper_position == 71
+
+    def test_latched_slip_is_released_and_the_next_close_can_slip_again(
+            self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._closing_into_fault(mock_config_files, mock_xarm_api, monkeypatch, 12)
+        assert c.close_gripper() is True
+        assert c.clear_errors() is True
+        assert c.gripper_fault_latch is None
+        assert c.close_gripper() is True
+        assert c.gripper_fault_latch["error_code"] == 12
+
+    def test_falls_back_to_reading_the_error_register(self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._closing_into_fault(mock_config_files, mock_xarm_api, monkeypatch, 0)
+        mock_xarm_api.get_bio_gripper_error.return_value = (0, 12)
+        assert c.close_gripper() is True
+        assert c.last_gripper_move_fault["error_code"] == 12
+
+    def test_a_clean_move_clears_the_previous_move_fault(self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._closing_into_fault(mock_config_files, mock_xarm_api, monkeypatch, 12)
+        assert c.close_gripper() is True
+        mock_xarm_api.set_bio_gripper_g2_position.return_value = 0
+        assert c.open_gripper() is True
+        assert c.last_gripper_move_fault is None
+
+    def test_other_gripper_faults_still_fail(self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._closing_into_fault(mock_config_files, mock_xarm_api, monkeypatch, 7)
+        assert c.close_gripper() is False
+        assert c.last_gripper_move_fault is None
+        assert c.health_failure["return_code"] == 102
+
+    def test_tolerated_slip_is_logged(self, mock_config_files, mock_xarm_api, monkeypatch, caplog):
+        caplog.set_level(logging.INFO, logger="xarm.events")
+        c = self._closing_into_fault(mock_config_files, mock_xarm_api, monkeypatch, 12)
+        assert c.close_gripper() is True
+        lines = [r.getMessage() for r in caplog.records if r.name == "xarm.events"]
+        assert lines[0].startswith("gripper.command target=71")
+        assert any(l.startswith("gripper.fault_latched error_code=12 error_text='object slipped'") for l in lines)
+        assert any(l.startswith("gripper.command_fault_tolerated target=71 sdk_code=102 error_code=12")
+                   for l in lines)
+        assert not any(l.startswith("gripper.command_failed") for l in lines)
+
+    def test_a_controller_error_still_fails(self, mock_config_files, mock_xarm_api, monkeypatch):
+        c = self._closing_into_fault(mock_config_files, mock_xarm_api, monkeypatch, 12)
+        mock_xarm_api.error_code = 19  # end-effector communication
+        assert c.close_gripper() is False
+        assert c.last_gripper_move_fault is None
+
 
 class TestForceTorqueAutoEnable:
     """force_torque_config.yaml auto_enable_on_connect: F/T comes up with the arm."""
@@ -631,6 +743,17 @@ class TestHealthRecovery:
                                  "latched_at": "2026-10-12T02:45:39+00:00"}
         assert c.clear_errors() is True
         assert c.gripper_fault_latch is None
+
+    def test_clear_errors_logs_the_released_latch(self, initialized_controller, caplog):
+        caplog.set_level(logging.INFO, logger="xarm.events")
+        c = initialized_controller
+        c.gripper_fault_latch = {"error_code": 12, "error_text": "object slipped",
+                                 "latched_at": "2026-10-12T02:45:39+00:00"}
+        assert c.clear_errors() is True
+        lines = [r.getMessage() for r in caplog.records if r.name == "xarm.events"]
+        assert any(line.startswith("gripper.fault_released error_code=12 error_text='object slipped' "
+                                   "latched_at=2026-10-12T02:45:39+00:00 held_s=") for line in lines)
+        assert "controller.recovered via clear_errors" in lines
 
     def test_failed_clear_errors_keeps_the_gripper_fault_latch(self, initialized_controller):
         c = initialized_controller

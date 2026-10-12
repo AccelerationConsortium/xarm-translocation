@@ -1,5 +1,6 @@
 import time
 import os
+import logging
 import json
 import hashlib
 import tempfile
@@ -76,6 +77,20 @@ _XARM_STATE_LABELS = {
 # /disconnect + /connect builds a new XArmController, and a reconnect must
 # not be a way around clear_errors. A service restart does clear it.
 _gripper_fault_latch = None
+
+# One timestamped line per event in the service log, so a fault can be lined
+# up with the commands before it (the dashboard exporter is best-effort and
+# the access log has no gripper detail). Gripper state is logged on change
+# only, so the 1 Hz status poll does not flood the log.
+event_log = logging.getLogger("xarm.events")
+
+
+def _seconds_since_iso(stamp):
+    """Seconds from an ISO 8601 timestamp to now, or None if unparseable."""
+    try:
+        return round((datetime.now(timezone.utc) - datetime.fromisoformat(stamp)).total_seconds(), 1)
+    except (TypeError, ValueError):
+        return None
 
 
 class ComponentState(Enum):
@@ -380,6 +395,13 @@ class XArmController:
         self.last_gripper_object_detected = None   # bool | None
         self.last_gripper_error_code = 0           # BIO register 0x0F; 0 == OK, 12 == object slipped
         self.last_gripper_error_text = None         # human-readable mapping of the code
+        # Set when the last jaw move ended in a tolerated gripper fault (a
+        # slip); the open/close routes report it in their 200 body.
+        self.last_gripper_move_fault = None
+        # For the event log: the last gripper command and the last logged
+        # (motion_state, error_code), so state is logged on change only.
+        self._last_gripper_command = None           # {"target", "speed", "force", "wait", "at"}
+        self._logged_gripper_state = None
 
         # FT snapshots and their interpretation are published under one lock.
         self._ft_lock = threading.RLock()
@@ -907,6 +929,8 @@ class XArmController:
             self._record_health_failure("error_callback", None, f"Controller error {error_code}")
             self.states['arm'] = ComponentState.ERROR
             print(f'Error {error_code} detected')
+            event_log.warning("controller.error error_code=%s warn_code=%s",
+                              error_code, data.get('warn_code', 0))
             self._emit_event(
                 "error",
                 message=f"Controller reports error code {error_code}",
@@ -921,6 +945,7 @@ class XArmController:
         if data.get('warn_code', 0) != 0:
             self.last_warn_code = data['warn_code']
             print(f'Warning: {data["warn_code"]}')
+            event_log.warning("controller.warning warn_code=%s", data['warn_code'])
             self._emit_event(
                 "error",
                 message=f"Controller reports warn code {data['warn_code']}",
@@ -962,6 +987,13 @@ class XArmController:
                 "controller_warn_title": codes["warn_title"],
             }
             print(f"Controller degraded: {self.health_failure}")
+            event_log.warning(
+                "controller.degraded operation=%s return_code=%s reason=%r "
+                "controller_error=%s controller_warn=%s",
+                operation, return_code, reason,
+                self.health_failure["controller_error_code"],
+                self.health_failure["controller_warn_code"],
+            )
 
     def check_code(self, code, operation_name):
         """An operation succeeds only when its result AND controller are healthy."""
@@ -1313,9 +1345,17 @@ class XArmController:
             self.health_failure = None
             # The gripper's own register was cleaned above; a fault that is
             # still live is latched again by the next status read.
+            released = self.gripper_fault_latch
             self.gripper_fault_latch = None
+            if released is not None:
+                event_log.info(
+                    "gripper.fault_released error_code=%s error_text=%r latched_at=%s held_s=%s",
+                    released.get("error_code"), released.get("error_text"),
+                    released.get("latched_at"), _seconds_since_iso(released.get("latched_at")),
+                )
             self.states['arm'] = ComponentState.ENABLED
             self._emit_state_transition("ready", message="Errors cleared; controller recovery verified")
+            event_log.info("controller.recovered via clear_errors")
             return True
         except Exception as e:
             self._record_health_failure("clear_errors", None, f"Recovery exception: {e}")
@@ -1874,6 +1914,53 @@ class XArmController:
     _BIO_GRIPPER_ERROR_TEXT = {
         12: "object slipped",
     }
+    # SDK APIState.END_EFFECTOR_HAS_FAULT: a waited BIO jaw move saw the
+    # gripper report a fault.
+    _SDK_END_EFFECTOR_HAS_FAULT = 102
+    # Gripper faults a jaw move tolerates instead of failing. 2026-10-12,
+    # operator choice until the gripper is replaced: a slip must not fail
+    # open/close or degrade the controller, so an agent can clear and retry.
+    # It is still latched, so /status shows it and clear_errors releases it.
+    _BIO_GRIPPER_TOLERATED_MOVE_FAULTS = frozenset({12})
+
+    def _latch_gripper_fault(self, err_code, err_text):
+        """Keep the first gripper fault until clear_errors succeeds.
+
+        Returns True when this call latched it (for the event log).
+        """
+        if self.gripper_fault_latch is not None:
+            return False
+        self.gripper_fault_latch = {
+            "error_code": err_code,
+            "error_text": err_text,
+            "latched_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return True
+
+    def _tolerated_gripper_move_fault(self, code):
+        """Return ``{"error_code", "error_text"}`` when a jaw move's SDK
+        result is a tolerated gripper fault, else ``None``.
+
+        Only the gripper's own fault qualifies: with a controller error
+        (e.g. 19, end-effector communication) the move fails as before.
+        """
+        if code != self._SDK_END_EFFECTOR_HAS_FAULT:
+            return None
+        controller_error = getattr(self.arm, 'error_code', 0)
+        if isinstance(controller_error, int) and controller_error != 0:
+            return None
+        # The SDK caches the error it saw while waiting; the register can read
+        # normal again by the time we ask, so prefer the cached value.
+        err = getattr(getattr(self.arm, '_arm', None), 'bio_gripper_error_code', None)
+        if not (isinstance(err, int) and err > 0) and hasattr(self.arm, 'get_bio_gripper_error'):
+            ecode, evalue = self.arm.get_bio_gripper_error()
+            err = evalue if (ecode == 0 and isinstance(evalue, int)) else None
+        if err not in self._BIO_GRIPPER_TOLERATED_MOVE_FAULTS:
+            return None
+        text = self._BIO_GRIPPER_ERROR_TEXT.get(err, "fault")
+        if self._latch_gripper_fault(err, text):
+            self._log_gripper_fault_latched()
+        return {"error_code": err, "error_text": text}
 
     @property
     def gripper_fault_latch(self):
@@ -1910,6 +1997,7 @@ class XArmController:
             if code != 0 or not isinstance(status, int) or status < 0:
                 return None
             motion_state = self._BIO_GRIPPER_MOTION_STATES.get(status & 0x03, "unknown")
+            latched_now = False
             self.last_gripper_motion_state = motion_state
             self.last_gripper_object_detected = (motion_state == "object_detected")
             if motion_state == "fault" and hasattr(self.arm, 'get_bio_gripper_error'):
@@ -1919,13 +2007,9 @@ class XArmController:
                 self.last_gripper_error_text = self._BIO_GRIPPER_ERROR_TEXT.get(
                     err_code, "fault"
                 )
-                if err_code != 0 and self.gripper_fault_latch is None:
+                if err_code != 0:
                     # Keep the first fault: it is the one that needs the labware checked.
-                    self.gripper_fault_latch = {
-                        "error_code": err_code,
-                        "error_text": self.last_gripper_error_text,
-                        "latched_at": datetime.now(timezone.utc).isoformat(),
-                    }
+                    latched_now = self._latch_gripper_fault(err_code, self.last_gripper_error_text)
             else:
                 self.last_gripper_error_code = 0
                 self.last_gripper_error_text = None
@@ -1933,10 +2017,54 @@ class XArmController:
             pos = self.get_gripper_position()
             if isinstance(pos, (int, float)) and not isinstance(pos, bool):
                 self.last_gripper_position_actual = pos
+            self._log_gripper_status(motion_state, latched_now)
             return motion_state
         except Exception as e:  # defensive: never let a status read break a move
             print(f"[gripper] status refresh failed: {e}")
             return None
+
+    def _gripper_context(self):
+        """Shared fields for gripper event lines: where the jaws are, what
+        was last commanded, and how long ago (a change long after the last
+        command happened while holding, not as part of a move)."""
+        cmd = getattr(self, '_last_gripper_command', None) or {}
+        since = round(time.monotonic() - cmd["at"], 1) if cmd else None
+        return (
+            f"position={getattr(self, 'last_gripper_position_actual', None)} "
+            f"commanded={cmd.get('target')} since_command_s={since}"
+        )
+
+    def _log_gripper_status(self, motion_state, latched_now):
+        """Log a gripper state change, and a newly latched fault, once each."""
+        key = (motion_state, self.last_gripper_error_code)
+        previous = getattr(self, '_logged_gripper_state', None)
+        if key != previous:
+            self._logged_gripper_state = key
+            event_log.log(
+                logging.WARNING if motion_state == "fault" else logging.INFO,
+                "gripper.state %s -> %s error_code=%s %s",
+                previous[0] if previous else None, motion_state,
+                self.last_gripper_error_code, self._gripper_context(),
+            )
+        if latched_now:
+            self._log_gripper_fault_latched()
+
+    def _log_gripper_fault_latched(self):
+        """One warning line, and a dashboard row, for a newly latched fault."""
+        latch = self.gripper_fault_latch
+        event_log.warning(
+            "gripper.fault_latched error_code=%s error_text=%r latched_at=%s %s",
+            latch["error_code"], latch["error_text"], latch["latched_at"],
+            self._gripper_context(),
+        )
+        self._emit_event(
+            "error",
+            message=f"Gripper fault latched: {latch['error_text']} (code {latch['error_code']})",
+            severity="warning",
+            gripper_error_code=latch["error_code"],
+            gripper_position=self.last_gripper_position_actual,
+            gripper_commanded=(getattr(self, '_last_gripper_command', None) or {}).get("target"),
+        )
 
     # =============================================================================
     # LINEAR TRACK CONTROL (Optional)
@@ -3371,9 +3499,25 @@ class XArmController:
         speed = self._coerce_int(speed, 'speed')
         force = self._coerce_int(force, 'force')
         timeout = self._coerce_int(timeout, 'timeout')
+        self._last_gripper_command = {
+            "target": position, "speed": speed, "force": force, "wait": wait,
+            "at": time.monotonic(),
+        }
+        event_log.info(
+            "gripper.command target=%s speed=%s force=%s wait=%s position=%s",
+            position, speed, force, wait, self.last_gripper_position_actual,
+        )
         code = self.arm.set_bio_gripper_g2_position(
             position, speed=speed, force=force, wait=wait, timeout=timeout
         )
+        self.last_gripper_move_fault = self._tolerated_gripper_move_fault(code)
+        if self.last_gripper_move_fault is not None:
+            event_log.warning(
+                "gripper.command_fault_tolerated target=%s sdk_code=%s error_code=%s error_text=%r %s",
+                position, code, self.last_gripper_move_fault["error_code"],
+                self.last_gripper_move_fault["error_text"], self._gripper_context(),
+            )
+            code = 0
         success = self.check_code(code, f'set_bio_gripper_g2_position({position})')
         if success:
             self.last_gripper_position = position
@@ -3382,6 +3526,8 @@ class XArmController:
             # With wait=False this can still report moving. The API poll
             # refreshes the snapshot as the jaws settle and while holding.
             self.refresh_gripper_status()
+        else:
+            event_log.warning("gripper.command_failed target=%s code=%s", position, code)
         return success
 
     # Standard Gripper Methods (Internal use - prefer universal methods)

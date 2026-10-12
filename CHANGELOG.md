@@ -7,6 +7,37 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — timestamped service log and gripper/controller event lines (2026-10-12)
+
+The NSSM service logs had no timestamps, so the 2026-10-12 slip and error 19
+could not be lined up with the requests before them.
+
+- Every service log line and every uvicorn access line starts with a UTC ISO
+  8601 time (`core.log_format`).
+- A new `xarm.events` logger writes one line per event: `gripper.command`,
+  `gripper.state` (on change only), `gripper.fault_latched`,
+  `gripper.command_fault_tolerated`, `gripper.fault_released`,
+  `controller.error`, `controller.warning`, `controller.degraded`,
+  `controller.recovered`. A latched gripper fault is also exported to the
+  dashboard history as an `error` row with severity `warning`.
+- The trajectory executor logs `[trajectory] session <id> ended <state>`;
+  the gripper poll pauses while a trajectory runs.
+
+### Changed — a gripper slip no longer fails a jaw move; agents may clear it (2026-10-12)
+
+Until the gripper is replaced, a slip (BIO gripper error 12) during
+`/gripper/open` or `/gripper/close` made the SDK return 102
+(END_EFFECTOR_HAS_FAULT), which marked the controller degraded and answered a
+generic 500. An agent that cleared the slip and closed again hit the same 500.
+
+- A jaw move that ends in a slip now succeeds: no health failure, and the 200
+  body carries `gripper_fault` (`error_code`, `error_text`). The slip is
+  latched in `details.gripper.fault_latched` as before, until `clear_errors`.
+- Any other gripper fault, or a controller error (e.g. 19, End Effector
+  Communication Error), still fails the move.
+- The agent guide now lets an agent report the slip, clear it and retry. A
+  controller fault that stops the arm stays with the operator.
+
 ### Fixed — a no-solution IK query no longer blocks trajectory start (2026-10-12)
 
 A `/kinematics/ik` query for an unreachable pose makes the controller latch

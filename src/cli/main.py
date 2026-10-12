@@ -52,10 +52,11 @@ class ServerManager:
 import sys
 sys.path.insert(0, '{os.getcwd()}')
 from core.xarm_api_server import app
+from core.log_format import uvicorn_log_config
 import uvicorn
 
 if __name__ == '__main__':
-    uvicorn.run(app, host='{host}', port={port}, log_level='info')
+    uvicorn.run(app, host='{host}', port={port}, log_level='info', log_config=uvicorn_log_config())
 """
             ]
             
@@ -184,6 +185,7 @@ def start_api_server(host: str = "0.0.0.0", port: int = 8000):
     try:
         # Import and run the API server
         from core.xarm_api_server import app
+        from core.log_format import uvicorn_log_config
         import uvicorn
         
         uvicorn.run(
@@ -191,7 +193,8 @@ def start_api_server(host: str = "0.0.0.0", port: int = 8000):
             host=host,
             port=port,
             log_level="info",
-            access_log=True
+            access_log=True,
+            log_config=uvicorn_log_config(),
         )
         
     except KeyboardInterrupt:
