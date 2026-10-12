@@ -160,9 +160,8 @@ on turned it off and closed the session with no error; RUNNING / NORMAL
 afterwards. The arm now rests at that hand-guided pose, not at the
 workflow's `safe_rack`.
 
-Still to do from this record: manual (teach) mode and its STOP latch were
-not exercised; the real limits for the motion block; the interlock
-contract with the workflow's owner. Done the same night: the edge and API
+Still to do from this record: the real limits for the motion block; the
+interlock contract with the workflow's owner. Done the same night: the edge and API
 secrets and the control tile (ac-organic-lab PRs #69 and #70; a live
 INIT / STOP / disconnect from the tile at 04:20-04:21 UTC reached the
 device as the operator), and `gibbie_ur_arm` retired from the dashboard.
