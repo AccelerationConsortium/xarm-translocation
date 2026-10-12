@@ -100,6 +100,45 @@ the read-only exception, like the UR5e observer was. Install scripts are
 kept in `.state\install-stage*.ps1` on the PC. Rollback: stop and remove
 that service and its firewall rule; nothing else on the PC was touched.
 
+## Stage 2/3 commissioning record (2026-10-12, user at the arm)
+
+Control enabled on `robot-motion-ur3e` at 02:21 UTC with
+`.state\install-stage3-enable-control.ps1` (the previous observer config is
+kept next to it as `robot-motion.local.json.bak-*-pre-control`): operator
+list, audit `control-audit.jsonl`, `gripper.model robotiq_2f85` (speed
+30 % default / 100 % cap, force 10 % / 20 %), `control.motion` with
+commissioning id `UR3E-ARM-2026-10-12-OPEN-PLACEHOLDER` (joints ±360°, box
+±800 mm, 10 deg/s, 50 mm/s, 30 N force guard, stop decelerations 90 deg/s²
+and 1000 mm/s²), trajectories off, `watchdog_hz 2`, and
+`ROBOT_MOTION_EDGE_SHARED_SECRET` in the service environment (its own
+secret; the edge and the dashboard API still had none, so the panel at
+`/ur3e/web/` stayed read-only). LocalSystem, as on pc-05 (DEVICE_PC_SETUP
+§5 exception still open). Gates checked before any move: `/connect` 401
+without identity, gripper 423 without a claim, claim 403 for an operator
+not in the list. The arm had been moved by hand away from the balance
+first; the Gibbie workflow was idle (its last run had failed on the Flex).
+
+Live results, all through the device API with the edge identity and a
+claim (the claim lives 30 s and needs a heartbeat every 10 s; two of the
+first attempts expired between commands):
+
+| Step | Result |
+|---|---|
+| connect | session open in one try; TCP offset (0, 0, 195) mm, payload 0.82 kg CoG (-6, 2, 65) mm already set on the pendant |
+| force zero | 14.6 N at rest → 0.18 N |
+| J6 +5° / −5° at 5 deg/s | 1.42 s each, peak force change 0.5–0.8 N, joints back to start; a second move sent in the same second was refused 412 `robot_moving` |
+| +Z / −Z 10 mm at 10 mm/s | 1.30 s each, TCP z 408.7 → 418.7 → 408.7 mm |
+| STOP mid-move (+Z 40 mm at 5 mm/s, stop at 2.5 s) | stop round trip 19 ms; 11.6 mm travelled; the move returned 500 `arm_move_failed` latched; a move while latched 412 `motion_latched`; `/control/reset` cleared it; the return jog brought z back to 408.7 |
+| gripper open ×2 | raw 3 (requested 0), 1.7–1.9 s |
+| gripper close on nothing ×2 | raw 228 (requested 255), 1.8 s, `at_requested_position` |
+| stroke 40 mm (default 0/255 map) | raw 135 in 0.9 s; under a linear 3/228 map that is ≈35 mm, to be confirmed with calipers before `open_raw 3` / `closed_raw 228` go into the config |
+| disconnect | closed with no error at 02:29:05 UTC; RUNNING / NORMAL, program STOPPED for the following 100 s, no protective stop |
+
+Still to do from this record: the gripper calibration above; manual
+(teach) mode and its STOP latch were not exercised; the real limits for
+the motion block; the interlock contract with the workflow's owner; the
+edge and API secrets plus the control tile on the dashboard.
+
 ## Open with the user
 
 - Who may hold the arm when: the interlock contract with the Gibbie
