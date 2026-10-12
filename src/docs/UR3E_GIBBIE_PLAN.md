@@ -148,6 +148,18 @@ fingers read 35.1 mm; a 60 mm command went to raw 69 (60.1 mm) and a 40 mm
 command to raw 122 (40.0 mm). The 2F-85's map is therefore the same as the
 UR5e 2F-140's (3/228).
 
+**Manual (teach) mode (2026-10-12 04:38-04:51 UTC, user at the arm).**
+`POST /robot/manual {"enable": true}` released the arm (freedrive); a jog
+sent while it was on was refused 412 `manual_mode`; off again restored
+position control with the joints unchanged. STOP while manual was on
+ended it and latched "Manual mode ended: Stop requested"; a move while
+latched was refused 412 `motion_latched`; `/control/reset` cleared it. In
+a second window the user pushed the arm: J2 -109.0 → -103.1°, J4 32.5 →
+30.7°, J5 89.3 → 84.7°, read live over RTDE. Disconnect with manual still
+on turned it off and closed the session with no error; RUNNING / NORMAL
+afterwards. The arm now rests at that hand-guided pose, not at the
+workflow's `safe_rack`.
+
 Still to do from this record: manual (teach) mode and its STOP latch were
 not exercised; the real limits for the motion block; the interlock
 contract with the workflow's owner. Done the same night: the edge and API
