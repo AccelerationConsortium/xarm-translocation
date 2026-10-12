@@ -60,6 +60,7 @@ try:
         RealtimeJointMonitor, TrajectoryError, TrajectoryManager, TrajectorySettings, make_backend,
     )
     from .joint_trajectory import JointLimits, JointPoint, validate_joint_trajectory
+    from .log_format import configure_root_logging, uvicorn_log_config
 except ImportError:
     from core.xarm_controller import XArmController, SafetyLevel, ComponentState
     from core.xarm_utils import load_config
@@ -94,9 +95,10 @@ except ImportError:
         RealtimeJointMonitor, TrajectoryError, TrajectoryManager, TrajectorySettings, make_backend,
     )
     from core.joint_trajectory import JointLimits, JointPoint, validate_joint_trajectory
+    from core.log_format import configure_root_logging, uvicorn_log_config
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure logging (UTC-timestamped lines; see core.log_format)
+configure_root_logging(logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Failures that happen *inside* the WebSocket broadcast path are logged here,
@@ -5803,4 +5805,4 @@ if __name__ == "__main__":
 
     # app.add_event_handler("startup", startup_connect)
     
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, log_config=uvicorn_log_config())

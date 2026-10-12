@@ -7,6 +7,22 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — timestamped service log and gripper/controller event lines (2026-10-12)
+
+The NSSM service logs had no timestamps, so the 2026-10-12 slip and error 19
+could not be lined up with the requests before them.
+
+- Every service log line and every uvicorn access line starts with a UTC ISO
+  8601 time (`core.log_format`).
+- A new `xarm.events` logger writes one line per event: `gripper.command`,
+  `gripper.state` (on change only), `gripper.fault_latched`,
+  `gripper.command_fault_tolerated`, `gripper.fault_released`,
+  `controller.error`, `controller.warning`, `controller.degraded`,
+  `controller.recovered`. A latched gripper fault is also exported to the
+  dashboard history as an `error` row with severity `warning`.
+- The trajectory executor logs `[trajectory] session <id> ended <state>`;
+  the gripper poll pauses while a trajectory runs.
+
 ### Changed — a gripper slip no longer fails a jaw move; agents may clear it (2026-10-12)
 
 Until the gripper is replaced, a slip (BIO gripper error 12) during

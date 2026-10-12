@@ -1153,6 +1153,8 @@ class TrajectoryManager:
                 logger.error(f"[trajectory] on_finish failed: {exc}", exc_info=True)
             session.state = state
             session.event("end", state=state, reason=session.reason)
+            logger.info(f"[trajectory] session {session.id} ended {state}"
+                        + (f" ({session.reason})" if session.reason else ""))
             try:
                 session.record = self._record(session, ticks, monitor)
                 self._write_log(session)
