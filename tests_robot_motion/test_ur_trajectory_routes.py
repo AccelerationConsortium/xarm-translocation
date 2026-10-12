@@ -185,6 +185,8 @@ def test_allowed_actions_advertise_the_catalog_names(rig, tmp_path):
         wait_for(lambda: client.get("/status").json()["details"].get("robotmode"), what="first observation")
         closed = set(allowed(client))
         assert {"trajectory.limits", "trajectory.status", "trajectory.create", "trajectory.upload_chunk"} <= closed
+        # The catalog also gates these on the control component, sent only with control on.
+        assert client.get("/status").json()["components"]["control"]["state"] == "enabled"
         assert not {"trajectory.validate", "trajectory.start", "trajectory.cancel"} & closed
         held = connected(client)
         assert {"trajectory.validate", "trajectory.start", "trajectory.create"} <= set(allowed(client))

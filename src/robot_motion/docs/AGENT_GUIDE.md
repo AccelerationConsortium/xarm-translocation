@@ -146,7 +146,9 @@ the operator must be on `authorized_operators`.
 when the matching call is not state-refused (validate and start only while
 a moveJ would run; cancel only while a session is open; create is withheld
 while one is open). They are the lab-skills skills `skills_for("robot_arm",
-"ligand_ur5e")` in the dashboard repo.
+"ligand_ur5e")` in the dashboard repo, which also require the `control`
+component (`components.control.state == "enabled"`, sent only with control
+on) so a receive-only service never offers them.
 
 1. **Read the limits first:** `GET /control/freehand/trajectory/limits`:
    joint ranges, `max_joint_speed_deg_s`, `max_joint_acc_deg_s2` (the

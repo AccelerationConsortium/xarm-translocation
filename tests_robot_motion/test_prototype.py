@@ -258,6 +258,7 @@ def test_offline_edits_never_replace_configured_graph_or_status(tmp_path):
         assert status["allowed_actions"] == []
         assert status["details"]["control_enabled"] is False
         assert status["details"]["monitoring_only"] is True
+        assert "control" not in status["components"]  # receive-only: no catalog control gate
         assert status["equipment_status"] == "unknown"
         assert json.loads(path.read_text()) == original
 

@@ -311,6 +311,12 @@ def create_app(
                 **cameras.components(),
                 **current["components"],
                 **({"gripper": gripper_component(gripper)} if gripper is not None else {}),
+                # Present only with control on: the lab-skills catalog gates
+                # the UR's control skills on it, so a receive-only service
+                # (empty allowed_actions) never offers them through the
+                # SDK's requires_states fallback.
+                **({"control": {"connected": True, "state": "enabled", "message": None, "last_event_at": None}}
+                   if control is not None else {}),
             },
             last_error=current.get("last_error"),
             allowed_actions=control_state["allowed_actions"] if control_state else [],

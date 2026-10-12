@@ -906,6 +906,7 @@ def test_status_publishes_live_force_between_slow_dashboard_polls():
         status = client.get("/status").json()
         assert status["details"]["telemetry"]["tcp_force"]["force_magnitude_n"] == 5.0
         assert status["components"]["telemetry"]["state"] == "receiving"
+        assert "control" not in status["components"]   # observe-only: no catalog control gate
         assert reads["dashboard"] == 1  # the slow poll did not speed up
         observer.failing = True
         wait_for(lambda: client.get("/status").json()["details"]["telemetry"]["valid"] is False)
