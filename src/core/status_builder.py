@@ -288,6 +288,28 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
                 f" {controller_codes['warn_title'] or 'not in the SDK code table'}."
             )
 
+    # A latched BIO gripper fault ("object slipped") outlives the register,
+    # which reads normal again once the jaws settle. The arm can still move,
+    # so this is degraded rather than error (§2.2), and allowed_actions is
+    # untouched: an agent keeps its skills, but nothing that waits for
+    # "ready" proceeds until someone checks the labware and clears it.
+    gripper_fault = _gripper_fault_latch(controller)
+    if gripper_fault is not None and equipment_status in ("ready", "busy", "degraded"):
+        fault_note = (
+            f"Gripper fault latched: {gripper_fault.get('error_text') or 'fault'} "
+            f"(code {gripper_fault.get('error_code')}) at {gripper_fault.get('latched_at')}; "
+            "check the labware, then clear_errors."
+        )
+        if equipment_status == "ready":
+            message = fault_note
+        elif equipment_status == "busy":
+            message = f"{fault_note} {message}"
+        else:
+            message = f"{message} {fault_note}"
+        equipment_status = "degraded"
+        if "clear_errors" not in required_actions:
+            required_actions.append("clear_errors")
+
     simulated = bool(getattr(controller, "is_simulated", False))
     if simulated:
         # Simulator session: healthy states become the spec's first-class
@@ -329,6 +351,9 @@ def build_status(controller: XArmController | None) -> EquipmentStatus:
         # the component message so it's visible without opening details.
         grip_err_code = getattr(controller, "last_gripper_error_code", 0)
         grip_err_text = getattr(controller, "last_gripper_error_text", None)
+        if not (isinstance(grip_err_code, int) and grip_err_code != 0) and gripper_fault:
+            grip_err_code = gripper_fault.get("error_code")
+            grip_err_text = gripper_fault.get("error_text")
         if isinstance(grip_err_code, int) and grip_err_code != 0:
             label = grip_err_text if isinstance(grip_err_text, str) else "fault"
             gripper_message = f"{gripper_message} FAULT: {label} (code {grip_err_code})".strip()
@@ -883,6 +908,12 @@ def _build_allowed_actions(
     return actions
 
 
+def _gripper_fault_latch(controller: XArmController) -> dict[str, Any] | None:
+    """The controller's latched gripper fault, or None (test doubles included)."""
+    latch = getattr(controller, "gripper_fault_latch", None)
+    return latch if isinstance(latch, dict) else None
+
+
 def _build_gripper_details(controller: XArmController) -> dict[str, Any] | None:
     """Cached BIO gripper status/error register snapshot for /status.
 
@@ -903,8 +934,14 @@ def _build_gripper_details(controller: XArmController) -> dict[str, Any] | None:
           "object_detected": bool,
           "position_mm":     float,   # actual read-back jaw position
           "error_code":      int,     # BIO register 0x0F; 0 == OK, 12 == slipped
-          "error_text":      str      # present only when error_code != 0
+          "error_text":      str,     # present only when error_code != 0
+          "fault_latched":   {        # present until clear_errors succeeds
+              "error_code": int, "error_text": str, "latched_at": str,
+          },
         }
+
+    ``error_code`` mirrors the register live; ``fault_latched`` keeps the
+    first fault after the register reads normal again.
     """
     block: dict[str, Any] = {}
 
@@ -926,6 +963,10 @@ def _build_gripper_details(controller: XArmController) -> dict[str, Any] | None:
         error_text = getattr(controller, "last_gripper_error_text", None)
         if error_code != 0 and isinstance(error_text, str):
             block["error_text"] = error_text
+
+    latch = _gripper_fault_latch(controller)
+    if latch is not None:
+        block["fault_latched"] = dict(latch)
 
     return block or None
 

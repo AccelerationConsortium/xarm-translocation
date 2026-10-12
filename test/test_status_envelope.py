@@ -897,6 +897,53 @@ def test_status_surfaces_gripper_slip_register(client_with_controller):
     assert "12" in parsed.components["gripper"].message
 
 
+_SLIP_LATCH = {"error_code": 12, "error_text": "object slipped",
+               "latched_at": "2026-10-12T02:45:39+00:00"}
+
+
+def test_latched_gripper_fault_degrades_until_cleared(client_with_controller):
+    """The register reads normal again, but the latched slip keeps the arm
+    degraded with clear_errors required, and names it everywhere."""
+    controller = _fake_controller(
+        gripper_type="bio_gen2",
+        last_gripper_motion_state="object_detected",
+        last_gripper_object_detected=True,
+        last_gripper_error_code=0,
+        last_gripper_error_text=None,
+        gripper_fault_latch=dict(_SLIP_LATCH),
+    )
+    parsed = EquipmentStatus(**client_with_controller(controller).get("/status").json())
+
+    assert parsed.equipment_status == "degraded"
+    assert parsed.activity == "idle"
+    assert "object slipped" in parsed.message and "clear_errors" in parsed.message
+    assert parsed.required_actions == ["clear_errors"]
+    assert "object slipped" in parsed.components["gripper"].message
+    grip = parsed.details["gripper"]
+    assert grip["error_code"] == 0
+    assert grip["fault_latched"] == _SLIP_LATCH
+
+
+def test_latched_gripper_fault_keeps_actions(client_with_controller):
+    """Degraded, not blocked: the agent keeps exactly the actions it had."""
+    base = dict(gripper_type="bio_gen2", last_gripper_error_code=0)
+    healthy = EquipmentStatus(**client_with_controller(_fake_controller(**base)).get("/status").json())
+    latched = EquipmentStatus(**client_with_controller(
+        _fake_controller(**base, gripper_fault_latch=dict(_SLIP_LATCH))).get("/status").json())
+    assert healthy.equipment_status == "ready"
+    assert latched.allowed_actions == healthy.allowed_actions
+
+
+def test_latched_gripper_fault_during_motion_is_degraded_running(client_with_controller):
+    controller = _fake_controller(
+        gripper_type="bio_gen2", last_gripper_error_code=0,
+        gripper_fault_latch=dict(_SLIP_LATCH), _motion_in_progress=True,
+    )
+    parsed = EquipmentStatus(**client_with_controller(controller).get("/status").json())
+    assert parsed.equipment_status == "degraded"
+    assert parsed.activity == "running"
+
+
 def test_status_surfaces_gripper_object_detected_no_fault(client_with_controller):
     """A clean pickup: object_detected true, no error code, no fault text."""
     controller = _fake_controller(

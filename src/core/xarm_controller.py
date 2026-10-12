@@ -69,6 +69,15 @@ _XARM_STATE_LABELS = {
 }
 
 
+# A BIO gripper fault seen by refresh_gripper_status, kept until
+# clear_errors() succeeds. The gripper register itself goes back to normal
+# once the jaws settle, so a slip mid-transfer would otherwise vanish from
+# /status at the next 1 Hz read. Process-wide rather than per-controller:
+# /disconnect + /connect builds a new XArmController, and a reconnect must
+# not be a way around clear_errors. A service restart does clear it.
+_gripper_fault_latch = None
+
+
 class ComponentState(Enum):
     """Enum for component states"""
     UNKNOWN = "unknown"
@@ -1302,6 +1311,9 @@ class XArmController:
             self.last_error_code = 0
             self.last_warn_code = 0
             self.health_failure = None
+            # The gripper's own register was cleaned above; a fault that is
+            # still live is latched again by the next status read.
+            self.gripper_fault_latch = None
             self.states['arm'] = ComponentState.ENABLED
             self._emit_state_transition("ready", message="Errors cleared; controller recovery verified")
             return True
@@ -1863,6 +1875,19 @@ class XArmController:
         12: "object slipped",
     }
 
+    @property
+    def gripper_fault_latch(self):
+        """The first BIO gripper fault since the last successful clear_errors, or None.
+
+        ``{"error_code", "error_text", "latched_at"}``; see ``_gripper_fault_latch``.
+        """
+        return _gripper_fault_latch
+
+    @gripper_fault_latch.setter
+    def gripper_fault_latch(self, value):
+        global _gripper_fault_latch
+        _gripper_fault_latch = value
+
     def refresh_gripper_status(self):
         """Read the BIO gripper status + error registers and cache them.
 
@@ -1894,6 +1919,13 @@ class XArmController:
                 self.last_gripper_error_text = self._BIO_GRIPPER_ERROR_TEXT.get(
                     err_code, "fault"
                 )
+                if err_code != 0 and self.gripper_fault_latch is None:
+                    # Keep the first fault: it is the one that needs the labware checked.
+                    self.gripper_fault_latch = {
+                        "error_code": err_code,
+                        "error_text": self.last_gripper_error_text,
+                        "latched_at": datetime.now(timezone.utc).isoformat(),
+                    }
             else:
                 self.last_gripper_error_code = 0
                 self.last_gripper_error_text = None

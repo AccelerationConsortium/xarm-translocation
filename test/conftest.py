@@ -11,6 +11,15 @@ from unittest.mock import Mock, MagicMock, patch
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from src.core.xarm_controller import XArmController, ComponentState
+from src.core import xarm_controller as _xarm_controller_module
+
+
+@pytest.fixture(autouse=True)
+def _reset_gripper_fault_latch():
+    """The gripper fault latch is process-wide; never let it leak between tests."""
+    _xarm_controller_module._gripper_fault_latch = None
+    yield
+    _xarm_controller_module._gripper_fault_latch = None
 
 
 @pytest.fixture

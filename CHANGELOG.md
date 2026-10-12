@@ -7,6 +7,36 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — a no-solution IK query no longer blocks trajectory start (2026-10-12)
+
+A `/kinematics/ik` query for an unreachable pose makes the controller latch
+W14 ("User instructions and parameters have no solution"). The route left it
+latched, so trajectory start refused 412 `arm_not_ready` until someone
+recovered the arm (Astra, 2026-10-11 23:03–23:14). The SDK also reports the
+warning reply as code 0, so the response could carry angles for a pose
+with no solution.
+
+- The IK route reads the controller's warning code fresh before and after
+  the query. With a warning latched afterwards the result is
+  `available: false`, `reason: "controller_warning"`, and the new
+  `controller_warning` field names the code. A warning the query itself
+  raised is cleared with `clean_warn` and verified by a readback; one that
+  was already latched is left for `clear_errors`.
+
+### Changed — a BIO gripper fault is latched and degrades the arm (2026-10-12)
+
+The gripper's fault register goes back to normal once the jaws settle, so a
+slip (code 12) disappeared from `/status` at the next 1 Hz read and an agent
+could carry on without the labware being checked.
+
+- The first fault is kept until `clear_errors()` succeeds, in the new
+  `details.gripper.fault_latched` (`error_code`, `error_text`, `latched_at`).
+  It is process-wide, so `/disconnect` + `/connect` does not release it; a
+  service restart does.
+- While latched, `equipment_status` is `degraded` (`degraded` + `running`
+  during a move), `required_actions` contains `clear_errors`, and the message
+  and gripper component name the fault. `allowed_actions` is unchanged.
+
 ### Fixed — CLEAR ERRORS no longer fails forever on a latched warning (2026-10-11)
 
 A controller warning (W14, "User instructions and parameters have no
