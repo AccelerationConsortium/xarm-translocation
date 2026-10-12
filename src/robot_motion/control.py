@@ -391,6 +391,9 @@ class URControl:
                 blocked = self.arm_block(action)
             if blocked is None:
                 allowed.append(action)
+        if self.trajectory is not None:
+            # trajectory.* catalog names, gated like the routes (routes.py).
+            allowed += self.trajectory.advertised_actions(move_block)
         if self.gripper_control is not None:
             allowed += self.gripper_control.allowed_actions()
         return {

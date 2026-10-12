@@ -20,6 +20,7 @@ from tests_robot_motion.test_motion import (
     SECRET,
     Control,
     Rig,
+    allowed,
     connected,
     wait_for,
 )
@@ -173,6 +174,41 @@ def test_a_run_streams_servoj_and_frees_the_arm(rig):
     assert dt == pytest.approx(1 / 125) and lookahead == 0.03 and gain == 1000
     assert math.degrees(q[0]) == pytest.approx(3.0, abs=1e-6)
     assert rig.control.servo_stops   # left servo mode at the end
+
+
+def test_allowed_actions_advertise_the_catalog_names(rig, tmp_path):
+    """allowed_actions carries the lab-skills names with the routes' gates:
+    reads and bookkeeping whenever enabled, validate/start only when a moveJ
+    would run, cancel only while a session is open, nothing when disabled."""
+    rig.control.servo_delay_s = 0.002
+    with rig.client() as client:
+        wait_for(lambda: client.get("/status").json()["details"].get("robotmode"), what="first observation")
+        closed = set(allowed(client))
+        assert {"trajectory.limits", "trajectory.status", "trajectory.create", "trajectory.upload_chunk"} <= closed
+        assert not {"trajectory.validate", "trajectory.start", "trajectory.cancel"} & closed
+        held = connected(client)
+        assert {"trajectory.validate", "trajectory.start", "trajectory.create"} <= set(allowed(client))
+        created = client.post(BASE, json={}, headers=held)
+        assert created.status_code == 201
+        sid = created.json()["session_id"]
+        pending = set(allowed(client))   # one session per arm: create is withheld, its cancel offered
+        assert {"trajectory.upload_chunk", "trajectory.start", "trajectory.cancel"} <= pending
+        assert "trajectory.create" not in pending
+        client.put(f"{BASE}/{sid}/chunks/0", json={"points": ramp(3.0, 4.0), "final": True}, headers=held)
+        assert client.post(f"{BASE}/{sid}/start", headers=held).status_code == 200
+        wait_for(lambda: len(rig.control.servo) > 20, what="streaming")
+        running = set(allowed(client))
+        assert {"trajectory.limits", "trajectory.status", "trajectory.cancel"} <= running
+        assert not {"trajectory.create", "trajectory.upload_chunk", "trajectory.validate",
+                    "trajectory.start", "arm.move_joints"} & running
+        assert client.post(f"{BASE}/{sid}/cancel", headers=held).status_code == 200
+        wait_for(lambda: state(client, sid) in TERMINAL, what="cancelled")
+        after = set(allowed(client))
+        assert "trajectory.create" in after and "trajectory.cancel" not in after
+    disabled = TrajectoryRig(config(tmp_path, enabled=False))
+    with disabled.client() as client:
+        wait_for(lambda: client.get("/status").json()["details"].get("robotmode"), what="first observation")
+        assert not [a for a in allowed(client) if a.startswith("trajectory.")]
 
 
 def test_moves_and_disconnect_are_refused_while_running_and_stop_halts_it(rig):

@@ -30,7 +30,12 @@ The same contract runs on the UR5e (tested on the arm 2026-10-11: servoJ at
 
 - **Base URL:** `http://100.64.254.6/ur5e` (the lab edge). Every call goes
   through it; the edge checks the sign-in cookie and adds the operator
-  identity the UR requires. The robot's own port refuses control.
+  identity the UR requires. The robot's own port refuses control. The
+  dashboard's passthrough, `http://100.64.254.6/api/equipment/ligand_ur5e/
+  control/…`, is the other route: it adds the same identity and forwards
+  your `X-Claim-Token`; its catalog lists these calls as the
+  `trajectory.*` skills of `ligand_ur5e`, and the device advertises those
+  names in `/status.allowed_actions` while each call would be honoured.
 - **Sign-in:** `POST http://100.64.254.6/auth/login {email}` sends a code;
   `POST http://100.64.254.6/auth/verify-code {email, code}` returns the
   `ac_auth_session` cookie. The address must be on the UR's operator list.

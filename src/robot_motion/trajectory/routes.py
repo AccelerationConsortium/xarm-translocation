@@ -29,7 +29,7 @@ from fastapi import HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from .executor import TrajectoryError, TrajectoryManager, TrajectorySettings
+from .executor import TERMINAL, TrajectoryError, TrajectoryManager, TrajectorySettings
 from .joint_trajectory import JointLimits, JointPoint, JointTrajectory, validate_joint_trajectory
 from .ur_backend import FeedbackMonitor, URServoJBackend, path_errors
 
@@ -107,6 +107,35 @@ class URTrajectory:
 
     def running(self):
         return self.manager.running
+
+    def advertised_actions(self, move_block):
+        """The lab-skills catalog names for /status allowed_actions.
+
+        STATUS_SPEC 6.2: listed means a call is not state-refused right now,
+        so clients that gate on the list (the dashboard's skill catalog,
+        agents) see the same gates the routes apply. move_block is
+        arm_block("arm.move_joints"), the check that start shares with a
+        moveJ. Per-request refusals (an unknown session id, a chunk out of
+        order, a path outside the box) are not predicted here.
+        """
+        if not self.settings.enabled:
+            return []
+        actions = ["trajectory.limits", "trajectory.status"]
+        summary = self.manager.summary() or {}
+        session = summary.get("session")
+        if session is not None and session.get("state") not in TERMINAL:
+            # A session is open (created, uploading or streaming): only its
+            # cancel is offered; create answers 409 session_open meanwhile.
+            actions.append("trajectory.cancel")
+            if session.get("state") == "created":
+                actions.append("trajectory.upload_chunk")
+                if move_block is None:
+                    actions += ["trajectory.validate", "trajectory.start"]
+            return actions
+        actions += ["trajectory.create", "trajectory.upload_chunk"]
+        if move_block is None:
+            actions += ["trajectory.validate", "trajectory.start"]
+        return actions
 
     def hard_stop(self, reason):
         self.manager.notify_hard_stop(reason)

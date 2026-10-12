@@ -129,12 +129,24 @@ service streams it with ur_rtde `servoJ` at 125 Hz (50–250 allowed) on its
 own clock. Measured on the arm: about 40 ms lag, tracking within about
 0.03° rms.
 
-**Route for clients:** the lab edge, `http://100.64.254.6/ur5e/…`, never the
-raw port: the edge checks the sign-in cookie (emailed code via
-`POST /auth/login` and `POST /auth/verify-code` on the edge) and adds the
-operator identity. The operator must be on `authorized_operators`. The
-dashboard's `/api/equipment/ligand_ur5e/control/*` proxy is not the
-route (it cannot present this device's edge identity).
+**Route for clients:** never the raw port. Either the lab edge,
+`http://100.64.254.6/ur5e/…`: the edge checks the sign-in cookie (emailed
+code via `POST /auth/login` and `POST /auth/verify-code` on the edge) and
+adds the operator identity. Or, since 2026-10-11, the dashboard's control
+passthrough, `http://100.64.254.6/api/equipment/ligand_ur5e/control/…`,
+which presents the signed-in operator as this device's edge identity and
+forwards a caller's own `X-Claim-Token` unchanged (claim through
+`…/control/claim` there first: a trajectory session belongs to the claim
+that created it, so create, upload and start must share one). Either way
+the operator must be on `authorized_operators`.
+
+**Catalog names:** `/status.allowed_actions` lists `trajectory.limits`,
+`trajectory.status`, `trajectory.create`, `trajectory.upload_chunk`,
+`trajectory.validate`, `trajectory.start` and `trajectory.cancel` exactly
+when the matching call is not state-refused (validate and start only while
+a moveJ would run; cancel only while a session is open; create is withheld
+while one is open). They are the lab-skills skills `skills_for("robot_arm",
+"ligand_ur5e")` in the dashboard repo.
 
 1. **Read the limits first:** `GET /control/freehand/trajectory/limits`:
    joint ranges, `max_joint_speed_deg_s`, `max_joint_acc_deg_s2` (the
