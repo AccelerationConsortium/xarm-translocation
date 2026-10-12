@@ -50,7 +50,7 @@ was idle.
 
 **Stage 1, observer (deployed 2026-10-12, see below).** A second
 robot-motion instance on the Gibbie PC, read-only: `observe` over RTDE,
-`control_enabled: false`, Tailnet bind only. Dashboard entry `gibbie_ur3e`
+`control_enabled: false`, Tailnet bind only. Dashboard entry `ur3e_gibbie`
 with the observation tile, an edge block `/ur3e/` for the read-only panel,
 host-ops whitelist and probe port. The old `gibbie_ur_arm` tile stays until
 the user retires it.
@@ -71,13 +71,13 @@ works); the interlock with the bench: robot-motion must refuse `/connect`
 while a program is PLAYING on the controller and should also consult the
 `gibbie_workflow` state, and the workflow side must know not to start a
 run while a robot-motion session is open (an `allowed_actions`/`busy`
-read of `gibbie_ur3e`, to be agreed with the workflow's owner). The service
+read of `ur3e_gibbie`, to be agreed with the workflow's owner). The service
 account question (LocalSystem with control on, DEVICE_PC_SETUP §5) applies
 here as it does on pc-05.
 
 **Stage 4, joint trajectories.** The UR5e's stages 0a/0b/3 repeated on the
 UR3e (servoJ timing, rate, lag), then `control.trajectory.enabled` with the
-watchdog rule, and the `trajectory.*` skills for `gibbie_ur3e`.
+watchdog rule, and the `trajectory.*` skills for `ur3e_gibbie`.
 
 ## Stage 1 deployment record
 
@@ -88,13 +88,16 @@ extras `ur` + `dev`, `--link-mode copy` (this PC's uv needs it). Config
 `.state\robot-motion.local.json`:
 
 ```json
-{"equipment_id": "gibbie_ur3e", "equipment_name": "UR3e Arm (Gibbie)",
+{"equipment_id": "ur3e_gibbie", "equipment_name": "UR3e Arm (Gibbie)",
  "driver": "ur", "model": "ur3e", "robot_host": "192.168.254.89",
  "observe": true, "poll_interval_s": 15, "timeout_s": 2,
  "control_enabled": false, "ur_transport": "rtde"}
 ```
 
-Binds `--host 100.64.254.17 --port 8075`; firewall rule "Robot Motion
+The equipment id was `gibbie_ur3e` on the first day and is `ur3e_gibbie`
+since 2026-10-12 (the user's choice); the dashboard keys on its registry
+id, so the device's own `equipment_id` is renamed at the next restart
+(`.state\rename-equipment-id.ps1`). Binds `--host 100.64.254.17 --port 8075`; firewall rule "Robot Motion
 UR3e 8075 (Tailnet only)"; logs under `.state\logs`; LocalSystem under
 the read-only exception, like the UR5e observer was. Install scripts are
 kept in `.state\install-stage*.ps1` on the PC. Rollback: stop and remove
@@ -144,6 +147,6 @@ edge and API secrets plus the control tile on the dashboard.
 - Who may hold the arm when: the interlock contract with the Gibbie
   workflow's owner (stage 3).
 - Whether `gibbie_ur_arm` (the monitor's probe) is retired once
-  `gibbie_ur3e` is on the dashboard.
+  `ur3e_gibbie` is on the dashboard.
 - The real limits for the motion block (stage 3), and a date for the
   supervised first session.
