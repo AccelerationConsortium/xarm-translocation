@@ -454,6 +454,39 @@ class TestGripperStatusRegister:
         assert controller.last_gripper_error_text == 'object slipped'
         assert controller.last_gripper_object_detected is False
 
+    def test_slip_is_latched_after_the_register_reads_normal(self, mock_config_files, mock_xarm_api, monkeypatch):
+        mock_xarm_api.get_bio_gripper_status.return_value = (0, 0b11)
+        mock_xarm_api.get_bio_gripper_error.return_value = (0, 12)
+        controller = self._bio_gen2_controller(mock_config_files, mock_xarm_api, monkeypatch)
+        controller.refresh_gripper_status()
+        latch = controller.gripper_fault_latch
+        assert latch["error_code"] == 12
+        assert latch["error_text"] == 'object slipped'
+
+        # The jaws settle and the register goes back to normal; the latch stays.
+        mock_xarm_api.get_bio_gripper_status.return_value = (0, 0)
+        controller.refresh_gripper_status()
+        assert controller.last_gripper_error_code == 0
+        assert controller.gripper_fault_latch == latch
+
+    def test_latch_keeps_the_first_fault(self, mock_config_files, mock_xarm_api, monkeypatch):
+        mock_xarm_api.get_bio_gripper_status.return_value = (0, 0b11)
+        mock_xarm_api.get_bio_gripper_error.return_value = (0, 12)
+        controller = self._bio_gen2_controller(mock_config_files, mock_xarm_api, monkeypatch)
+        controller.refresh_gripper_status()
+        mock_xarm_api.get_bio_gripper_error.return_value = (0, 7)
+        controller.refresh_gripper_status()
+        assert controller.gripper_fault_latch["error_code"] == 12
+
+    def test_latch_survives_a_new_controller(self, mock_config_files, mock_xarm_api, monkeypatch):
+        # /disconnect + /connect builds a new XArmController; reconnecting
+        # must not be a way around clear_errors.
+        mock_xarm_api.get_bio_gripper_status.return_value = (0, 0b11)
+        mock_xarm_api.get_bio_gripper_error.return_value = (0, 12)
+        self._bio_gen2_controller(mock_config_files, mock_xarm_api, monkeypatch).refresh_gripper_status()
+        fresh = self._bio_gen2_controller(mock_config_files, mock_xarm_api, monkeypatch)
+        assert fresh.gripper_fault_latch["error_code"] == 12
+
     def test_clean_stop_clears_error(self, mock_config_files, mock_xarm_api, monkeypatch):
         # status low 2 bits == 0 (IS_STOP): jaws fully closed, nothing held.
         mock_xarm_api.get_bio_gripper_status.return_value = (0, 0)
@@ -591,6 +624,22 @@ class TestHealthRecovery:
         c.arm.clean_warn.assert_called_once()
         assert c.alive is True
         assert c.health_failure is None
+
+    def test_clear_errors_releases_the_gripper_fault_latch(self, initialized_controller):
+        c = initialized_controller
+        c.gripper_fault_latch = {"error_code": 12, "error_text": "object slipped",
+                                 "latched_at": "2026-10-12T02:45:39+00:00"}
+        assert c.clear_errors() is True
+        assert c.gripper_fault_latch is None
+
+    def test_failed_clear_errors_keeps_the_gripper_fault_latch(self, initialized_controller):
+        c = initialized_controller
+        latch = {"error_code": 12, "error_text": "object slipped",
+                 "latched_at": "2026-10-12T02:45:39+00:00"}
+        c.gripper_fault_latch = latch
+        c.arm.motion_enable.return_value = 1
+        assert c.clear_errors() is False
+        assert c.gripper_fault_latch == latch
 
     def test_warning_that_survives_clean_warn_stays_unhealthy(self, initialized_controller):
         c = initialized_controller

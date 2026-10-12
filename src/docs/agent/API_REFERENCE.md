@@ -54,6 +54,16 @@ Examples illustrate the schema, not validated motion targets. Arrays of joints
 must contain exactly the connected robot's axis count (five for xArm5).
 Omit `reference_angles` to sample current joints as the reference. `limited`
 controls SDK ±180-degree normalization, not safety or joint-limit enforcement.
+
+The SDK reports the controller's warning reply as success, so an IK query
+for an unreachable pose could otherwise look like a solution. The route reads
+the controller's warning code before and after the query. When one is latched
+afterwards, `result` is `available: false`, `reason: "controller_warning"`,
+and `controller_warning` is
+`{"warn_code","warn_title","raised_by_this_query","cleared"}`; otherwise
+`controller_warning` is `null`. A warning this query raised (W14, "User
+instructions and parameters have no solution") is cleared and verified by a
+readback; one that was already latched is left for `POST /control/clear_errors`.
 Reference IK requires firmware >=2.7.103 and a compatible SDK; **409** means
 unsupported, and the reference is never silently discarded. **422** means
 invalid dimensions/non-finite values; **400** means no controller instance;
@@ -209,7 +219,7 @@ All under `/control/freehand/trajectory`. Login on every call; the claim
 | `POST /validate {points, rate_hz?, start_tolerance_deg?}` | Moves nothing. 200 report; 422 `trajectory_invalid` (`detail.report.errors[]`: `code`, `message`), `rate_out_of_range`, `start_tolerance_out_of_range` |
 | `POST {rate_hz?, start_tolerance_deg?}` | 201 session status with `session_id`. 412 `trajectory_disabled`, `claim_enforcement_off`; 409 `graph_mode_strict`, `session_open`; 423 claim |
 | `PUT` or `POST /{id}/chunks/{seq} {points, final}` | 200 `{accepted, duplicate, seq, report, session}`. Identical re-send: `duplicate: true`. 409 `chunk_conflict`, `chunk_out_of_order` (`expected_seq`), `session_closed`, `session_running`; 422 with the report; 423 `session_owner_mismatch` |
-| `POST /{id}/start` | 200 status (`state: running`). 412 `arm_not_ready`, `arm_not_idle`, `manual_mode`; 409 `motion_in_progress`, `stopped_during_start`, `trajectory_incomplete`, `graph_mode_override_expiring`; 422 start too far from the first point |
+| `POST /{id}/start` | 200 status (`state: running`). 412 `arm_not_ready` (also any latched controller warning; clear it with `POST /control/clear_errors`), `arm_not_idle`, `manual_mode`; 409 `motion_in_progress`, `stopped_during_start`, `trajectory_incomplete`, `graph_mode_override_expiring`; 422 start too far from the first point |
 | `GET /{id}` | `state` (`created`, `starting`, `running`, `stopping`, `completed`, `cancelled`, `stopped`, `failed`, `expired`), `reason`, `executed {t_exec, duration_s, fraction}`, `started_at_utc`, `measured {joints_deg, age_ms}`, `servo` timing, `final`, `log_available` |
 | `POST /{id}/cancel` | Constrained stop along the path; before start it just closes |
 | `GET /{id}/log` | After the run: every tick and measured pose. 409 `log_not_ready`, `trajectory_running` |
@@ -264,9 +274,14 @@ commanded opening. An opening above the closing target may mean something
 blocked the jaws; reaching the target may mean they closed on empty space.
 Neither result identifies the object or measures grip force. `GET /status`
 reports `details.gripper.motion_state`, `object_detected`, `position_mm`, and
-error data **cached after the last successful jaw move**; it is not a live
-holding-force monitor. The gripper may remain clamped after travel stops, but
-the API does not confirm sustained holding force or rule out a later slip.
+error data read from the gripper after each jaw move and by a 1 Hz poll
+(paused while a joint trajectory runs); it is not a live holding-force
+monitor. The gripper may remain clamped after travel stops, but the API does
+not confirm sustained holding force. A gripper fault such as code 12 ("object
+slipped") is kept in `details.gripper.fault_latched` and holds
+`equipment_status` at `degraded` with `required_actions: ["clear_errors"]`
+until `POST /control/clear_errors` succeeds, even after the register reads
+normal again; a reconnect does not release it, a service restart does.
 Inspect the plate before lifting. Gripper force is unrelated to the wrist
 force/torque values used for pressing.
 

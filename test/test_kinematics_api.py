@@ -131,3 +131,61 @@ def test_invalid_reference_length_rejected(setup):
     client, arm = setup
     assert client.post('/kinematics/ik', json={'pose': [1] * 6, 'reference_angles': [0] * 6}).status_code == 422
     arm.ik.assert_not_called()
+
+
+def _warn_sequence(arm, warns):
+    """get_err_warn_code returns these warning codes in order (fresh reads)."""
+    arm.get_err_warn_code = Mock(side_effect=[(0, [0, w]) for w in warns])
+    arm.clean_warn = Mock(return_value=0)
+
+
+def test_no_solution_warning_is_not_a_solution_and_is_cleared(setup):
+    # The SDK reports code 0 for the controller's warning reply, so the IK
+    # result looks like a solution; W14 latched by this query says it is not.
+    client, arm = setup
+    _warn_sequence(arm, [0, 14, 0])
+    r = client.post('/kinematics/ik', json={'pose': [1] * 6}).json()
+    assert r['result']['available'] is False
+    assert r['result']['data'] is None
+    assert r['result']['reason'] == 'controller_warning'
+    assert r['controller_warning'] == {
+        'warn_code': 14, 'warn_title': 'User instructions and parameters have no solution',
+        'raised_by_this_query': True, 'cleared': True}
+    arm.clean_warn.assert_called_once_with()
+    arm.is_joint_limit.assert_not_called()
+
+
+def test_clear_is_verified_by_readback(setup):
+    client, arm = setup
+    _warn_sequence(arm, [0, 14, 14])
+    r = client.post('/kinematics/ik', json={'pose': [1] * 6}).json()
+    assert r['controller_warning']['cleared'] is False
+    assert r['result']['available'] is False
+
+
+def test_warning_latched_before_the_query_is_left_alone(setup):
+    client, arm = setup
+    _warn_sequence(arm, [14, 14])
+    r = client.post('/kinematics/ik', json={'pose': [1] * 6}).json()
+    assert r['controller_warning']['raised_by_this_query'] is False
+    assert r['controller_warning']['cleared'] is False
+    assert r['result']['available'] is False
+    arm.clean_warn.assert_not_called()
+
+
+def test_unreadable_warning_before_is_not_cleared(setup):
+    client, arm = setup
+    arm.get_err_warn_code = Mock(side_effect=[(-1, [0, 0]), (0, [0, 14])])
+    arm.clean_warn = Mock(return_value=0)
+    r = client.post('/kinematics/ik', json={'pose': [1] * 6}).json()
+    assert r['result']['available'] is False
+    arm.clean_warn.assert_not_called()
+
+
+def test_no_warning_keeps_the_solution(setup):
+    client, arm = setup
+    _warn_sequence(arm, [0, 0])
+    r = client.post('/kinematics/ik', json={'pose': [1] * 6}).json()
+    assert r['result']['available'] is True
+    assert r['controller_warning'] is None
+    arm.clean_warn.assert_not_called()

@@ -1,10 +1,18 @@
-"""Read-only SDK queries. No connection, motion, enable, or configuration writes."""
+"""Read-only SDK queries. No connection, motion, enable, or configuration writes.
+
+One exception: an IK query for a pose with no solution makes the controller
+latch W14 ("User instructions and parameters have no solution"), which then
+blocks trajectory start until someone recovers the arm. ``inverse`` clears
+that warning again, and only when this query is the one that raised it.
+"""
 import inspect
 from datetime import datetime, timezone
 from importlib.metadata import version
 
 from fastapi import HTTPException
 from xarm.x3.code import APIState
+
+from .xarm_utils import describe_controller_codes
 
 
 UNITS = {"position": "mm", "angle": "degree", "pose_order": ["x", "y", "z", "roll", "pitch", "yaw"]}
@@ -88,12 +96,60 @@ def inverse(arm, pose, reference_angles, limited):
             return {**metadata(), "result": current, "reference_angles": None,
                     "joint_limit_check": None, "violating_joints": None}
         reference_angles = current["data"][:arm.axis]
+    warn_before = _fresh_warn_code(arm)
     result = read_result(arm, "get_inverse_kinematics", pose, input_is_radian=False,
                          return_is_radian=False, limited=limited, ref_angles=reference_angles)
+    warning = _ik_warning(arm, warn_before)
+    if warning is not None:
+        # The SDK maps the controller's warning reply to code 0, so the IK
+        # result alone would read as a solution. With a warning latched it
+        # cannot be told apart from one, so it is never offered as one.
+        result = {"available": False, "code": result["code"], "data": None,
+                  "reason": "controller_warning", "message": warning["warn_title"]}
     check = None
     if result["available"]:
         result["data"] = result["data"][:arm.axis]
         check = read_result(arm, "is_joint_limit", result["data"], is_radian=False)
     return {**metadata(), "result": result, "reference_angles": reference_angles,
             "limited": limited, "joint_limit_check": check, "violating_joints": None,
+            "controller_warning": warning,
             "diagnostic_scope": "SDK returns a limit boolean and status code, not per-joint reasons. This is not collision/path validation."}
+
+
+def _fresh_warn_code(arm):
+    """The controller's warning code read from the box now, or None.
+
+    ``arm.warn_code`` is the 5 Hz report cache and can lag the IK reply, so
+    this asks the controller directly.
+    """
+    result = read_result(arm, "get_err_warn_code")
+    codes = result["data"]
+    if not result["available"] or not isinstance(codes, (list, tuple)) or len(codes) < 2:
+        return None
+    return codes[1]
+
+
+def _ik_warning(arm, warn_before):
+    """Describe a warning latched after an IK query; clear it if the query raised it.
+
+    None when no warning is latched or the codes cannot be read. A warning
+    that was already latched before the query belongs to someone else and is
+    left for clear_errors.
+    """
+    warn_after = _fresh_warn_code(arm)
+    if not warn_after:
+        return None
+    raised_here = warn_before == 0
+    warning = {**describe_controller_codes(None, warn_after),
+               "raised_by_this_query": raised_here, "cleared": False}
+    warning.pop("error_code"), warning.pop("error_title")
+    if raised_here:
+        clean = getattr(arm, "clean_warn", None)
+        if callable(clean):
+            try:
+                clean()
+            except Exception:
+                pass
+            # Trust the readback, not clean_warn's return code.
+            warning["cleared"] = _fresh_warn_code(arm) == 0
+    return warning

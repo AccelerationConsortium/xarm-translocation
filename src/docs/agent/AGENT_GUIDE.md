@@ -76,7 +76,12 @@ ordinary effective limits as unavailable. `POST /kinematics/fk` and
 `POST /kinematics/ik` calculate without motion or state changes; IK accepts
 `reference_angles` or reads current joints when omitted. These routes require
 an existing connection and no claim. Check SDK result codes and the separate
-limit check; a solution does not establish a safe path. See the
+limit check; a solution does not establish a safe path. A pose with no
+solution makes the controller latch warning W14; the IK route then returns
+`result.available: false` with `reason: "controller_warning"` and clears the
+warning it raised (`controller_warning.cleared`). If `cleared` is false, or the
+warning was already latched (`raised_by_this_query: false`), trajectory start
+refuses with 412 `arm_not_ready` until the warning is cleared. See the
 [API reference](agent-docs/api-reference) for schemas and remaining limitations.
 
 ## Moving the arm
@@ -140,6 +145,18 @@ restored and the service reconnected, `capabilities` on `/connect` and in
   `gripper_force_control_disabled` even when the graph is OFF.
 - `/gripper/open` and `/gripper/close` still move the jaws (close goes to
   the configured 71 mm) and `GET /gripper/position` still reads the opening.
+
+### A gripper fault is latched until clear_errors
+
+When the BioGripper reports a fault (code 12, "object slipped", is the one
+seen in practice), `/status` keeps it after the gripper's own register reads
+normal again: `equipment_status` is `degraded`, `required_actions` contains
+`clear_errors`, the message names the fault, and
+`details.gripper.fault_latched` holds `error_code`, `error_text` and
+`latched_at`. `allowed_actions` is unchanged, so skills stay available, but a
+slip means the labware may have moved or dropped. Stop, report it, and leave
+recovery to the operator: someone checks the labware, then
+`POST /control/clear_errors` releases the latch. Reconnecting does not.
 
 The sections below describe the full feature set for when it is restored.
 
