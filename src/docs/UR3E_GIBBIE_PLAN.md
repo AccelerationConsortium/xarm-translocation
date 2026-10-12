@@ -134,10 +134,21 @@ first attempts expired between commands):
 | STOP mid-move (+Z 40 mm at 5 mm/s, stop at 2.5 s) | stop round trip 19 ms; 11.6 mm travelled; the move returned 500 `arm_move_failed` latched; a move while latched 412 `motion_latched`; `/control/reset` cleared it; the return jog brought z back to 408.7 |
 | gripper open ×2 | raw 3 (requested 0), 1.7–1.9 s |
 | gripper close on nothing ×2 | raw 228 (requested 255), 1.8 s, `at_requested_position` |
-| stroke 40 mm (default 0/255 map) | raw 135 in 0.9 s; under a linear 3/228 map that is ≈35 mm, to be confirmed with calipers before `open_raw 3` / `closed_raw 228` go into the config |
+| stroke 40 mm (default 0/255 map) | raw 135 in 0.9 s; the calipers read **35 mm**, which is what a linear 3/228 map predicts (35.1) |
 | disconnect | closed with no error at 02:29:05 UTC; RUNNING / NORMAL, program STOPPED for the following 100 s, no protective stop |
 
-Still to do from this record: the gripper calibration above; manual
+**Gripper calibration (2026-10-12 ~04:40-04:55 UTC).** Five more opens
+and closes on nothing all ended at raw 3 and raw 228 (no scatter, 1.8 s
+each at the 30 % default speed). The 40 mm command under the default map
+went to raw 135 and measured 35 mm, so the user applied `open_raw 3` /
+`closed_raw 228` with `.state\install-stage4-gripper-calibration.ps1`
+(backup `robot-motion.local.json.bak-*-pre-gripper-cal`; the same config
+set `equipment_id` to `ur3e_gibbie`). After the restart the unchanged
+fingers read 35.1 mm; a 60 mm command went to raw 69 (60.1 mm) and a 40 mm
+command to raw 122 (40.0 mm). The 2F-85's map is therefore the same as the
+UR5e 2F-140's (3/228).
+
+Still to do from this record: manual
 (teach) mode and its STOP latch were not exercised; the real limits for
 the motion block; the interlock contract with the workflow's owner; the
 edge and API secrets plus the control tile on the dashboard.
