@@ -20,11 +20,12 @@ Controller, from the Gibbie PC over the Dashboard Server (29999):
 | State at recon | RUNNING / NORMAL, program STOPPED `<unnamed>` | same |
 | Remote Control | **on** (operational mode NONE) | had to be switched on at the pendant |
 | Open ports | 30002, 30004 (RTDE), 502, **63352 (Robotiq URCap)** | same set |
-| Gripper URCap registers | ACT 1, STA 3, FLT 00, POS 207, SPE 128, FOR 128, OBJ 3 | 2F-140 |
+| Gripper | **Robotiq 2F-85** (85 mm stroke; user, 2026-10-12). URCap registers ACT 1, STA 3, FLT 00, POS 207, SPE 128, FOR 128, OBJ 3 | 2F-140 |
 
-The gripper model is not known yet (the URCap does not say; POS 207 with
-OBJ 3 at rest is a closed or nearly closed gripper). Read it from the
-pendant's Robotiq screen before any gripper work.
+The driver already knows the model (`gripper.model: robotiq_2f85`,
+`drivers/robotiq.py`). POS 207 under the default 0/255 map is about 16 mm
+open, so the fingers were nearly closed at recon; the real open/closed raw
+values are measured in stage 2 as they were on the UR5e (3/228 there).
 
 The Gibbie PC (`sdl2-pc-04`, Tailnet 100.64.254.17, lab switch
 192.168.254.79, ssh alias `gibbie-pc`, cmd.exe shell, elevated): git 2.53,
@@ -54,9 +55,11 @@ with the observation tile, an edge block `/ur3e/` for the read-only panel,
 host-ops whitelist and probe port. The old `gibbie_ur_arm` tile stays until
 the user retires it.
 
-**Stage 2, gripper.** Identify the model on the pendant, add it to the
-config (`gripper.model`), calibrate `open_raw`/`closed_raw` as for the
-UR5e, live test with the user present. Needs `control_enabled` and the
+**Stage 2, gripper.** The 2F-85: `gripper.model: robotiq_2f85` in the
+config, calibrate `open_raw`/`closed_raw` as for the UR5e (closes on
+nothing, opens, five times each), live test with the user present.
+Re-activating it sweeps the fingers, and the bench workflow activates it
+too, so agree the moment with the workflow's owner. Needs `control_enabled` and the
 edge secret in the service environment (`ROBOT_MOTION_UR3E_EDGE_SHARED_SECRET`,
 its own, in Caddy's and the dashboard API's env files too).
 
@@ -99,7 +102,6 @@ that service and its firewall rule; nothing else on the PC was touched.
 
 ## Open with the user
 
-- The gripper model (pendant).
 - Who may hold the arm when: the interlock contract with the Gibbie
   workflow's owner (stage 3).
 - Whether `gibbie_ur_arm` (the monitor's probe) is retired once
