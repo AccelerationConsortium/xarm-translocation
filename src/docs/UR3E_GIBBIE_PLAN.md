@@ -148,16 +148,23 @@ fingers read 35.1 mm; a 60 mm command went to raw 69 (60.1 mm) and a 40 mm
 command to raw 122 (40.0 mm). The 2F-85's map is therefore the same as the
 UR5e 2F-140's (3/228).
 
-Still to do from this record: manual
-(teach) mode and its STOP latch were not exercised; the real limits for
-the motion block; the interlock contract with the workflow's owner; the
-edge and API secrets plus the control tile on the dashboard.
+Still to do from this record: manual (teach) mode and its STOP latch were
+not exercised; the real limits for the motion block; the interlock
+contract with the workflow's owner. Done the same night: the edge and API
+secrets and the control tile (ac-organic-lab PRs #69 and #70; a live
+INIT / STOP / disconnect from the tile at 04:20-04:21 UTC reached the
+device as the operator), and `gibbie_ur_arm` retired from the dashboard.
 
 ## Open with the user
 
 - Who may hold the arm when: the interlock contract with the Gibbie
-  workflow's owner (stage 3).
-- Whether `gibbie_ur_arm` (the monitor's probe) is retired once
-  `ur3e_gibbie` is on the dashboard.
-- The real limits for the motion block (stage 3), and a date for the
-  supervised first session.
+  workflow's owner, and then the device-side guard (refuse `/connect`
+  while a program is PLAYING or `gibbie_workflow` is busy).
+- The real limits for the motion block (the placeholder is 10 deg/s,
+  50 mm/s, ±800 mm, ±360°), and the manual-mode test.
+- Stage 4 (joint trajectories): the UR5e's stages 0a/0b/3 on this arm,
+  then `control.trajectory.enabled` and the `trajectory.*` skills for
+  `ur3e_gibbie`.
+- Housekeeping: `robot-motion-ur3e` in the Gibbie PC's host-ops whitelist
+  and probe ports; the LocalSystem service account (DEVICE_PC_SETUP §5)
+  now that control is on, as on pc-05.
