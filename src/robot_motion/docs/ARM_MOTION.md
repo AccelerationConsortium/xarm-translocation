@@ -14,8 +14,8 @@ mistakes. They do not replace those.
 
 ## Configuration
 
-A `motion` block inside `control` (with `control_enabled: true`, RTDE
-observation and `authorized_operators`). Every field without a default is
+A `motion` block inside `control` (with `control_enabled: true` and RTDE
+observation; who may operate is the central edge's decision, not the config's). Every field without a default is
 required; nothing is guessed:
 
 ```json

@@ -87,9 +87,12 @@ class TrajectoryConfig(BaseModel):
 class ControlSettings(BaseModel):
     """Explicit commissioning inputs for the control routes.
 
-    Nothing here is guessed: the operator allowlist, every joint bound, the
-    stop deceleration and the commissioning reference come from the local
-    config. The dashboard edge's shared secret comes from the environment.
+    Nothing here is guessed: every joint bound, the stop deceleration and the
+    commissioning reference come from the local config. The dashboard edge's
+    shared secret comes from the environment. Who may command the robot is not
+    configured here: the central edge decides (Caddy forward_auth with
+    ``/auth/verify?equipment=<key>``, and the dashboard's per-equipment check),
+    and the device trusts the identity it vouches for.
     The arm is driven by at most one of joint_step (single tiny steps, the
     first commissioning primitive) or motion (joint and Cartesian moves and
     jogs, ur_motion.py). Both are optional so the gripper can be commissioned
@@ -97,7 +100,6 @@ class ControlSettings(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    authorized_operators: tuple[str, ...] = Field(min_length=1, max_length=50)
     joint_step: JointStepLimits | None = None
     motion: MotionLimits | None = None
     # Dedicated receive stream for control feedback; the UI poll is too old.
@@ -109,13 +111,18 @@ class ControlSettings(BaseModel):
     audit_file: str | None = None
     trajectory: TrajectoryConfig | None = None
 
-    @field_validator("authorized_operators")
+    @model_validator(mode="before")
     @classmethod
-    def email_identities(cls, operators):
-        normalized = tuple(sorted({o.strip().lower() for o in operators}))
-        if any(not o or "@" not in o or " " in o for o in normalized):
-            raise ValueError("Authorized operators are e-mail identities")
-        return normalized
+    def no_local_operator_list(cls, data):
+        # Named, not left to extra="forbid": a config that still carries the
+        # old list must say why it no longer loads.
+        if isinstance(data, dict) and "authorized_operators" in data:
+            raise ValueError(
+                "authorized_operators was removed: the central edge authorizes "
+                "operators (grant a role on this equipment in the auth roster) "
+                "- delete the key from the local config"
+            )
+        return data
 
     @model_validator(mode="after")
     def one_arm_mode(self):

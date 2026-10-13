@@ -58,7 +58,6 @@ def config(tmp_path, **trajectory):
         ur_transport="rtde",
         control_enabled=True,
         control={
-            "authorized_operators": [OPERATOR],
             "motion": MOTION,
             # A STOP while servoing brakes under the SDK lock: 20 deg/s at
             # 90 deg/s^2 needs a watchdog below 2.25 Hz (config rule).

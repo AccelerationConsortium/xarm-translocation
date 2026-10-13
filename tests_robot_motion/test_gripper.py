@@ -146,7 +146,7 @@ def settings(control=True, gripper=None, **overrides):
         robot_host="robot.invalid",
         ur_transport="rtde",
         control_enabled=control,
-        control={"authorized_operators": [OPERATOR]} if control else None,
+        control={} if control else None,
         gripper=gripper or GRIPPER,
     )
     base.update(overrides)
@@ -209,7 +209,7 @@ def test_gripper_needs_an_observed_ur_and_control_needs_something_to_control():
     with pytest.raises(ValidationError):
         Settings(
             driver="ur", model="ur5e", observe=True, robot_host="robot.invalid", ur_transport="rtde",
-            control_enabled=True, control={"authorized_operators": [OPERATOR]},
+            control_enabled=True, control={},
         )
     gripper_only = settings()
     assert gripper_only.control.joint_step is None
@@ -318,8 +318,8 @@ def test_gripper_only_control_has_no_arm_routes_and_gates_every_command():
         assert client.post("/control/joint_step", json={}, headers=HEADERS).status_code == 404
         assert client.post("/gripper/open", json={}).status_code in (401, 423)
         assert client.post("/gripper/open", json={}, headers=HEADERS).status_code == 423
-        unlisted = {"X-Auth-User": "someone@example.invalid", "X-Edge-Auth": SECRET}
-        assert client.post("/control/claim", json={"owner": "x", "session_id": "s", "ttl_s": 30}, headers=unlisted).status_code == 403
+        unvouched = {"X-Auth-User": OPERATOR, "X-Edge-Auth": "wrong"}
+        assert client.post("/control/claim", json={"owner": "x", "session_id": "s", "ttl_s": 30}, headers=unvouched).status_code == 401
         status = client.get("/status").json()
         assert set(status["allowed_actions"]) == {"control.stop", "gripper.open", "gripper.close", "gripper.move"}
         assert status["details"]["control_session"]["arm_control"] is False

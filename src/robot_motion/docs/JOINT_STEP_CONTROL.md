@@ -17,14 +17,17 @@ receive-only.
 
 `control.py` installs the routes only when the local config sets
 `control_enabled: true` together with a complete `control` block
-(`authorized_operators`, every `joint_step` limit including the six joint
+(every `joint_step` limit including the six joint
 bounds, the stop deceleration and `commissioning_id`) on a service that
 already observes the same UR robot over RTDE. A lone flag is rejected.
 
 - Identity: requests must carry the dashboard edge's `X-Auth-User` and an
   `X-Edge-Auth` that matches `ROBOT_MOTION_EDGE_SHARED_SECRET`. Without that
-  secret every control route answers 503; unverified callers get 401 and
-  verified callers outside `authorized_operators` get 403. The verified
+  secret every control route answers 503 and unverified callers get 401.
+  Who may control the robot is decided centrally, before the request
+  arrives: the edge's forward_auth names the equipment
+  (`/auth/verify?equipment=<key>`) and the dashboard checks the roster per
+  equipment, so the device keeps no operator list. The verified
   e-mail, never the client's `owner` field, becomes the claim holder.
 - Claims: `POST /control/claim`, `/control/heartbeat`, `/control/release`
   reuse `core.claims.ClaimManager` under hard enforcement.

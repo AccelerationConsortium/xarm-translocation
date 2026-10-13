@@ -120,14 +120,8 @@ class URControl:
                     "hint": "control requests must arrive through the authenticated dashboard edge",
                 },
             )
-        if identity["email"] not in self.config.authorized_operators:
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "error": "operator_not_authorized",
-                    "hint": "only operators listed in the local control config may command this robot",
-                },
-            )
+        # No local operator list: the edge holding the secret has already
+        # decided this identity may control this equipment (central roster).
         request.state.identity = identity
         return identity
 
@@ -158,14 +152,14 @@ class URControl:
 
     def authorize(self, request, target, commissioning_id):
         # Rechecked by the executors before dispatch, at the exact target, and
-        # on every feedback sample: the holder must still be a listed operator
-        # and the session the move started under must still be the open one.
+        # on every feedback sample: the claim must still be held (its owner is
+        # the edge-verified identity that took it) and the session the move
+        # started under must still be the open one.
         holder = self.claims.claimed_by()
         return (
             self.arm_limits is not None
             and commissioning_id == self.arm_limits.commissioning_id
             and holder is not None
-            and holder["owner"] in self.config.authorized_operators
             and self.session is not None
             and self.session.is_open
         )
