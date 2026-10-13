@@ -63,6 +63,9 @@ STOP_NOTICE = (
 
 
 IDLE_STATE = {"robotmode": "RUNNING", "safetystatus": "NORMAL", "program_state": "STOPPED"}
+# ur_rtde's RTDEControlInterface raises this when another RTDE client already
+# holds the input registers its control script needs.
+REGISTERS_IN_USE = "RTDE input registers are already in use"
 
 
 class URControl:
@@ -570,6 +573,21 @@ class URControl:
                 try:
                     session.open()
                 except Exception as exc:
+                    if REGISTERS_IN_USE in str(exc):
+                        # Another RTDE control client (on the LLE PC, automated-lle's
+                        # IvoryOS server) holds the input registers: the arm is taken,
+                        # not broken.
+                        log.warning("UR control session refused: RTDE input registers in use")
+                        self.event("connect_refused", identity, action="connect", reason="arm_held_by_another_client")
+                        raise HTTPException(
+                            status_code=409,
+                            detail={
+                                "error": "arm_held_by_another_client",
+                                "reason": "Another RTDE control client holds this arm (its input registers are in use)",
+                                "hint": "Stop the other client (e.g. an automation server) on the arm's host PC, then connect again",
+                                "message": str(exc),
+                            },
+                        )
                     log.exception("UR control session failed to open")
                     raise HTTPException(
                         status_code=502,
