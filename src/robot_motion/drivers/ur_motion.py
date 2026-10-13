@@ -526,7 +526,7 @@ class MotionExecutor:
     def _gate(self, token, target=None):
         self._require_claim_and_unlatched(token)
         if self.authorize(None, target, self.limits.commissioning_id) is not True:
-            raise MotionRefused("not_authorized", "Authorized session and operator required")
+            raise MotionRefused("not_authorized", "Held claim and open commissioned session required")
         if not self.control.isConnected():
             raise MotionRefused("control_link_down", "Owned control interface is not connected")
         self._require_claim_and_unlatched(token)

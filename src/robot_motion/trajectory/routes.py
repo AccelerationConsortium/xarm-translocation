@@ -286,8 +286,6 @@ class URTrajectory:
             current = self.ur.claims.claimed_by()
             if not isinstance(current, dict) or current.get("session_id") != key:
                 return "claim_lost"
-            if current.get("owner") not in self.ur.config.authorized_operators:
-                return "not_authorized"
             if self.ur.session is not session or not session.is_open or not session.watchdog_ok:
                 return "control_session_lost"
             if self.ur.executor is not executor or executor.latched is not None:

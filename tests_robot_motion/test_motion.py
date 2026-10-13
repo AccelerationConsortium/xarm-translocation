@@ -68,7 +68,7 @@ def settings(motion=None, **overrides):
         robot_host="robot.invalid",
         ur_transport="rtde",
         control_enabled=True,
-        control={"authorized_operators": [OPERATOR], "motion": {**MOTION, **(motion or {})}},
+        control={"motion": {**MOTION, **(motion or {})}},
     )
     base.update(overrides)
     return Settings(**base)
@@ -376,7 +376,7 @@ def test_joint_step_and_motion_are_exclusive():
         Settings(
             driver="ur", model="ur5e", observe=True, robot_host="robot.invalid", ur_transport="rtde",
             control_enabled=True,
-            control={"authorized_operators": [OPERATOR], "joint_step": joint_step, "motion": MOTION},
+            control={"joint_step": joint_step, "motion": MOTION},
         )
 
 
@@ -1129,7 +1129,7 @@ def test_stops_while_servoing_are_servo_stops():
 
 
 def test_trajectories_need_a_watchdog_slower_than_braking():
-    control = {"authorized_operators": [OPERATOR], "motion": MOTION, "trajectory": {"enabled": True}}
+    control = {"motion": MOTION, "trajectory": {"enabled": True}}
     # 20 deg/s at 90 deg/s^2 brakes for 0.22 s: the watchdog must be below 2.25 Hz.
     with pytest.raises(ValidationError, match="watchdog_hz must be below 2.25"):
         settings(control=control)

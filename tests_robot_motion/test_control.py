@@ -43,7 +43,7 @@ def settings(**overrides):
         robot_host="robot.invalid",
         ur_transport="rtde",
         control_enabled=True,
-        control={"authorized_operators": [OPERATOR], "joint_step": LIMITS},
+        control={"joint_step": LIMITS},
     )
     base.update(overrides)
     return Settings(**base)
@@ -224,10 +224,10 @@ def step(joint=2, delta_deg=0.1):
         {"control": None},
         {"ur_transport": "dashboard"},
         {"observe": False, "robot_host": None},
-        {"control": {"authorized_operators": [], "joint_step": LIMITS}},
-        {"control": {"authorized_operators": ["not an email"], "joint_step": LIMITS}},
-        {"control": {"authorized_operators": [OPERATOR], "joint_step": {**LIMITS, "lower_deg": [2.0] * 6}}},
-        {"control": {"authorized_operators": [OPERATOR], "joint_step": {**LIMITS, "max_step_deg": 1.0}}},
+        # The local operator list is gone: authorization is the central edge's.
+        {"control": {"authorized_operators": [OPERATOR], "joint_step": LIMITS}},
+        {"control": {"joint_step": {**LIMITS, "lower_deg": [2.0] * 6}}},
+        {"control": {"joint_step": {**LIMITS, "max_step_deg": 1.0}}},
     ],
 )
 def test_control_configuration_must_be_explicit_and_coherent(overrides):
@@ -254,17 +254,22 @@ def test_enabling_control_imports_no_vendor_sdk_before_connect():
     assert rig.control_calls == []
 
 
-def test_identity_is_edge_verified_and_allowlisted():
+def test_identity_is_edge_verified_and_authorized_centrally():
+    """The edge decides who may control this equipment; the device keeps no list.
+
+    Any identity the edge vouches for (shared secret) is accepted, and the
+    claim is stamped with that identity, never the client's `owner`.
+    """
     rig = Rig(settings())
     with rig.client() as client:
         body = {"owner": "x", "session_id": "s", "ttl_s": 30}
         assert client.post("/control/claim", json=body).status_code == 401
         bad = {"X-Auth-User": OPERATOR, "X-Edge-Auth": "wrong"}
         assert client.post("/control/claim", json=body, headers=bad).status_code == 401
-        unlisted = {"X-Auth-User": "someone@example.invalid", "X-Edge-Auth": SECRET}
-        assert client.post("/control/claim", json=body, headers=unlisted).status_code == 403
-        assert client.post("/control/stop", headers=unlisted).status_code == 403
-        assert client.post("/control/claim", json=body, headers=HEADERS).status_code == 200
+        assert client.post("/control/stop", headers=bad).status_code == 401
+        other = {"X-Auth-User": "Someone@Example.invalid", "X-Edge-Auth": SECRET}
+        assert client.post("/control/claim", json=body, headers=other).status_code == 200
+        assert client.get("/status").json()["details"]["claimed_by"]["owner"] == "someone@example.invalid"
     with rig.client(secret=None) as client:
         response = client.post("/control/claim", json=body, headers=HEADERS)
         assert response.status_code == 503
@@ -472,7 +477,7 @@ def test_connect_refuses_unless_the_robot_is_observed_idle():
 
 def test_watchdog_is_armed_kicked_and_fails_closed():
     rig = Rig(settings(control={
-        "authorized_operators": [OPERATOR], "joint_step": LIMITS, "watchdog_hz": 20,
+        "joint_step": LIMITS, "watchdog_hz": 20,
     }))
     with rig.client() as client:
         held = claim(client)
@@ -519,7 +524,7 @@ def test_audit_file_records_every_control_event(tmp_path):
 
     audit = tmp_path / "control-audit.jsonl"
     rig = Rig(settings(control={
-        "authorized_operators": [OPERATOR], "joint_step": LIMITS, "audit_file": str(audit),
+        "joint_step": LIMITS, "audit_file": str(audit),
     }))
     with rig.client() as client:
         held = claim(client)
@@ -548,7 +553,7 @@ def test_relative_audit_file_resolves_beside_the_config(tmp_path):
     config.write_text(json.dumps({
         "driver": "ur", "model": "ur5e", "observe": True, "robot_host": "robot.invalid",
         "ur_transport": "rtde", "control_enabled": True,
-        "control": {"authorized_operators": [OPERATOR], "joint_step": LIMITS,
+        "control": {"joint_step": LIMITS,
                     "audit_file": "logs/control.jsonl"},
     }))
     loaded = load_settings(config)

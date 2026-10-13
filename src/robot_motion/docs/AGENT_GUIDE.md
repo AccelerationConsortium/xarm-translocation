@@ -51,8 +51,8 @@ must use lab-skills, claims, interlocks, and validated human-approved plans.
 Use a gitignored *.local.json config, passed with --config. Robot addresses,
 deployment paths and calibration stay local. Observation requires observe=true,
 driver=ur, an explicit model, and robot_host. control_enabled defaults to false
-and is rejected unless a complete control block (authorized_operators plus
-joint_step or motion limits, or a gripper) accompanies it on an RTDE-observed robot;
+and is rejected unless a complete control block (joint_step or motion
+limits, or a gripper) accompanies it on an RTDE-observed robot;
 the edge secret comes from ROBOT_MOTION_EDGE_SHARED_SECRET in the service
 environment, never from the config file. Optional control settings:
 watchdog_hz (controller-side watchdog rate, default 10) and audit_file
@@ -138,7 +138,10 @@ which presents the signed-in operator as this device's edge identity and
 forwards a caller's own `X-Claim-Token` unchanged (claim through
 `…/control/claim` there first: a trajectory session belongs to the claim
 that created it, so create, upload and start must share one). Either way
-the operator must be on `authorized_operators`.
+the operator needs a role on this equipment in the central auth roster: the
+edge (`/auth/verify?equipment=<key>`) and the dashboard's per-equipment check
+decide, and the device keeps no operator list. A config that still carries
+`authorized_operators` is refused at load.
 
 **Catalog names:** `/status.allowed_actions` lists `trajectory.limits`,
 `trajectory.status`, `trajectory.create`, `trajectory.upload_chunk`,
