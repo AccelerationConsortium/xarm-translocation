@@ -40,6 +40,12 @@ Gibbie UR3e (`ur3e_gibbie`).
   `arm.zero_force_sensor` is never offered (412 `no_force_sensor`).
 - RTDE and servoJ run at 125 Hz at most; the config refuses a higher
   feedback or trajectory rate.
+- The pendant's active TCP stays all zeros (the bare flange): automated-lle's
+  `moveL` / `getActualTCPPose` poses are flange poses, so setting a Hand-E
+  TCP on the pendant would shift every one of them. FK with an all-zero
+  offset ends the control script, so robot-motion verifies FK with a 1 um
+  tool-Z offset instead (`FLANGE_TCP_OFFSET`); joint moves need it for the
+  workspace check. robot-motion's linear moves are therefore flange moves.
 - A safeguard stop reads `requires_init` (the tile's "Needs Init"), not an
   error. /connect stays refused until safety is NORMAL again.
 

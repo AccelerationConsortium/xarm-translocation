@@ -280,7 +280,7 @@ def test_force_guard_stops_the_run(tmp_path):
 
 
 def test_trajectories_are_refused_when_kinematics_cannot_be_verified(rig):
-    rig.control.getTCPOffset = lambda: [0.0] * 6
+    rig.control.getTCPOffset = lambda: [0.0] * 5   # unusable: kinematics stay unverified
     with rig.client() as client:
         held = connected(client)
         check = client.post(f"{BASE}/validate", json={"points": ramp()}, headers=held)

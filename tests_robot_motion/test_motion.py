@@ -460,17 +460,31 @@ def test_connect_verifies_forward_kinematics_against_the_measured_pose():
     assert rig.control.fk_calls == 1
 
 
+def test_a_bare_flange_tcp_verifies_kinematics_with_a_micron_offset():
+    # The LLE PC's UR5 CB3 keeps the pendant TCP at zero (automated-lle's
+    # poses are flange poses); FK must not send the all-zero offset.
+    rig = Rig()
+    rig.control.getTCPOffset = lambda: [0.0] * 6
+    with rig.client() as client:
+        held = connected(client)
+        session = client.get("/status").json()["details"]["control_session"]
+        assert session["kinematics_error"] is None
+        assert session["tcp_offset_mm_rpy_deg"] == [0.0] * 6
+        moved = client.post("/control/freehand/joints", json={"angles": [2, 0, 0, 0, 0, 0]}, headers=held)
+        assert moved.status_code == 200, moved.text
+
+
 @pytest.mark.parametrize(
     "break_it, reason",
     [
-        ("offset", "all zeros"),
+        ("offset", "not 6"),
         ("fk", "mm from the measured TCP"),
     ],
 )
 def test_joint_moves_are_refused_when_kinematics_cannot_be_verified(break_it, reason):
     rig = Rig()
     if break_it == "offset":
-        rig.control.getTCPOffset = lambda: [0.0] * 6
+        rig.control.getTCPOffset = lambda: [0.0] * 5
     else:
         rig.control.fk = lambda q: [v + 0.5 for v in fk(q)]   # 0.87 m off, as ur_rtde without the offset
     with rig.client() as client:
