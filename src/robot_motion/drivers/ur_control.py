@@ -174,6 +174,10 @@ class ControlFeedback:
         self.receiver.disconnect()
 
 
+# FK offset standing in for an all-zero active TCP (see verify_kinematics).
+FLANGE_TCP_OFFSET = (0.0, 0.0, 1e-6, 0.0, 0.0, 0.0)
+
+
 class _SerializedControl:
     """RTDEControlInterface is not thread-safe: one caller inside the SDK at a time.
 
@@ -271,9 +275,15 @@ class _SerializedControl:
         try:
             with self._lock:
                 offset = [float(v) for v in self._control.getTCPOffset()]
-            if len(offset) != 6 or all(v == 0.0 for v in offset):
-                # An all-zero offset is the call that ends the script; refuse it.
-                raise RuntimeError("the active TCP offset is all zeros; FK with it stops the control script")
+            if len(offset) != 6:
+                raise RuntimeError(f"the active TCP offset has {len(offset)} values, not 6")
+            if all(v == 0.0 for v in offset):
+                # The active TCP is the bare flange (the LLE PC's UR5 CB3, whose
+                # automated-lle poses are flange poses, so the pendant TCP must
+                # stay zero). An all-zero offset is the call that ends the
+                # script; 1 um along tool Z is the flange for every check here,
+                # and the comparison below still has to pass.
+                offset = list(FLANGE_TCP_OFFSET)
             with self._lock:
                 pose = list(self._control.getForwardKinematics(list(measured_q_rad), offset))
             error = math.dist(pose[:3], list(measured_pose)[:3])
