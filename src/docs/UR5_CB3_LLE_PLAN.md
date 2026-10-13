@@ -40,6 +40,12 @@ Gibbie UR3e (`ur3e_gibbie`).
   `arm.zero_force_sensor` is never offered (412 `no_force_sensor`).
 - RTDE and servoJ run at 125 Hz at most; the config refuses a higher
   feedback or trajectory rate.
+- The pendant's active TCP stays all zeros (the bare flange): automated-lle's
+  `moveL` / `getActualTCPPose` poses are flange poses, so setting a Hand-E
+  TCP on the pendant would shift every one of them. FK with an all-zero
+  offset ends the control script, so robot-motion verifies FK with a 1 um
+  tool-Z offset instead (`FLANGE_TCP_OFFSET`); joint moves need it for the
+  workspace check. robot-motion's linear moves are therefore flange moves.
 - A safeguard stop reads `requires_init` (the tile's "Needs Init"), not an
   error. /connect stays refused until safety is NORMAL again.
 
@@ -51,6 +57,16 @@ an LLE run exclude each other. /connect refuses while a program is PLAYING,
 but an LLE run between moves may show STOPPED. Rule until an interlock
 exists: no INIT while an LLE run is scheduled or in progress. automated-lle's
 code is not changed by this work.
+
+In practice the IvoryOS server (`implementations/SDL2/LLE_IvoryOS.py`, conda
+env `ur_robot`) keeps a ur_rtde control session open between runs (seen
+2026-10-13: up since 2026-10-06, holding 29999/30003/30004). Its session
+holds the RTDE input registers, so /connect gets ur_rtde's "RTDE input
+registers are already in use" and answers 409 `arm_held_by_another_client`.
+That refusal is the de facto interlock: do not work around it (e.g. with the
+upper register range), since a second control script would replace
+IvoryOS's on the controller. To use the arm, stop IvoryOS on the LLE PC,
+connect, and Disconnect before the LLE team restarts it.
 
 ## Commissioning
 

@@ -475,6 +475,45 @@ def test_connect_refuses_unless_the_robot_is_observed_idle():
         assert fresh.control_calls == []
 
 
+def test_connect_names_another_rtde_client_holding_the_arm():
+    rig = Rig(settings())
+
+    def taken(host):
+        rig.control_calls.append(host)
+        raise RuntimeError(
+            "One of the RTDE input registers are already in use! Currently you must disable the "
+            "EtherNet/IP adapter, PROFINET or any MODBUS unit configured on the robot. "
+            "This might change in the future."
+        )
+
+    rig.session = lambda: ControlSession(
+        rig.config, control_factory=taken, receiver_factory=lambda host, **kwargs: rig.receiver
+    )
+    with rig.client() as client:
+        held = claim(client)
+        refused = client.post("/connect", headers=held)
+        assert refused.status_code == 409
+        detail = refused.json()["detail"]
+        assert detail["error"] == "arm_held_by_another_client"
+        assert "Another RTDE control client" in detail["reason"]
+        status = client.get("/status").json()
+        assert status["details"]["control_session"]["open"] is False
+        assert status["details"]["control_session"]["last_event"]["kind"] == "connect_refused"
+    # Any other open failure stays a 502.
+    broken = Rig(settings())
+
+    def timed_out(host):
+        raise RuntimeError("timed out")
+
+    broken.session = lambda: ControlSession(
+        broken.config, control_factory=timed_out, receiver_factory=lambda host, **kwargs: broken.receiver
+    )
+    with broken.client() as client:
+        failed = client.post("/connect", headers=claim(client))
+        assert failed.status_code == 502
+        assert failed.json()["detail"]["error"] == "control_connect_failed"
+
+
 def test_watchdog_is_armed_kicked_and_fails_closed():
     rig = Rig(settings(control={
         "joint_step": LIMITS, "watchdog_hz": 20,
