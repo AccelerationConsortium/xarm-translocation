@@ -29,6 +29,9 @@ READ_COMMANDS = frozenset(
 )
 
 
+SAFEGUARD_STOPS = frozenset({"SAFEGUARD_STOP", "AUTOMATIC_MODE_SAFEGUARD_STOP"})
+
+
 def _readline(stream):
     raw = stream.readline(4097)
     if not raw or len(raw) > 4096 or not raw.endswith(b"\n"):
@@ -98,14 +101,18 @@ def interpret(mode, safety, program, safety_source="safetystatus", *, remote_con
             severity="critical",
             timestamp=datetime.now(timezone.utc),
         )
+    elif safety in SAFEGUARD_STOPS:
+        # A safeguard stop is the bench's safety-stop input doing its job, not
+        # a fault: the arm is held until the input is released (and reset, if
+        # the installation asks for it), so it needs init rather than an error.
+        state, message = "requires_init", f"Safeguard stop ({safety}): release the safety stop to resume"
+        activity = "running" if program == "PLAYING" else "idle"
     elif safety not in {"NORMAL", "REDUCED"}:
         known_faults = {
             "PROTECTIVE_STOP",
-            "SAFEGUARD_STOP",
             "RECOVERY",
             "VIOLATION",
             "FAULT",
-            "AUTOMATIC_MODE_SAFEGUARD_STOP",
             "SYSTEM_THREE_POSITION_ENABLING_STOP",
         }
         if safety in known_faults:
