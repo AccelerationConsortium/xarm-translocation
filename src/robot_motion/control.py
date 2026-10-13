@@ -52,6 +52,7 @@ from .drivers.ur_motion import (
     MotionFailed,
     MotionRefused,
 )
+from .config import MODELS
 from .edge import SECRET_ENV, configured_secret, edge_identity
 
 log = logging.getLogger(__name__)
@@ -234,10 +235,15 @@ class URControl:
         if self.arm_mode == "joint_step":
             return ("connect", "disconnect", "control.joint_step")
         if self.arm_mode == "motion":
-            return (
-                "connect", "disconnect", *MOVE_ACTIONS, "arm.manual_mode", "control.reset", "arm.zero_force_sensor"
-            )
+            actions = ("connect", "disconnect", *MOVE_ACTIONS, "arm.manual_mode", "control.reset")
+            return actions + ("arm.zero_force_sensor",) if self.has_force_sensor else actions
         return ()
+
+    @property
+    def has_force_sensor(self):
+        # Only the e-Series has a flange force/torque sensor to zero; a CB3's
+        # TCP force is estimated from joint currents (zeroFtSensor is e-Series).
+        return MODELS[self.settings.model]["generation"] == "e_series"
 
     def arm_block(self, action):
         """(HTTP status, body) for why `action` cannot run now, or None.
@@ -301,6 +307,8 @@ class URControl:
         if action == "control.reset":
             return self._reset_block(session, control, feedback)
         if action == "arm.zero_force_sensor":
+            if not self.has_force_sensor:
+                return 412, {"error": "no_force_sensor", "reason": "This robot has no force/torque sensor to zero"}
             if not session.watchdog_ok:
                 return 412, {"error": "control_link_down", "reason": f"Control link fault: {session.watchdog_error}"}
             sample = feedback.latest()

@@ -13,7 +13,12 @@ Importing the package and listing drivers never connect to equipment.
   and TCP-force observation using the adapted automated-lle URArm wrapper (see
   LLE_RTDE.md). With RTDE the telemetry refreshes every telemetry_interval_s
   (0.5 s) while the Dashboard poll stays slow. On e-Series the Dashboard also
-  reports remote_control and operational_mode.
+  reports remote_control and operational_mode (null on a CB3, which has no
+  Remote Control). A safeguard stop (the bench's safety-stop input) reads as
+  equipment_status `requires_init` with no last_error, not as an error; a
+  protective stop is still an error. A CB3 has no flange force/torque sensor:
+  `arm.zero_force_sensor` is never offered there, and its RTDE rates are
+  capped at 125 Hz.
   By default no RTDE control interface, program upload, motion, recovery,
   power, brake, gripper or IO command is instantiated or exposed.
 - UR control: a local config may enable config-gated, identity-checked,

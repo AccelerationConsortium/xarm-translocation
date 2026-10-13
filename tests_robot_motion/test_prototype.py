@@ -361,6 +361,9 @@ def test_readonly_queries_and_cb3_fallback(model, safety, extra, remote, operati
         ("RUNNING", "ROBOT_EMERGENCY_STOP", "STOPPED", "e_stop", "idle"),
         ("RUNNING", "PROTECTIVE_STOP", "STOPPED", "error", "idle"),
         ("RUNNING", "PROTECTIVE_STOP", "PLAYING", "error", "running"),
+        # The safety-stop input holding the arm needs init, not an error.
+        ("RUNNING", "SAFEGUARD_STOP", "STOPPED", "requires_init", "idle"),
+        ("RUNNING", "AUTOMATIC_MODE_SAFEGUARD_STOP", "STOPPED", "requires_init", "idle"),
         ("POWER_OFF", "NORMAL", "STOPPED", "requires_init", "idle"),
         ("RUNNING", "UNRECOGNIZED", "STOPPED", "unknown", "unknown"),
     ],
@@ -369,3 +372,6 @@ def test_status_contract(mode, safety, program, state, activity):
     value = interpret(mode, safety, program)
     assert value["equipment_status"] == state
     assert value["activity"] == activity
+    if safety.endswith("SAFEGUARD_STOP"):
+        assert value["last_error"] is None
+        assert value["details"]["safetystatus"] == safety

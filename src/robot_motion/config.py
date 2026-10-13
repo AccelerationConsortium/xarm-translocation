@@ -44,6 +44,7 @@ MODELS = {
         "implementation": "planned",
     },
 }
+CB3_RTDE_HZ = 125
 
 
 class TrajectoryConfig(BaseModel):
@@ -248,6 +249,13 @@ class Settings(BaseModel):
             raise ValueError("Driver and robot model do not match")
         if self.observe and (self.driver != "ur" or not self.robot_host):
             raise ValueError("Observation requires an explicit UR model and robot_host")
+        if self.model and MODELS[self.model]["generation"] == "cb3" and self.control is not None:
+            # A CB3 controller runs and streams RTDE at 125 Hz (e-Series: 500).
+            if self.control.feedback_frequency_hz > CB3_RTDE_HZ:
+                raise ValueError(f"A CB3 streams RTDE at {CB3_RTDE_HZ:g} Hz at most (feedback_frequency_hz)")
+            trajectory = self.control.trajectory
+            if trajectory is not None and trajectory.max_rate_hz > CB3_RTDE_HZ:
+                raise ValueError(f"A CB3 servoes at {CB3_RTDE_HZ:g} Hz at most (trajectory.max_rate_hz)")
         return self
 
 

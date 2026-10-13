@@ -833,6 +833,27 @@ def test_zero_force_sensor_needs_the_session_and_a_still_arm():
         assert client.post("/control/force/zero", headers=held).status_code == 409
 
 
+def test_a_cb3_offers_no_force_sensor_zero():
+    # A CB3 has no flange F/T sensor (its TCP force is estimated), so the
+    # action is never advertised and the route refuses without calling the SDK.
+    rig = Rig(settings(model="ur5_cb3"))
+    with rig.client() as client:
+        held = connected(client)
+        assert "arm.zero_force_sensor" not in client.get("/status").json()["allowed_actions"]
+        refused = client.post("/control/force/zero", headers=held)
+        assert refused.status_code == 412 and refused.json()["detail"]["error"] == "no_force_sensor"
+        assert rig.control.zeroed == 0
+
+
+def test_a_cb3_caps_rtde_rates_at_125_hz():
+    with pytest.raises(ValidationError, match="125 Hz"):
+        settings(model="ur5_cb3", control={"motion": MOTION, "feedback_frequency_hz": 250})
+    with pytest.raises(ValidationError, match="125 Hz"):
+        settings(model="ur5_cb3", control={"motion": MOTION, "trajectory": {"enabled": True, "max_rate_hz": 250}, "watchdog_hz": 2})
+    trajectory = {"enabled": True, "rate_hz": 125, "max_rate_hz": 125}
+    assert settings(model="ur5_cb3", control={"motion": MOTION, "trajectory": trajectory, "watchdog_hz": 2})
+
+
 def test_every_motion_event_is_audited(tmp_path):
     import json
 
