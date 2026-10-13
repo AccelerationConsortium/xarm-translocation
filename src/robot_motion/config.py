@@ -254,7 +254,7 @@ class Settings(BaseModel):
             if self.control.feedback_frequency_hz > CB3_RTDE_HZ:
                 raise ValueError(f"A CB3 streams RTDE at {CB3_RTDE_HZ:g} Hz at most (feedback_frequency_hz)")
             trajectory = self.control.trajectory
-            if trajectory is not None and trajectory.max_rate_hz > CB3_RTDE_HZ:
+            if trajectory is not None and trajectory.enabled and trajectory.max_rate_hz > CB3_RTDE_HZ:
                 raise ValueError(f"A CB3 servoes at {CB3_RTDE_HZ:g} Hz at most (trajectory.max_rate_hz)")
         return self
 

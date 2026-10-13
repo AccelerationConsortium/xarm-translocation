@@ -850,6 +850,8 @@ def test_a_cb3_caps_rtde_rates_at_125_hz():
         settings(model="ur5_cb3", control={"motion": MOTION, "feedback_frequency_hz": 250})
     with pytest.raises(ValidationError, match="125 Hz"):
         settings(model="ur5_cb3", control={"motion": MOTION, "trajectory": {"enabled": True, "max_rate_hz": 250}, "watchdog_hz": 2})
+    # A disabled block keeps its defaults (max 250 Hz) without tripping the cap.
+    assert settings(model="ur5_cb3", control={"motion": MOTION, "trajectory": {"enabled": False}})
     trajectory = {"enabled": True, "rate_hz": 125, "max_rate_hz": 125}
     assert settings(model="ur5_cb3", control={"motion": MOTION, "trajectory": trajectory, "watchdog_hz": 2})
 
