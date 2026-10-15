@@ -7,6 +7,21 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — UR5 CB3 commissioning follow-ups (2026-10-15)
+
+- Gripper `stroke_mm` is an optional per-deployment override of the model
+  catalog (Hand-E measured 52.76 mm against 50). It feeds the opening
+  estimate, mm/raw conversion, `gripper.move` and `stroke_range`. A value
+  outside half to twice the catalog stroke is refused at load.
+- A safeguard stop's `requires_init` envelope names `required_actions`
+  (`connect`, or `disconnect` then `connect` when a session is open). A
+  session whose watchdog is no longer acknowledged stays `requires_init`
+  with those actions instead of looking ready while moves disappear.
+  e-stop and protective stop are unchanged.
+- `/status` reports the ur_rtde control script as PLAYING when its watchdog
+  is acknowledged. Dashboard `programState` stays STOPPED for that external
+  script (UR5 CB3); the cached reading used by `/connect` is not rewritten.
+
 ### Added — timestamped service log and gripper/controller event lines (2026-10-12)
 
 The NSSM service logs had no timestamps, so the 2026-10-12 slip and error 19

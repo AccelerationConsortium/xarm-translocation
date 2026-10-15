@@ -69,6 +69,8 @@ class GripperSettings(BaseModel):
     them is refused, never clamped. open_raw / closed_raw map the position
     register to the finger opening in mm (linear estimate); leave the
     defaults until the stroke has been measured on the real fingers.
+    stroke_mm overrides the catalog stroke for that opening (a Hand-E measured
+    52.76 mm against the 50 mm catalog). Omit it to keep the catalog value.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -84,6 +86,9 @@ class GripperSettings(BaseModel):
     max_force_pct: float = Field(default=50, ge=0, le=100, allow_inf_nan=False)
     open_raw: int = Field(default=0, ge=0, le=255)
     closed_raw: int = Field(default=255, ge=0, le=255)
+    # None means the catalog stroke. Half to twice that catalog value: enough
+    # for a measured finger opening (Hand-E 52.76 mm vs 50), not a different model.
+    stroke_mm: float | None = Field(default=None, gt=0, le=200, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def coherent(self):
@@ -93,15 +98,22 @@ class GripperSettings(BaseModel):
             raise ValueError("default_speed_pct exceeds max_speed_pct")
         if self.default_force_pct > self.max_force_pct:
             raise ValueError("default_force_pct exceeds max_force_pct")
+        catalog = GRIPPER_MODELS[self.model]["stroke_mm"]
+        stroke = catalog if self.stroke_mm is None else self.stroke_mm
+        low, high = 0.5 * catalog, 2 * catalog
+        if not low <= stroke <= high:
+            raise ValueError(
+                f"stroke_mm must be within {low:g}–{high:g} mm for {self.model} "
+                f"(catalog {catalog:g} mm); got {stroke:g}"
+            )
+        if self.stroke_mm is None:
+            # Frozen model: a validator may not return a copy from __init__.
+            object.__setattr__(self, "stroke_mm", catalog)
         return self
 
     @property
     def name(self):
         return GRIPPER_MODELS[self.model]["name"]
-
-    @property
-    def stroke_mm(self):
-        return GRIPPER_MODELS[self.model]["stroke_mm"]
 
 
 class GripperRefused(Exception):
@@ -337,7 +349,10 @@ class RobotiqGripper:
             "position_raw": r["POS"],
             "requested_raw": r["PRE"],
             "opening_mm": self.raw_to_mm(r["POS"]),
-            "opening_mm_estimate": "linear from the position register (open_raw/closed_raw)",
+            "opening_mm_estimate": (
+                "linear from the position register (open_raw/closed_raw) "
+                f"over {self.settings.stroke_mm:g} mm"
+            ),
             "object": OBJECT_STATES.get(r["OBJ"], "unknown") if r["GTO"] == 1 else None,
             "speed_raw": r["SPE"],
             "force_raw": r["FOR"],

@@ -244,6 +244,16 @@ hand-guide the arm while the service owns it.
   - The panel's `/ws` push follows the same interval.
 - `details.remote_control` and `details.operational_mode`, from the Dashboard
   (e-Series).
+- `details.program_state` is the Dashboard loaded-program state, except while
+  this service's control script is running and the watchdog is acknowledged.
+  Dashboard `programState` does not report that external script (STOPPED on
+  the CB3); `/status` then says PLAYING and sets
+  `details.program_state_source` to `control_session`.
+- `required_actions`, when `equipment_status` is `requires_init`: `connect`,
+  or `disconnect` then `connect` if a session is open. That includes a
+  safeguard stop, and a session whose watchdog has stopped being acknowledged
+  (the moves drop out of `allowed_actions`; the message says to disconnect
+  and connect). e-stop and protective stop stay errors and are not rewritten.
 
 ## Panel
 

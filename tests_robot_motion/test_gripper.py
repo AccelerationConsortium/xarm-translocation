@@ -196,6 +196,10 @@ def claim(client):
         {"gripper": {**GRIPPER, "open_raw": 100, "closed_raw": 120}},
         {"gripper": {**GRIPPER, "model": "robotiq_3f"}},
         {"gripper": {**GRIPPER, "unknown": 1}},
+        {"gripper": {**GRIPPER, "stroke_mm": 0}},
+        {"gripper": {**GRIPPER, "stroke_mm": 10}},
+        {"gripper": {**GRIPPER, "stroke_mm": 300}},
+        {"gripper": {**GRIPPER, "stroke_mm": float("nan")}},
     ],
 )
 def test_gripper_configuration_is_validated(overrides):
@@ -251,6 +255,77 @@ def test_client_accepts_set_ack_with_or_without_a_newline(ack):
     assert client.get("POS") == 3
     client.set([("FOR", 10)])
     assert client.get("FLT") == 0
+
+
+def test_stroke_mm_defaults_to_the_catalog_and_a_measured_opening_overrides_it():
+    """Hand-E catalog is 50 mm; this deployment's fingers measured 52.76 mm."""
+    catalog = GripperSettings(model="robotiq_hande")
+    assert catalog.stroke_mm == 50.0
+    measured = GripperSettings(
+        model="robotiq_hande", stroke_mm=52.76, open_raw=3, closed_raw=249
+    )
+    assert measured.stroke_mm == 52.76
+    gripper = RobotiqGripper(
+        measured,
+        "robot.invalid",
+        client=RobotiqClient("robot.invalid", 63352, 1.0, connector=URCap().connector),
+    )
+    assert gripper.mm_to_raw(52.76) == 3
+    assert gripper.mm_to_raw(0) == 249
+    assert gripper.raw_to_mm(3) == pytest.approx(52.8, abs=0.05)
+    assert gripper.raw_to_mm(249) == 0.0
+    # The same raw ends on the catalog stroke would advertise 50 mm open.
+    assert (
+        RobotiqGripper(
+            GripperSettings(model="robotiq_hande", open_raw=3, closed_raw=249),
+            "robot.invalid",
+            client=RobotiqClient(
+                "robot.invalid", 63352, 1.0, connector=URCap().connector
+            ),
+        ).raw_to_mm(3)
+        == 50.0
+    )
+
+
+def test_measured_hande_stroke_is_advertised_and_enforced():
+    rig = Rig(
+        settings(
+            gripper={
+                "model": "robotiq_hande",
+                "stroke_mm": 52.76,
+                "open_raw": 3,
+                "closed_raw": 249,
+                "poll_interval_s": 0.2,
+                "move_timeout_s": 1.0,
+            }
+        )
+    )
+    with rig.client() as client:
+        status = ready(client)
+        config = status["details"]["connection_details"]["gripper_config"]
+        assert config["stroke_range"] == {"min": 0, "max": 52.76}
+        assert status["details"]["gripper"]["opening_mm"] == pytest.approx(
+            52.8, abs=0.05
+        )
+        assert "52.76" in status["details"]["gripper"]["opening_mm_estimate"]
+        headers = claim(client)
+        # 51 mm is past the 50 mm catalog and inside the measured stroke.
+        moved = client.post(
+            "/gripper/move/stroke", json={"stroke": 51}, headers=headers
+        )
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["position_raw"] == 11
+        opened = client.post(
+            "/gripper/move/stroke", json={"stroke": 52.76}, headers=headers
+        )
+        assert opened.status_code == 200, opened.text
+        assert opened.json()["position_raw"] == 3
+        refused = client.post(
+            "/gripper/move/stroke", json={"stroke": 53}, headers=headers
+        )
+        assert refused.status_code == 422
+        assert refused.json()["detail"]["max_mm"] == 52.76
+
 
 
 def test_driver_maps_stroke_to_position_and_rejects_concurrent_commands():

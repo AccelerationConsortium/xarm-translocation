@@ -514,6 +514,85 @@ def test_connect_names_another_rtde_client_holding_the_arm():
         assert failed.json()["detail"]["error"] == "control_connect_failed"
 
 
+def test_control_script_is_reported_playing_when_dashboard_says_stopped():
+    """CB3: Dashboard programState stays STOPPED while the control script runs."""
+    rig = Rig(settings())
+    with rig.client() as client:
+        wait_observed(client)
+        before = client.get("/status").json()
+        assert before["details"]["program_state"] == "STOPPED"
+        assert before["equipment_status"] == "ready"
+        assert before["required_actions"] == []
+        held = claim(client)
+        assert client.post("/connect", headers=held).status_code == 200
+        status = client.get("/status").json()
+        assert status["details"]["program_state"] == "PLAYING"
+        assert status["details"]["program_state_source"] == "control_session"
+        assert status["components"]["program"]["state"] == "playing"
+        assert "external script" in status["components"]["program"]["message"]
+        assert status["equipment_status"] == "busy"
+        assert status["activity"] == "running"
+        assert "stopped" not in status["message"].lower()
+        assert status["required_actions"] == []
+        # The poll cache is still the Dashboard reading, so a later connect
+        # (after disconnect) is not refused for our own script.
+        assert rig.observer.program_state == "STOPPED"
+        assert client.post("/disconnect", headers=held).status_code == 200
+        assert client.get("/status").json()["details"]["program_state"] == "STOPPED"
+
+
+def test_safeguard_stop_names_connect_and_refuses_it_until_released():
+    from robot_motion.drivers.ur import interpret
+
+    rig = Rig(settings())
+    rig.observer.read = lambda: interpret("RUNNING", "SAFEGUARD_STOP", "STOPPED")
+    with rig.client() as client:
+        wait_observed(client)
+        status = client.get("/status").json()
+        assert status["equipment_status"] == "requires_init"
+        assert status["activity"] == "idle"
+        assert status["last_error"] is None
+        assert "Safeguard stop (SAFEGUARD_STOP)" in status["message"]
+        assert status["required_actions"] == ["connect"]
+        assert "connect" not in status["allowed_actions"]
+        held = claim(client)
+        refused = client.post("/connect", headers=held)
+        assert refused.status_code == 412
+        assert refused.json()["detail"]["error"] == "robot_not_idle"
+
+
+def test_dead_session_requires_disconnect_then_connect():
+    rig = Rig(settings(control={"joint_step": LIMITS, "watchdog_hz": 20}))
+    with rig.client() as client:
+        wait_observed(client)
+        held = claim(client)
+        assert client.post("/connect", headers=held).status_code == 200
+        rig.control.kick_ok = False
+        deadline = time.monotonic() + 2
+        while client.get("/status").json()["details"]["control_session"]["watchdog_ok"]:
+            assert time.monotonic() < deadline, "watchdog failure never surfaced"
+            time.sleep(0.02)
+        status = client.get("/status").json()
+        assert status["equipment_status"] == "requires_init"
+        assert status["activity"] == "idle"
+        assert status["required_actions"] == ["disconnect", "connect"]
+        assert "Controller did not acknowledge the watchdog kick" in status["message"]
+        assert "Disconnect and connect" in status["message"]
+        assert status["details"]["program_state"] == "STOPPED"
+        assert "program_state_source" not in status["details"]
+        assert "control.joint_step" not in status["allowed_actions"]
+        assert "disconnect" in status["allowed_actions"]
+        assert "connect" not in status["allowed_actions"]
+        # The catalog still sees the control surface; the message says it is unusable.
+        assert status["components"]["control"]["state"] == "enabled"
+        assert status["components"]["control"]["message"] == status["message"]
+        assert client.post("/disconnect", headers=held).status_code == 200
+        cleared = client.get("/status").json()
+        assert cleared["equipment_status"] == "ready"
+        assert cleared["required_actions"] == []
+
+
+
 def test_watchdog_is_armed_kicked_and_fails_closed():
     rig = Rig(settings(control={
         "joint_step": LIMITS, "watchdog_hz": 20,

@@ -15,8 +15,15 @@ Importing the package and listing drivers never connect to equipment.
   (0.5 s) while the Dashboard poll stays slow. On e-Series the Dashboard also
   reports remote_control and operational_mode (null on a CB3, which has no
   Remote Control). A safeguard stop (the bench's safety-stop input) reads as
-  equipment_status `requires_init` with no last_error, not as an error; a
-  protective stop is still an error. A CB3 has no flange force/torque sensor:
+  equipment_status `requires_init` with no last_error, not as an error.
+  `required_actions` is `connect`, or `disconnect` then `connect` when a
+  control session is still open (release the stop, then reconnect; connect
+  stays refused until safety is NORMAL). A read-only service names
+  `release_safety_stop` instead. A protective stop is still an error. After
+  the stop, or if the control program is stopped on the controller, a session
+  whose watchdog is no longer acknowledged is `requires_init` with the same
+  disconnect-then-connect actions, not a quiet `ready` whose moves have
+  disappeared. A CB3 has no flange force/torque sensor:
   `arm.zero_force_sensor` is never offered there, and its RTDE rates are
   capped at 125 Hz.
   By default no RTDE control interface, program upload, motion, recovery,
@@ -44,7 +51,13 @@ without its token, 412 when a precondition fails, 422 when a request exceeds
 the commissioned limits, and /control/stop needs identity only.
 allowed_actions then lists exactly what a POST will honor.
 Primary operation for UR observation means the controller program is PLAYING;
-it does not mean the physical arm is moving. Failed/stale observations are unknown,
+it does not mean the physical arm is moving. Dashboard `programState` reports
+the loaded program. ur_rtde's control script runs on the secondary interface
+and does not move that reading (STOPPED on the UR5 CB3 while the script runs
+and the watchdog is acknowledged). `/status` then reports `program_state`
+PLAYING from the control session (`details.program_state_source` is
+`control_session`); the cached Dashboard reading is unchanged, so `/connect`
+still requires the loaded program to be STOPPED. Failed/stale observations are unknown,
 not device faults. Reported safety faults take precedence over readiness.
 
 Transport documentation does not authorize hardware execution. Follow the lab's
