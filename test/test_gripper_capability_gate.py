@@ -2,8 +2,9 @@
 gripper config turns the feature off (has_stroke_control / has_force_control
 false), instead of failing deep in the controller as a generic 500.
 
-Since 2026-10-11 the lab BioGripper Gen2 runs open/close only, so every
-agent-facing route that would command a stroke or force must say so.
+The lab BioGripper Gen2 ran open/close only from 2026-10-11 to 2026-10-15;
+while a feature is off, every agent-facing route that would command a stroke
+or force must say so.
 """
 
 from __future__ import annotations
