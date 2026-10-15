@@ -59,7 +59,7 @@ _ROLE_SUFFIXES: tuple[tuple[str, str], ...] = (
     ("top_plate", "low"),
     ("open_max", "drawer_open"),
     ("open_min", "drawer_ajar"),
-    ("open_close", "drawer_closed"),
+    ("push", "drawer_push"),
     ("low", "low"),
     ("high", "high"),
     ("home", "home"),

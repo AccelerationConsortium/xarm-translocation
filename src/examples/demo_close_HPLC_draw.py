@@ -146,7 +146,7 @@ def demo_hplc_drawer_closing(controller, auto_confirm=False, custom_speeds=None)
         print("3. Joint movement → uplc_draw_home + Close gripper")
         print("4. Joint movement → uplc_draw_open_max (approach open drawer)")
         print("5. Linear movement → uplc_draw_open_min (position for closing)")
-        print("6. Linear movement → uplc_draw_open_close (close drawer)")
+        print("6. Linear movement → uplc_draw_push (push drawer shut)")
         print("7. Linear movement → uplc_draw_open_min (retract from closed)")
         print("8. Linear movement → uplc_draw_open_max (move away)")
         print("9. Joint movement → Robot home")
@@ -174,7 +174,7 @@ def demo_hplc_drawer_closing(controller, auto_confirm=False, custom_speeds=None)
         # Check that all required positions exist
         required_positions = [
             'robot_home', 'uplc_draw_home', 'uplc_draw_open_max', 
-            'uplc_draw_open_min', 'uplc_draw_open_close'
+            'uplc_draw_open_min', 'uplc_draw_push'
         ]
         
         for pos_name in required_positions:
@@ -247,12 +247,12 @@ def demo_hplc_drawer_closing(controller, auto_confirm=False, custom_speeds=None)
         ):
             return False
         
-        # Step 6: Linear movement to uplc_draw_open_close (close the drawer)
+        # Step 6: Linear movement to uplc_draw_push (push the drawer shut)
         tcp_speed = speeds['close_drawer']['tcp_speed']
         if not move_with_confirmation(
             controller,
-            lambda: controller.move_plate_linear('uplc_draw_open_close', speed=tcp_speed),
-            "Step 6: Linear movement to close the drawer",
+            lambda: controller.move_plate_linear('uplc_draw_push', speed=tcp_speed),
+            "Step 6: Linear movement to push the drawer shut",
             auto_confirm,
             speeds['close_drawer']
         ):
