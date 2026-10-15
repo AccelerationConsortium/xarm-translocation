@@ -10,8 +10,8 @@ positions:
   opentrons_2_high: [-182.91, 16.22, -27.26, 10.55, -3.39]
   opentrons_2_low: [-182.9, 33.69, -32.46, -1.72, -3.62]            # Gripper close to 120mm to grip from long side
   opentrons_2_low_press: [-182.20, 33.82, -32.07, -2.26, -2.94]        # Press plate down
-  opentrons_4_high: [-164.98, 22.82, -48.26, 25.01, 14.78]
-  opentrons_4_low: [-164.94, 41.24, -53.53, 11.86, 14.57]
+  opentrons_4_high: [-165.35, 26.06, -48.61, 22.12, 14.36]
+  opentrons_4_low: [-165.34, 36.63, -51.59, 14.53, 14.22]
   opentrons_4_low_top: [-164.95, 35.06, -51.13, 15.64, 14.63]
   opentrons_4_low_press: [-164.95, 36.03, -51.59, 14.96, 14.49]        # todo get this real position  
   opentrons_6_high: [-198.91, 30.83, -51.62, 20.11, -19.25]
@@ -23,12 +23,12 @@ positions:
   # The following are for opening/closing the uplc draw, no payload allowed
   uplc_draw_home: [-3.5, 8.1, -70.1, 62.1, 90.0]
   uplc_draw_open_max: [-5.5, 8.3, -70.4, 62.2, 88]                 # slight further from fully open to avoid collision with the arm
-  uplc_draw_open_min: [-36.77, 29.67, -101.22, 71.35, 56.77]                # slight short from fully close to avoid collision with the arm
-  uplc_draw_open_close: [-37.27, 30.54, -102.61, 71.89, 56.26]           # You hear a "click" when the door is closed/opened
+  uplc_draw_open_min: [-35.64, 27.6, -98.06, 70.27, 57.89]               # slight short from fully close to avoid collision with the arm
+  uplc_draw_push: [-36.77, 29.67, -101.21, 71.35, 56.76]           # Push the drawer until it clicks shut
   # The following are for putting in/taking out the uplc plate, no payload allowed
   uplc_plate_home: [-89.95, -54.66, -40.29, 94.98, -89.63]
-  uplc_plate_high: [-42.43, -5.67, -73.46, 78.39, -40.27]
-  uplc_plate_in: [-42.46, -4.33, -61.66, 65.25, -40.36]              # Gripper close to 120mm open to only 125mm
+  uplc_plate_high: [-42.99, -4.91, -72.62, 76.78, -40.84]
+  uplc_plate_in: [-43.03, -3.61, -62.45, 65.31, -40.94]              # Gripper close to 120mm open to only 125mm
 
   # The following happens when linear rail is at Deck location (550mm)
   deck_home: [-90.0, -45.0, 0.0, 45, -90.0]

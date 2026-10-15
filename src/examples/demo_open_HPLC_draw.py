@@ -8,7 +8,7 @@ This script demonstrates a complete sequence for opening an HPLC drawer:
 3. Joint movement to uplc_draw_home
 4. Joint movement to uplc_draw_open_max
 5. Linear movement to uplc_draw_open_min
-6. Linear movement to uplc_draw_open_close
+6. Linear movement to uplc_draw_push
 7. Linear movement back to uplc_draw_open_min
 8. Linear movement to uplc_draw_open_max
 9. Joint movement back to robot home
@@ -112,9 +112,9 @@ def get_speed_config():
             'tcp_speed': 50,     # mm/s - Very slow linear movement for fine positioning
             'description': 'Precise linear positioning near drawer'
         },
-        'uplc_draw_open_close': {
+        'uplc_draw_push': {
             'tcp_speed': 20,     # mm/s - Very slow linear movement for drawer interaction
-            'description': 'Very slow linear movement for drawer closing'
+            'description': 'Very slow linear movement for drawer push'
         },
         'uplc_draw_return_min': {
             'tcp_speed': 20,     # mm/s - Slow linear movement backing away
@@ -158,7 +158,7 @@ def demo_hplc_drawer_opening(controller, auto_confirm=False, custom_speeds=None)
         print("3. Joint movement → uplc_draw_home + Close gripper")
         print("4. Joint movement → uplc_draw_open_max")
         print("5. Linear movement → uplc_draw_open_min")
-        print("6. Linear movement → uplc_draw_open_close")
+        print("6. Linear movement → uplc_draw_push")
         print("7. Linear movement → uplc_draw_open_min")
         print("8. Linear movement → uplc_draw_open_max")
         print("9. Joint movement → Robot home")
@@ -186,7 +186,7 @@ def demo_hplc_drawer_opening(controller, auto_confirm=False, custom_speeds=None)
         # Check that all required positions exist
         required_positions = [
             'robot_home', 'uplc_draw_home', 'uplc_draw_open_max', 
-            'uplc_draw_open_min', 'uplc_draw_open_close'
+            'uplc_draw_open_min', 'uplc_draw_push'
         ]
         
         for pos_name in required_positions:
@@ -259,14 +259,14 @@ def demo_hplc_drawer_opening(controller, auto_confirm=False, custom_speeds=None)
         ):
             return False
     
-        # Step 6: Linear movement to uplc_draw_open_close
-        tcp_speed = speeds['uplc_draw_open_close']['tcp_speed']
+        # Step 6: Linear movement to uplc_draw_push
+        tcp_speed = speeds['uplc_draw_push']['tcp_speed']
         if not move_with_confirmation(
             controller,
-            lambda: controller.move_plate_linear('uplc_draw_open_close', speed=tcp_speed),
-            "Step 6: Linear movement to uplc_draw_open_close position (drawer fully closed)",
+            lambda: controller.move_plate_linear('uplc_draw_push', speed=tcp_speed),
+            "Step 6: Linear movement to uplc_draw_push position (push drawer shut)",
             auto_confirm,
-            speeds['uplc_draw_open_close']
+            speeds['uplc_draw_push']
         ):
             return False
         

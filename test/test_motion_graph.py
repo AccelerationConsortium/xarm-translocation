@@ -120,22 +120,24 @@ def test_real_yaml_loads_and_validates():
     graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
     nodes = {n.id for n in graph.nodes}
     assert "robot_home" in nodes
-    assert "uplc_draw_open_close" in nodes
+    assert "uplc_draw_push" in nodes
     # Nodes are bare pose names now — no gripper-state stacking.
     assert "opentrons_2_high" in nodes
     assert "opentrons_2_high_empty" not in nodes
     assert "opentrons_2_high_grip_120" not in nodes
-    # The drawer close pose is a leaf for direct return — must back out.
-    assert graph.allowed_targets("uplc_draw_open_close") == ["uplc_draw_open_min"]
+    # The drawer push pose is a leaf for direct return — must back out.
+    assert graph.allowed_targets("uplc_draw_push") == ["uplc_draw_open_min"]
 
 
-def test_real_yaml_has_five_state_catalog():
+def test_real_yaml_has_six_state_catalog():
     graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
     names = {gs.name for gs in graph.gripper_states}
-    assert names == {"empty", "grip_120", "reach_90", "grip_80", "reach_72"}
+    assert names == {"empty", "grip_120", "reach_90", "grip_80", "reach_72", "closed"}
     assert graph.gripper_state("grip_120").intent == GripIntent.GRASP
     assert graph.gripper_state("reach_90").stroke == 90.0
     assert graph.gripper_state("reach_72").intent == GripIntent.POSITION
+    # A full close (stroke 71) must resolve, or recover_to refuses it.
+    assert graph.resolve_gripper_state(71) == "closed"
 
 
 def test_press_nodes_are_grip_only():
@@ -188,7 +190,7 @@ def test_real_yaml_reachability_from_home():
     unreachable = set(graph.unreachable_nodes("robot_home"))
     drawer = {
         "uplc_draw_home", "uplc_draw_open_max",
-        "uplc_draw_open_min", "uplc_draw_open_close",
+        "uplc_draw_open_min", "uplc_draw_push",
     }
     assert drawer & unreachable == set()
 
