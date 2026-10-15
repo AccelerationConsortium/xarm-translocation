@@ -92,6 +92,59 @@ document.addEventListener('DOMContentLoaded', () => {
     let claimToken = null;          // non-null while this browser holds the claim
     let claimHeartbeatTimer = null; // setInterval handle for the heartbeat
 
+    // Reload keeps control. A page cannot tell a reload from closing the tab,
+    // so pagehide still releases the claim; it also leaves a note in this
+    // tab's sessionStorage, and a reload of the same panel shortly after takes
+    // control back once the status shows the claim free and the same person
+    // signed in. Closing the tab discards the note with the tab, and other
+    // tabs never see it. A claim someone else took in the gap is left alone.
+    const RECLAIM_KEY = `robot-motion.reclaim:${BASE_PATH || '/'}`;
+    const RECLAIM_NOTE_MAX_AGE_MS = 15000;  // pagehide -> reloaded page
+    const RECLAIM_WAIT_MS = 35000;          // > the 30 s claim TTL, if the release was lost
+    let pendingReclaim = readReclaimNote();
+
+    function readReclaimNote() {
+        let note = null;
+        try {
+            note = JSON.parse(sessionStorage.getItem(RECLAIM_KEY) || 'null');
+            sessionStorage.removeItem(RECLAIM_KEY);
+        } catch {
+            return null;
+        }
+        const nav = performance.getEntriesByType ? performance.getEntriesByType('navigation')[0] : null;
+        if (!note || !nav || nav.type !== 'reload') return null;
+        if (!(Date.now() - note.at < RECLAIM_NOTE_MAX_AGE_MS)) return null;
+        return { owner: note.owner, sessionId: note.sessionId, until: Date.now() + RECLAIM_WAIT_MS };
+    }
+
+    function leaveReclaimNote() {
+        try {
+            sessionStorage.setItem(RECLAIM_KEY, JSON.stringify({
+                owner: claimOwner(), sessionId: claimSessionId, at: Date.now(),
+            }));
+        } catch { /* storage blocked: a reload just shows Take Control */ }
+    }
+
+    // Called on every status. Waits (until the deadline) for a connected,
+    // signed-in panel and a free claim; gives up for good on anything else.
+    function maybeReclaim(claimedBy) {
+        const pending = pendingReclaim;
+        if (!pending || claimToken !== null || claimAcquisition) return;
+        if (Date.now() > pending.until) { pendingReclaim = null; return; }
+        if (!controllerConnected || loginRequiredButNotSignedIn() || claimOwner() !== pending.owner) return;
+        if (claimedBy) {
+            // Our previous page's claim, its release still in flight: wait.
+            if (claimedBy.session_id === pending.sessionId) return;
+            pendingReclaim = null;  // someone else holds control now
+            return;
+        }
+        const ur = urArmGate();
+        pendingReclaim = null;
+        if (ur.ur && ur.noSession) return;  // the arm was disconnected meanwhile
+        addLogEntry('Page reloaded: taking control back', 'info');
+        claimAcquisition = takeControl().finally(() => { claimAcquisition = null; });
+    }
+
     // One session owns drive, graph editing, heartbeat and release. The editor
     // reads the current token at request time, never a copied/stale token.
     let claimAcquisition = null;
@@ -948,6 +1001,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 updateClaimIndicator(data.claimed_by);
                 // UR arm session gates layer on top (no-op for the xArm).
                 applyArmSessionGates(data);
+                maybeReclaim(data.claimed_by);
                 lastHasTrack = data.has_track;
                 applyRailAvailability(data.has_track);
                 // Only the UR service reports a control_session.
@@ -2563,7 +2617,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // TTL expiry and block workflows. `pagehide` is the reliable mobile/desktop
     // unload signal; keepalive lets the request (with its header) survive.
     window.addEventListener('pagehide', () => {
-        if (claimToken !== null) releaseControl(true);
+        if (claimToken !== null) {
+            leaveReclaimNote();
+            releaseControl(true);
+        }
     });
 
     stopBtn.addEventListener('click', () => {
