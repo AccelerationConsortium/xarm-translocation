@@ -81,6 +81,9 @@ LEAD_IN_FRACTION = 0.5
 
 BACKENDS = ("servoj", "online_planning")
 SETTINGS_PATH = os.path.join("src", "settings", "trajectory.yaml")
+# Device-local overlay (gitignored): keys here replace the shipped file's,
+# so a commissioned arm can say `enabled: true` without editing a tracked file.
+LOCAL_SETTINGS_PATH = os.path.join("src", "settings", "trajectory.local.yaml")
 
 
 def _utc(ts: Optional[float]) -> Optional[str]:
@@ -179,6 +182,20 @@ class TrajectorySettings:
                 return cls.from_mapping(yaml.safe_load(handle) or {})
         except FileNotFoundError:
             return cls()
+
+    @classmethod
+    def load_effective(cls, path: str = SETTINGS_PATH,
+                       local_path: str = LOCAL_SETTINGS_PATH) -> "TrajectorySettings":
+        """The shipped settings with the device-local overlay on top."""
+        import yaml
+        data: Dict[str, Any] = {}
+        for source in (path, local_path):
+            try:
+                with open(source, encoding="utf-8") as handle:
+                    data.update(yaml.safe_load(handle) or {})
+            except FileNotFoundError:
+                pass
+        return cls.from_mapping(data)
 
     def check(self) -> None:
         for name in ("enabled", "realtime_report"):

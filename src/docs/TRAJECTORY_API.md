@@ -99,7 +99,7 @@ just at the points.
 | Start | the first point within 0.5° of the measured pose | the first point within 0.5° of the measured pose |
 | Command rate | 100 Hz by default; a session may ask for 50–200 Hz | 125 Hz by default; a session may ask for 50–250 Hz |
 | Servo smoothing | ServoJ, no controller-side filter | servoJ lookahead 0.03 s, gain 1000 (about 40 ms lag) |
-| Source | `src/settings/safety.yaml` (model 5) and `src/settings/trajectory.yaml` | `control.motion` and `control.trajectory` in pc-05's `.state\robot-motion.local.json`; defaults in `src/robot_motion/config.py` |
+| Source | `src/settings/safety.yaml` (model 5) and `src/settings/trajectory.yaml`, overlaid by the device-local `src/settings/trajectory.local.yaml` | `control.motion` and `control.trajectory` in pc-05's `.state\robot-motion.local.json`; defaults in `src/robot_motion/config.py` |
 
 The xArm controller enforces its own limits underneath. On 2026-10-10 it
 reported 180°/s and 1000 mm/s, no TCP boundary, and joint ranges slightly

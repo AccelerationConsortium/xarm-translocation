@@ -110,6 +110,8 @@ site/
 # Claude settings
 .claude/settings.local.json
 
+# Device-local trajectory overlay (enabled: true on a commissioned arm)
+src/settings/trajectory.local.yaml
 # Joint-trajectory session records (src/settings/trajectory.yaml log_dir)
 logs/trajectory/
 # Stage 0b probe records (tools/servo_mode_probe.py --out)

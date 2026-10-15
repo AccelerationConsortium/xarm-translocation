@@ -7,6 +7,23 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — xArm lab config from cytation-pc; device-local trajectory switch (2026-10-15)
+
+The cytation-pc checkout carried uncommitted lab edits; they are now on main
+so the arm can run main:
+
+- Re-taught poses: `opentrons_4_high` / `_low`, `uplc_plate_high` / `_in`,
+  `uplc_draw_open_min`, and the drawer push pose.
+- The UPLC drawer node `uplc_draw_open_close` is now `uplc_draw_push` (graph,
+  layout, HPLC demos, assistant role `drawer_push`).
+- A `closed` gripper state (stroke 71, position) on the high/low nodes, with
+  `empty` <-> `closed` transitions, so `recover_to` accepts a fully closed
+  gripper.
+
+`trajectory.yaml` still ships `enabled: false`. A commissioned arm sets
+`enabled: true` (or any other key) in the gitignored
+`src/settings/trajectory.local.yaml`, whose keys replace the shipped ones.
+
 ### Added — timestamped service log and gripper/controller event lines (2026-10-12)
 
 The NSSM service logs had no timestamps, so the 2026-10-12 slip and error 19

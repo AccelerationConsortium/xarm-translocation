@@ -778,7 +778,7 @@ def _trajectory_settings() -> TrajectorySettings:
     global _trajectory_settings_cache, _trajectory_settings_error
     if _trajectory_settings_cache is None:
         try:
-            _trajectory_settings_cache = TrajectorySettings.load()
+            _trajectory_settings_cache = TrajectorySettings.load_effective()
         except Exception as exc:  # noqa: BLE001 - a bad file must not stop the service
             _trajectory_settings_error = str(exc)
             logger.error(f"[trajectory] settings rejected, feature disabled: {exc}")
@@ -2679,7 +2679,8 @@ def _trajectory_enabled_guard() -> TrajectorySettings:
     settings = _trajectory_settings()
     if not settings.enabled:
         message = ("Joint-trajectory execution is disabled on this device "
-                   "(src/settings/trajectory.yaml, enabled: false).")
+                   "(enabled: false in src/settings/trajectory.yaml and "
+                   "src/settings/trajectory.local.yaml).")
         if _trajectory_settings_error:
             message += f" The settings file was rejected: {_trajectory_settings_error}"
         raise HTTPException(status_code=412, detail={"error": "trajectory_disabled", "message": message})
