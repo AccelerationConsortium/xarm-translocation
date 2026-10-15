@@ -363,6 +363,7 @@ def test_readonly_queries_and_cb3_fallback(model, safety, extra, remote, operati
         ("RUNNING", "PROTECTIVE_STOP", "PLAYING", "error", "running"),
         # The safety-stop input holding the arm needs init, not an error.
         ("RUNNING", "SAFEGUARD_STOP", "STOPPED", "requires_init", "idle"),
+        ("RUNNING", "SAFEGUARD_STOP", "PLAYING", "requires_init", "idle"),
         ("RUNNING", "AUTOMATIC_MODE_SAFEGUARD_STOP", "STOPPED", "requires_init", "idle"),
         ("POWER_OFF", "NORMAL", "STOPPED", "requires_init", "idle"),
         ("RUNNING", "UNRECOGNIZED", "STOPPED", "unknown", "unknown"),

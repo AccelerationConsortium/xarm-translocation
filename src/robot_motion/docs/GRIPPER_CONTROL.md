@@ -32,8 +32,12 @@ A top-level `gripper` block in the local config:
   For the 2F-140, 100 % force is roughly 125 N and 100 % speed roughly
   250 mm/s.
 - **Opening:** the stroke in mm is a linear estimate from the position
-  register using `open_raw` / `closed_raw` (defaults 0 / 255). Measure the
-  real fingers before trusting it for anything other than display. A 2F
+  register using `open_raw` / `closed_raw` (defaults 0 / 255) across
+  `stroke_mm`. Omit `stroke_mm` to use the model catalog (2F-85 85 mm,
+  2F-140 140 mm, Hand-E 50 mm). Set it when the fingers were measured
+  otherwise: a value under half or over twice the catalog stroke is
+  refused at load. It is the opening `gripper.move` accepts, the
+  `opening_mm` estimate, and `gripper_config.stroke_range`. A 2F
   gripper stops short of the register ends (the UR5e's opens to 3) and
   still reports "at requested position".
 
