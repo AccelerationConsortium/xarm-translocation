@@ -24,7 +24,7 @@ positions:
   uplc_draw_home: [-3.5, 8.1, -70.1, 62.1, 90.0]
   uplc_draw_open_max: [-5.5, 8.3, -70.4, 62.2, 88]                 # slight further from fully open to avoid collision with the arm
   uplc_draw_open_min: [-35.64, 27.6, -98.06, 70.27, 57.89]               # slight short from fully close to avoid collision with the arm
-  uplc_draw_push: [-36.77, 29.67, -101.21, 71.35, 56.76]           # Push the drawer until it clicks shut
+  uplc_draw_push: [-37.21, 30.52, -102.52, 71.78, 56.32]          # Push the drawer until it clicks shut (re-taught 2026-10-15)
   # The following are for putting in/taking out the uplc plate, no payload allowed
   uplc_plate_home: [-89.95, -54.66, -40.29, 94.98, -89.63]
   uplc_plate_high: [-42.99, -4.91, -72.62, 76.78, -40.84]
