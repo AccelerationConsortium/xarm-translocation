@@ -1524,8 +1524,8 @@ def gripper_capability_guard(feature: str, action: str) -> None:
     """Refuse a stroke/force gripper command the active gripper config turns off.
 
     ``has_stroke_control`` / ``has_force_control`` in gripper_config.yaml are
-    operator switches (both off since 2026-10-11 on the lab BioGripper Gen2,
-    leaving open/close only). The controller already returns False for such
+    operator switches (both were off 2026-10-11 to 2026-10-15 on the lab
+    BioGripper Gen2, leaving open/close only). The controller already returns False for such
     commands; surfacing that as a generic 500 made agents retry a request that
     can never succeed. 409: the request conflicts with the current device
     configuration, and nothing the caller does short of an operator flipping
