@@ -115,6 +115,31 @@ def test_shipped_settings_file_is_disabled():
     assert TrajectorySettings.load(os.path.join("src", "settings", "trajectory.yaml")).enabled is False
 
 
+def test_local_overlay_replaces_shipped_keys(tmp_path):
+    shipped = tmp_path / "trajectory.yaml"
+    shipped.write_text("enabled: false\nservo_rate_hz: 100\n")
+    local = tmp_path / "trajectory.local.yaml"
+    local.write_text("enabled: true\n")
+    settings = TrajectorySettings.load_effective(str(shipped), str(local))
+    assert settings.enabled is True and settings.servo_rate_hz == 100
+
+
+def test_missing_local_overlay_keeps_shipped_settings(tmp_path):
+    shipped = tmp_path / "trajectory.yaml"
+    shipped.write_text("enabled: false\n")
+    settings = TrajectorySettings.load_effective(str(shipped), str(tmp_path / "absent.yaml"))
+    assert settings.enabled is False
+
+
+def test_bad_local_overlay_is_rejected(tmp_path):
+    shipped = tmp_path / "trajectory.yaml"
+    shipped.write_text("enabled: false\n")
+    local = tmp_path / "trajectory.local.yaml"
+    local.write_text("enabeld: true\n")
+    with pytest.raises(ValueError, match="enabeld"):
+        TrajectorySettings.load_effective(str(shipped), str(local))
+
+
 def test_validate_route_reports_without_moving(monkeypatch, client, mock_controller, backend):
     monkeypatch.setattr("src.core.xarm_api_server._trajectory_settings_cache", TrajectorySettings())
     resp = client.post("/control/freehand/trajectory/validate", json={"points": points_j1()})

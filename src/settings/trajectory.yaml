@@ -3,7 +3,9 @@
 # below are the defaults. Unknown keys or out-of-range values disable the
 # feature and are reported by the routes (412 trajectory_disabled).
 
-# Off until it has been commissioned on this arm with someone present.
+# Off until it has been commissioned on this arm with someone present. A
+# commissioned device turns it on in src/settings/trajectory.local.yaml
+# (gitignored; its keys replace these), not here.
 enabled: false
 
 # servoj (mode 1, set_servo_angle_j: exact timing, the executor shapes all

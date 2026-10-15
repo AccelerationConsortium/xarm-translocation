@@ -3,7 +3,8 @@
 Status (2026-10-09): **version 1 implemented on branch
 `feature/xarm-joint-trajectory`.** The executor has run on the arm through
 the stage 0b probe (§2); the HTTP routes have not yet run on the arm.
-It is disabled by default (`src/settings/trajectory.yaml`). See §13 for what
+It is disabled by default (`src/settings/trajectory.yaml`); a commissioned
+arm turns it on in the gitignored `src/settings/trajectory.local.yaml`. See §13 for what
 was built and where it differs from this plan. **Test first:** whether
 execution uses ServoJ (mode 1) or joint online planning (mode 6) is decided
 by measurements on the real arm before either is built (§2, §10 stage 0).
