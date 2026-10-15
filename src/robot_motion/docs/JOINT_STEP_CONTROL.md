@@ -49,9 +49,10 @@ already observes the same UR robot over RTDE. A lone flag is rejected.
   10 Hz) and kicks it at twice that rate from a dedicated thread. If this
   service freezes or dies, the controller itself halts the control script.
   A refused kick marks the interface faulted: steps are refused, status
-  shows `watchdog_ok: false` with the error, and kicking stops so the
-  controller completes the shutdown. A controller that refuses the watchdog
-  never gets a session (502).
+  shows `watchdog_ok: false` with the error, `equipment_status` becomes
+  `requires_init` with `required_actions` `disconnect` then `connect`, and
+  kicking stops so the controller completes the shutdown. A controller that
+  refuses the watchdog never gets a session (502).
 - Every control event (claim, connect, connect_refused, joint_step,
   joint_step_refused, joint_step_failed, stop, disconnect) is appended as a
   JSON line to `control.audit_file` when configured (path relative to the

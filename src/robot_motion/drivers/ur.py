@@ -105,8 +105,12 @@ def interpret(mode, safety, program, safety_source="safetystatus", *, remote_con
         # A safeguard stop is the bench's safety-stop input doing its job, not
         # a fault: the arm is held until the input is released (and reset, if
         # the installation asks for it), so it needs init rather than an error.
-        state, message = "requires_init", f"Safeguard stop ({safety}): release the safety stop to resume"
-        activity = "running" if program == "PLAYING" else "idle"
+        # STATUS_SPEC §2.3: requires_init ⇒ idle, even if a program was playing.
+        state, activity, message = (
+            "requires_init",
+            "idle",
+            f"Safeguard stop ({safety}): release the safety stop to resume",
+        )
     elif safety not in {"NORMAL", "REDUCED"}:
         known_faults = {
             "PROTECTIVE_STOP",
@@ -168,3 +172,165 @@ def interpret(mode, safety, program, safety_source="safetystatus", *, remote_con
             "operational_mode": operational_mode,
         },
     }
+
+
+def _is_safeguard(details):
+    return (details or {}).get("safetystatus") in SAFEGUARD_STOPS
+
+
+def _reconnect_note(message, *, safeguard):
+    text = message or ""
+    if "Disconnect and connect" in text:
+        return text
+    if safeguard:
+        return text + " Disconnect and connect once the safety stop is released."
+    return text + " Disconnect and connect to resume."
+
+
+# Trajectory session states that are moving the arm. A created or finished
+# session is not work (STATUS_SPEC: activity is doing work, not "connected").
+_TRAJECTORY_ACTIVE = frozenset({"starting", "running", "stopping"})
+
+
+def work_in_flight(*, arm_busy=False, active_move=None, trajectory_state=None, gripper_busy=False):
+    """True while this service is actually moving the arm or the fingers."""
+    if arm_busy or active_move:
+        return True
+    if trajectory_state in _TRAJECTORY_ACTIVE:
+        return True
+    return bool(gripper_busy)
+
+
+def _report_control_script(view, *, motion_active):
+    """Dashboard programState does not see ur_rtde's external control script.
+
+    The script is sent on the secondary interface (port 30002). Dashboard
+    ``programState`` reports the loaded .urp program, which stays STOPPED
+    while that script runs — measured on the UR5 CB3 (PolyScope 3.15.8) and
+    the same split documented for e-Series. The acknowledged watchdog is the
+    script answering, so /status reports program_state PLAYING. That is not
+    work: activity stays idle until a move, trajectory, or gripper motion is
+    in flight (ready ⇒ idle, busy ⇒ running). The cached observation is left
+    alone: /connect still requires the loaded program to be STOPPED.
+    """
+    details = view["details"]
+    corrected = interpret(
+        details["robotmode"],
+        details["safetystatus"],
+        "PLAYING",
+        details.get("safety_source") or "safetystatus",
+        remote_control=details.get("remote_control"),
+        operational_mode=details.get("operational_mode"),
+    )
+    extra = {
+        key: value for key, value in details.items() if key not in corrected["details"]
+    }
+    components = dict(view["components"])
+    components.update(corrected["components"])
+    note = (
+        "ur_rtde control script is running; Dashboard programState "
+        "does not report an external script"
+    )
+    program = components["program"]
+    components["program"] = program.model_copy(update={"message": note})
+    # interpret(PLAYING) calls a running program "busy". The control script
+    # is up whenever the session is; only in-flight motion is busy/running.
+    status = corrected["equipment_status"]
+    if motion_active:
+        activity = "running"
+        if status == "ready":
+            status = "busy"
+    else:
+        activity = "idle"
+        if status == "busy":
+            status = "ready"
+    return {
+        **view,
+        "equipment_status": status,
+        "activity": activity,
+        "message": corrected["message"],
+        "last_error": corrected["last_error"],
+        "components": components,
+        "details": {
+            **corrected["details"],
+            **extra,
+            "program_state_source": "control_session",
+        },
+    }
+
+
+def present_status(
+    observation,
+    *,
+    control_enabled,
+    session_open,
+    watchdog_ok,
+    watchdog_error,
+    motion_active=False,
+):
+    """/status view of a cached Dashboard observation. Does not mutate it.
+
+    A requires_init state names the action that gets out of it (STATUS_SPEC
+    §4.1). An open control session has to be disconnected before connect will
+    run, including after a safeguard stop clears. A session whose watchdog is
+    no longer acknowledged is not a healthy stopped program: motion has
+    already dropped out of allowed_actions, and the envelope says why.
+    e-stop and other safety faults are left as reported.
+    """
+    view = {
+        "equipment_status": observation.get("equipment_status", "unknown"),
+        "activity": observation.get("activity", "unknown"),
+        "message": observation.get("message"),
+        "last_error": observation.get("last_error"),
+        "components": dict(observation.get("components") or {}),
+        "details": dict(observation.get("details") or {}),
+        "required_actions": [],
+        "control_message": None,
+    }
+    details = view["details"]
+    script_running = session_open and watchdog_ok
+    dashboard_hides_script = (
+        script_running
+        and details.get("robotmode") == "RUNNING"
+        and details.get("safetystatus") in {"NORMAL", "REDUCED"}
+        and details.get("program_state") == "STOPPED"
+    )
+    if dashboard_hides_script:
+        view = _report_control_script(view, motion_active=motion_active)
+
+    if (
+        session_open
+        and not watchdog_ok
+        and view["equipment_status"] not in {"e_stop", "error"}
+    ):
+        # ready/busy/degraded/unknown here means the Dashboard no longer shows
+        # the stop, but this session's script is gone. requires_init, not a
+        # quiet ready with the moves missing.
+        if view["equipment_status"] != "requires_init":
+            reason = (
+                watchdog_error
+                or "the controller stopped acknowledging the control script"
+            )
+            view["equipment_status"] = "requires_init"
+            view["activity"] = "idle"
+            view["message"] = (
+                f"Control session is open but not usable ({reason}). "
+                "Disconnect and connect to resume."
+            )
+
+    safeguard = _is_safeguard(view["details"])
+    if view["equipment_status"] != "requires_init":
+        actions = []
+    elif session_open:
+        actions = ["disconnect", "connect"]
+    elif control_enabled:
+        actions = ["connect"]
+    elif safeguard:
+        actions = ["release_safety_stop"]
+    else:
+        actions = []
+    view["required_actions"] = actions
+    if session_open and view["equipment_status"] == "requires_init":
+        view["message"] = _reconnect_note(view["message"], safeguard=safeguard)
+        view["control_message"] = view["message"]
+    return view
