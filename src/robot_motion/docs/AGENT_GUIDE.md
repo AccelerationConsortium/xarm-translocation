@@ -50,14 +50,20 @@ and allowed_actions is empty. With control enabled, /control/claim,
 without its token, 412 when a precondition fails, 422 when a request exceeds
 the commissioned limits, and /control/stop needs identity only.
 allowed_actions then lists exactly what a POST will honor.
-Primary operation for UR observation means the controller program is PLAYING;
-it does not mean the physical arm is moving. Dashboard `programState` reports
-the loaded program. ur_rtde's control script runs on the secondary interface
-and does not move that reading (STOPPED on the UR5 CB3 while the script runs
-and the watchdog is acknowledged). `/status` then reports `program_state`
-PLAYING from the control session (`details.program_state_source` is
-`control_session`); the cached Dashboard reading is unchanged, so `/connect`
-still requires the loaded program to be STOPPED. Failed/stale observations are unknown,
+`activity` is work in flight, not a connected session. While this service's
+control script is the program `/status` reports, `activity` stays `idle` and
+`equipment_status` stays `ready` until an arm move (`control_session.busy` /
+`active_move`), a trajectory in `starting`/`running`/`stopping`, or a gripper
+move is actually running; that work is `busy` + `running` (or `degraded` +
+`running` when safety is REDUCED). Dashboard `programState` reports the loaded
+program. ur_rtde's control script runs on the secondary interface and does not
+move that reading (STOPPED on the UR5 CB3 while the script runs and the
+watchdog is acknowledged). `/status` then reports `program_state` PLAYING from
+the control session (`details.program_state_source` is `control_session`)
+without calling that idle connection `running`. A Dashboard `programState` of
+PLAYING that is not this correction (another program) is still `activity`
+`running`. The cached Dashboard reading is unchanged, so `/connect` still
+requires the loaded program to be STOPPED. Failed/stale observations are unknown,
 not device faults. Reported safety faults take precedence over readiness.
 
 Transport documentation does not authorize hardware execution. Follow the lab's

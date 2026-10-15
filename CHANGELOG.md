@@ -21,6 +21,8 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 - `/status` reports the ur_rtde control script as PLAYING when its watchdog
   is acknowledged. Dashboard `programState` stays STOPPED for that external
   script (UR5 CB3); the cached reading used by `/connect` is not rewritten.
+  `activity` stays `idle` until an arm move, an active trajectory, or a
+  gripper move is in flight (`busy` only then; ready ⇒ idle).
 
 ### Added — timestamped service log and gripper/controller event lines (2026-10-12)
 

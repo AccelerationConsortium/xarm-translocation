@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 
 from robot_motion.app import create_app
 from robot_motion.config import Settings
-from robot_motion.drivers.ur import interpret, present_status
+from robot_motion.drivers.ur import interpret, present_status, work_in_flight
 
 
 def _view(**flags):
@@ -33,28 +33,38 @@ def test_present_status_does_not_mutate_the_cached_observation():
     assert view["details"]["program_state"] == "PLAYING"
     assert view["details"]["program_state_source"] == "control_session"
     assert view["details"]["telemetry"]["joints_deg"][0] == 1
-    assert view["equipment_status"] == "busy"
-    assert view["activity"] == "running"
+    # The script is up; the arm is not moving. ready ⇒ idle.
+    assert view["equipment_status"] == "ready"
+    assert view["activity"] == "idle"
     assert view["message"] == "Read-only observation: program playing"
     assert view["required_actions"] == []
     assert "external script" in view["components"]["program"].message
 
 
 def test_an_already_playing_dashboard_program_is_left_alone():
+    """A loaded program Dashboard already calls PLAYING is still that program."""
     observed = interpret("RUNNING", "NORMAL", "PLAYING")
     view = present_status(observed, **_view(session_open=True, watchdog_ok=True))
     assert view["details"]["program_state"] == "PLAYING"
     assert "program_state_source" not in view["details"]
     assert view["components"]["program"].message is None
+    assert view["equipment_status"] == "busy"
+    assert view["activity"] == "running"
 
 
 def test_reduced_mode_still_reports_the_control_script():
     observed = interpret("RUNNING", "REDUCED", "STOPPED")
     view = present_status(observed, **_view(session_open=True, watchdog_ok=True))
     assert view["equipment_status"] == "degraded"
-    assert view["activity"] == "running"
+    assert view["activity"] == "idle"
     assert view["details"]["program_state"] == "PLAYING"
     assert "program PLAYING" in view["message"]
+    moving = present_status(
+        observed, **_view(session_open=True, watchdog_ok=True, motion_active=True)
+    )
+    assert moving["equipment_status"] == "degraded"
+    assert moving["activity"] == "running"
+    assert moving["details"]["program_state"] == "PLAYING"
 
 
 def test_a_safety_fault_is_not_rewritten_as_a_playing_script_or_a_reconnect():
@@ -158,6 +168,31 @@ def test_controller_power_off_names_connect_only_when_control_exists():
     assert held["required_actions"] == ["disconnect", "connect"]
     assert held["message"].startswith("Controller mode: POWER_OFF")
     assert "Disconnect and connect to resume." in held["message"]
+
+
+def test_in_flight_work_is_running_and_a_connected_arm_stays_idle():
+    observed = interpret("RUNNING", "NORMAL", "STOPPED")
+    idle = present_status(observed, **_view(session_open=True, watchdog_ok=True))
+    assert idle["details"]["program_state"] == "PLAYING"
+    assert idle["activity"] == "idle"
+    assert idle["equipment_status"] == "ready"
+    for flags in (
+        dict(arm_busy=True),
+        dict(active_move={"kind": "joint"}),
+        dict(trajectory_state="running"),
+        dict(trajectory_state="starting"),
+        dict(trajectory_state="stopping"),
+        dict(gripper_busy=True),
+    ):
+        assert work_in_flight(**flags) is True
+        view = present_status(
+            observed, **_view(session_open=True, watchdog_ok=True, motion_active=True)
+        )
+        assert view["activity"] == "running"
+        assert view["equipment_status"] == "busy"
+        assert view["details"]["program_state"] == "PLAYING"
+    for quiet in (None, "created", "completed", "stopped"):
+        assert work_in_flight(trajectory_state=quiet) is False
 
 
 def test_readonly_service_reports_the_safeguard_release():

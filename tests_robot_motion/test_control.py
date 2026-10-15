@@ -530,8 +530,9 @@ def test_control_script_is_reported_playing_when_dashboard_says_stopped():
         assert status["details"]["program_state_source"] == "control_session"
         assert status["components"]["program"]["state"] == "playing"
         assert "external script" in status["components"]["program"]["message"]
-        assert status["equipment_status"] == "busy"
-        assert status["activity"] == "running"
+        assert status["equipment_status"] == "ready"
+        assert status["activity"] == "idle"
+        assert status["details"]["control_session"]["busy"] is False
         assert "stopped" not in status["message"].lower()
         assert status["required_actions"] == []
         # The poll cache is still the Dashboard reading, so a later connect

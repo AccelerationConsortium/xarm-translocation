@@ -55,6 +55,8 @@ Gibbie UR3e (`ur3e_gibbie`).
 - Dashboard `programState` stays STOPPED while robot-motion's ur_rtde control
   script is running. `/status` reports that script as PLAYING
   (`program_state_source: control_session`) when the watchdog is acknowledged.
+  `activity` stays `idle` while the arm is merely connected; it is `running`
+  only during a move, an active trajectory, or a gripper move.
 
 ## automated-lle
 

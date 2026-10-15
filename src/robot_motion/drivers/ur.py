@@ -187,15 +187,31 @@ def _reconnect_note(message, *, safeguard):
     return text + " Disconnect and connect to resume."
 
 
-def _report_control_script(view):
+# Trajectory session states that are moving the arm. A created or finished
+# session is not work (STATUS_SPEC: activity is doing work, not "connected").
+_TRAJECTORY_ACTIVE = frozenset({"starting", "running", "stopping"})
+
+
+def work_in_flight(*, arm_busy=False, active_move=None, trajectory_state=None, gripper_busy=False):
+    """True while this service is actually moving the arm or the fingers."""
+    if arm_busy or active_move:
+        return True
+    if trajectory_state in _TRAJECTORY_ACTIVE:
+        return True
+    return bool(gripper_busy)
+
+
+def _report_control_script(view, *, motion_active):
     """Dashboard programState does not see ur_rtde's external control script.
 
     The script is sent on the secondary interface (port 30002). Dashboard
     ``programState`` reports the loaded .urp program, which stays STOPPED
     while that script runs — measured on the UR5 CB3 (PolyScope 3.15.8) and
     the same split documented for e-Series. The acknowledged watchdog is the
-    script answering, so /status reports PLAYING. The cached observation is
-    left alone: /connect still requires the loaded program to be STOPPED.
+    script answering, so /status reports program_state PLAYING. That is not
+    work: activity stays idle until a move, trajectory, or gripper motion is
+    in flight (ready ⇒ idle, busy ⇒ running). The cached observation is left
+    alone: /connect still requires the loaded program to be STOPPED.
     """
     details = view["details"]
     corrected = interpret(
@@ -217,10 +233,21 @@ def _report_control_script(view):
     )
     program = components["program"]
     components["program"] = program.model_copy(update={"message": note})
+    # interpret(PLAYING) calls a running program "busy". The control script
+    # is up whenever the session is; only in-flight motion is busy/running.
+    status = corrected["equipment_status"]
+    if motion_active:
+        activity = "running"
+        if status == "ready":
+            status = "busy"
+    else:
+        activity = "idle"
+        if status == "busy":
+            status = "ready"
     return {
         **view,
-        "equipment_status": corrected["equipment_status"],
-        "activity": corrected["activity"],
+        "equipment_status": status,
+        "activity": activity,
         "message": corrected["message"],
         "last_error": corrected["last_error"],
         "components": components,
@@ -239,6 +266,7 @@ def present_status(
     session_open,
     watchdog_ok,
     watchdog_error,
+    motion_active=False,
 ):
     """/status view of a cached Dashboard observation. Does not mutate it.
 
@@ -268,7 +296,7 @@ def present_status(
         and details.get("program_state") == "STOPPED"
     )
     if dashboard_hides_script:
-        view = _report_control_script(view)
+        view = _report_control_script(view, motion_active=motion_active)
 
     if (
         session_open

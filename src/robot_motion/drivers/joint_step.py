@@ -137,6 +137,11 @@ class JointStepExecutor:
         self._cancelled.set()
 
     @property
+    def busy(self):
+        """True while a step holds the move lock. /status reads this, not the lock."""
+        return self._lock.locked()
+
+    @property
     def latched(self):
         """Why further steps are refused, or None. Cleared only by replacement."""
         if self._fault is not None:

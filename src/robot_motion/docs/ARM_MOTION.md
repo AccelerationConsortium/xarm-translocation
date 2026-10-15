@@ -248,7 +248,10 @@ hand-guide the arm while the service owns it.
   this service's control script is running and the watchdog is acknowledged.
   Dashboard `programState` does not report that external script (STOPPED on
   the CB3); `/status` then says PLAYING and sets
-  `details.program_state_source` to `control_session`.
+  `details.program_state_source` to `control_session`. `activity` stays
+  `idle` (and `equipment_status` `ready`) until `control_session.busy` /
+  `active_move`, a trajectory session in `starting`, `running`, or
+  `stopping`, or a gripper move is in flight.
 - `required_actions`, when `equipment_status` is `requires_init`: `connect`,
   or `disconnect` then `connect` if a session is open. That includes a
   safeguard stop, and a session whose watchdog has stopped being acknowledged
