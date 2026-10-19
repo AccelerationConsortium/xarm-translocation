@@ -129,15 +129,57 @@ def test_real_yaml_loads_and_validates():
     assert graph.allowed_targets("uplc_draw_push") == ["uplc_draw_open_min"]
 
 
-def test_real_yaml_has_six_state_catalog():
+def test_real_yaml_has_seven_state_catalog():
     graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
     names = {gs.name for gs in graph.gripper_states}
-    assert names == {"empty", "grip_120", "reach_90", "grip_80", "reach_72", "closed"}
+    assert names == {
+        "empty", "grip_120", "reach_90", "grip_80",
+        "reach_72", "uplc_130", "closed",
+    }
     assert graph.gripper_state("grip_120").intent == GripIntent.GRASP
     assert graph.gripper_state("reach_90").stroke == 90.0
     assert graph.gripper_state("reach_72").intent == GripIntent.POSITION
+    assert graph.gripper_state("uplc_130").stroke == 130.0
+    assert graph.gripper_state("uplc_130").intent == GripIntent.POSITION
     # A full close (stroke 71) must resolve, or recover_to refuses it.
     assert graph.resolve_gripper_state(71) == "closed"
+
+
+def test_real_yaml_no_node_occupies_closed():
+    """``closed`` stays in the catalog (so a 71 mm stroke still resolves for
+    recovery) but is no longer an occupiable leaf on any node."""
+    graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
+    for node in graph.nodes:
+        assert "closed" not in node.gripper_states, node.id
+        for frm, to in node.gripper_transitions:
+            assert "closed" not in (frm, to), node.id
+
+
+def test_real_yaml_uplc_130_is_uplc_plate_only():
+    """``uplc_130`` partially opens to release a plate inside the UPLC. It is
+    occupiable at ``uplc_plate_in`` (with transitions) and ``uplc_plate_high``
+    (so the arm can retreat still at 130), and nowhere else."""
+    graph = MotionGraph.from_yaml(REAL_YAML, preconditions=DEFAULT_PRECONDITIONS)
+
+    plate_in = graph.node("uplc_plate_in")
+    assert "uplc_130" in plate_in.gripper_states
+    for pair in (
+        ("grip_120", "uplc_130"), ("uplc_130", "grip_120"),
+        ("empty", "uplc_130"), ("uplc_130", "empty"),
+    ):
+        assert pair in plate_in.gripper_transitions
+
+    plate_high = graph.node("uplc_plate_high")
+    assert "uplc_130" in plate_high.gripper_states
+    # Occupiable but no grip/release transitions at the high pose.
+    for frm, to in plate_high.gripper_transitions:
+        assert "uplc_130" not in (frm, to)
+
+    carriers = {"uplc_plate_in", "uplc_plate_high"}
+    for node in graph.nodes:
+        if node.id in carriers:
+            continue
+        assert "uplc_130" not in node.gripper_states, node.id
 
 
 def test_press_nodes_are_grip_only():

@@ -7,6 +7,19 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed — drop `closed` from nodes, add `uplc_130` at the UPLC plate pose (2026-10-15)
+
+Motion-graph gripper-state cleanup in `src/settings/motion_graph.yaml`:
+
+- `closed` (stroke 71) is removed from every node's `gripper_states` and from
+  the `empty` <-> `closed` transitions. It stays in the catalog, so a fully
+  closed gripper still resolves for `/graph/nearest`, but `recover_to` with a
+  71 mm gripper now needs `force` or an explicitly declared `gripper_state`.
+- New `uplc_130` state (stroke 130, position): a partial open to release the
+  plate inside the UPLC. Occupiable at `uplc_plate_in` (with `grip_120` <->
+  `uplc_130` and `empty` <-> `uplc_130` transitions) and `uplc_plate_high`
+  (occupy-only, so the arm can retreat to the high pose still at 130).
+
 ### Changed — xArm lab config from cytation-pc; device-local trajectory switch (2026-10-15)
 
 The cytation-pc checkout carried uncommitted lab edits; they are now on main
