@@ -14,6 +14,15 @@ from .realsense_camera import RealSenseError, RealSenseUnavailable, RealSenseNot
 from .realsense_captures import CaptureNotFound
 
 
+def _reason_text(reason):
+    """A status ``reason`` as text: the service may send ``{"error", "reason"}``."""
+    if reason is None or isinstance(reason, str):
+        return reason
+    if isinstance(reason, dict):
+        return str(reason.get('reason') or reason.get('error') or reason)
+    return str(reason)
+
+
 class RemoteService:
     def __init__(self, config):
         self.ids = list(config['cameras'])
@@ -100,6 +109,10 @@ class RemoteCamera:
               'warnings':[],'present':False,'streaming':False,'state':'unavailable',
               'reason':self.service.reason,'start_on_demand':False}
         base.update(d)
+        # The camera service's listing can carry a structured refusal in
+        # ``reason`` while a worker respawns; status fields here are strings
+        # (the UR5e's /status 500'd on a dict here, 2026-10-27).
+        base['reason']=_reason_text(base.get('reason'))
         base['sample_age_s']=age
         if stale:
             base.update(state='unavailable',present=False,streaming=False,start_on_demand=False,
@@ -108,7 +121,7 @@ class RemoteCamera:
 
     def component_status(self):
         d=self.describe()
-        return {'connected':d['present'],'state':d['state'],'message':d.get('reason') or self.label}
+        return {'connected':d['present'],'state':d['state'],'message':_reason_text(d.get('reason')) or self.label}
 
     def status_block(self):
         return self.describe()
