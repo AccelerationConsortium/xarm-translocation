@@ -129,9 +129,23 @@ feature owns the gate (412 + `allowed_actions` mirroring), not this layer.
 | `installed: false` | extra not synced into this venv | `uv sync --extra realsense` (stop the service or add `--no-install-project`) |
 | `no RealSense device connected` | not enumerated by Windows | USB 3 *data* cable, direct blue port; confirm in Device Manager |
 | `warnings: ["USB 2.x link …"]` or 502 on start | camera negotiated USB 2 | different port/cable, or drop `fps` / resolution in the YAML |
+| was on USB 3, now `device.usb_type: "2.x"` | **known issue:** the link drops from USB 3 to USB 2 every now and then | unplug and replug the camera cable (another port if it recurs); no software step recovers it — see below |
 | stream freezes, then `state: error` | cable yanked / power dip | re-seat, `POST /realsense/{id}/start` |
 | preview blank through the `:6001` legacy proxy | that proxy buffers whole bodies; MJPEG never ends | open the panel on the API port (`:8000/web/`) |
 | `distance_m: null` | depth hole (black / reflective / too close, < 0.2 m) | larger `window`, move the target, or check the IR projector is not blocked |
+
+### Known issue: the USB 3 link drops to USB 2
+
+Every now and then a RealSense that enumerated on USB 3 renegotiates to USB 2
+and stays there. The service does not cause it and cannot undo it: restarting
+`sdl-camera-server` or the `xarm` service, or a librealsense hardware reset,
+keeps the USB 2 link. Only unplugging and replugging the cable (or moving to
+another port) brings USB 3 back. Read `device.usb_type` on
+`GET /realsense/{id}/status`: `3.x` is healthy; `2.x` means depth+colour at
+1280x720 will be refused or run below the configured fps until someone
+re-seats the cable. An agent that needs the camera should report this to the
+operator rather than retry `start`. Observed on the D435i and D405 of the
+Cytation PC (reported 2026-10-27).
 
 ## Bench check (optional, no service needed)
 
