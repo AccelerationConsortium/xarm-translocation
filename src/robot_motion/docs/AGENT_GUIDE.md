@@ -244,8 +244,8 @@ equipment_status.
   /realsense/cameras reason; it never stops robot observation. /status gains
   components.realsense_<id> and details.realsense from cached telemetry.
 
-Discovery, /camera/config, /realsense/<id>/status, /depth and /intrinsics are
-open reads. Pixels (snapshot.jpg, depth.png, stream.mjpg), start/stop and PTZ
+Discovery, /camera/config, /realsense/<id>/status, /depth, /intrinsics and
+/calibration are open reads. Pixels (snapshot.jpg, depth.png, stream.mjpg), start/stop and PTZ
 need the edge identity (ROBOT_MOTION_EDGE_SHARED_SECRET): 401 without it, 503
 when the service has no secret.
 
@@ -261,7 +261,7 @@ when the service has no secret.
 - shared-ui tagged routes: absent-feature answers for the page's load-time reads
 - cameras tagged routes: /cameras and /realsense/cameras discovery,
   /camera/config, /camera/ptz, /camera/preset, /camera/follow (409), and
-  /realsense/<id>/{status,start,stop,snapshot.jpg,depth.png,stream.mjpg,depth,intrinsics}
+  /realsense/<id>/{status,start,stop,snapshot.jpg,depth.png,stream.mjpg,depth,intrinsics,calibration}
 - control tagged routes (only with control_enabled): /control/claim, heartbeat,
   release; /connect, /disconnect; /control/stop (/move/stop); joint_step mode:
   /control/joint_step

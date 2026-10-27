@@ -208,6 +208,9 @@ class CameraService:
             return httpx.Response(200, json={"distance_m": 0.5, "x": int(request.url.params["x"])})
         if path == "/v1/cameras/d435i/start":
             return httpx.Response(200, json={"streaming": True})
+        if path == "/v1/cameras/d435i/calibration":
+            return httpx.Response(200, json={"stereo_baseline": {"baseline_m": 0.05},
+                                             "refresh": request.url.params.get("refresh")})
         return httpx.Response(404)
 
 
@@ -259,6 +262,12 @@ def test_realsense_routes_follow_the_xarm_contract(stereo):
         ]:
             assert client.request(method, path).status_code == 401, path
         assert client.get("/realsense/d435i/depth?x=3&y=4").json()["distance_m"] == 0.5
+        # Stored calibration is an open read relayed with its refresh flag.
+        assert entry["urls"]["calibration"] == "/realsense/d435i/calibration"
+        assert "calibration" in client.get("/cameras").json()["cameras"][0]["capabilities"]
+        assert client.get("/realsense/d435i/calibration").json() == {
+            "stereo_baseline": {"baseline_m": 0.05}, "refresh": "false"}
+        assert client.get("/realsense/d435i/calibration?refresh=true").json()["refresh"] == "true"
 
         snapshot = client.get("/realsense/d435i/snapshot.jpg", headers=OPERATOR)
         assert snapshot.content == b"\xff\xd8jpeg"

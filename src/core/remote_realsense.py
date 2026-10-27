@@ -143,6 +143,11 @@ class RemoteCamera:
     def intrinsics(self):
         return self.service.request('GET',self.base+'/intrinsics').json()
 
+    def calibration(self, refresh=False):
+        """Stored device calibration from the camera service (no pipeline start)."""
+        return self.service.request('GET',self.base+'/calibration',
+                                    params={'refresh':'true' if refresh else 'false'}).json()
+
     def diagnostic_export(self,start_if_idle=False):
         r=self.service.request('POST',self.base+'/diagnostic',params={'start_if_idle':start_if_idle},timeout=90)
         return r.headers['X-Capture-ID'],r.content

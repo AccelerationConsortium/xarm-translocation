@@ -64,6 +64,7 @@ lists them with a ready-made URL per route.
 | GET | `/realsense/{id}/stream.mjpg?stream=color\|depth&fps=10` | login | `multipart/x-mixed-replace` MJPEG for an `<img>`; paced server-side |
 | GET | `/realsense/{id}/depth?x=&y=&window=5` | open | `{distance_m, point_m:[X,Y,Z], valid_samples, …}`; **409** when stopped — never starts the camera |
 | GET | `/realsense/{id}/intrinsics` | open | pinhole intrinsics per stream + `depth_scale_m` + `aligned_to` |
+| GET | `/realsense/{id}/calibration?refresh=false` | open | the calibration stored on the device, relayed from the camera service without starting the pipeline: `streams` (intrinsics per video stream and resolution — `depth`, `color`, `infrared_1`, `infrared_2` — with formats and fps), `extrinsics[from][to]` for every stream pair incl. `accel`/`gyro`, `stereo_baseline`, `imu` (D435i intrinsics: scale and cross-axis, bias, noise/bias variances), `conventions`. Cached per serial; `refresh=true` re-reads. **501** on an in-process camera |
 
 `point_m` is a pinhole deprojection in the frame of the stream the depth
 map is expressed in (colour when `align_depth_to_color: true`): +X right,

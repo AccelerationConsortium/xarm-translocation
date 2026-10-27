@@ -96,6 +96,7 @@ def _urls(camera_id):
         "stream": f"{base}/stream.mjpg",
         "depth": f"{base}/depth",
         "intrinsics": f"{base}/intrinsics",
+        "calibration": f"{base}/calibration",
     }
 
 
@@ -345,7 +346,8 @@ class Cameras:
             """Discover this panel's cameras by capability."""
             rs = await realsense_cameras()
             cameras = [
-                dict(camera, kind="realsense", capabilities=["color", "depth", "intrinsics", "snapshot", "mjpeg"])
+                dict(camera, kind="realsense",
+                     capabilities=["color", "depth", "intrinsics", "calibration", "snapshot", "mjpeg"])
                 for camera in rs["cameras"]
             ]
             lab = {"configured": self.lab is not None}
@@ -461,6 +463,17 @@ class Cameras:
             camera = self.camera(camera_id)
             try:
                 return await asyncio.to_thread(camera.intrinsics)
+            except Exception as exc:
+                raise _camera_error(exc) from exc
+
+        @app.get("/realsense/{camera_id}/calibration", tags=TAGS)
+        async def realsense_calibration(camera_id: str, refresh: bool = False):
+            """Stored device calibration (per-profile intrinsics, all stream
+            extrinsics, stereo baseline, IMU on a D435i) from the camera
+            service; no pipeline start. ``refresh=true`` re-reads it."""
+            camera = self.camera(camera_id)
+            try:
+                return await asyncio.to_thread(camera.calibration, refresh=refresh)
             except Exception as exc:
                 raise _camera_error(exc) from exc
 
