@@ -1,5 +1,9 @@
 # Robot Motion
 
+Motion-graph control for laboratory robot arms. Supported arms are the UFactory
+xArm5 and the Universal Robots UR5e, UR3e and UR5 CB3; Dobot MG400 support is
+planned.
+
 Installs as robot-motion with the API and the shared web UI (src/web) included
 by default. Optional extras are [xarm], [ur], and [mg400] (reserved; MG400 is
 not implemented yet). Run robot-motion serve for the UR service, or
