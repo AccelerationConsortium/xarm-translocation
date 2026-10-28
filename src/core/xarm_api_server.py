@@ -52,6 +52,7 @@ try:
     from .camera_tracker import CameraTracker
     from . import realsense_camera, realsense_captures
     from .realsense_camera import RealSenseError, RealSenseNotStreaming, RealSenseUnavailable
+    from .remote_realsense import StreamParts
     from .sash_interlock import SashInterlock, SashInterlockError
     from . import kinematics
     from . import assistant_actions
@@ -87,6 +88,7 @@ except ImportError:
     from core.camera_tracker import CameraTracker
     from core import realsense_camera, realsense_captures
     from core.realsense_camera import RealSenseError, RealSenseNotStreaming, RealSenseUnavailable
+    from core.remote_realsense import StreamParts
     from core.sash_interlock import SashInterlock, SashInterlockError
     from core import kinematics
     from core import assistant_actions
@@ -4163,13 +4165,19 @@ async def realsense_stream(camera_id: str, stream: Optional[str] = None, fps: fl
 
     async def body():
         # The generator blocks on the capture thread's condition variable;
-        # pull each part on a worker so the event loop stays free.
-        it = camera.mjpeg_frames(kind, max_fps=fps)
-        while True:
-            chunk = await asyncio.to_thread(next, it, None)
-            if chunk is None:
-                return
-            yield chunk
+        # pull each part on a worker so the event loop stays free. A viewer
+        # leaving cancels this generator: close the camera stream then rather
+        # than leaving it to the garbage collector (close_soon, not an await,
+        # since awaiting in a cancelled task's finally is itself cancelled).
+        parts = StreamParts(camera.mjpeg_frames(kind, max_fps=fps))
+        try:
+            while True:
+                chunk = await asyncio.to_thread(parts.next)
+                if chunk is None:
+                    return
+                yield chunk
+        finally:
+            parts.close_soon()
 
     return StreamingResponse(body(), media_type=camera.mjpeg_content_type(),
                              headers={"Cache-Control": "no-store"})

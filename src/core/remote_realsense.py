@@ -23,11 +23,45 @@ def _reason_text(reason):
     return str(reason)
 
 
+class StreamParts:
+    """Pull a blocking part generator from worker threads, and always close it.
+
+    ``next()`` and ``close()`` share one lock, so a close requested while a
+    pull is in flight (a viewer dropping mid-frame) runs as soon as that pull
+    returns instead of failing with "generator already executing" and leaving
+    the stream, and its upstream connection, to the garbage collector.
+    """
+
+    def __init__(self, parts):
+        self._parts = iter(parts)
+        self._lock = threading.Lock()
+
+    def next(self):
+        """The next part, or None once the stream has ended or was closed."""
+        with self._lock:
+            return next(self._parts, None)
+
+    def close(self):
+        with self._lock:
+            close = getattr(self._parts, 'close', None)  # plain iterators have none
+            if close is not None:
+                close()
+
+    def close_soon(self):
+        """Close from a fresh thread, for callers that must not block or await
+        (an async generator's ``finally`` while its task is being cancelled)."""
+        threading.Thread(target=self.close, daemon=True, name='camera-stream-close').start()
+
+
 class RemoteService:
-    def __init__(self, config):
+    def __init__(self, config, transport=None):
         self.ids = list(config['cameras'])
-        self.client = httpx.Client(base_url=config['url'].rstrip('/'),
-            headers={'Authorization': 'Bearer '+config['token']}, timeout=40,trust_env=False,
+        # ``transport`` is for tests (httpx.MockTransport); it reaches the
+        # per-stream clients too.
+        self._client_args = dict(base_url=config['url'].rstrip('/'),
+            headers={'Authorization': 'Bearer '+config['token']}, trust_env=False,
+            transport=transport)
+        self.client = httpx.Client(**self._client_args, timeout=40,
             limits=httpx.Limits(keepalive_expiry=4))
         self.stop_event = threading.Event()
         self.states = {}
@@ -74,6 +108,20 @@ class RemoteService:
         if self.thread:
             self.thread.join(12)
         self.client.close()
+
+    def stream_client(self):
+        """A client of its own for one MJPEG stream, closed with the stream.
+
+        Never ``self.client``: an abandoned stream is finalised by the garbage
+        collector on whatever thread triggers a collection, and closing it
+        re-enters its pool's non-reentrant lock -- inside the shared pool that
+        deadlocks the thread holding the lock and, with it, status polling and
+        every camera call (Gibbie UR3e, 2026-10-27: ~22 h of "Camera telemetry
+        stale" with a healthy camera service). A stream's own pool is never
+        locked by any other thread.
+        """
+        return httpx.Client(**self._client_args, timeout=httpx.Timeout(40),
+            limits=httpx.Limits(max_connections=1, max_keepalive_connections=0))
 
 
 class RemoteCamera:
@@ -166,12 +214,15 @@ class RemoteCamera:
         return r.headers['X-Capture-ID'],r.content
 
     def mjpeg_frames(self,kind='color',max_fps=10):
+        client=self.service.stream_client()
         try:
-            with self.service.client.stream('GET',self.base+'/stream.mjpg',params={'stream':kind,'fps':max_fps}) as r:
+            with client.stream('GET',self.base+'/stream.mjpg',params={'stream':kind,'fps':max_fps}) as r:
                 r.raise_for_status()
                 yield from r.iter_bytes()
         except httpx.HTTPError as exc:
             raise RealSenseUnavailable('Camera stream unavailable') from exc
+        finally:
+            client.close()
 
     def mjpeg_content_type(self):
         return 'multipart/x-mixed-replace; boundary=camera-frame'

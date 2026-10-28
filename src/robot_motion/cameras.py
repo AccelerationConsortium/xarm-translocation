@@ -32,6 +32,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 from core.camera_tracker import CameraTracker
 from core.realsense_camera import RealSenseNotStreaming, RealSenseUnavailable
+from core.remote_realsense import StreamParts
 
 from .edge import SECRET_ENV, configured_secret, edge_identity
 
@@ -428,20 +429,28 @@ class Cameras:
             # the event loop stays free. The first part is read before the
             # response starts, so an upstream refusal is a status code rather
             # than an empty 200 stream.
-            parts = camera.mjpeg_frames(kind, max_fps=fps)
+            parts = StreamParts(camera.mjpeg_frames(kind, max_fps=fps))
             try:
-                first = await asyncio.to_thread(next, parts, None)
+                first = await asyncio.to_thread(parts.next)
             except Exception as exc:
+                parts.close_soon()
                 raise _camera_error(exc) from exc
 
             async def body():
-                chunk = first
-                while chunk is not None:
-                    yield chunk
-                    try:
-                        chunk = await asyncio.to_thread(next, parts, None)
-                    except RealSenseUnavailable:
-                        return  # upstream ended mid-stream; the <img> reconnects
+                # A viewer leaving cancels this generator; close the upstream
+                # stream then rather than leaving it to the garbage collector.
+                # close_soon(), not an await: awaiting inside a cancelled
+                # task's finally is itself cancelled.
+                try:
+                    chunk = first
+                    while chunk is not None:
+                        yield chunk
+                        try:
+                            chunk = await asyncio.to_thread(parts.next)
+                        except RealSenseUnavailable:
+                            return  # upstream ended mid-stream; the <img> reconnects
+                finally:
+                    parts.close_soon()
 
             return StreamingResponse(body(), media_type=camera.mjpeg_content_type(),
                                      headers={"Cache-Control": "no-store"})
