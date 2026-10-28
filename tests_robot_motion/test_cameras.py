@@ -217,13 +217,9 @@ class CameraService:
 @pytest.fixture
 def stereo():
     upstream = CameraService()
-    service = RemoteService({"url": "http://camera.invalid", "token": "service-token", "cameras": ["d435i"]})
-    service.client.close()
-    service.client = httpx.Client(
-        base_url="http://camera.invalid",
-        headers={"Authorization": "Bearer service-token"},
-        transport=httpx.MockTransport(upstream),
-    )
+    # The transport reaches the per-stream clients as well as the shared one.
+    service = RemoteService({"url": "http://camera.invalid", "token": "service-token", "cameras": ["d435i"]},
+                            transport=httpx.MockTransport(upstream))
     camera = RemoteCamera(
         "d435i", {"label": "UR5e depth camera", "short_label": "D435i", "mount": {"location": "bench"}}, service
     )
