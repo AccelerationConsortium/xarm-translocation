@@ -101,6 +101,9 @@ class URControl:
             from .trajectory.routes import URTrajectory
 
             self.trajectory = URTrajectory(self)
+        # Graph moves and bench routines (routines.py), set by the app when a
+        # graph is configured; installed with the other control routes.
+        self.routines = None
 
     # ── identity and gates ──────────────────────────────────────────
     def identity(self, request):
@@ -401,6 +404,10 @@ class URControl:
             allowed += self.trajectory.advertised_actions(move_block)
         if self.gripper_control is not None:
             allowed += self.gripper_control.allowed_actions()
+        if self.routines is not None:
+            # Gated like the moves they are made of; where the arm starts, the
+            # gripper and the balance door are checked per request.
+            allowed += self.routines.advertised_actions(move_block)
         return {
             "claimed_by": self.claims.claimed_by(),
             "control_session": {
@@ -422,6 +429,7 @@ class URControl:
             },
             "allowed_actions": allowed,
             "trajectory": self.trajectory.summary() if self.trajectory is not None else None,
+            "routines": self.routines.summary() if self.routines is not None else None,
         }
 
     def shutdown(self):
@@ -513,6 +521,8 @@ class URControl:
             self.trajectory.install(app, login, claim)
         if self.gripper_control is not None:
             self.gripper_control.install(app, login, claim)
+        if self.routines is not None:
+            self.routines.install(app, login, claim)
 
         @app.post("/control/stop", tags=["control"])
         @app.post("/move/stop", tags=["control"])
