@@ -103,7 +103,33 @@ It does NOT validate reachability, collisions, physical limits, TCP calibration,
 payload, gripper state, rail clearance, or physical execution authority.
 Never transfer coordinates from one physical robot to another.
 Graphs submitted in the browser are not persisted or sent to hardware.
-UR hardware control still requires implementation and commissioning.
+
+### Graph moves and routines (`graph_file`, `routines_file`)
+
+With motion control on and a `graph_file` configured, `POST /graph/move
+{target}` walks the configured graph from the node the arm is at (every joint
+within `node_tolerance_deg`, default 1°) to `target`: a joint edge is a moveJ
+to the target node's joints, a linear edge a moveL to its TCP pose. Each edge
+is an ordinary arm move, under the same claim, envelope, speed caps, force
+guard and STOP latch as a panel move. Only taught edges are used, so a graph
+should contain only the transitions the bench has actually run.
+
+A `routines_file` adds bench routines (the Gibbie vial rack and XPR balance):
+`POST /routines/vial/rack_to_balance {slot}` and
+`POST /routines/vial/balance_to_rack {slot}`; `GET /routines` lists the slots.
+Each refuses with 412, before anything moves, unless the arm is at the home
+node, the gripper is empty and the balance service's door component reads
+`open` (read from its `/status`; the routine never commands the balance).
+Open the door through the balance service first. `dry_run: true` on any of
+these returns the planned steps without moving.
+
+A routine stops at the first refused or failed step and reports
+`failed_step`, `completed_steps` and `arm_may_have_moved`. A grip that closes
+without stopping on a part is a failure (`no_object_gripped`); the arm stays
+where it gripped. Nothing is rewound or retried: inspect the bench and
+reconcile before the next command. `allowed_actions` advertises `graph.move`
+and the `routine.*` actions when an arm move could run; where the arm is, the
+gripper and the door are checked per request.
 
 ## Shared web UI
 

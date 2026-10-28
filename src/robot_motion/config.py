@@ -216,6 +216,9 @@ class Settings(BaseModel):
     telemetry_interval_s: float = Field(default=0.5, ge=0.1, le=10, allow_inf_nan=False)
     timeout_s: float = Field(default=2, ge=0.1, le=5, allow_inf_nan=False)
     graph_file: str | None = None
+    # Bench routines over the graph (routines.py): rack and balance geometry,
+    # grips and the balance door check. Needs graph_file and motion control.
+    routines_file: str | None = None
     # Physical control cannot be switched on by a UI toggle or a lone flag:
     # it needs this flag AND a complete control block AND RTDE observation of
     # the same robot. Even then only the moves its limits allow exist.
@@ -272,6 +275,8 @@ def load_settings(path: Path | None) -> Settings:
 
     if settings.graph_file:
         settings = settings.model_copy(update={"graph_file": beside_config(settings.graph_file)})
+    if settings.routines_file:
+        settings = settings.model_copy(update={"routines_file": beside_config(settings.routines_file)})
     if settings.control and settings.control.audit_file:
         control = settings.control.model_copy(
             update={"audit_file": beside_config(settings.control.audit_file)}

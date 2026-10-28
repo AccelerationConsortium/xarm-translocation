@@ -24,6 +24,7 @@ from .drivers import inventory
 from .drivers.ur import URObserver, present_status, work_in_flight
 from .edge import configured_secret, edge_identity
 from .graph import Graph, PreviewRequest
+from .routines import RoutineSettings, Routines
 from .gripper import component_status as gripper_component
 
 log = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ def create_app(
     stereo_cameras=None,
     camera_transport=None,
     gripper=None,
+    balance_door_reader=None,
 ):
     settings = settings or Settings()
     observation = None
@@ -81,6 +83,13 @@ def create_app(
         )
         if settings.model and graph.robot_model != settings.model:
             raise ValueError("Configured graph belongs to a different robot model")
+    routine_settings = None
+    if settings.routines_file:
+        if graph is None:
+            raise ValueError("routines_file needs a graph_file")
+        routine_settings = RoutineSettings.model_validate_json(
+            Path(settings.routines_file).read_text(encoding="utf-8-sig")
+        )
 
     if observer is None and settings.observe:
         if settings.ur_transport == "rtde":
@@ -239,7 +248,16 @@ def create_app(
             edge_secret=edge_secret,
             observe=current_observation,
             gripper=gripper,
-        ).install(app)
+        )
+        # Graph moves are ordinary arm moves, so they exist only in motion mode.
+        if graph is not None and control.arm_mode == "motion":
+            control.routines = Routines(
+                control, graph, routine_settings,
+                **({"door_reader": balance_door_reader} if balance_door_reader else {}),
+            )
+        control.install(app)
+    if routine_settings is not None and getattr(control, "routines", None) is None:
+        raise ValueError("routines_file needs control enabled with control.motion")
 
     @app.get("/", response_model=ProbeResponse)
     def probe():
@@ -371,6 +389,8 @@ def create_app(
                 "control_session": control_state["control_session"] if control_state else None,
                 # Joint-trajectory session (xArm field name); None without the block.
                 "trajectory": control_state.get("trajectory") if control_state else None,
+                # Graph moves and bench routines; None without a graph.
+                "routines": control_state.get("routines") if control_state else None,
                 # The panel's Manual switch reads this (the xArm's field name).
                 "manual_mode": bool(control_state and control_state["control_session"].get("manual_mode")),
                 "driver": settings.driver,

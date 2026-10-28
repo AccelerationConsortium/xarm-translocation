@@ -166,6 +166,44 @@ secrets and the control tile (ac-organic-lab PRs #69 and #70; a live
 INIT / STOP / disconnect from the tile at 04:20-04:21 UTC reached the
 device as the operator), and `gibbie_ur_arm` retired from the dashboard.
 
+## Vial routines on the motion graph (2026-10-28, offline only)
+
+The Gibbie workflow's `URController.vial_2_balance` / `balance_2_vial`
+(`sdl2_solid_dose`, read on the PC) as robot-motion routines
+(`robot_motion/routines.py`, AGENT_GUIDE "Graph moves and routines"):
+
+- `deploy/ur3e_gibbie/graph.json`: the eight taught positions those two
+  methods use, copied from the workflow's
+  `settings/robot/ur3_1006_locations_converted.json` (same mm and extrinsic
+  xyz-degree convention, same controller TCP), and only the 14 transitions
+  they run. The graph's shortest paths reproduce both methods move for move.
+- `deploy/ur3e_gibbie/routines.json`: home `safe_rack`; the 4×6 rack from
+  `vial_stock_JL` at 20 mm pitch (A..D along -x, 1..6 along -y, as the
+  workflow's resource handler builds it); pick 55 mm, place 35 mm below the
+  slot pose; vial grip raw 207 / 242 (the workflow's 0.81 / 0.95); the
+  balance door `door_right` (XPR RightOuter, the one the workflow opens) read
+  from `gibbie_balance`'s `/status`.
+
+To enable: copy both files into `.state` beside the config and add
+`"graph_file": "graph.json", "routines_file": "routines.json"`.
+
+Deliberate differences from the workflow, for review:
+
+- `home_prep_bal → safe_bal` is a joint move in both directions; the
+  workflow uses moveJ in `vial_2_balance` but moveL in `balance_2_vial`, and a
+  graph has one edge per direction.
+- After releasing a vial in the rack the arm lifts straight up out of the
+  slot before going to `vial_stock_prep`; the workflow moves there directly
+  from the release height.
+- Speeds are the motion block's defaults (a quarter of the 10 deg/s and
+  50 mm/s placeholders), well below the workflow's 30 deg/s and 50–100 mm/s.
+- Grip force is the gripper's commissioned default (10 %, cap 20 %); the
+  workflow grips at 50 %. Whether 10 % holds a vial is untested.
+
+Not yet run on the arm. First live run: with the user at the arm and the
+Gibbie workflow idle, `dry_run` each routine, then `graph.move` along each
+leg at the default speeds before a full routine.
+
 ## Open with the user
 
 - Who may hold the arm when: the interlock contract with the Gibbie
