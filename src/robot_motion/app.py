@@ -68,6 +68,7 @@ def create_app(
     camera_transport=None,
     gripper=None,
     balance_door_reader=None,
+    key_verifier=None,
 ):
     settings = settings or Settings()
     observation = None
@@ -248,6 +249,7 @@ def create_app(
             edge_secret=edge_secret,
             observe=current_observation,
             gripper=gripper,
+            key_verifier=key_verifier,
         )
         # Graph moves are ordinary arm moves, so they exist only in motion mode.
         if graph is not None and control.arm_mode == "motion":

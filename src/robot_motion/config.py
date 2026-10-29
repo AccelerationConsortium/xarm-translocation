@@ -204,6 +204,10 @@ class Settings(BaseModel):
         default="robot_motion_prototype", pattern=r"^[a-z][a-z0-9_]{0,63}$"
     )
     equipment_name: str = Field(default="Robot Motion", min_length=1, max_length=100)
+    # Central auth service (ac_auth) origin. With it, an agent's X-Api-Key is
+    # verified there for equipment_id (edge.py); without it only the edge's
+    # identity is trusted.
+    auth_url: str | None = Field(default=None, pattern=r"^https?://[^\s/?#]+$")
     driver: Literal["none", "ur", "mg400"] = "none"
     model: Literal["ur3e", "ur5e", "ur5_cb3", "mg400"] | None = None
     robot_host: str | None = Field(default=None, min_length=1, max_length=253)

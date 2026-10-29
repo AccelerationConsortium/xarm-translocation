@@ -2,8 +2,10 @@
 
 Installed only when Settings.control_enabled is true. Identity is the
 dashboard edge's (X-Auth-User plus X-Edge-Auth matching
-ROBOT_MOTION_EDGE_SHARED_SECRET); without a configured secret every control
-route refuses, so a directly reachable service never trusts client headers.
+ROBOT_MOTION_EDGE_SHARED_SECRET) or, with auth_url configured, an agent's
+X-Api-Key as verified by ac_auth for this equipment (edge.py); with neither
+configured every control route refuses, so a directly reachable service never
+trusts client headers.
 Hard claims (core.claims) gate every arm move and the gripper commands
 (gripper.py). /connect and /disconnect follow the xArm order (Connect, then
 Take Control): any listed operator may call them while nobody holds control,
@@ -53,7 +55,15 @@ from .drivers.ur_motion import (
     MotionRefused,
 )
 from .config import MODELS
-from .edge import SECRET_ENV, configured_secret, edge_identity
+from .edge import (
+    API_KEY_HEADER,
+    SECRET_ENV,
+    ApiKeyVerifier,
+    AuthUnavailable,
+    KeyForbidden,
+    configured_secret,
+    edge_identity,
+)
 
 log = logging.getLogger(__name__)
 STOP_NOTICE = (
@@ -69,7 +79,8 @@ REGISTERS_IN_USE = "RTDE input registers are already in use"
 
 
 class URControl:
-    def __init__(self, settings, *, session_factory=None, edge_secret=None, observe=None, gripper=None):
+    def __init__(self, settings, *, session_factory=None, edge_secret=None, observe=None, gripper=None,
+                 key_verifier=None):
         self.settings = settings
         self.config = settings.control
         # joint_step or motion limits, whichever the config names (never both).
@@ -89,6 +100,10 @@ class URControl:
         self._observe = observe or (lambda: (None, True))
         self.claims = ClaimManager(enforce=True)
         self.secret = configured_secret(edge_secret)
+        # Agents' X-Api-Key, verified centrally for this equipment (edge.py).
+        self.key_verifier = key_verifier or (
+            ApiKeyVerifier(settings.auth_url, settings.equipment_id) if settings.auth_url else None
+        )
         self._session_factory = session_factory or (lambda: ControlSession(settings))
         self._lock = threading.Lock()
         self.session = None
@@ -107,10 +122,32 @@ class URControl:
 
     # ── identity and gates ──────────────────────────────────────────
     def identity(self, request):
-        return edge_identity(request, self.secret)
+        """The edge's identity, else an agent key's as vouched for by ac_auth."""
+        identity = edge_identity(request, self.secret)
+        if identity is not None or self.key_verifier is None:
+            return identity
+        key = (request.headers.get(API_KEY_HEADER) or "").strip()
+        if not key:
+            return None
+        try:
+            return self.key_verifier(key)
+        except KeyForbidden:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "no_role",
+                    "hint": f"this key's principal holds no role on {self.settings.equipment_id} in the auth roster",
+                },
+            ) from None
+        except AuthUnavailable as exc:
+            log.warning("API key not verified, auth service unavailable: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "auth_unavailable", "hint": "the auth service did not answer; control refused"},
+            ) from None
 
     def require_login(self, request: Request):
-        if not self.secret:
+        if not self.secret and self.key_verifier is None:
             raise HTTPException(
                 status_code=503,
                 detail={
@@ -124,11 +161,14 @@ class URControl:
                 status_code=401,
                 detail={
                     "error": "login_required",
-                    "hint": "control requests must arrive through the authenticated dashboard edge",
+                    "hint": (
+                        "control requests must arrive through the authenticated dashboard edge"
+                        + (" or carry an agent's X-Api-Key" if self.key_verifier else "")
+                    ),
                 },
             )
-        # No local operator list: the edge holding the secret has already
-        # decided this identity may control this equipment (central roster).
+        # No local operator list: the edge holding the secret, or ac_auth for
+        # a key, has already decided this identity may control this equipment.
         request.state.identity = identity
         return identity
 

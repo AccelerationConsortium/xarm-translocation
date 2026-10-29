@@ -78,7 +78,9 @@ driver=ur, an explicit model, and robot_host. control_enabled defaults to false
 and is rejected unless a complete control block (joint_step or motion
 limits, or a gripper) accompanies it on an RTDE-observed robot;
 the edge secret comes from ROBOT_MOTION_EDGE_SHARED_SECRET in the service
-environment, never from the config file. Optional control settings:
+environment, never from the config file. `auth_url` (top level, the ac_auth
+origin, e.g. `http://100.64.254.6:8009`) lets agents present their own
+X-Api-Key, verified there for this `equipment_id`. Optional control settings:
 watchdog_hz (controller-side watchdog rate, default 10) and audit_file
 (JSON-lines control event trail, relative to the config file). Enabling control is a local config
 change plus a restart in an authorized window; no request can switch it on.
@@ -179,7 +181,16 @@ service streams it with ur_rtde `servoJ` at 125 Hz (50–250 allowed) on its
 own clock. Measured on the arm: about 40 ms lag, tracking within about
 0.03° rms.
 
-**Route for clients:** never the raw port. Either the lab edge,
+**Route for agents (lab-skills SDK):** the device itself, with the agent's
+`X-Api-Key` on every call, as for the xArm and the OT-2 gateways. With
+`auth_url` configured the device asks ac_auth
+`/auth/verify?equipment=<equipment_id>`: 401 `login_required` for an unknown
+or revoked key, 403 `no_role` when its principal holds no role on this
+equipment, 503 `auth_unavailable` when ac_auth does not answer (fail closed).
+An allowing verdict is reused for 30 s, so a revoked key stops within 30 s.
+Claims are stamped with the key's principal (`agent:<human>`).
+
+**Route for browsers and other clients:** never the raw port. Either the lab edge,
 `http://100.64.254.6/ur5e/…`: the edge checks the sign-in cookie (emailed
 code via `POST /auth/login` and `POST /auth/verify-code` on the edge) and
 adds the operator identity. Or, since 2026-10-11, the dashboard's control
@@ -298,8 +309,9 @@ when the service has no secret.
 - /llms.txt: documentation index
 
 The read-only routes have no authentication because they mutate nothing. The
-control routes trust only the dashboard edge's shared-secret identity headers
-and refuse entirely when that secret is unset. Serve the process only on the
+control routes trust the dashboard edge's shared-secret identity headers and,
+with `auth_url` set, an agent X-Api-Key that ac_auth vouches for on this
+equipment; with neither configured they refuse entirely. Serve the process only on the
 loopback or explicitly firewalled Tailnet interface; never expose it publicly.
 Commissioning arm motion on the physical robot remains outstanding; see the
 checklist in ARM_MOTION.md.
