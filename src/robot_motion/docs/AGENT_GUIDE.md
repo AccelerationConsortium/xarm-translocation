@@ -112,7 +112,11 @@ within `node_tolerance_deg`, default 1°) to `target`: a joint edge is a moveJ
 to the target node's joints, a linear edge a moveL to its TCP pose. Each edge
 is an ordinary arm move, under the same claim, envelope, speed caps, force
 guard and STOP latch as a panel move. Only taught edges are used, so a graph
-should contain only the transitions the bench has actually run.
+should contain only the transitions the bench has actually run. Joints are
+matched by shortest angular distance; a joint a whole number of turns from
+the taught angle (the UR3e's wrist 3 turns without limit) is refused with
+412 `joint_turn_offset` naming the joint and the turns, because a moveJ to
+the taught angle would spin it the whole way round — unwind it first.
 
 A `routines_file` adds bench routines (the Gibbie vial rack and XPR balance):
 `POST /routines/vial/rack_to_balance {slot}` and

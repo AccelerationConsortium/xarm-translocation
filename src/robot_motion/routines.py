@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import string
-from typing import Annotated
+from typing import Annotated, NamedTuple
 
 import httpx
 from fastapi import Header, HTTPException
@@ -39,6 +39,19 @@ Raw = Annotated[int, Field(ge=0, le=255)]
 
 GRAPH_ACTIONS = ("graph.move",)
 ROUTINE_ACTIONS = ("routine.vial_rack_to_balance", "routine.vial_balance_to_rack")
+
+
+def _fold_deg(delta: float) -> float:
+    """Shortest angular distance for a joint difference, in [0, 180]."""
+    delta = abs(delta) % 360.0
+    return min(delta, 360.0 - delta)
+
+
+class Location(NamedTuple):
+    node: str | None  # the node the arm is at, or None
+    nearest: str  # the closest node by shortest angular distance
+    deviation_deg: float  # its largest per-joint deviation with whole turns folded out
+    turns: dict[str, int]  # joints a whole number of turns off that node, e.g. {"j6": 1}
 
 
 # ── bench configuration (routines_file) ──────────────────────────────
@@ -171,8 +184,15 @@ class Routines:
         self._running = None  # name of the routine in progress
 
     # ── where the arm is ────────────────────────────────────────────
-    def locate(self):
-        """(node id or None, nearest node id, its largest joint deviation)."""
+    def locate(self) -> Location:
+        """Which graph node the arm is at, by shortest angular distance per joint.
+
+        A joint a whole number of turns from its taught angle (the UR3e's
+        wrist 3 turns without limit, so it reads 540° as readily as 180°)
+        folds to the same pose, but a moveJ to the taught angle would spin it
+        the whole way round. Such a node counts as *nearest*, not *at*, and
+        the turns are reported so the operator can unwind the joint first.
+        """
         session = self.control.session
         feedback = getattr(session, "feedback", None) if session is not None else None
         sample = feedback.latest() if feedback is not None else None
@@ -182,27 +202,42 @@ class Routines:
                 detail={"error": "no_control_session", "reason": "No arm session; Connect first"},
             )
         tolerance = self.settings.node_tolerance_deg if self.settings else 1.0
-        best, best_dev = None, None
+        best = None
         for node in self.graph.nodes:
-            dev = max(abs(a - b) for a, b in zip(sample["joints_deg"], node.joints_deg))
-            if best_dev is None or dev < best_dev:
-                best, best_dev = node.id, dev
-        return (best if best_dev is not None and best_dev <= tolerance else None), best, best_dev
+            raw = [a - b for a, b in zip(sample["joints_deg"], node.joints_deg)]
+            folded = max(_fold_deg(d) for d in raw)
+            if best is None or folded < best[1]:
+                best = (node, folded, raw)
+        node, folded, raw = best
+        if folded > tolerance:
+            return Location(None, node.id, folded, {})
+        turns = {f"j{i + 1}": round(d / 360) for i, d in enumerate(raw) if abs(d) > tolerance}
+        return Location(None if turns else node.id, node.id, folded, turns)
+
+    def _not_at(self, where: Location, reason: str, **extra):
+        """The 412 for an arm that is not at the node a move needs."""
+        detail = {
+            "error": "not_at_node",
+            "reason": reason,
+            **extra,
+            "at": where.node,
+            "nearest": where.nearest,
+            "nearest_deviation_deg": round(where.deviation_deg, 3),
+        }
+        if where.turns:
+            joints = ", ".join(f"{j} by {n:+d} turn{'s' if abs(n) != 1 else ''}" for j, n in where.turns.items())
+            detail["error"] = "joint_turn_offset"
+            detail["turns"] = where.turns
+            detail["reason"] = (
+                f"The arm is at {where.nearest!r} except that {joints} from the taught angle; "
+                "unwind it before a graph move (a joint move to the taught angle would spin it the whole way)"
+            )
+        return HTTPException(status_code=412, detail=detail)
 
     def _at(self, required):
-        node, nearest, deviation = self.locate()
-        if node != required:
-            raise HTTPException(
-                status_code=412,
-                detail={
-                    "error": "not_at_node",
-                    "reason": f"The arm must start at {required!r}",
-                    "required": required,
-                    "at": node,
-                    "nearest": nearest,
-                    "nearest_deviation_deg": round(deviation, 3),
-                },
-            )
+        where = self.locate()
+        if where.node != required:
+            raise self._not_at(where, f"The arm must start at {required!r}", required=required)
 
     # ── step plans ──────────────────────────────────────────────────
     def path_steps(self, source, target):
@@ -395,17 +430,10 @@ class Routines:
         async def graph_move(body: GraphMove, identity: dict = login, x_claim_token: str | None = Header(default=None)):
             """Walk the motion graph from the node the arm is at to `target`,
             one ordinary arm move per edge. Refused unless the arm is at a node."""
-            node, nearest, deviation = self.locate()
+            where = self.locate()
+            node = where.node
             if node is None:
-                raise HTTPException(
-                    status_code=412,
-                    detail={
-                        "error": "not_at_node",
-                        "reason": "The arm is not at a graph node",
-                        "nearest": nearest,
-                        "nearest_deviation_deg": round(deviation, 3),
-                    },
-                )
+                raise self._not_at(where, "The arm is not at a graph node")
             try:
                 steps = self.path_steps(node, body.target)
             except GraphError as exc:
