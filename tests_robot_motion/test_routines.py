@@ -361,3 +361,32 @@ def test_the_gibbie_files_reproduce_the_workflows_paths():
     assert len(rack.slots()) == 24 and rack.slot_pose("A1") == list(rack.a1_tcp_mm_rpy_deg)
     assert rack.slot_pose("D6")[:2] == pytest.approx([483.7 - 60, 122.41 - 100])
     assert (routines.vial_grip.open_raw, routines.vial_grip.close_raw) == (207, 242)
+
+
+def test_a_joint_a_whole_turn_off_the_node_is_refused_with_the_turns_named(tmp_path):
+    """Wrist 3 on the UR3e turns without limit, so 360° past home folds to the
+    same pose; a moveJ to the taught angle would spin it the whole way round."""
+    bench = Bench(tmp_path)
+    with bench.client() as client:
+        held = connected(client)
+        bench.rig.world.q[5] += 2 * math.pi
+        probe = lambda: client.post("/graph/move", json={"target": "pan", "dry_run": True}, headers=held)
+        wait_for(lambda: probe().status_code == 412, what="the feedback to see the extra turn")
+        sent = len(bench.rig.control.moves)
+        for route, body in (
+            ("/graph/move", {"target": "pan"}),
+            ("/routines/vial/rack_to_balance", {"slot": "A1"}),
+        ):
+            refused = client.post(route, json=body, headers=held)
+            assert refused.status_code == 412, refused.text
+            detail = refused.json()["detail"]
+            assert detail["error"] == "joint_turn_offset"
+            assert detail["at"] is None and detail["nearest"] == "home"
+            assert detail["turns"] == {"j6": 1}
+            assert detail["nearest_deviation_deg"] == pytest.approx(0.0, abs=1e-6)
+            assert "j6 by +1 turn" in detail["reason"]
+        assert len(bench.rig.control.moves) == sent
+        # Unwound, the same pose is home again and the move goes ahead.
+        bench.rig.world.q[5] -= 2 * math.pi
+        wait_for(lambda: probe().status_code == 200, what="the feedback to see the joint unwound")
+        assert probe().json()["from"] == "home"
