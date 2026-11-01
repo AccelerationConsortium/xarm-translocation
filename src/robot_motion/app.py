@@ -14,7 +14,13 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
-from sdl_lab_contract import ComponentStatus, EquipmentStatus, HealthResponse, ProbeResponse
+from sdl_lab_contract import (
+    ComponentStatus,
+    EquipmentStatus,
+    ErrorInfo,
+    HealthResponse,
+    ProbeResponse,
+)
 from core.motion_graph import GraphError
 
 from . import __version__
@@ -55,6 +61,23 @@ SAFETY = (
     "Topology preview only: no collision, reachability, joint-limit, payload, "
     "TCP calibration, gripper, or physical clearance validation; not executable authorization."
 )
+
+
+class ReconnectBackoff:
+    """Bounded retry delay shared by the Dashboard and RTDE polling loops."""
+
+    def __init__(self, *, initial=0.5, maximum=30):
+        self.initial = initial
+        self.maximum = maximum
+        self._next = initial
+
+    def failed(self):
+        delay = self._next
+        self._next = min(self._next * 2, self.maximum)
+        return delay
+
+    def succeeded(self):
+        self._next = self.initial
 
 
 def create_app(
@@ -98,6 +121,73 @@ def create_app(
         and callable(getattr(observer, "read_dashboard", None))
     )
     telemetry = {"sample": None, "error": None, "at": None}
+    controller_outage = {
+        "since": None,
+        "last_error": None,
+        "consecutive_failures": 0,
+        "sources": set(),
+    }
+
+    def controller_failed(exc, source):
+        """Remember one controller-link outage without flooding service logs."""
+        error = str(exc) or type(exc).__name__
+        if controller_outage["since"] is None:
+            controller_outage["since"] = datetime.now(timezone.utc)
+            log.warning("UR controller link down (%s): %s", source, error)
+        controller_outage["last_error"] = error
+        controller_outage["consecutive_failures"] += 1
+        controller_outage["sources"].add(source)
+
+    def controller_recovered(source):
+        controller_outage["sources"].discard(source)
+        if controller_outage["since"] is not None and not controller_outage["sources"]:
+            log.info(
+                "UR controller link recovered (%s) after %d failed attempts",
+                source,
+                controller_outage["consecutive_failures"],
+            )
+            controller_outage.update(
+                since=None, last_error=None, consecutive_failures=0, sources=set()
+            )
+
+    def outage_observation():
+        """A controller link failure is an unknown status, not a robot fault."""
+        since = controller_outage["since"]
+        if since is None:
+            return None
+        ports = (
+            "Dashboard :29999 / RTDE :30004" if fast_telemetry else "Dashboard :29999"
+        )
+        error = controller_outage["last_error"]
+        message = (
+            f"UR controller {settings.robot_host} not answering ({ports}) since "
+            f"{since.isoformat()}; check controller power and cable"
+        )
+        return {
+            "equipment_status": "unknown",
+            "activity": "unknown",
+            "message": message,
+            "last_error": ErrorInfo(
+                code="ur_controller_unreachable",
+                message=error,
+                severity="error",
+                timestamp=since,
+            ),
+            "components": {
+                "controller": ComponentStatus(
+                    connected=False, state="unreachable", message=error
+                )
+            },
+            "details": {
+                "robot": {
+                    "reachable": False,
+                    "host": settings.robot_host,
+                    "since": since.isoformat(),
+                    "last_error": error,
+                    "consecutive_failures": controller_outage["consecutive_failures"],
+                }
+            },
+        }
 
     async def threaded(read):
         task = asyncio.create_task(asyncio.to_thread(read))
@@ -112,38 +202,47 @@ def create_app(
     async def poll():
         nonlocal observation, observed_at, observed_time, activity_since, previous_activity
         read = observer.read_dashboard if fast_telemetry else observer.read
+        backoff = ReconnectBackoff()
         while True:
             try:
                 result = await threaded(read)
-            except Exception:
-                log.exception("Read-only robot observation failed")
+            except Exception as exc:  # The cached outage is served by /status.
+                controller_failed(exc, "Dashboard")
                 result = {
                     "equipment_status": "unknown",
                     "activity": "unknown",
-                    "message": "Robot observation unavailable; see service log",
+                    "message": "UR controller observation unavailable",
                     "components": {},
                     "details": {},
                 }
+                delay = backoff.failed()
+            else:
+                controller_recovered("Dashboard")
+                delay = settings.poll_interval_s
+                backoff.succeeded()
             now = datetime.now(timezone.utc)
             activity = result["activity"]
             if activity != previous_activity:
                 previous_activity, activity_since = activity, now
             observation, observed_at = result, time.monotonic()
             observed_time = now
-            await asyncio.sleep(settings.poll_interval_s)
+            await asyncio.sleep(delay)
 
     async def poll_telemetry():
+        backoff = ReconnectBackoff()
         while True:
             try:
                 sample, error = await threaded(observer.read_telemetry), None
             except Exception as exc:  # noqa: BLE001 - a broken stream reads as absent
                 sample, error = None, str(exc)
-                if error != telemetry["error"]:
-                    log.exception("RTDE receive-only telemetry unavailable")
-            if error is None and telemetry["error"] is not None:
-                log.info("RTDE receive-only telemetry restored")
+                controller_failed(exc, "RTDE")
+                delay = backoff.failed()
+            else:
+                controller_recovered("RTDE")
+                delay = settings.telemetry_interval_s
+                backoff.succeeded()
             telemetry.update(sample=sample, error=error, at=time.monotonic())
-            await asyncio.sleep(settings.telemetry_interval_s)
+            await asyncio.sleep(delay)
 
     def with_telemetry(current, stale):
         """Overlay the fast sample on the Dashboard observation. A missing or
@@ -151,23 +250,34 @@ def create_app(
         if not fast_telemetry or stale:
             return current
         age_limit = max(3 * settings.telemetry_interval_s, 2.0)
-        fresh = telemetry["at"] is not None and time.monotonic() - telemetry["at"] <= age_limit
+        fresh = (
+            telemetry["at"] is not None
+            and time.monotonic() - telemetry["at"] <= age_limit
+        )
         sample = telemetry["sample"] if fresh else None
         component = (
             ComponentStatus(connected=True, state="receiving")
             if sample
             else ComponentStatus(
-                connected=False, state="unknown", message="RTDE telemetry unavailable; see service log"
+                connected=False,
+                state="unknown",
+                message="RTDE telemetry unavailable; see service log",
             )
         )
         return {
             **current,
             "components": {**current["components"], "telemetry": component},
-            "details": {**current["details"], "telemetry": sample or dict(TELEMETRY_UNAVAILABLE)},
+            "details": {
+                **current["details"],
+                "telemetry": sample or dict(TELEMETRY_UNAVAILABLE),
+            },
         }
 
     cameras = Cameras(
-        settings, edge_secret=edge_secret, stereo=stereo_cameras, transport=camera_transport
+        settings,
+        edge_secret=edge_secret,
+        stereo=stereo_cameras,
+        transport=camera_transport,
     )
     if gripper is None and settings.gripper is not None:
         from .drivers.robotiq import RobotiqGripper
@@ -177,7 +287,9 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app):
         task = asyncio.create_task(poll()) if settings.observe else None
-        telemetry_task = asyncio.create_task(poll_telemetry()) if fast_telemetry else None
+        telemetry_task = (
+            asyncio.create_task(poll_telemetry()) if fast_telemetry else None
+        )
         # Camera telemetry is polled on its own thread; /status only reads it.
         cameras.start()
         if gripper is not None:
@@ -208,6 +320,9 @@ def create_app(
     app.state.settings = settings
 
     def current_observation():
+        outage = outage_observation()
+        if outage is not None:
+            return outage, False
         stale = (
             observed_at is None
             or time.monotonic() - observed_at > settings.poll_interval_s + 30
@@ -313,7 +428,11 @@ def create_app(
                 gripper_busy=bool(gripper is not None and gripper.busy),
             ),
         )
-        shown_since = activity_since if not stale and presented["activity"] == current["activity"] else None
+        shown_since = (
+            activity_since
+            if not stale and presented["activity"] == current["activity"]
+            else None
+        )
         return EquipmentStatus(
             protocol_version="1.2",
             equipment_id=settings.equipment_id,
@@ -333,17 +452,27 @@ def create_app(
             components={
                 **cameras.components(),
                 **presented["components"],
-                **({"gripper": gripper_component(gripper)} if gripper is not None else {}),
+                **(
+                    {"gripper": gripper_component(gripper)}
+                    if gripper is not None
+                    else {}
+                ),
                 # Present only with control on: the lab-skills catalog gates
                 # the UR's control skills on state "enabled", so a receive-only
                 # service never offers them. The message, not the state, says
                 # when an open session has to be disconnected and connected again.
-                **({"control": {
-                    "connected": True,
-                    "state": "enabled",
-                    "message": presented["control_message"],
-                    "last_event_at": None,
-                }} if control is not None else {}),
+                **(
+                    {
+                        "control": {
+                            "connected": True,
+                            "state": "enabled",
+                            "message": presented["control_message"],
+                            "last_event_at": None,
+                        }
+                    }
+                    if control is not None
+                    else {}
+                ),
             },
             last_error=presented.get("last_error"),
             allowed_actions=control_state["allowed_actions"] if control_state else [],
@@ -368,11 +497,18 @@ def create_app(
                     else "not_implemented"
                 ),
                 "claimed_by": control_state["claimed_by"] if control_state else None,
-                "control_session": control_state["control_session"] if control_state else None,
+                "control_session": (
+                    control_state["control_session"] if control_state else None
+                ),
                 # Joint-trajectory session (xArm field name); None without the block.
-                "trajectory": control_state.get("trajectory") if control_state else None,
+                "trajectory": (
+                    control_state.get("trajectory") if control_state else None
+                ),
                 # The panel's Manual switch reads this (the xArm's field name).
-                "manual_mode": bool(control_state and control_state["control_session"].get("manual_mode")),
+                "manual_mode": bool(
+                    control_state
+                    and control_state["control_session"].get("manual_mode")
+                ),
                 "driver": settings.driver,
                 "model": settings.model,
                 "primary_operation": (
@@ -496,7 +632,11 @@ def create_app(
             return {"authenticated": False, "identity": None}
         return {
             "authenticated": True,
-            "identity": {"email": identity["email"], "role": identity["role"] or "user", "via": "edge"},
+            "identity": {
+                "email": identity["email"],
+                "role": identity["role"] or "user",
+                "via": "edge",
+            },
         }
 
     # /camera/* and /realsense/*: real routes, configured by the local
@@ -521,7 +661,9 @@ def create_app(
 
     # With fast telemetry the push follows it, so the panel's joint and TCP
     # read-outs move live (fresh pushes also stand down its HTTP polling).
-    push_interval = settings.telemetry_interval_s if fast_telemetry else settings.poll_interval_s
+    push_interval = (
+        settings.telemetry_interval_s if fast_telemetry else settings.poll_interval_s
+    )
 
     @app.websocket("/ws")
     async def status_push(websocket: WebSocket):
@@ -535,7 +677,12 @@ def create_app(
                     # status() can wait on the control SDK lock: never on the loop.
                     envelope = await asyncio.to_thread(status)
                     await websocket.send_text(
-                        json.dumps({"type": "status_update", "data": envelope.model_dump(mode="json")})
+                        json.dumps(
+                            {
+                                "type": "status_update",
+                                "data": envelope.model_dump(mode="json"),
+                            }
+                        )
                     )
                     await asyncio.sleep(push_interval)
             except (WebSocketDisconnect, RuntimeError):
@@ -553,7 +700,12 @@ def create_app(
         finally:
             pusher.cancel()
 
-    model_label = {"ur3e": "UR3e", "ur5e": "UR5e", "ur5_cb3": "UR5 CB3", "mg400": "MG400"}
+    model_label = {
+        "ur3e": "UR3e",
+        "ur5e": "UR5e",
+        "ur5_cb3": "UR5 CB3",
+        "mg400": "MG400",
+    }
     page_title = f"{model_label.get(settings.model, 'Robot Motion')} Control"
 
     @app.get("/web", include_in_schema=False)

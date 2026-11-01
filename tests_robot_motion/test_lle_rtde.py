@@ -2,6 +2,7 @@
 
 import math
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
@@ -9,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from robot_motion.app import create_app
+from robot_motion.app import ReconnectBackoff, create_app
 from robot_motion.config import Settings
 from robot_motion.drivers.lle_rtde import URArm, tcp_to_mm_deg, vector6
 from robot_motion.drivers.ur import interpret
@@ -56,6 +57,18 @@ class Receiver:
         self.connected = False
 
 
+class TcpProbe:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
+def connected_tcp(*_args, **_kwargs):
+    return TcpProbe()
+
+
 @pytest.fixture
 def arm():
     pytest.importorskip("scipy")
@@ -66,7 +79,12 @@ def arm():
         return receiver
 
     return (
-        URArm("robot.invalid", timeout=0.1, receiver_factory=factory),
+        URArm(
+            "robot.invalid",
+            timeout=0.1,
+            receiver_factory=factory,
+            tcp_connector=connected_tcp,
+        ),
         receiver,
         calls,
     )
@@ -108,7 +126,7 @@ def test_only_receive_interface_is_constructed(monkeypatch):
             ),
         ),
     )
-    arm = URArm("robot.invalid")
+    arm = URArm("robot.invalid", tcp_connector=connected_tcp)
     assert not calls
     arm.connect()
     arm.connect()
@@ -117,7 +135,12 @@ def test_only_receive_interface_is_constructed(monkeypatch):
             ("robot.invalid",),
             {
                 "frequency": 50.0,
-                "variables": ["timestamp", "actual_q", "actual_TCP_pose", "actual_TCP_force"],
+                "variables": [
+                    "timestamp",
+                    "actual_q",
+                    "actual_TCP_pose",
+                    "actual_TCP_force",
+                ],
             },
         )
     ]
@@ -126,6 +149,23 @@ def test_only_receive_interface_is_constructed(monkeypatch):
     arm.disconnect()
     arm.disconnect()
     assert receiver.disconnections == 1
+
+
+def test_failed_tcp_precheck_never_constructs_the_native_receiver():
+    constructors = []
+
+    def refused(*_args, **_kwargs):
+        raise TimeoutError("RTDE port timed out")
+
+    arm = URArm(
+        "robot.invalid",
+        timeout=0.1,
+        receiver_factory=lambda *_args, **_kwargs: constructors.append(True),
+        tcp_connector=refused,
+    )
+    with pytest.raises(TimeoutError, match="RTDE port timed out"):
+        arm.connect()
+    assert constructors == []
 
 
 def test_lle_unit_conventions_and_persistent_receive_connection(arm):
@@ -141,7 +181,11 @@ def test_lle_unit_conventions_and_persistent_receive_connection(arm):
     assert wrapper.joint_positions == first["joints_deg"]
     assert wrapper.get_tcp_pose() == first["tcp_mm_rpy_deg"]
     force = first["tcp_force"]
-    assert force["force_n"] == [3.0, -4.0, 12.0] and force["torque_nm"] == [0.1, -0.2, 0.3]
+    assert force["force_n"] == [3.0, -4.0, 12.0] and force["torque_nm"] == [
+        0.1,
+        -0.2,
+        0.3,
+    ]
     assert force["force_magnitude_n"] == pytest.approx(13.0)
     assert force["frame"] == "base"
     assert "payload" not in first  # opt-in (e-Series only)
@@ -151,12 +195,20 @@ def test_payload_is_read_when_enabled_and_invalid_force_fails_the_sample():
     pytest.importorskip("scipy")
     receiver, calls = Receiver(), []
     arm = URArm(
-        "robot.invalid", timeout=0.1, payload=True,
+        "robot.invalid",
+        timeout=0.1,
+        payload=True,
         receiver_factory=lambda host, **kw: calls.append(kw) or receiver,
+        tcp_connector=connected_tcp,
     )
     sample = arm.read()
     assert calls[0]["variables"] == [
-        "timestamp", "actual_q", "actual_TCP_pose", "actual_TCP_force", "payload", "payload_cog",
+        "timestamp",
+        "actual_q",
+        "actual_TCP_pose",
+        "actual_TCP_force",
+        "payload",
+        "payload_cog",
     ]
     assert sample["payload"] == {"mass_kg": 1.0, "cog_mm": [0.0, 0.0, 60.0]}
     receiver.wrench = [float("nan")] * 6
@@ -332,9 +384,70 @@ def test_cached_service_status_staleness_and_shutdown(arm, monkeypatch):
     assert receiver.disconnections == 1
 
 
-def test_shutdown_drains_inflight_read_before_close():
-    import threading
+def test_reconnect_backoff_grows_caps_and_resets():
+    backoff = ReconnectBackoff(initial=0.5, maximum=30)
+    assert [backoff.failed() for _ in range(8)] == [0.5, 1, 2, 4, 8, 16, 30, 30]
+    backoff.succeeded()
+    assert backoff.failed() == 0.5
 
+
+def test_controller_outage_is_explicit_in_cached_status():
+    class Unreachable:
+        def read_dashboard(self):
+            raise OSError("Dashboard connection refused")
+
+        def read_telemetry(self):
+            raise OSError("RTDE connection refused")
+
+        def close(self):
+            pass
+
+    with TestClient(create_app(settings(), observer=Unreachable())) as client:
+        deadline = time.monotonic() + 3
+        while True:
+            value = client.get("/status").json()
+            if value["details"].get("robot", {}).get("reachable") is False:
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    assert value["equipment_status"] == "unknown"
+    assert value["required_actions"] == []
+    assert "not answering (Dashboard :29999 / RTDE :30004)" in value["message"]
+    assert value["components"]["controller"]["connected"] is False
+    assert value["components"]["controller"]["state"] == "unreachable"
+    assert value["details"]["robot"]["host"] == "robot.invalid"
+    assert value["details"]["robot"]["consecutive_failures"] >= 1
+    assert value["last_error"]["code"] == "ur_controller_unreachable"
+    assert value["last_error"]["severity"] == "error"
+
+
+def test_health_and_status_do_not_wait_for_a_blocked_tcp_precheck():
+    started, release = threading.Event(), threading.Event()
+
+    def blocking_tcp(*_args, **_kwargs):
+        started.set()
+        assert release.wait(3)
+        raise TimeoutError("RTDE port timed out")
+
+    arm = URArm(
+        "robot.invalid",
+        timeout=0.1,
+        receiver_factory=lambda *_args, **_kwargs: pytest.fail(
+            "native constructor called"
+        ),
+        tcp_connector=blocking_tcp,
+    )
+    observer = URRTDEObserver(settings(), arm=arm, dashboard=dashboard())
+    with TestClient(create_app(settings(), observer=observer)) as client:
+        assert started.wait(3)
+        started_at = time.monotonic()
+        assert client.get("/health").status_code == 200
+        assert client.get("/status").status_code == 200
+        assert time.monotonic() - started_at < 0.25
+        release.set()
+
+
+def test_shutdown_drains_inflight_read_before_close():
     started, release = threading.Event(), threading.Event()
     calls = []
 
