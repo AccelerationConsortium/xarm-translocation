@@ -11,6 +11,7 @@ e-Series, the configured payload, so an operator can check both.
 from __future__ import annotations
 
 import math
+import socket
 import threading
 import time
 
@@ -44,7 +45,16 @@ class URArm:
     All operations are serialized, including shutdown and failure cleanup.
     """
 
-    def __init__(self, robot_ip, *, frequency=50.0, timeout=2.0, receiver_factory=None, payload=False):
+    def __init__(
+        self,
+        robot_ip,
+        *,
+        frequency=50.0,
+        timeout=2.0,
+        receiver_factory=None,
+        payload=False,
+        tcp_connector=socket.create_connection,
+    ):
         if not robot_ip or not math.isfinite(frequency) or not 1 <= frequency <= 50:
             raise ValueError("Explicit host and receive frequency 1..50 Hz required")
         if not math.isfinite(timeout) or not 0.1 <= timeout <= 5:
@@ -53,6 +63,7 @@ class URArm:
         self.frequency = frequency
         self.timeout = timeout
         self._factory = receiver_factory
+        self._tcp_connector = tcp_connector
         # payload / payload_cog are RTDE outputs on e-Series (PolyScope 5).
         self.payload = payload
         self.rtde_r = None
@@ -63,6 +74,13 @@ class URArm:
         with self._lock:
             if self.rtde_r is not None:
                 return
+            # ur_rtde's RTDEReceiveInterface constructor performs a native
+            # blocking connect which holds the GIL on Windows.  Probe the port
+            # first with Python's socket implementation: it honours the
+            # configured timeout and releases the GIL while it waits.  Never
+            # invoke the native constructor when the controller is absent.
+            with self._tcp_connector((self.robot_ip, 30004), timeout=self.timeout):
+                pass
             factory = self._factory
             if factory is None:
                 from rtde_receive import RTDEReceiveInterface
@@ -71,7 +89,9 @@ class URArm:
             variables = ["timestamp", "actual_q", "actual_TCP_pose", "actual_TCP_force"]
             if self.payload:
                 variables += ["payload", "payload_cog"]
-            self.rtde_r = factory(self.robot_ip, frequency=self.frequency, variables=variables)
+            self.rtde_r = factory(
+                self.robot_ip, frequency=self.frequency, variables=variables
+            )
             self._last_timestamp = None
 
     def _connected(self):
@@ -127,7 +147,11 @@ class URArm:
                 if self.payload:
                     mass = float(self.rtde_r.getPayload())
                     cog = [float(v) for v in self.rtde_r.getPayloadCog()]
-                    if not math.isfinite(mass) or len(cog) != 3 or not all(map(math.isfinite, cog)):
+                    if (
+                        not math.isfinite(mass)
+                        or len(cog) != 3
+                        or not all(map(math.isfinite, cog))
+                    ):
                         raise ValueError("Invalid RTDE payload")
                     payload = {"mass_kg": mass, "cog_mm": [v * 1000 for v in cog]}
                 self._connected()
