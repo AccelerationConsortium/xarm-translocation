@@ -200,6 +200,14 @@ Deliberate differences from the workflow, for review:
 - Grip force is the gripper's commissioned default (10 %, cap 20 %); the
   workflow grips at 50 %. Whether 10 % holds a vial is untested.
 
+Two more routines (2026-11-03, offline only) take a vial off the balance
+somewhere other than the rack: `balance_to_node {target}` picks it from the
+pan and carries it, still gripped, to any taught graph node, and
+`node_to_rack {slot}` puts a held vial away from whichever node the arm is
+at. `balance_to_rack` is now literally the pick followed by `node_to_rack`
+from `pick_up_vial`, so its moves are unchanged. A target needs a taught
+node and edges in `graph.json`; none is taught for this yet.
+
 Not yet run on the arm. First live run: with the user at the arm and the
 Gibbie workflow idle, `dry_run` each routine, then `graph.move` along each
 leg at the default speeds before a full routine.

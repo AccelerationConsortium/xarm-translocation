@@ -331,6 +331,90 @@ def test_a_refused_move_mid_routine_reports_what_already_ran(tmp_path):
         assert client.get("/status").json()["details"]["routines"]["running"] is None
 
 
+# ── balance to a node, and from there to the rack ────────────────────
+def test_balance_to_node_carries_the_vial_to_the_target_and_keeps_holding_it(tmp_path):
+    bench = Bench(tmp_path)
+    with bench.client() as client:
+        held = connected(client)
+        actions = client.get("/status").json()["allowed_actions"]
+        assert {"routine.vial_balance_to_node", "routine.vial_node_to_rack"} <= set(actions)
+        plan = client.post("/routines/vial/balance_to_node", json={"target": "hub", "dry_run": True}, headers=held)
+        assert [s["to"] for s in plan.json()["plan"]] == [
+            "vial_open", "hub", "pick_above", "pick", "vial_close", "pick_above", "hub",
+        ]
+        assert bench.rig.control.moves == [] and bench.door_reads == 0
+
+        done = client.post("/routines/vial/balance_to_node", json={"target": "hub"}, headers=held)
+        assert done.status_code == 200, done.text
+        assert done.json()["target"] == "hub"
+        assert bench.targets() == [
+            ("J", joints("hub")), ("L", mm("pick_above")), ("L", mm("pick")),
+            ("L", mm("pick_above")), ("L", mm("hub")),
+        ]
+        assert bench.gripper.moves == [OPEN, CLOSE] and bench.gripper.holding
+        # Holding a vial away from home: the home-start routines refuse.
+        refused = client.post("/routines/vial/rack_to_balance", json={"slot": "A1"}, headers=held)
+        assert refused.status_code == 412 and refused.json()["detail"]["error"] == "not_at_node"
+
+
+def test_node_to_rack_puts_the_held_vial_in_the_slot_from_where_the_arm_is(tmp_path):
+    bench = Bench(tmp_path)
+    with bench.client() as client:
+        held = connected(client)
+        assert client.post("/routines/vial/balance_to_node", json={"target": "hub"}, headers=held).status_code == 200
+        sent = len(bench.rig.control.moves)
+        done = client.post("/routines/vial/node_to_rack", json={"slot": "A2"}, headers=held)
+        assert done.status_code == 200, done.text
+        assert done.json()["source"] == "hub" and done.json()["slot"] == "A2"
+        a2 = [340.0, -10.0, 300.0]
+        assert bench.targets()[sent:] == [
+            ("J", joints("home")), ("L", mm("approach")),
+            ("L", a2), ("L", [340.0, -10.0, 285.0]), ("L", a2),  # down 15, release, straight up
+            ("L", mm("approach")), ("J", joints("home")),
+        ]
+        assert bench.gripper.moves == [OPEN, CLOSE, OPEN] and not bench.gripper.holding
+
+
+def test_balance_to_rack_is_the_pick_then_node_to_rack_from_the_pick_node(tmp_path):
+    bench = Bench(tmp_path)
+    with bench.client() as client:
+        held = connected(client)
+        whole = client.post("/routines/vial/balance_to_rack", json={"slot": "B3", "dry_run": True}, headers=held)
+        to_pick = client.post("/routines/vial/balance_to_node", json={"target": "pick_above", "dry_run": True}, headers=held)
+        pick = [s["to"] for s in to_pick.json()["plan"]][:5]
+        assert [s["to"] for s in whole.json()["plan"]][:5] == pick
+
+
+@pytest.mark.parametrize(
+    "route, body, setup, status, error",
+    [
+        ("balance_to_node", {"target": "pick"}, None, 422, "target_is_pick_node"),
+        ("balance_to_node", {"target": "nowhere"}, None, 422, "unknown_node"),
+        ("balance_to_node", {"target": "hub"}, "door_closed", 412, "balance_door_not_open"),
+        ("balance_to_node", {"target": "hub"}, "holding", 412, "gripper_holding"),
+        ("node_to_rack", {"slot": "A1"}, None, 412, "gripper_empty"),
+        ("node_to_rack", {"slot": "A1"}, "off_node", 412, "not_at_node"),
+        ("node_to_rack", {"slot": "Z9"}, "holding", 422, "unknown_slot"),
+        ("node_to_rack", {"slot": "A1"}, "holding_door_closed", 412, "balance_door_not_open"),
+    ],
+)
+def test_balance_to_node_and_node_to_rack_refuse_before_anything_moves(tmp_path, route, body, setup, status, error):
+    bench = Bench(tmp_path)
+    with bench.client() as client:
+        held = connected(client)
+        if setup == "off_node":
+            client.post("/control/freehand/joints", json={"angles": [3, 3, 3, 0, 0, 0]}, headers=held)
+        if setup in ("holding", "holding_door_closed", "off_node"):
+            bench.gripper.holding = True
+        if setup in ("door_closed", "holding_door_closed"):
+            bench.door = "closed"
+        sent = len(bench.rig.control.moves)
+        refused = client.post(f"/routines/vial/{route}", json=body, headers=held)
+        assert refused.status_code == status, refused.text
+        assert refused.json()["detail"]["error"] == error
+        assert len(bench.rig.control.moves) == sent and bench.gripper.moves == []
+
+
 # ── configuration ────────────────────────────────────────────────────
 def test_routines_must_name_graph_nodes(tmp_path):
     with pytest.raises(ValueError, match="missing from the graph"):
@@ -361,3 +445,32 @@ def test_the_gibbie_files_reproduce_the_workflows_paths():
     assert len(rack.slots()) == 24 and rack.slot_pose("A1") == list(rack.a1_tcp_mm_rpy_deg)
     assert rack.slot_pose("D6")[:2] == pytest.approx([483.7 - 60, 122.41 - 100])
     assert (routines.vial_grip.open_raw, routines.vial_grip.close_raw) == (207, 242)
+
+
+def test_a_joint_a_whole_turn_off_the_node_is_refused_with_the_turns_named(tmp_path):
+    """Wrist 3 on the UR3e turns without limit, so 360° past home folds to the
+    same pose; a moveJ to the taught angle would spin it the whole way round."""
+    bench = Bench(tmp_path)
+    with bench.client() as client:
+        held = connected(client)
+        bench.rig.world.q[5] += 2 * math.pi
+        probe = lambda: client.post("/graph/move", json={"target": "pan", "dry_run": True}, headers=held)
+        wait_for(lambda: probe().status_code == 412, what="the feedback to see the extra turn")
+        sent = len(bench.rig.control.moves)
+        for route, body in (
+            ("/graph/move", {"target": "pan"}),
+            ("/routines/vial/rack_to_balance", {"slot": "A1"}),
+        ):
+            refused = client.post(route, json=body, headers=held)
+            assert refused.status_code == 412, refused.text
+            detail = refused.json()["detail"]
+            assert detail["error"] == "joint_turn_offset"
+            assert detail["at"] is None and detail["nearest"] == "home"
+            assert detail["turns"] == {"j6": 1}
+            assert detail["nearest_deviation_deg"] == pytest.approx(0.0, abs=1e-6)
+            assert "j6 by +1 turn" in detail["reason"]
+        assert len(bench.rig.control.moves) == sent
+        # Unwound, the same pose is home again and the move goes ahead.
+        bench.rig.world.q[5] -= 2 * math.pi
+        wait_for(lambda: probe().status_code == 200, what="the feedback to see the joint unwound")
+        assert probe().json()["from"] == "home"
