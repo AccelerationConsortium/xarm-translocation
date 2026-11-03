@@ -184,10 +184,25 @@ def create_app(
 
         gripper = RobotiqGripper(settings.gripper, settings.robot_host)
 
+    async def reap_idle_sessions():
+        # Closes an arm session left open, unclaimed and idle (control.py).
+        while True:
+            await asyncio.sleep(control.idle_check_s)
+            try:
+                await asyncio.to_thread(control.reap_idle)
+            except Exception:
+                log.exception("Idle arm session check failed")
+
     @asynccontextmanager
     async def lifespan(_app):
         task = asyncio.create_task(poll()) if settings.observe else None
         telemetry_task = asyncio.create_task(poll_telemetry()) if fast_telemetry else None
+        reaper = (
+            asyncio.create_task(reap_idle_sessions())
+            if control is not None and control.arm_limits is not None
+            and control.config.idle_disconnect_s is not None
+            else None
+        )
         # Camera telemetry is polled on its own thread; /status only reads it.
         cameras.start()
         if gripper is not None:
@@ -195,6 +210,12 @@ def create_app(
         try:
             yield
         finally:
+            if reaper is not None:
+                reaper.cancel()
+                try:
+                    await reaper
+                except asyncio.CancelledError:
+                    pass
             # The arm first: stop any move and close its session while the
             # service manager's shutdown allowance is still running.
             if control is not None:
@@ -258,6 +279,7 @@ def create_app(
                 **({"door_reader": balance_door_reader} if balance_door_reader else {}),
             )
         control.install(app)
+    app.state.control = control
     if routine_settings is not None and getattr(control, "routines", None) is None:
         raise ValueError("routines_file needs control enabled with control.motion")
 

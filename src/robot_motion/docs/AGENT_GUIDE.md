@@ -50,6 +50,13 @@ and allowed_actions is empty. With control enabled, /control/claim,
 without its token, 412 when a precondition fails, 422 when a request exceeds
 the commissioned limits, and /control/stop needs identity only.
 allowed_actions then lists exactly what a POST will honor.
+An open arm session holds the controller: nobody else can Connect until it
+closes. Disconnect when done, not only release the claim. A session left open
+with no claim held and nothing running (no move, trajectory or gripper motion,
+teach mode off) is closed after `control.idle_disconnect_s` (default 1800 s;
+`null` turns it off), audited as `idle_disconnect` with `connected_by`.
+`control_session.connected_by` and `idle_disconnect_in_s` show who opened the
+session and the countdown; taking the claim or starting work resets it.
 `activity` is work in flight, not a connected session. While this service's
 control script is the program `/status` reports, `activity` stays `idle` and
 `equipment_status` stays `ready` until an arm move (`control_session.busy` /
@@ -81,8 +88,10 @@ the edge secret comes from ROBOT_MOTION_EDGE_SHARED_SECRET in the service
 environment, never from the config file. `auth_url` (top level, the ac_auth
 origin, e.g. `http://100.64.254.6:8009`) lets agents present their own
 X-Api-Key, verified there for this `equipment_id`. Optional control settings:
-watchdog_hz (controller-side watchdog rate, default 10) and audit_file
-(JSON-lines control event trail, relative to the config file). Enabling control is a local config
+watchdog_hz (controller-side watchdog rate, default 10), audit_file
+(JSON-lines control event trail, relative to the config file) and
+idle_disconnect_s (close an unclaimed, idle arm session after this long;
+default 1800, 60 to 86400, null to keep sessions open). Enabling control is a local config
 change plus a restart in an authorized window; no request can switch it on.
 Do not point a second controller at a robot owned by another workflow.
 ur_transport defaults to dashboard; rtde adds receive-only telemetry and
