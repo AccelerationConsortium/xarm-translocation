@@ -280,6 +280,22 @@ equipment_status.
   ids. A rejected camera configuration is logged and reported as the
   /realsense/cameras reason; it never stops robot observation. /status gains
   components.realsense_<id> and details.realsense from cached telemetry.
+- Captures (camera_service): the xArm's capture records, kept by the camera
+  service's store. POST /control/realsense/capture ({camera?, label?,
+  node_id?, tags?, protected?}; the skill-facing alias, camera omitted = the
+  sole one) or /control/realsense/<id>/capture grabs one aligned colour +
+  16-bit depth frameset with the arm's pose (`context.arm`: connected,
+  model, node_id from the motion graph, joints, position, gripper_state,
+  activity; the open session's own feedback when there is one, otherwise the
+  cached receive telemetry) and who asked. With control on it needs the
+  login and the claim (423 claim_required) like a move, and it is refused
+  with 409 arm_moving while a move, trajectory or grip is in flight;
+  allowed_actions then lists `realsense.capture`. Without control the edge
+  identity gates it. The capture listings and meta are open reads; the
+  color.jpg and depth.png files need the edge identity. DELETE
+  /control/realsense/<id>/captures/<capture_id> is gated like a capture (the
+  camera service also wants its admin token). No camera_service, no capture
+  routes.
 
 Discovery, /camera/config, /realsense/<id>/status, /depth, /intrinsics and
 /calibration are open reads. Pixels (snapshot.jpg, depth.png, stream.mjpg), start/stop and PTZ
@@ -298,7 +314,9 @@ when the service has no secret.
 - shared-ui tagged routes: absent-feature answers for the page's load-time reads
 - cameras tagged routes: /cameras and /realsense/cameras discovery,
   /camera/config, /camera/ptz, /camera/preset, /camera/follow (409), and
-  /realsense/<id>/{status,start,stop,snapshot.jpg,depth.png,stream.mjpg,depth,intrinsics,calibration}
+  /realsense/<id>/{status,start,stop,snapshot.jpg,depth.png,stream.mjpg,depth,intrinsics,calibration};
+  with a camera service, POST /control/realsense[/<id>]/capture and
+  /realsense[/<id>]/captures[/<capture_id>[/<file>]]
 - control tagged routes (only with control_enabled): /control/claim, heartbeat,
   release; /connect, /disconnect; /control/stop (/move/stop); joint_step mode:
   /control/joint_step
