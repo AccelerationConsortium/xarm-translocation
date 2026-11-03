@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from sdl_lab_contract import ComponentStatus, EquipmentStatus, HealthResponse, ProbeResponse
 from core.motion_graph import GraphError
@@ -261,6 +261,52 @@ def create_app(
     if routine_settings is not None and getattr(control, "routines", None) is None:
         raise ValueError("routines_file needs control enabled with control.motion")
 
+    def arm_moving():
+        """A move, trajectory or grip in flight (refuses a RealSense capture)."""
+        if control is None:
+            return False
+        executor = control.executor
+        trajectory = control.trajectory.summary() if control.trajectory is not None else {}
+        return work_in_flight(
+            arm_busy=bool(getattr(executor, "busy", False)),
+            active_move=getattr(executor, "active", None),
+            trajectory_state=(trajectory.get("session") or {}).get("state"),
+            gripper_busy=bool(gripper is not None and gripper.busy),
+        )
+
+    def capture_arm_context():
+        """The arm as /status has it cached, stamped on a RealSense capture.
+        Never a request to the controller: a capture must not stall on one."""
+        current, stale = current_observation()
+        current = with_telemetry(current, stale)
+        sample = current["details"].get("telemetry") or {}
+        valid = sample.get("valid") is True
+        joints = sample.get("joints_deg") if valid else None
+        position = sample.get("tcp_mm_rpy_deg") if valid else None
+        session = control.session if control is not None else None
+        feedback = getattr(session, "feedback", None) if session is not None and session.is_open else None
+        latest = feedback.latest() if feedback is not None else None
+        if latest is not None:
+            # An open session's own feedback is fresher than the receive poll.
+            from .drivers.ur_motion import tcp_to_mm_deg
+
+            joints, position = list(latest["joints_deg"]), tcp_to_mm_deg(latest["tcp_pose"])
+        node = None
+        if getattr(control, "routines", None) is not None:
+            try:
+                node = control.routines.locate().node
+            except HTTPException:
+                node = None  # no session: where the arm is is unknown, not an error
+        return {
+            "connected": bool(session is not None and session.is_open),
+            "model": settings.model,
+            "node_id": node,
+            "joints": joints,
+            "position": position,
+            "gripper_state": gripper.summary().get("object") if gripper is not None else None,
+            "activity": current.get("activity"),
+        }
+
     @app.get("/", response_model=ProbeResponse)
     def probe():
         return ProbeResponse(
@@ -366,7 +412,13 @@ def create_app(
                 }} if control is not None else {}),
             },
             last_error=presented.get("last_error"),
-            allowed_actions=control_state["allowed_actions"] if control_state else [],
+            allowed_actions=(
+                [*control_state["allowed_actions"],
+                 # Claim-gated like the xArm's; withheld while anything moves.
+                 *(["realsense.capture"] if cameras.captures_available() and not arm_moving() else [])]
+                if control_state
+                else []
+            ),
             details={
                 **cameras.details(),
                 **presented["details"],
@@ -523,7 +575,12 @@ def create_app(
 
     # /camera/* and /realsense/*: real routes, configured by the local
     # lab_camera / camera_service blocks (see cameras.py).
-    cameras.install(app)
+    cameras.install(
+        app,
+        take=[Depends(control.require_login), Depends(control.require_claim)] if control is not None else None,
+        arm_context=capture_arm_context,
+        arm_moving=arm_moving,
+    )
 
     @app.get("/assistant/status", **shared)
     def assistant_status():
