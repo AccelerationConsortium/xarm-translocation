@@ -127,6 +127,16 @@ node, the gripper is empty and the balance service's door component reads
 Open the door through the balance service first. `dry_run: true` on any of
 these returns the planned steps without moving.
 
+To take a vial off the balance somewhere other than the rack,
+`POST /routines/vial/balance_to_node {target}` picks it from the pan and
+carries it along the graph to `target` (any taught node except the pick node
+itself), where the arm stops still holding it; it has the same three
+preconditions. `POST /routines/vial/node_to_rack {slot}` then puts the held
+vial in `slot` from whichever graph node the arm is at, and returns home. It
+needs the arm at a node, the gripper reporting a part between its fingers
+(412 `gripper_empty` otherwise) and the door open, since the way back may
+pass it.
+
 A routine stops at the first refused or failed step and reports
 `failed_step`, `completed_steps` and `arm_may_have_moved`. A grip that closes
 without stopping on a part is a failure (`no_object_gripped`); the arm stays

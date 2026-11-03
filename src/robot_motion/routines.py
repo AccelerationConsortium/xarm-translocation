@@ -38,7 +38,12 @@ Six = tuple[Number, Number, Number, Number, Number, Number]
 Raw = Annotated[int, Field(ge=0, le=255)]
 
 GRAPH_ACTIONS = ("graph.move",)
-ROUTINE_ACTIONS = ("routine.vial_rack_to_balance", "routine.vial_balance_to_rack")
+ROUTINE_ACTIONS = (
+    "routine.vial_rack_to_balance",
+    "routine.vial_balance_to_rack",
+    "routine.vial_balance_to_node",
+    "routine.vial_node_to_rack",
+)
 
 
 def _fold_deg(delta: float) -> float:
@@ -151,6 +156,12 @@ class GraphMove(BaseModel):
 class VialTask(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     slot: str = Field(pattern=r"^[A-Z][0-9]{1,2}$")
+    dry_run: bool = False
+
+
+class VialToNode(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    target: Identifier
     dry_run: bool = False
 
 
@@ -275,16 +286,35 @@ class Routines:
             *self.path_steps(port.drop_node, s.home_node),
         ]
 
-    def balance_to_rack_steps(self, slot):
+    def _pick_from_balance(self):
+        """Home to the balance pick node, gripping the vial there."""
         s = self.settings
-        rack, grip, port = s.vial_rack, s.vial_grip, s.balance
+        return [
+            self._grip(s.vial_grip.open_raw, "vial_open", False),
+            *self.path_steps(s.home_node, s.balance.pick_node),
+            self._grip(s.vial_grip.close_raw, "vial_close", True),
+        ]
+
+    def balance_to_rack_steps(self, slot):
+        return [*self._pick_from_balance(), *self.node_to_rack_steps(self.settings.balance.pick_node, slot)]
+
+    def balance_to_node_steps(self, target):
+        """Pick the vial off the pan and carry it to `target`, still gripped."""
+        if target == self.settings.balance.pick_node:
+            raise HTTPException(
+                status_code=422,
+                detail={"error": "target_is_pick_node", "reason": "The target must be a node off the balance pan"},
+            )
+        return [*self._pick_from_balance(), *self.path_steps(self.settings.balance.pick_node, target)]
+
+    def node_to_rack_steps(self, source, slot):
+        """From `source`, holding a vial, put it in `slot` and go home."""
+        s = self.settings
+        rack, grip = s.vial_rack, s.vial_grip
         above = rack.slot_pose(slot)
         down = [*above[:2], above[2] - rack.place_depth_mm, *above[3:]]
         return [
-            self._grip(grip.open_raw, "vial_open", False),
-            *self.path_steps(s.home_node, port.pick_node),
-            self._grip(grip.close_raw, "vial_close", True),
-            *self.path_steps(port.pick_node, rack.approach_node),
+            *self.path_steps(source, rack.approach_node),
             {"kind": "linear", "to": f"slot_{slot}", "pose": above},
             {"kind": "linear", "to": f"slot_{slot}_place", "pose": down},
             self._grip(grip.open_raw, "vial_open", False),
@@ -370,6 +400,18 @@ class Routines:
                 detail={"error": "gripper_holding", "reason": "The gripper reports a part between its fingers"},
             )
 
+    def _gripper_holding(self):
+        holding = self.control.gripper_control.gripper.summary().get("object")
+        if holding != "contact_closing":
+            raise HTTPException(
+                status_code=412,
+                detail={
+                    "error": "gripper_empty",
+                    "reason": "The gripper reports no part between its fingers; there is no vial to place",
+                    "object": holding,
+                },
+            )
+
     async def _door_open(self):
         port = self.settings.balance
         try:
@@ -398,6 +440,14 @@ class Routines:
                 status_code=422,
                 detail={"error": "unknown_slot", "slot": slot, "slots": self.settings.vial_rack.slots()},
             )
+        except GraphError as exc:
+            raise HTTPException(status_code=422, detail={"error": "no_path", "reason": str(exc)})
+
+    def _target_steps(self, target):
+        try:
+            return self.balance_to_node_steps(target)
+        except GraphError as exc:
+            raise HTTPException(status_code=422, detail={"error": "no_path", "reason": str(exc)})
 
     async def _vial_task(self, identity, token, name, build, body):
         steps = self._slot_steps(build, body.slot)
@@ -407,6 +457,29 @@ class Routines:
         self._gripper_empty()
         await self._door_open()
         return await self.run(identity, token, name, steps, slot=body.slot)
+
+    async def _balance_to_node(self, identity, token, body):
+        name = "routine.vial_balance_to_node"
+        steps = self._target_steps(body.target)
+        if body.dry_run:
+            return {"ok": True, "dry_run": True, "routine": name, "target": body.target, "plan": steps}
+        self._at(self.settings.home_node)
+        self._gripper_empty()
+        await self._door_open()
+        return await self.run(identity, token, name, steps, target=body.target)
+
+    async def _node_to_rack(self, identity, token, body):
+        name = "routine.vial_node_to_rack"
+        where = self.locate()
+        if where.node is None:
+            raise self._not_at(where, "The arm must be at a graph node")
+        steps = self._slot_steps(lambda slot: self.node_to_rack_steps(where.node, slot), body.slot)
+        if body.dry_run:
+            return {"ok": True, "dry_run": True, "routine": name, "from": where.node, "slot": body.slot, "plan": steps}
+        self._gripper_holding()
+        # The way back to the rack may pass the balance door.
+        await self._door_open()
+        return await self.run(identity, token, name, steps, source=where.node, slot=body.slot)
 
     # ── status and routes ───────────────────────────────────────────
     def advertised_actions(self, move_block):
@@ -453,10 +526,12 @@ class Routines:
                 "routines": {
                     "vial_rack_to_balance": "POST /routines/vial/rack_to_balance {slot}",
                     "vial_balance_to_rack": "POST /routines/vial/balance_to_rack {slot}",
+                    "vial_balance_to_node": "POST /routines/vial/balance_to_node {target}",
+                    "vial_node_to_rack": "POST /routines/vial/node_to_rack {slot}",
                 },
                 "preconditions": [
-                    f"arm session open and the arm at {self.settings.home_node!r}",
-                    "gripper empty",
+                    f"arm session open and the arm at {self.settings.home_node!r}, gripper empty "
+                    "(node_to_rack: at any graph node, holding a vial)",
                     f"balance {self.settings.balance.door_component} open",
                 ],
             }
@@ -474,6 +549,17 @@ class Routines:
             return await self._vial_task(
                 identity, x_claim_token, "routine.vial_balance_to_rack", self.balance_to_rack_steps, body
             )
+
+        @app.post("/routines/vial/balance_to_node", tags=tags, dependencies=[claim])
+        async def balance_to_node(body: VialToNode, identity: dict = login, x_claim_token: str | None = Header(default=None)):
+            """Take the vial off the balance pan and carry it to graph node `target`.
+            The arm stops there still holding it; /routines/vial/node_to_rack puts it away."""
+            return await self._balance_to_node(identity, x_claim_token, body)
+
+        @app.post("/routines/vial/node_to_rack", tags=tags, dependencies=[claim])
+        async def node_to_rack(body: VialTask, identity: dict = login, x_claim_token: str | None = Header(default=None)):
+            """From the graph node the arm is at, holding a vial, put it in `slot`, back at home."""
+            return await self._node_to_rack(identity, x_claim_token, body)
 
 
 def _json(response: JSONResponse):
