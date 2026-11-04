@@ -50,6 +50,13 @@ and allowed_actions is empty. With control enabled, /control/claim,
 without its token, 412 when a precondition fails, 422 when a request exceeds
 the commissioned limits, and /control/stop needs identity only.
 allowed_actions then lists exactly what a POST will honor.
+An open arm session holds the controller: nobody else can Connect until it
+closes. Disconnect when done, not only release the claim. A session left open
+with no claim held and nothing running (no move, trajectory or gripper motion,
+teach mode off) is closed after `control.idle_disconnect_s` (default 1800 s;
+`null` turns it off), audited as `idle_disconnect` with `connected_by`.
+`control_session.connected_by` and `idle_disconnect_in_s` show who opened the
+session and the countdown; taking the claim or starting work resets it.
 Before or after a Cartesian move, `POST /control/diagnose/pose` (the
 `freehand/linear` body, no claim) checks the target against the controller
 without moving and says whether a refusal is confirmed, a query that failed,
@@ -86,8 +93,10 @@ the edge secret comes from ROBOT_MOTION_EDGE_SHARED_SECRET in the service
 environment, never from the config file. `auth_url` (top level, the ac_auth
 origin, e.g. `http://100.64.254.6:8009`) lets agents present their own
 X-Api-Key, verified there for this `equipment_id`. Optional control settings:
-watchdog_hz (controller-side watchdog rate, default 10) and audit_file
-(JSON-lines control event trail, relative to the config file). Enabling control is a local config
+watchdog_hz (controller-side watchdog rate, default 10), audit_file
+(JSON-lines control event trail, relative to the config file) and
+idle_disconnect_s (close an unclaimed, idle arm session after this long;
+default 1800, 60 to 86400, null to keep sessions open). Enabling control is a local config
 change plus a restart in an authorized window; no request can switch it on.
 Do not point a second controller at a robot owned by another workflow.
 ur_transport defaults to dashboard; rtde adds receive-only telemetry and
@@ -119,7 +128,11 @@ within `node_tolerance_deg`, default 1°) to `target`: a joint edge is a moveJ
 to the target node's joints, a linear edge a moveL to its TCP pose. Each edge
 is an ordinary arm move, under the same claim, envelope, speed caps, force
 guard and STOP latch as a panel move. Only taught edges are used, so a graph
-should contain only the transitions the bench has actually run.
+should contain only the transitions the bench has actually run. Joints are
+matched by shortest angular distance; a joint a whole number of turns from
+the taught angle (the UR3e's wrist 3 turns without limit) is refused with
+412 `joint_turn_offset` naming the joint and the turns, because a moveJ to
+the taught angle would spin it the whole way round — unwind it first.
 
 A `routines_file` adds bench routines (the Gibbie vial rack and XPR balance):
 `POST /routines/vial/rack_to_balance {slot}` and
@@ -129,6 +142,16 @@ node, the gripper is empty and the balance service's door component reads
 `open` (read from its `/status`; the routine never commands the balance).
 Open the door through the balance service first. `dry_run: true` on any of
 these returns the planned steps without moving.
+
+To take a vial off the balance somewhere other than the rack,
+`POST /routines/vial/balance_to_node {target}` picks it from the pan and
+carries it along the graph to `target` (any taught node except the pick node
+itself), where the arm stops still holding it; it has the same three
+preconditions. `POST /routines/vial/node_to_rack {slot}` then puts the held
+vial in `slot` from whichever graph node the arm is at, and returns home. It
+needs the arm at a node, the gripper reporting a part between its fingers
+(412 `gripper_empty` otherwise) and the door open, since the way back may
+pass it.
 
 A routine stops at the first refused or failed step and reports
 `failed_step`, `completed_steps` and `arm_may_have_moved`. A grip that closes

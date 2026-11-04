@@ -110,6 +110,10 @@ class ControlSettings(BaseModel):
     watchdog_hz: float = Field(default=10, ge=1, le=50, allow_inf_nan=False)
     # JSON-lines audit of every control event; relative to the config file.
     audit_file: str | None = None
+    # Close an arm session left open with no claim and nothing running for
+    # this long, so a forgotten Connect does not lock everyone else out of
+    # the arm. None keeps sessions open until someone disconnects.
+    idle_disconnect_s: float | None = Field(default=1800, ge=60, le=86400, allow_inf_nan=False)
     trajectory: TrajectoryConfig | None = None
 
     @model_validator(mode="before")

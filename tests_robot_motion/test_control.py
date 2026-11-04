@@ -804,3 +804,94 @@ def test_feedback_reader_stamps_only_new_packets_and_names_modes():
     assert mode_name(SAFETY_MODES, True) == "UNKNOWN"
     with pytest.raises(ConnectionError):
         ControlFeedback(Static(world), frequency_hz=125).read(wait_s=0)
+
+
+def test_an_unclaimed_idle_session_is_closed_after_the_timeout(tmp_path):
+    import json
+
+    audit = tmp_path / "control-audit.jsonl"
+    rig = Rig(settings(control={"joint_step": LIMITS, "audit_file": str(audit), "idle_disconnect_s": 600}))
+    with rig.client() as client:
+        wait_observed(client)
+        control = client.app.state.control
+        assert client.post("/connect", headers=HEADERS).status_code == 200
+        session = client.get("/status").json()["details"]["control_session"]
+        assert session["connected_by"] == OPERATOR and session["idle_disconnect_s"] == 600
+        # The first check starts the clock; nothing closes before the timeout.
+        assert control.reap_idle(now=1000.0) is False
+        assert control.idle_disconnect_in_s(now=1300.0) == 300.0
+        assert control.reap_idle(now=1599.0) is False
+        assert client.get("/status").json()["details"]["control_session"]["open"] is True
+        assert control.reap_idle(now=1600.0) is True
+        status = client.get("/status").json()
+        assert status["details"]["control_session"]["open"] is False
+        assert status["details"]["control_session"]["connected_by"] is None
+        assert "connect" in status["allowed_actions"]
+        # Closed like /disconnect: the script ended, both interfaces released.
+        assert rig.control.script_stops == 1
+        assert rig.control.disconnections == 1 and rig.receiver.disconnections == 1
+        assert control.reap_idle(now=9999.0) is False
+    events = [json.loads(line) for line in audit.read_text(encoding="utf-8").splitlines()]
+    assert [e["kind"] for e in events] == ["connect", "idle_disconnect"]
+    assert events[1]["operator"] is None
+    assert events[1]["connected_by"] == OPERATOR
+    assert events[1]["idle_s"] == 600
+    assert rig.control.moves == []
+
+
+def test_a_held_claim_or_running_move_keeps_the_session_open():
+    rig = Rig(settings(control={"joint_step": LIMITS, "idle_disconnect_s": 600}))
+    with rig.client() as client:
+        control = client.app.state.control
+        held = claim(client)
+        assert client.post("/connect", headers=held).status_code == 200
+        # Claimed: open however long it sits.
+        assert control.reap_idle(now=0.0) is False
+        assert control.reap_idle(now=10_000.0) is False
+        assert control.idle_disconnect_in_s() is None
+        assert client.post("/control/release", headers=held).status_code == 204
+
+        # Released: the clock starts at the next check, not at the connect.
+        assert control.reap_idle(now=20_000.0) is False
+        # A move in flight (it holds the executor's lock) restarts the clock.
+        with control.executor._lock:
+            assert control.reap_idle(now=20_700.0) is False
+        assert control.reap_idle(now=20_800.0) is False
+        assert control.reap_idle(now=21_399.0) is False
+        assert control.reap_idle(now=21_400.0) is True
+        assert client.get("/status").json()["details"]["control_session"]["open"] is False
+
+
+def test_idle_disconnect_can_be_turned_off_but_not_set_absurdly_short():
+    rig = Rig(settings(control={"joint_step": LIMITS, "idle_disconnect_s": None}))
+    with rig.client() as client:
+        wait_observed(client)
+        control = client.app.state.control
+        assert client.post("/connect", headers=HEADERS).status_code == 200
+        assert control.reap_idle(now=0.0) is False
+        assert control.reap_idle(now=1e9) is False
+        session = client.get("/status").json()["details"]["control_session"]
+        assert session["open"] is True
+        assert session["idle_disconnect_s"] is None and session["idle_disconnect_in_s"] is None
+        assert client.post("/disconnect", headers=HEADERS).status_code == 200
+    # On by default; a timeout under a minute would close sessions mid-thought.
+    assert settings().control.idle_disconnect_s == 1800
+    with pytest.raises(ValidationError):
+        settings(control={"joint_step": LIMITS, "idle_disconnect_s": 5})
+
+
+def test_the_service_runs_the_idle_check_in_the_background(monkeypatch):
+    from robot_motion.control import URControl
+
+    calls = []
+    monkeypatch.setattr(URControl, "idle_check_s", 0.01)
+    monkeypatch.setattr(URControl, "reap_idle", lambda self, now=None: calls.append(now) or False)
+    rig = Rig(settings())
+    with rig.client():
+        deadline = time.monotonic() + 5
+        while len(calls) < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+    assert len(calls) >= 3
+    settled = len(calls)
+    time.sleep(0.05)
+    assert len(calls) == settled  # stopped with the service

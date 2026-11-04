@@ -10,6 +10,9 @@ Hard claims (core.claims) gate every arm move and the gripper commands
 (gripper.py). /connect and /disconnect follow the xArm order (Connect, then
 Take Control): any listed operator may call them while nobody holds control,
 but never against someone else's claim. /control/stop needs identity only.
+A session left open with no claim and nothing running is closed after
+control.idle_disconnect_s (reap_idle), so a forgotten Connect does not lock
+the arm for everyone else.
 
 The arm runs in one of two modes, chosen by the control block: joint_step
 (single tiny steps, the first commissioning primitive) or motion (joint and
@@ -84,6 +87,9 @@ REGISTERS_IN_USE = "RTDE input registers are already in use"
 
 
 class URControl:
+    # Seconds between idle-session checks (the timeout is idle_disconnect_s).
+    idle_check_s = 15
+
     def __init__(self, settings, *, session_factory=None, edge_secret=None, observe=None, gripper=None,
                  key_verifier=None):
         self.settings = settings
@@ -115,6 +121,10 @@ class URControl:
         self.executor = None
         self.tcp_offset = None
         self.last_event = None
+        # Who opened the current session, and since when it has sat idle
+        # (monotonic s, None while claimed or busy): reap_idle's inputs.
+        self.connected_by = None
+        self._idle_since = None
         # Streamed joint trajectories (trajectory/routes.py): motion mode only.
         self.trajectory = None
         if self.arm_mode == "motion" and self.config.trajectory is not None:
@@ -374,6 +384,88 @@ class URControl:
         refusal = executor.state_block(feedback.latest())
         return (refusal.status, refusal.body()) if refusal is not None else None
 
+    # ── idle sessions ───────────────────────────────────────────────
+    def _idle_now(self):
+        """True while a session is open that nobody is using: no claim held,
+        no move, trajectory or gripper motion, teach mode off."""
+        if not self.session_open or self.claims.claimed_by() is not None:
+            return False
+        executor = self.executor
+        if getattr(executor, "busy", False) or getattr(executor, "manual", False):
+            return False
+        if self.trajectory is not None and self.trajectory.running():
+            return False
+        return not (self.gripper_control is not None and self.gripper_control.gripper.busy)
+
+    def idle_disconnect_in_s(self, now=None):
+        """Seconds until reap_idle closes the session, or None if it will not."""
+        limit = self.config.idle_disconnect_s
+        if limit is None or self._idle_since is None or not self._idle_now():
+            return None
+        now = time.monotonic() if now is None else now
+        return max(0.0, round(limit - (now - self._idle_since), 1))
+
+    def reap_idle(self, now=None):
+        """Close the session once it has been idle for idle_disconnect_s.
+
+        Taking the claim or starting any work restarts the clock, so a session
+        someone is using stays open however long it runs; only one everybody
+        has walked away from is closed. Returns True when it closed one.
+        """
+        limit = self.config.idle_disconnect_s
+        if limit is None:
+            return False
+        now = time.monotonic() if now is None else now
+        if not self._idle_now():
+            self._idle_since = None
+            return False
+        if self._idle_since is None:
+            self._idle_since = now
+            return False
+        idle_s = now - self._idle_since
+        if idle_s < limit:
+            return False
+        connected_by = self.connected_by
+        detached = self._detach_session(still=self._idle_now)
+        if detached is None:  # claimed or busy since the check above
+            self._idle_since = None
+            return False
+        error = self._close_detached(*detached)
+        log.warning("UR arm session idle for %.0f s (connected by %s); closed", idle_s, connected_by)
+        self.event("idle_disconnect", None, idle_s=round(idle_s), connected_by=connected_by, error=error)
+        return True
+
+    def _detach_session(self, still=None):
+        """Take the session out of service: (session, executor), or None
+        while a move runs (closing mid-move would end the control script
+        under the arm) or when `still` no longer holds under the lock."""
+        with self._lock:
+            if still is not None and not still():
+                return None
+            executor = self.executor
+            retire = getattr(executor, "retire", None)
+            if retire is not None and not retire():  # holds the move lock if free
+                return None
+            session, self.session, self.executor = self.session, None, None
+            self.tcp_offset = None
+            self.connected_by = None
+            self._idle_since = None
+        return session, executor
+
+    def _close_detached(self, session, executor):
+        """Close a detached session; the close error, if any."""
+        # Teach mode off before the script goes (closing ends it too).
+        end_manual = getattr(executor, "end_manual", None)
+        if end_manual is not None:
+            end_manual("Disconnected")
+        if session is None:
+            return None
+        try:
+            session.close()
+        except Exception as exc:
+            return str(exc)
+        return None
+
     def _still(self, sample):
         limit = self.arm_limits.stationary_speed_deg_s
         return all(abs(v) <= limit for v in sample["velocities_deg_s"])
@@ -551,6 +643,9 @@ class URControl:
                 "limits": self.config.motion.summary() if self.config.motion else None,
                 "tcp_offset_mm_rpy_deg": self.tcp_offset if session_open else None,
                 "kinematics_error": getattr(session.control, "kinematics_error", None) if session_open else None,
+                "connected_by": self.connected_by if session_open else None,
+                "idle_disconnect_s": self.config.idle_disconnect_s,
+                "idle_disconnect_in_s": self.idle_disconnect_in_s(),
                 "last_event": self.last_event,
             },
             "allowed_actions": allowed,
@@ -760,6 +855,8 @@ class URControl:
                 # /control/reset).
                 self.executor = self._new_executor(session)
                 self.tcp_offset = None
+                self.connected_by = identity["email"]
+                self._idle_since = None
                 if self.arm_mode == "motion":
                     try:
                         self.tcp_offset = [round(v, 3) for v in tcp_to_mm_deg(session.control.getTCPOffset())]
@@ -776,28 +873,14 @@ class URControl:
 
         @app.post("/disconnect", tags=["control"], dependencies=[claim_if_held])
         def disconnect(identity: dict = login):
-            with self._lock:
-                # Closing mid-move would end the control script under the
-                # arm; STOP first. Without a session this is a harmless no-op.
-                executor = self.executor
-                retire = getattr(executor, "retire", None)
-                if retire is not None and not retire():  # holds the move lock if free
-                    self._refuse(identity, "disconnect", (409, {
-                        "error": "motion_in_progress",
-                        "reason": "An arm move is running; STOP it first",
-                    }))
-                session, self.session, self.executor = self.session, None, None
-                self.tcp_offset = None
-            # Teach mode off before the script goes (closing ends it too).
-            end_manual = getattr(executor, "end_manual", None)
-            if end_manual is not None:
-                end_manual("Disconnected")
-            error = None
-            if session is not None:
-                try:
-                    session.close()
-                except Exception as exc:
-                    error = str(exc)
+            # STOP first if a move runs. Without a session this is a harmless no-op.
+            detached = self._detach_session()
+            if detached is None:
+                self._refuse(identity, "disconnect", (409, {
+                    "error": "motion_in_progress",
+                    "reason": "An arm move is running; STOP it first",
+                }))
+            error = self._close_detached(*detached)
             self.event("disconnect", identity, error=error)
             return {"connected": False, "close_error": error, "message": "Arm session closed"}
 
