@@ -35,6 +35,16 @@ JOINT_ACTIONS = ("arm.move_joints", "arm.jog_joint")
 LINEAR_ACTIONS = ("arm.move_linear", "arm.jog_linear")
 MOVE_ACTIONS = JOINT_ACTIONS + LINEAR_ACTIONS
 MAX_PATH_SAMPLES = 200
+# outside_controller_limits: the second half of the reason, by likely_cause.
+POSE_REJECTION_CAUSES = {
+    "controller_pose_rule": (
+        "the joints of its IK solution pass the controller's joint limits, so a pose rule "
+        "refused it (a safety plane, tool orientation or TCP limit; see the pendant's safety settings)"
+    ),
+    "controller_joint_limits": "the joints of its IK solution are outside the controller's joint limits",
+    "no_ik_solution": "the controller finds no inverse kinematics solution for it",
+    "unknown": "the controller gave no further reason",
+}
 # How often teach mode rechecks the claim, the session and the controller.
 MANUAL_CHECK_INTERVAL_S = 0.1
 
@@ -235,7 +245,9 @@ class MotionRefused(Exception):
         self.extra = extra
 
     def body(self):
-        return {"error": self.error, "reason": str(self), **self.extra}
+        # error_code is the stable name; error is the same value, kept for
+        # clients written before error_code existed.
+        return {"error": self.error, "error_code": self.error, "reason": str(self), **self.extra}
 
 
 class MotionFailed(Exception):
@@ -646,8 +658,12 @@ class MotionExecutor:
                 status=422, tcp_mm=[round(v, 1) for v in point], axes=axes,
             )
         if self.control.isPoseWithinSafetyLimits(list(target)) is not True:
+            diagnosis = self._pose_rejection(q0, p0, target)
             raise MotionRefused(
-                "outside_controller_limits", "The controller's safety limits reject this pose", status=422
+                "outside_controller_limits",
+                "The controller's safety limits reject this pose; " + POSE_REJECTION_CAUSES[diagnosis["likely_cause"]],
+                status=422,
+                **diagnosis,
             )
         q_start = [math.radians(q) for q in q0]
         if self.control.getInverseKinematicsHasSolution(list(target), q_start) is not True:
@@ -710,6 +726,45 @@ class MotionExecutor:
         )
         target_q = tuple(math.degrees(v) for v in previous)
         return Plan(action, "linear", q0, target_q, list(p0), list(target), speed, 1.5 * duration + 3.0, count + 1)
+
+    def _pose_rejection(self, q0, p0, target):
+        """What can be said about a pose isPoseWithinSafetyLimits refused.
+
+        ur_rtde answers only true or false. The controller's inverse
+        kinematics near the current joints, and its joint-limit check at that
+        solution, tell a joint limit apart from a pose rule (a safety plane,
+        tool orientation or TCP limit), which the pendant's safety settings
+        then name. These are the planner's own queries; nothing moves.
+        """
+        diagnosis = {
+            "controller_check": "isPoseWithinSafetyLimits",
+            "start_tcp_mm_rpy_deg": [round(v, 3) for v in tcp_to_mm_deg(p0)],
+            "target_tcp_mm_rpy_deg": [round(v, 3) for v in tcp_to_mm_deg(target)],
+            "target_pose_m_rotvec": [round(v, 6) for v in target],
+            "translation_mm": round(math.dist(p0[:3], target[:3]) * 1000, 3),
+            # The shortest rotation between the two, whatever the RPY wrap.
+            "orientation_change_deg": round(orientation_error_deg(p0[3:], target[3:]), 3),
+            "likely_cause": "unknown",
+        }
+        q_start = [math.radians(q) for q in q0]
+        try:
+            # Asked first: URScript's IK ends the script when there is none.
+            if self.control.getInverseKinematicsHasSolution(list(target), q_start) is not True:
+                diagnosis["likely_cause"] = "no_ik_solution"
+                return diagnosis
+            q = vector6(self.control.getInverseKinematics(list(target), q_start))
+            joints_ok = self.control.isJointsWithinSafetyLimits(list(q)) is True
+        except Exception as exc:  # noqa: BLE001 - the refusal stands either way
+            diagnosis["diagnostic_error"] = str(exc)
+            return diagnosis
+        ik_deg = [round(math.degrees(v), 3) for v in q]
+        diagnosis["ik_joints_deg"] = ik_deg
+        diagnosis["ik_joints_within_controller_limits"] = joints_ok
+        outside = self._outside_envelope(ik_deg)
+        if outside:
+            diagnosis["ik_joints_outside_envelope"] = outside
+        diagnosis["likely_cause"] = "controller_pose_rule" if joints_ok else "controller_joint_limits"
+        return diagnosis
 
     # ── execution ───────────────────────────────────────────────────
     def _stop(self, kind):
@@ -796,7 +851,7 @@ class MotionExecutor:
                 settled_since, settled = None, 0
             self.sleep(0.02)
 
-    def execute(self, action, request, *, claim_token, speed):
+    def execute(self, action, request, *, claim_token, speed, request_id=None):
         if action not in MOVE_ACTIONS:
             raise ValueError(f"Unknown arm action {action!r}")
         if not self._lock.acquire(blocking=False):
@@ -846,7 +901,7 @@ class MotionExecutor:
                 and orientation_error_deg(plan.start_pose[3:], plan.target_pose[3:])
                 <= lim.orientation_tolerance_deg
             ):
-                return self._result(plan, request, start, started, moved=False, peak_force=0.0)
+                return self._result(plan, request, start, started, moved=False, peak_force=0.0, request_id=request_id)
             self._gate(claim_token, plan.target_q_deg)
             # Planning took controller round trips: re-measure, and only move
             # from the pose the plan was made for.
@@ -870,7 +925,7 @@ class MotionExecutor:
             if accepted is not True:
                 raise RuntimeError("The controller did not accept the move")
             final, peak_force = self._monitor(plan, fresh, deadline, claim_token)
-            return self._result(plan, request, final, started, moved=True, peak_force=peak_force)
+            return self._result(plan, request, final, started, moved=True, peak_force=peak_force, request_id=request_id)
         except Exception as exc:
             if not dispatched:
                 raise
@@ -882,9 +937,9 @@ class MotionExecutor:
             self.active = None
             self._lock.release()
 
-    def _result(self, plan, request, sample, started, *, moved, peak_force):
+    def _result(self, plan, request, sample, started, *, moved, peak_force, request_id=None):
         return {
-            "request_id": str(request.request_id or uuid4()),
+            "request_id": str(request.request_id or request_id or uuid4()),
             "completed": True,
             "moved": moved,
             "kind": plan.kind,

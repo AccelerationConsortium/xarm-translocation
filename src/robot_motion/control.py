@@ -28,8 +28,11 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import Depends, Header, HTTPException, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sdl_lab_contract import ClaimRejection, ClaimRequest, ClaimResponse
 from core.claims import ClaimConflict, ClaimManager, InvalidClaimToken
@@ -396,10 +399,13 @@ class URControl:
             return 412, {"error": "robot_moving", "reason": "The arm is moving; wait until it is still"}
         return None
 
-    def _refuse(self, identity, action, blocked):
+    def _refuse(self, identity, action, blocked, request_id=None):
         status, body = blocked
         kind = "connect_refused" if action == "connect" else "arm_refused"
-        self.event(kind, identity, action=action, reason=body.get("error"))
+        body = {**body, "error_code": body.get("error"), "action": action}
+        if request_id is not None:
+            body["request_id"] = request_id
+        self.event(kind, identity, action=action, reason=body.get("error"), request_id=request_id, status=status)
         raise HTTPException(status_code=status, detail=body)
 
     def event(self, kind, identity, **extra):
@@ -509,6 +515,29 @@ class URControl:
         login = Depends(self.require_login)
         claim = Depends(self.require_claim)
         claim_if_held = Depends(self.require_claim_if_held)
+
+        @app.exception_handler(RequestValidationError)
+        async def invalid_request(request: Request, exc: RequestValidationError):
+            """A body that does not match the schema. FastAPI's own detail list
+            is kept as it was, with a stable error_code, the fields at fault
+            and the request id beside it; a rejected POST is audited."""
+            errors = jsonable_encoder(exc.errors())
+            sent = exc.body if isinstance(exc.body, dict) else {}
+            request_id = sent.get("request_id") if isinstance(sent.get("request_id"), str) else None
+            fields = sorted({".".join(str(part) for part in error.get("loc", ())[1:]) or "body" for error in errors})
+            if request.method == "POST":
+                self.event(
+                    "request_invalid", edge_identity(request, self.secret), path=request.url.path,
+                    request_id=request_id, fields=fields,
+                    errors=[{"loc": error.get("loc"), "msg": error.get("msg"), "type": error.get("type")} for error in errors],
+                )
+            return JSONResponse(status_code=422, content={
+                "detail": errors,
+                "error_code": "invalid_request",
+                "reason": "The request does not match the API schema: " + ", ".join(fields),
+                "fields": fields,
+                "request_id": request_id,
+            })
 
         @app.post("/control/claim", responses={409: {"model": ClaimRejection}}, tags=["control"])
         def acquire_claim(request: ClaimRequest, identity: dict = login):
@@ -734,41 +763,60 @@ class URControl:
             }
 
     # ── arm motion (ur_motion.py) ───────────────────────────────────
+    def _motion_refused(self, identity, action, status, body, request_id, request):
+        """Raise a move's refusal: the stable error_code and reason, the
+        request id, what was asked and, for a 422, the limits it was held to.
+        The audit line carries the same body, so it can be found by request id."""
+        detail = {**body, "error_code": body["error"], "action": action, "request_id": request_id, "request": request}
+        if status == 422:
+            detail["limits"] = self.arm_limits.summary()
+        self.event(
+            "arm_refused", identity, action=action, reason=body["error"], request_id=request_id, status=status,
+            detail={key: value for key, value in detail.items() if key not in ("limits", "request")},
+        )
+        raise HTTPException(status_code=status, detail=detail)
+
     async def _run_motion(self, identity, action, body, token):
+        # The caller's id, else one made here, names this request in the
+        # response and every audit line about it, refused or not.
+        request_id = str(body.request_id) if body.request_id is not None else str(uuid4())
         blocked = await asyncio.to_thread(self.arm_block, action)
         if blocked is not None:
-            self._refuse(identity, action, blocked)
+            self._refuse(identity, action, blocked, request_id=request_id)
         limits = self.arm_limits
         joint = action in JOINT_ACTIONS
         unit = "deg/s" if joint else "mm/s"
         default = limits.joint_speed_default if joint else limits.linear_speed_default
         cap = limits.max_joint_speed_deg_s if joint else limits.max_linear_speed_mm_s
         speed = body.speed if body.speed is not None else default
+        request = {**body.model_dump(mode="json", exclude_none=True), "speed": speed, "request_id": request_id}
         if speed > cap:
-            self.event("arm_refused", identity, action=action, reason="above_commissioned_limit")
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "error": "above_commissioned_limit",
-                    "reason": f"Speed {speed:g} {unit} exceeds the commissioned {cap:g} {unit}",
-                    "requested": speed,
-                    "limit": cap,
-                    "units": unit,
-                },
-            )
+            self._motion_refused(identity, action, 422, {
+                "error": "above_commissioned_limit",
+                "reason": f"Speed {speed:g} {unit} exceeds the commissioned {cap:g} {unit}",
+                "requested": speed,
+                "limit": cap,
+                "units": unit,
+            }, request_id, request)
         executor = self.executor
-        self.event(action, identity, **{**body.model_dump(mode="json", exclude_none=True), "speed": speed})
+        self.event(action, identity, **request)
         try:
-            result = await asyncio.to_thread(executor.execute, action, body, claim_token=token, speed=speed)
+            result = await asyncio.to_thread(
+                executor.execute, action, body, claim_token=token, speed=speed, request_id=request_id
+            )
         except MotionRefused as exc:
-            self.event("arm_refused", identity, action=action, reason=exc.error)
-            raise HTTPException(status_code=exc.status, detail=exc.body())
+            self._motion_refused(identity, action, exc.status, exc.body(), request_id, request)
         except MotionFailed as exc:
-            self.event("arm_failed", identity, action=action, reason=str(exc), stop_error=exc.stop_error)
+            self.event(
+                "arm_failed", identity, action=action, reason=str(exc), stop_error=exc.stop_error,
+                request_id=request_id,
+            )
             return JSONResponse(
                 status_code=500,
                 content={
                     "error": "arm_move_failed",
+                    "error_code": "arm_move_failed",
+                    "request_id": request_id,
                     "reason": str(exc),
                     "stop_attempted": exc.stop_attempted,
                     "stop_confirmed": exc.stop_confirmed,
@@ -781,6 +829,7 @@ class URControl:
         self.event(
             f"{action}_done",
             identity,
+            request_id=request_id,
             moved=result["moved"],
             measured_joints_deg=[round(q, 3) for q in result["measured_joints_deg"]],
             measured_tcp_mm_rpy_deg=[round(v, 2) for v in result["measured_tcp_mm_rpy_deg"]],
