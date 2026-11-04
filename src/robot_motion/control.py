@@ -509,7 +509,7 @@ class URControl:
         raise HTTPException(status_code=status, detail=body)
 
     def _keep(self, request_id, kind, status, body):
-        """Record a refusal under its request id, stamped like its audit line."""
+        """Record an outcome under its request id, stamped like its audit line."""
         if request_id is not None:
             event = self.last_event or {}
             self.records.put(request_id, {
@@ -954,6 +954,10 @@ class URControl:
         unit = "deg/s" if joint else "mm/s"
         default = limits.joint_speed_default if joint else limits.linear_speed_default
         cap = limits.max_joint_speed_deg_s if joint else limits.max_linear_speed_mm_s
+        profile = limits.precision_profiles.get(getattr(body, "precision", None) or "")
+        if profile is not None:
+            # A precision move without a speed takes the profile's cap if lower.
+            default = min(default, profile.max_linear_speed_mm_s)
         speed = body.speed if body.speed is not None else default
         request = {**body.model_dump(mode="json", exclude_none=True), "speed": speed, "request_id": request_id}
         if speed > cap:
@@ -966,6 +970,8 @@ class URControl:
             }, request_id, request)
         executor = self.executor
         self.event(action, identity, **request)
+        # Received: with no outcome after it, the move is running or was cut off.
+        self._keep(request_id, action, None, request)
         try:
             result = await asyncio.to_thread(
                 executor.execute, action, body, claim_token=token, speed=speed, request_id=request_id
@@ -977,33 +983,52 @@ class URControl:
                 "arm_failed", identity, action=action, reason=str(exc), stop_error=exc.stop_error,
                 request_id=request_id,
             )
-            return JSONResponse(
-                status_code=500,
-                content={
-                    "error": "arm_move_failed",
-                    "error_code": "arm_move_failed",
-                    "request_id": request_id,
-                    "reason": str(exc),
-                    "stop_attempted": exc.stop_attempted,
-                    "stop_confirmed": exc.stop_confirmed,
-                    "stop_error": exc.stop_error,
-                    "latched": True,
-                    "hint": "Check the arm on the pendant, then Clear errors (POST /control/reset) "
-                    "before the next move",
-                },
-            )
+            content = {
+                "error": "arm_move_failed",
+                "error_code": "arm_move_failed",
+                "request_id": request_id,
+                "reason": str(exc),
+                "stop_attempted": exc.stop_attempted,
+                "stop_confirmed": exc.stop_confirmed,
+                "stop_error": exc.stop_error,
+                "latched": True,
+                "hint": "Check the arm on the pendant, then Clear errors (POST /control/reset) "
+                "before the next move",
+            }
+            self._keep(request_id, "arm_failed", 500, content)
+            return JSONResponse(status_code=500, content=content)
         self.event(
             f"{action}_done",
             identity,
             request_id=request_id,
             moved=result["moved"],
+            no_op_reason=result["no_op_reason"],
             measured_joints_deg=[round(q, 3) for q in result["measured_joints_deg"]],
-            measured_tcp_mm_rpy_deg=[round(v, 2) for v in result["measured_tcp_mm_rpy_deg"]],
+            measured_tcp_mm_rpy_deg=[round(v, 4) for v in result["measured_tcp_mm_rpy_deg"]],
+            displacement_mm=result["displacement_mm"],
+            target_error_mm=result.get("target_error_mm"),
+            completion=result["completion"],
             peak_force_change_n=result["peak_force_change_n"],
             elapsed_s=result["elapsed_s"],
         )
-        message = "Move complete" if result["moved"] else "Already at the target"
-        return {"ok": True, "action": action, "message": message, **result}
+        completion = result["completion"]
+        if result["moved"]:
+            message = "Move complete"
+        elif "position_tolerance_mm" in completion:
+            message = (
+                f"Already at the target: {result['requested_distance_mm']:.3f} mm away, within the "
+                f"{completion['position_tolerance_mm']:g} mm completion tolerance; nothing was sent"
+            )
+        else:
+            message = (
+                f"Already at the target: within the {completion['position_tolerance_deg']:g} deg "
+                "completion tolerance; nothing was sent"
+            )
+        response = {"ok": True, "action": action, "message": message, **result}
+        # Kept like a refusal, so a caller whose request timed out reads what
+        # happened instead of sending the move again.
+        self._keep(request_id, f"{action}_done", 200, response)
+        return response
 
     def _install_motion(self, app, login, claim):
         tags = ["arm"]
@@ -1046,12 +1071,13 @@ class URControl:
 
         @app.get("/control/diagnostics/{request_id}", tags=tags)
         def diagnostics(request_id: str, identity: dict = login):
-            """Every refusal and diagnosis recorded for a request id, oldest first."""
+            """Every record for a request id, oldest first: a diagnosis, or a move
+            as received and its outcome (done, refused or failed)."""
             records = self.records.get(request_id)
             if not records:
                 raise HTTPException(status_code=404, detail={
                     "error": "unknown_request_id", "error_code": "unknown_request_id", "request_id": request_id,
-                    "reason": "No refusal or diagnosis is recorded under this request id",
+                    "reason": "Nothing is recorded under this request id",
                 })
             return {"request_id": request_id, "records": records}
 

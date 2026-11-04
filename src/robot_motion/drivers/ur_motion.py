@@ -81,6 +81,34 @@ class Workspace(BaseModel):
         ]
 
 
+class PrecisionProfile(BaseModel):
+    """A commissioned completion tolerance for small Cartesian moves (probes).
+
+    The default position_tolerance_mm both ends a move and keeps a move that
+    small from being sent at all, so without a profile a target nearer than
+    it is a reported no-op. A profile names a tighter tolerance for moves no
+    larger or faster than its bounds; every other limit still applies.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    position_tolerance_mm: Number = Field(ge=0.02, le=0.5)
+    orientation_tolerance_deg: Number = Field(default=0.05, ge=0.01, le=2)
+    max_translation_mm: Number = Field(gt=0, le=5)
+    max_rotation_deg: Number = Field(default=0.5, ge=0, le=2)
+    max_linear_speed_mm_s: Number = Field(gt=0, le=25)
+    # Who measured the tolerance on this arm, and when (shown in /status).
+    commissioning_note: str = Field(min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def reachable(self):
+        if self.position_tolerance_mm >= self.max_translation_mm:
+            raise ValueError("position_tolerance_mm must be below max_translation_mm, or no move is ever sent")
+        return self
+
+    def summary(self):
+        return self.model_dump()
+
+
 class MotionLimits(BaseModel):
     """Commissioning envelope for arm motion. Software limits, not safety ratings."""
 
@@ -128,6 +156,11 @@ class MotionLimits(BaseModel):
     # are refused (they would crawl past any sensible deadline); above it the
     # deadline stretches by the slider.
     min_speed_fraction: Number = Field(default=0.1, gt=0, le=1)
+    # Named tolerances a Cartesian move may ask for with "precision"; empty
+    # means submillimetre moves are not commissioned on this arm.
+    precision_profiles: dict[
+        Annotated[str, Field(pattern=r"^[a-z0-9_]{1,40}$")], PrecisionProfile
+    ] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def coherent(self):
@@ -142,6 +175,13 @@ class MotionLimits(BaseModel):
             raise ValueError("default_joint_speed_deg_s exceeds max_joint_speed_deg_s")
         if (self.default_linear_speed_mm_s or 0) > self.max_linear_speed_mm_s:
             raise ValueError("default_linear_speed_mm_s exceeds max_linear_speed_mm_s")
+        for name, profile in self.precision_profiles.items():
+            if profile.max_linear_speed_mm_s > self.max_linear_speed_mm_s:
+                raise ValueError(f"precision profile {name}: max_linear_speed_mm_s exceeds max_linear_speed_mm_s")
+            if profile.max_translation_mm > self.max_jog_mm:
+                raise ValueError(f"precision profile {name}: max_translation_mm exceeds max_jog_mm")
+            if profile.position_tolerance_mm >= self.position_tolerance_mm:
+                raise ValueError(f"precision profile {name}: position_tolerance_mm must be below the default")
         return self
 
     @property
@@ -169,6 +209,16 @@ class MotionLimits(BaseModel):
             "max_jog_joint_deg": self.max_jog_joint_deg,
             "max_jog_mm": self.max_jog_mm,
             "force_guard_n": self.force_guard_n,
+            # A move ends within these of its target, and a target already
+            # within them is reported (moved: false) and never sent.
+            "completion": {
+                "position_tolerance_mm": self.position_tolerance_mm,
+                "orientation_tolerance_deg": self.orientation_tolerance_deg,
+                "position_tolerance_deg": self.position_tolerance_deg,
+                "no_dispatch_within_mm": self.position_tolerance_mm,
+                "no_dispatch_within_deg": self.position_tolerance_deg,
+            },
+            "precision_profiles": {name: p.summary() for name, p in self.precision_profiles.items()},
         }
 
 
@@ -200,7 +250,13 @@ class JointJog(_Motion):
         return self
 
 
-class LinearJog(_Motion):
+class _Cartesian(_Motion):
+    # A commissioned precision profile (/status limits.precision_profiles);
+    # None: the default completion tolerance.
+    precision: str | None = Field(default=None, pattern=r"^[a-z0-9_]{1,40}$")
+
+
+class LinearJog(_Cartesian):
     """Relative TCP translation in the base frame, mm; orientation is kept."""
 
     dx: Number = 0.0
@@ -214,7 +270,7 @@ class LinearJog(_Motion):
         return self
 
 
-class LinearMove(_Motion):
+class LinearMove(_Cartesian):
     """Absolute TCP pose: base-frame mm and roll/pitch/yaw degrees, the same
     convention as details.current_position."""
 
@@ -324,6 +380,10 @@ class Plan:
     speed: float  # deg/s or mm/s
     timeout_s: float
     samples: int
+    # Linear completion tolerance (the limits' default, or a precision profile's).
+    position_tolerance_mm: float | None = None
+    orientation_tolerance_deg: float | None = None
+    precision: str | None = None
 
 
 # ── executor ──────────────────────────────────────────────────────────
@@ -626,7 +686,47 @@ class MotionExecutor:
             target = [request.x / 1000, request.y / 1000, request.z / 1000] + rpy_to_rotvec(
                 (request.roll, request.pitch, request.yaw)
             )
-        return self._plan_linear(action, q0, p0, target, speed)
+        profile = self._precision(request, p0, target, speed)
+        plan = self._plan_linear(action, q0, p0, target, speed)
+        plan.precision = request.precision
+        plan.position_tolerance_mm = (profile or lim).position_tolerance_mm
+        plan.orientation_tolerance_deg = (profile or lim).orientation_tolerance_deg
+        return plan
+
+    def _precision(self, request, p0, target, speed):
+        """The precision profile a Cartesian request names, held to its
+        bounds (422 otherwise); None without one. Nothing is asked of the
+        controller, so an unavailable precision is refused before any move."""
+        name = request.precision
+        if name is None:
+            return None
+        profiles = self.limits.precision_profiles
+        profile = profiles.get(name)
+        if profile is None:
+            raise MotionRefused(
+                "precision_unavailable",
+                f"Precision profile {name!r} is not commissioned on this arm"
+                + ("" if profiles else "; no precision profiles are commissioned"),
+                status=422, precision=name, available=sorted(profiles),
+                default_position_tolerance_mm=self.limits.position_tolerance_mm,
+            )
+        translation = math.dist(p0[:3], target[:3]) * 1000
+        rotation = orientation_error_deg(p0[3:], target[3:])
+        bounds = {
+            "translation_mm": (translation, profile.max_translation_mm),
+            "rotation_deg": (rotation, profile.max_rotation_deg),
+            "speed_mm_s": (speed, profile.max_linear_speed_mm_s),
+        }
+        over = {k: {"requested": round(v, 4), "limit": cap} for k, (v, cap) in bounds.items() if v > cap}
+        if over:
+            raise MotionRefused(
+                "precision_bounds_exceeded",
+                f"Precision profile {name!r} allows at most {profile.max_translation_mm:g} mm, "
+                f"{profile.max_rotation_deg:g} deg and {profile.max_linear_speed_mm_s:g} mm/s; "
+                f"this move exceeds {', '.join(over)}",
+                status=422, precision=name, exceeded=over, profile=profile.summary(),
+            )
+        return profile
 
     def _plan_joint(self, action, q0, target, p0, speed):
         lim = self.limits
@@ -905,9 +1005,9 @@ class MotionExecutor:
                 if distance_to_segment(point, start_mm, target_mm) > lim.path_tolerance_mm:
                     raise RuntimeError("TCP left the planned straight line")
                 at_target = (
-                    math.dist(point, target_mm) <= lim.position_tolerance_mm
+                    math.dist(point, target_mm) <= plan.position_tolerance_mm
                     and orientation_error_deg(sample["tcp_pose"][3:], plan.target_pose[3:])
-                    <= lim.orientation_tolerance_deg
+                    <= plan.orientation_tolerance_deg
                 )
             force = math.dist(sample["tcp_force"][:3], baseline)
             peak_force = max(peak_force, force)
@@ -971,11 +1071,13 @@ class MotionExecutor:
                 <= lim.position_tolerance_deg
             ) or (
                 plan.kind == "linear"
-                and math.dist(plan.start_pose[:3], plan.target_pose[:3]) * 1000 <= lim.position_tolerance_mm
+                and math.dist(plan.start_pose[:3], plan.target_pose[:3]) * 1000 <= plan.position_tolerance_mm
                 and orientation_error_deg(plan.start_pose[3:], plan.target_pose[3:])
-                <= lim.orientation_tolerance_deg
+                <= plan.orientation_tolerance_deg
             ):
-                return self._result(plan, request, start, started, moved=False, peak_force=0.0, request_id=request_id)
+                return self._result(
+                    plan, request, start, started, moved=False, peak_force=0.0, request_id=request_id, origin=start
+                )
             self._gate(claim_token, plan.target_q_deg)
             # Planning took controller round trips: re-measure, and only move
             # from the pose the plan was made for.
@@ -999,7 +1101,9 @@ class MotionExecutor:
             if accepted is not True:
                 raise RuntimeError("The controller did not accept the move")
             final, peak_force = self._monitor(plan, fresh, deadline, claim_token)
-            return self._result(plan, request, final, started, moved=True, peak_force=peak_force, request_id=request_id)
+            return self._result(
+                plan, request, final, started, moved=True, peak_force=peak_force, request_id=request_id, origin=fresh
+            )
         except Exception as exc:
             if not dispatched:
                 raise
@@ -1011,21 +1115,48 @@ class MotionExecutor:
             self.active = None
             self._lock.release()
 
-    def _result(self, plan, request, sample, started, *, moved, peak_force, request_id=None):
-        return {
+    def _result(self, plan, request, sample, started, *, moved, peak_force, request_id=None, origin=None):
+        """moved: false only when nothing was sent (the target was within the
+        completion tolerance); no_op_reason says so, and a caller must not
+        read it as a move that happened."""
+        origin = origin or sample
+        start_mm = [v * 1000 for v in origin["tcp_pose"][:3]]
+        end_mm = [v * 1000 for v in sample["tcp_pose"][:3]]
+        target = plan.target_pose
+        result = {
             "request_id": str(request.request_id or request_id or uuid4()),
             "completed": True,
             "moved": moved,
+            "dispatched": moved,
+            "no_op_reason": None if moved else "within_completion_tolerance",
             "kind": plan.kind,
             "speed": plan.speed,
             "target_joints_deg": list(plan.target_q_deg),
-            "target_tcp_mm_rpy_deg": tcp_to_mm_deg(plan.target_pose) if plan.target_pose else None,
+            "target_tcp_mm_rpy_deg": tcp_to_mm_deg(target) if target else None,
+            "start_joints_deg": list(origin["joints_deg"]),
+            "start_tcp_mm_rpy_deg": tcp_to_mm_deg(origin["tcp_pose"]),
             "measured_joints_deg": list(sample["joints_deg"]),
             "measured_tcp_mm_rpy_deg": tcp_to_mm_deg(sample["tcp_pose"]),
+            # Measured end minus measured start, base frame.
+            "displacement_xyz_mm": [round(b - a, 4) for a, b in zip(start_mm, end_mm)],
+            "displacement_mm": round(math.dist(start_mm, end_mm), 4),
             "peak_force_change_n": round(peak_force, 2),
             "path_samples_checked": plan.samples,
             "elapsed_s": round(self.clock() - started, 3),
         }
+        if plan.kind == "linear":
+            target_mm = [v * 1000 for v in target[:3]]
+            result["target_error_mm"] = round(math.dist(end_mm, target_mm), 4)
+            result["target_error_deg"] = round(orientation_error_deg(sample["tcp_pose"][3:], target[3:]), 4)
+            result["requested_distance_mm"] = round(math.dist(start_mm, target_mm), 4)
+            result["completion"] = {
+                "precision": plan.precision,
+                "position_tolerance_mm": plan.position_tolerance_mm,
+                "orientation_tolerance_deg": plan.orientation_tolerance_deg,
+            }
+        else:
+            result["completion"] = {"precision": None, "position_tolerance_deg": self.limits.position_tolerance_deg}
+        return result
 
     # ── manual (teach) mode ─────────────────────────────────────────
     def set_manual(self, enable, *, claim_token):

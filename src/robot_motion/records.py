@@ -1,7 +1,7 @@
-"""Diagnoses and refusals by request id, to read back later.
+"""Diagnoses, refusals and move outcomes by request id, to read back later.
 
 GET /control/diagnostics/{request_id} answers from here, so a caller that
-lost a response body never has to resend a move to see why it was refused.
+lost a response body never has to resend a move to see what happened.
 The newest records are kept in memory; anything older, or from before a
 restart, is read back from the control audit file, where every one is also
 written (control.py event()).
@@ -16,7 +16,16 @@ from collections import OrderedDict
 
 log = logging.getLogger(__name__)
 # Audit line kinds that carry a request's record, and where in the line.
-RECORD_KINDS = {"pose_diagnosis": "record", "arm_refused": "detail", "request_invalid": None}
+RECORD_KINDS = {
+    "pose_diagnosis": "record",
+    "arm_refused": "detail",
+    "request_invalid": None,
+    "arm_failed": None,
+    # A move as received, and as it ended: a received move with no end line
+    # was interrupted (for example by a restart) and may have moved the arm.
+    **{kind: None for action in ("arm.move_joints", "arm.jog_joint", "arm.move_linear", "arm.jog_linear")
+       for kind in (action, f"{action}_done")},
+}
 
 
 class RequestRecords:

@@ -52,9 +52,60 @@ required; nothing is guessed:
 - **Tolerances:** completion within 0.05 deg / 0.5 mm / 0.2 deg (defaults).
   While moving: joints within 0.5 deg of their start-to-target segment, and
   the TCP within 2 mm of the planned line. A request already within the
-  completion tolerance is answered `moved: false` and not sent.
+  completion tolerance is answered `moved: false` and not sent. The same
+  tolerance decides both, so by default a Cartesian target nearer than 0.5 mm
+  is never sent: see [Precision profiles](#precision-profiles). `/status`
+  `limits.completion` publishes the values in force.
 - **Pendant speed slider:** moves are refused below `min_speed_fraction`
   (default 10 %). Above it, the deadline stretches by the slider.
+
+### Precision profiles
+
+The default 0.5 mm tolerance would let a 0.3 mm move "arrive" before it
+starts, so it is also the no-dispatch threshold. Submillimetre probes need a
+tighter tolerance, measured on the arm and written into the config as a named
+profile:
+
+```json
+"precision_profiles": {
+  "probe": {
+    "position_tolerance_mm": 0.05,
+    "orientation_tolerance_deg": 0.05,
+    "max_translation_mm": 2,
+    "max_rotation_deg": 0.5,
+    "max_linear_speed_mm_s": 2,
+    "commissioning_note": "UR5e, no load, 0.1/0.25/0.5 mm probes, 2026-11-xx, <who>"
+  }
+}
+```
+
+- **Asking for one:** `freehand/linear` and `freehand/relative` take
+  `"precision": "<name>"`. A move without it keeps the default tolerance.
+- **Bounds:** the move's translation, rotation and speed must be within the
+  profile's, or it answers 422 `precision_bounds_exceeded` with `exceeded`. A
+  name that is not configured answers 422 `precision_unavailable` with
+  `available`. Both are decided before any controller query, so a client can
+  find out precision is unavailable before it starts a probe sequence:
+  `/status` `limits.precision_profiles` is `{}` when none is commissioned.
+- **Everything else still applies:** the workspace box, the joint envelope,
+  the controller's safety and IK checks, the speed caps, the path checks, the
+  claim and the force guard. A profile only changes when a move counts as
+  arrived, and so how small a move can be sent.
+- **No speed given:** a profile move takes the lower of the default linear
+  speed and the profile's cap.
+- **Arrival:** the move ends only once the TCP is within the profile's
+  tolerance and still. An arm that settles outside it fails at its deadline
+  (500, stopped and latched); it is never reported as arrived.
+- **Config checks:** the profile tolerance must be below the default and
+  below its own `max_translation_mm`; its speed and translation must be within
+  `max_linear_speed_mm_s` and `max_jog_mm`. Tolerances run from 0.02 to
+  0.5 mm, translations up to 5 mm, speeds up to 25 mm/s.
+
+Commissioning, before any probe near contact: with no object held and no
+target near the tool, send 0.1, 0.25 and 0.5 mm moves on each axis under the
+profile. Each must answer `moved: true` with `displacement_mm` within the
+tolerance of the request; then a move smaller than the tolerance must answer
+`moved: false`. Record who did it in `commissioning_note`.
 
 ## Routes
 
@@ -77,7 +128,7 @@ The paths are the ones the shared panel already calls:
 | `POST /control/force/zero` | — | zero the flange force/torque sensor |
 | `POST /control/stop` (alias `/move/stop`) | — | identity only: stop the move (stopJ, or stopL during a linear move) |
 | `POST /control/diagnose/pose` | the `freehand/linear` body | identity only, no claim: check a target pose without moving ([Pose diagnosis](#pose-diagnosis)) |
-| `GET /control/diagnostics/{request_id}` | — | identity only: every refusal and diagnosis kept under that id |
+| `GET /control/diagnostics/{request_id}` | — | identity only: the diagnosis, or the move as received and its outcome, kept under that id |
 
 Each move takes an optional `request_id` (UUID). A request id never runs
 twice.
@@ -198,7 +249,19 @@ the long way round, takes the short way.
 
 - **200:** `{ok, action, message, request_id, moved, measured_joints_deg,
   measured_tcp_mm_rpy_deg, peak_force_change_n, elapsed_s, ...}`.
-  `moved: false` means the arm was already at the target.
+  `moved: false` means the arm was already at the target and nothing was
+  sent. Every answer also has:
+  - `dispatched` (the same as `moved`) and `no_op_reason`:
+    `within_completion_tolerance` on a no-op, else null. A no-op is never a
+    probe that happened.
+  - `start_tcp_mm_rpy_deg` / `start_joints_deg`: measured just before the
+    move was sent (or when the no-op was decided).
+  - `displacement_xyz_mm` and `displacement_mm`: measured end minus measured
+    start.
+  - `completion`: the `precision` profile (or null) and the tolerances used.
+
+  Cartesian answers add `requested_distance_mm` (start to target),
+  `target_error_mm` and `target_error_deg` (end to target).
 - **409:** no session, or a move is already running. Commands are never
   queued. Disconnect is refused while a move runs, and is atomic with a move
   starting.
@@ -225,7 +288,10 @@ the long way round, takes the short way.
   - `joint_speed_exceeded`
   - `unreachable`
   - `outside_controller_limits`: with `likely_cause` (see above)
-  - `request_replayed`
+  - `precision_unavailable` / `precision_bounds_exceeded`: see
+    [Precision profiles](#precision-profiles)
+  - `request_replayed`: a request id never runs twice, so a client that
+    timed out and resends the same id cannot send a second move
   - `invalid_request`: the body fails the schema
 - **502:** nothing was sent:
   - `planning_failed`: a controller kinematics query raised during planning.
@@ -236,9 +302,12 @@ the long way round, takes the short way.
   `stop_attempted`, `stop_error` and `latched: true`. Check the arm, then
   reset.
 
-Every refusal is kept under its request id. `GET
-/control/diagnostics/{request_id}` returns it with the full body, so a caller
-that lost the response never resends the move to find out why. The newest
+Every move is kept under its request id: as received (`kind` the action,
+`status` null), then its outcome (`<action>_done` 200, `arm_refused` or
+`arm_failed` 500) with the full body. `GET /control/diagnostics/{request_id}`
+returns them, so a caller that lost the response or timed out never resends
+the move to find out what happened. A received move with no outcome is still
+running or was cut off (a restart), and may have moved the arm. The newest
 1000 ids are held in memory; older ones, or ones from before a restart, are
 read back from the audit file.
 

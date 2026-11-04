@@ -257,7 +257,9 @@ def test_records_are_read_back_from_the_audit_file_after_a_restart(tmp_path):
         assert record[0]["source"] == "audit_file" and record[0]["verdict"] == "rejected"
         assert record[0]["checks"]["controller_pose_limits"]["result"] == "rejected"
         refused = client.get(f"/control/diagnostics/{move_id}", headers=HEADERS).json()["records"]
-        assert refused[0]["kind"] == "arm_refused" and refused[0]["error_code"] == "outside_controller_limits"
+        # The move as received, then its refusal.
+        assert [r["kind"] for r in refused] == ["arm.move_linear", "arm_refused"]
+        assert refused[1]["error_code"] == "outside_controller_limits"
         invalid = client.get(f"/control/diagnostics/{bad_id}", headers=HEADERS).json()["records"]
         assert invalid[0]["kind"] == "request_invalid" and "y" in invalid[0]["fields"]
         assert client.get(f"/control/diagnostics/{move_id}").status_code == 401
