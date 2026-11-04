@@ -123,7 +123,11 @@ within `node_tolerance_deg`, default 1°) to `target`: a joint edge is a moveJ
 to the target node's joints, a linear edge a moveL to its TCP pose. Each edge
 is an ordinary arm move, under the same claim, envelope, speed caps, force
 guard and STOP latch as a panel move. Only taught edges are used, so a graph
-should contain only the transitions the bench has actually run.
+should contain only the transitions the bench has actually run. Joints are
+matched by shortest angular distance; a joint a whole number of turns from
+the taught angle (the UR3e's wrist 3 turns without limit) is refused with
+412 `joint_turn_offset` naming the joint and the turns, because a moveJ to
+the taught angle would spin it the whole way round — unwind it first.
 
 A `routines_file` adds bench routines (the Gibbie vial rack and XPR balance):
 `POST /routines/vial/rack_to_balance {slot}` and
@@ -133,6 +137,16 @@ node, the gripper is empty and the balance service's door component reads
 `open` (read from its `/status`; the routine never commands the balance).
 Open the door through the balance service first. `dry_run: true` on any of
 these returns the planned steps without moving.
+
+To take a vial off the balance somewhere other than the rack,
+`POST /routines/vial/balance_to_node {target}` picks it from the pan and
+carries it along the graph to `target` (any taught node except the pick node
+itself), where the arm stops still holding it; it has the same three
+preconditions. `POST /routines/vial/node_to_rack {slot}` then puts the held
+vial in `slot` from whichever graph node the arm is at, and returns home. It
+needs the arm at a node, the gripper reporting a part between its fingers
+(412 `gripper_empty` otherwise) and the door open, since the way back may
+pass it.
 
 A routine stops at the first refused or failed step and reports
 `failed_step`, `completed_steps` and `arm_may_have_moved`. A grip that closes
