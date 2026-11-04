@@ -175,6 +175,10 @@ class Control:
         self.joints_ok = True
         self.pose_ok = True
         self.has_solution = True
+        self.probe_ok = True
+        self.queries = []
+        self.raising = {}  # query name -> error message it raises
+        self.drop_link = set()  # queries after which the control script is gone
         self.on_plan = None  # hook called during planning
         self.program_running = True
         self.zeroed = 0
@@ -239,16 +243,32 @@ class Control:
         self.ik_calls += 1
         return self.ik(pose, qnear)
 
+    # The safety queries answer for a target as the test sets; about the
+    # arm's own current state (the refusal probe, ur_checks.py) the answer is
+    # True unless probe_ok is False, as a controller with safety NORMAL gives.
+    def _current(self, values, current):
+        return all(abs(a - b) < 1e-9 for a, b in zip(values, current))
+
+    def _answer(self, query, ok, values, current):
+        self.queries.append(query)
+        if query in self.raising:
+            raise RuntimeError(self.raising[query])
+        if query in self.drop_link:
+            self.program_running = False
+        if self._current(values, current):
+            return self.probe_ok
+        return ok
+
     def getInverseKinematicsHasSolution(self, pose, qnear):
-        return self.has_solution
+        return self._answer("getInverseKinematicsHasSolution", self.has_solution, pose, fk(self.world.q))
 
     def isPoseWithinSafetyLimits(self, pose):
-        return self.pose_ok
+        return self._answer("isPoseWithinSafetyLimits", self.pose_ok, pose, fk(self.world.q))
 
     def isJointsWithinSafetyLimits(self, q):
         if self.on_plan:
             self.on_plan()
-        return self.joints_ok
+        return self._answer("isJointsWithinSafetyLimits", self.joints_ok, q, self.world.q)
 
     def isProgramRunning(self):
         return self.program_running
@@ -1225,7 +1245,13 @@ def test_a_controller_pose_refusal_names_its_cause_request_and_limits(tmp_path, 
     detail = refused.json()["detail"]
     assert detail["error_code"] == detail["error"] == "outside_controller_limits"
     assert detail["request_id"] == REPORTED_ID and detail["action"] == "arm.move_linear"
-    assert detail["controller_check"] == "isPoseWithinSafetyLimits"
+    # Confirmed: false for the target, true for the arm's own pose on the same link.
+    assert detail["controller_check"]["query"] == "isPoseWithinSafetyLimits"
+    assert detail["controller_check"]["result"] == "rejected"
+    assert detail["controller_check"]["probe"] == {
+        "of": "current TCP pose", "completed": True, "answer": True, "error": None,
+    }
+    assert detail["specific_limit"]["known"] is False
     assert detail["likely_cause"] == cause
     assert detail["reason"].startswith("The controller's safety limits reject this pose; ")
     # The request as received, the turn it asks for and the limits it met.

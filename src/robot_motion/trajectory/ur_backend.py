@@ -22,6 +22,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from ..drivers import ur_checks
 from .executor import BackendError, StopRequested
 
 
@@ -267,11 +268,23 @@ def path_errors(trajectory, control, guard, *, step_deg: float = 2.0, max_checks
                 return [{"code": "path_check_too_long",
                          "message": f"the path needs more than {max_checks} workspace checks; "
                                     "split it or move less"}]
+    start = [math.radians(v) for v in checks[0][1]]
     for t, q in checks:
         radians = [math.radians(v) for v in q]
-        if control.isJointsWithinSafetyLimits(radians) is not True:
-            return [{"code": "outside_controller_limits", "t": round(t, 4),
-                     "message": f"the controller's safety limits reject the joints at t={t:.3f} s"}]
+        answer = control.isJointsWithinSafetyLimits(radians)
+        if answer is not True:
+            # A false is a limit only once confirmed against the path's start,
+            # which is the arm's current pose (ur_checks.py).
+            record = ur_checks.recheck(control, "isJointsWithinSafetyLimits", [radians], [start],
+                                       "trajectory's first sample", answer)
+            if record["result"] == ur_checks.REJECTED:
+                return [{"code": "outside_controller_limits", "t": round(t, 4), "controller_check": record,
+                         "message": f"the controller's safety limits reject the joints at t={t:.3f} s"}]
+            code = ("controller_check_indeterminate" if record["result"] == ur_checks.INDETERMINATE
+                    else "controller_query_failed")
+            return [{"code": code, "t": round(t, 4), "controller_check": record,
+                     "message": f"the controller's joint-limit check at t={t:.3f} s did not give a confirmed "
+                                f"answer ({record.get('reason')}); the path is refused"}]
         pose = control.getForwardKinematics(radians)
         point = [float(v) * 1000 for v in list(pose)[:3]]
         axes = guard.workspace.outside(point)

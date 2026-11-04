@@ -57,6 +57,11 @@ teach mode off) is closed after `control.idle_disconnect_s` (default 1800 s;
 `null` turns it off), audited as `idle_disconnect` with `connected_by`.
 `control_session.connected_by` and `idle_disconnect_in_s` show who opened the
 session and the countdown; taking the claim or starting work resets it.
+Before or after a Cartesian move, `POST /control/diagnose/pose` (the
+`freehand/linear` body, no claim) checks the target against the controller
+without moving and says whether a refusal is confirmed, a query that failed,
+or undetermined. `GET /control/diagnostics/{request_id}` reads back any
+refusal or diagnosis by id (ARM_MOTION.md).
 `activity` is work in flight, not a connected session. While this service's
 control script is the program `/status` reports, `activity` stays `idle` and
 `equipment_status` stays `ready` until an arm move (`control_session.busy` /

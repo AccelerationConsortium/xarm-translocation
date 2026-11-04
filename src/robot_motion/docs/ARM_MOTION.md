@@ -76,6 +76,8 @@ The paths are the ones the shared panel already calls:
 | `POST /control/reset` (alias `/clear/errors`) | — | clear a stop/fault latch |
 | `POST /control/force/zero` | — | zero the flange force/torque sensor |
 | `POST /control/stop` (alias `/move/stop`) | — | identity only: stop the move (stopJ, or stopL during a linear move) |
+| `POST /control/diagnose/pose` | the `freehand/linear` body | identity only, no claim: check a target pose without moving ([Pose diagnosis](#pose-diagnosis)) |
+| `GET /control/diagnostics/{request_id}` | — | identity only: every refusal and diagnosis kept under that id |
 
 Each move takes an optional `request_id` (UUID). A request id never runs
 twice.
@@ -147,22 +149,45 @@ list unchanged, plus `error_code: invalid_request`, `fields` (the fields at
 fault), `reason` and `request_id` (when the body named one). It is audited as
 `request_invalid`.
 
-`outside_controller_limits` on a Cartesian move means the controller's
-`isPoseWithinSafetyLimits` answered false. ur_rtde gives no reason beyond
-that, so the service asks the controller two more questions, and nothing
-moves while it does:
-- the inverse-kinematics solution near the current joints (`ik_joints_deg`);
-- whether those joints pass its joint limits
-  (`ik_joints_within_controller_limits`).
+#### Controller safety answers
 
-The answers give `likely_cause`:
+ur_rtde's `isPoseWithinSafetyLimits`, `isJointsWithinSafetyLimits` and
+`getInverseKinematicsHasSolution` answer False both when the controller says
+no and when the query never completed, for example with the script not
+running or a timeout. A False is therefore classified (`drivers/ur_checks.py`)
+before it is reported:
+- The link and control script are checked before and after the query.
+- On a False, the same query is asked about the arm's current state: its
+  joints or TCP pose. A controller running with safety NORMAL accepts that.
+
+Only a True for that probe makes the False a confirmed refusal. Every
+outcome other than passed refuses the move:
+- **Confirmed:** 422 with the limit's code (`outside_controller_limits`,
+  `unreachable`).
+- **Not confirmed:** 502 `controller_check_indeterminate` when the probe did
+  not answer true, or `controller_query_failed` when the query did not
+  complete. No limit is claimed.
+
+`controller_check` in the body is the record: `query`, `result`,
+`completed`, `answer`, `probe` and `reason`. `specific_limit` says the
+controller does not name the joint, plane or tool-orientation limit, because
+these queries answer a boolean only. Trajectory validation classifies its
+joint-limit check the same way, probing the trajectory's first sample.
+
+A confirmed `outside_controller_limits` on a Cartesian move asks two more
+classified questions, and nothing moves while it does:
+- the IK solution near the current joints (`ik_check`, `ik_joints_deg`);
+- whether those joints pass the controller's joint limits
+  (`joint_limit_check`, `ik_joints_within_controller_limits`).
+
+From these it names a `likely_cause`, using confirmed answers only:
 - `controller_pose_rule`: the joints pass, so a pose rule refused it. That
   is a safety plane, a tool-orientation limit or a TCP limit, and the
   pendant's safety settings say which.
 - `controller_joint_limits`: the joints of the IK solution fail the
   controller's joint limits.
 - `no_ik_solution`: the controller finds no IK solution.
-- `unknown`: the follow-up queries failed (see `diagnostic_error`).
+- `unknown`: a follow-up was not confirmed.
 
 The body also gives `start_tcp_mm_rpy_deg`, `target_tcp_mm_rpy_deg`,
 `target_pose_m_rotvec` (exactly what was checked), `translation_mm` and
@@ -202,11 +227,71 @@ the long way round, takes the short way.
   - `outside_controller_limits`: with `likely_cause` (see above)
   - `request_replayed`
   - `invalid_request`: the body fails the schema
-- **502:** `planning_failed`: a controller kinematics query failed during
-  planning. Nothing was sent.
+- **502:** nothing was sent:
+  - `planning_failed`: a controller kinematics query raised during planning.
+  - `controller_query_failed`: a safety query did not complete.
+  - `controller_check_indeterminate`: a safety query answered false, but the
+    probe did not confirm it.
 - **500:** the move was sent and failed. A stop was sent; the body carries
   `stop_attempted`, `stop_error` and `latched: true`. Check the arm, then
   reset.
+
+Every refusal is kept under its request id. `GET
+/control/diagnostics/{request_id}` returns it with the full body, so a caller
+that lost the response never resends the move to find out why. The newest
+1000 ids are held in memory; older ones, or ones from before a restart, are
+read back from the audit file.
+
+### Pose diagnosis
+
+`POST /control/diagnose/pose` takes the `freehand/linear` body. `speed` is
+accepted and ignored, so a move's body can be sent as is. It asks the
+planner's target-pose questions on the open session:
+- **Rules:** it needs identity but no claim. It never connects, resets, moves
+  the arm or touches the gripper. It holds the move slot while its queries run
+  (milliseconds), so a move asked for meanwhile answers 409 `motion_busy` and
+  a STOP never waits behind a query.
+- **Scope:** it checks the target pose, not the straight line to it. A move
+  checks the line itself.
+
+The answer is a 200 (also kept under its `request_id`) with:
+- **`verdict`:** one of
+  - `passed`;
+  - `rejected`: confirmed, by a software limit or a confirmed controller
+    answer;
+  - `query_failed`;
+  - `indeterminate`;
+  - `not_checked`.
+
+  With it come `decided_by`, the checks that gave the verdict, and
+  `verdict_reason`.
+- **`checks`,** each with its own `result`:
+  - `connection`;
+  - `software_workspace`: always checked, even without a session;
+  - `ik_solution`: with `joints_deg` and `qnear_joints_deg`;
+  - `software_envelope_at_ik`;
+  - `controller_joint_limits_at_ik`;
+  - `controller_pose_limits`.
+
+  The controller checks carry their `controller_check` fields and
+  `specific_limit`.
+- **`target`:** `requested` (mm, RPY degrees), `used_pose_m_rotvec` (what
+  ur_rtde receives) and `units`.
+- **`state`:** current joints, TCP (mm/RPY and m/rotvec), feedback age,
+  robot and safety mode, and the translation and shortest orientation change
+  to the target.
+- **`tcp_config`:** the active TCP offset, the FK offset and payload.
+- **`versions`:**
+  - `service`;
+  - `ur_rtde`;
+  - `controller`: the Dashboard `PolyscopeVersion`, read once;
+  - `robot_model`.
+
+With no session, a stopped control script, stale feedback, a controller not
+RUNNING/NORMAL, a move or trajectory in flight, or manual mode, nothing is
+asked: every controller check is `not_checked` with the reason. A stopped
+script is reported rather than queried, because ur_rtde would re-upload its
+script to answer.
 
 ### Latch and reset
 

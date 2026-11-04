@@ -25,6 +25,8 @@ READ_COMMANDS = frozenset(
         # all, and MANUAL/AUTOMATIC. Read-only, like the rest.
         "is in remote control",
         "get operational mode",
+        # The controller software version, for diagnoses (read_versions).
+        "PolyscopeVersion",
     }
 )
 
@@ -50,26 +52,36 @@ class URObserver:
         self.settings = settings
         self.connector = connector
 
+    def _dashboard(self, stack):
+        """A query function on a fresh Dashboard connection held by stack."""
+        conn = stack.enter_context(
+            self.connector(
+                (self.settings.robot_host, 29999), timeout=self.settings.timeout_s
+            )
+        )
+        stream = stack.enter_context(conn.makefile("rb"))
+        banner = _readline(stream)
+        if "Universal Robots Dashboard Server" not in banner:
+            raise OSError("Unexpected Dashboard Server identity")
+
+        def query(command):
+            if command not in READ_COMMANDS:
+                raise ValueError(
+                    "Only fixed read-only Dashboard queries are permitted"
+                )
+            conn.sendall((command + "\n").encode("ascii"))
+            return _readline(stream)
+
+        return query
+
+    def read_versions(self):
+        """The controller's software version (read-only Dashboard query)."""
+        with ExitStack() as stack:
+            return {"polyscope": self._dashboard(stack)("PolyscopeVersion")}
+
     def read(self):
         with ExitStack() as stack:
-            conn = stack.enter_context(
-                self.connector(
-                    (self.settings.robot_host, 29999), timeout=self.settings.timeout_s
-                )
-            )
-            stream = stack.enter_context(conn.makefile("rb"))
-            banner = _readline(stream)
-            if "Universal Robots Dashboard Server" not in banner:
-                raise OSError("Unexpected Dashboard Server identity")
-
-            def query(command):
-                if command not in READ_COMMANDS:
-                    raise ValueError(
-                        "Only fixed read-only Dashboard queries are permitted"
-                    )
-                conn.sendall((command + "\n").encode("ascii"))
-                return _readline(stream)
-
+            query = self._dashboard(stack)
             mode = _value(query("robotmode"), "robotmode")
             source = "safetystatus"
             safety_reply = query(source)

@@ -61,6 +61,8 @@ from .drivers.ur_motion import (
     MotionRefused,
 )
 from .config import MODELS
+from .drivers.ur_diagnosis import diagnose_pose
+from .records import RequestRecords
 from .edge import (
     API_KEY_HEADER,
     SECRET_ENV,
@@ -132,6 +134,11 @@ class URControl:
         # Graph moves and bench routines (routines.py), set by the app when a
         # graph is configured; installed with the other control routes.
         self.routines = None
+        # Refusals and pose diagnoses by request id (GET /control/diagnostics).
+        self.records = RequestRecords(self.config.audit_file)
+        # The controller's software version (the app reads it from the
+        # Dashboard server once); None when unknown.
+        self.controller_versions = lambda: None
 
     # ── identity and gates ──────────────────────────────────────────
     def identity(self, request):
@@ -498,7 +505,80 @@ class URControl:
         if request_id is not None:
             body["request_id"] = request_id
         self.event(kind, identity, action=action, reason=body.get("error"), request_id=request_id, status=status)
+        self._keep(request_id, kind, status, body)
         raise HTTPException(status_code=status, detail=body)
+
+    def _keep(self, request_id, kind, status, body):
+        """Record a refusal under its request id, stamped like its audit line."""
+        if request_id is not None:
+            event = self.last_event or {}
+            self.records.put(request_id, {
+                **body, "kind": kind, "status": status, "at": event.get("at"), "operator": event.get("operator"),
+            })
+
+    def versions(self):
+        """Service, SDK and controller versions for a diagnosis."""
+        from importlib import metadata
+
+        from . import __version__
+
+        try:
+            sdk = metadata.version("ur_rtde")
+        except metadata.PackageNotFoundError:
+            sdk = None
+        try:
+            controller = self.controller_versions()
+        except Exception as exc:  # noqa: BLE001 - reported, not fatal
+            controller = {"error": str(exc)}
+        return {"service": __version__, "ur_rtde": sdk, "controller": controller, "robot_model": self.settings.model}
+
+    def diagnose_pose(self, identity, body):
+        """Check a target pose on the open session without moving (ur_diagnosis.py).
+
+        Never connects, resets, moves or grips; with no session, or while the
+        arm is busy or in manual mode, the controller checks are not_checked.
+        """
+        request_id = str(body.request_id) if body.request_id is not None else str(uuid4())
+        session, executor = self.session, self.executor
+        if session is None or not session.is_open or executor is None:
+            report = diagnose_pose(request=body, limits=self.arm_limits)
+            control = None
+        else:
+            control = session.control
+            # The move slot is held for the queries (a trajectory holds it too).
+            with executor.queries_only() as free:
+                blocked = (
+                    "motion_in_progress: no queries while the arm is commanded" if not free
+                    else "manual_mode: turn manual mode off first" if executor.manual
+                    else None
+                )
+                report = diagnose_pose(
+                    request=body, limits=self.arm_limits, control=control, latest=session.feedback.latest,
+                    blocked=blocked,
+                )
+        current, _ = self._observe()
+        telemetry = ((current or {}).get("details") or {}).get("telemetry") or {}
+        record = {
+            "kind": "pose_diagnosis",
+            "request_id": request_id,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "operator": identity["email"] if identity else None,
+            **report,
+            "tcp_config": {
+                "tcp_offset_mm_rpy_deg": self.tcp_offset if control is not None else None,
+                "fk_tcp_offset_m_rotvec": getattr(control, "tcp_offset", None),
+                "kinematics_error": getattr(control, "kinematics_error", None),
+                "payload": telemetry.get("payload"),
+            },
+            "versions": self.versions(),
+            "commissioning_id": self.arm_limits.commissioning_id,
+            "speed_ignored": body.speed,
+            "moved": False,
+            "notice": "Diagnosis only: no connect, reset, move or gripper command was sent",
+        }
+        self.event("pose_diagnosis", identity, request_id=request_id, verdict=record["verdict"], record=record)
+        self.records.put(request_id, record)
+        return record
 
     def event(self, kind, identity, **extra):
         self.last_event = {
@@ -620,19 +700,21 @@ class URControl:
             sent = exc.body if isinstance(exc.body, dict) else {}
             request_id = sent.get("request_id") if isinstance(sent.get("request_id"), str) else None
             fields = sorted({".".join(str(part) for part in error.get("loc", ())[1:]) or "body" for error in errors})
+            content = {
+                "detail": errors,
+                "error_code": "invalid_request",
+                "reason": "The request does not match the API schema: " + ", ".join(fields),
+                "fields": fields,
+                "request_id": request_id,
+            }
             if request.method == "POST":
                 self.event(
                     "request_invalid", edge_identity(request, self.secret), path=request.url.path,
                     request_id=request_id, fields=fields,
                     errors=[{"loc": error.get("loc"), "msg": error.get("msg"), "type": error.get("type")} for error in errors],
                 )
-            return JSONResponse(status_code=422, content={
-                "detail": errors,
-                "error_code": "invalid_request",
-                "reason": "The request does not match the API schema: " + ", ".join(fields),
-                "fields": fields,
-                "request_id": request_id,
-            })
+                self._keep(request_id, "request_invalid", 422, {**content, "path": request.url.path})
+            return JSONResponse(status_code=422, content=content)
 
         @app.post("/control/claim", responses={409: {"model": ClaimRejection}}, tags=["control"])
         def acquire_claim(request: ClaimRequest, identity: dict = login):
@@ -857,6 +939,7 @@ class URControl:
             "arm_refused", identity, action=action, reason=body["error"], request_id=request_id, status=status,
             detail={key: value for key, value in detail.items() if key not in ("limits", "request")},
         )
+        self._keep(request_id, "arm_refused", status, detail)
         raise HTTPException(status_code=status, detail=detail)
 
     async def _run_motion(self, identity, action, body, token):
@@ -952,6 +1035,25 @@ class URControl:
         ):
             """moveL to an absolute TCP pose (mm and roll/pitch/yaw degrees; speed mm/s)."""
             return await self._run_motion(identity, "arm.move_linear", body, x_claim_token)
+
+        @app.post("/control/diagnose/pose", tags=tags)
+        def diagnose(body: LinearMove, identity: dict = login):
+            """Check a target pose (the /control/freehand/linear body) against
+            the controller on the open session, without moving: no claim is
+            needed, and nothing connects, resets, moves or grips. The result
+            is kept under its request_id."""
+            return self.diagnose_pose(identity, body)
+
+        @app.get("/control/diagnostics/{request_id}", tags=tags)
+        def diagnostics(request_id: str, identity: dict = login):
+            """Every refusal and diagnosis recorded for a request id, oldest first."""
+            records = self.records.get(request_id)
+            if not records:
+                raise HTTPException(status_code=404, detail={
+                    "error": "unknown_request_id", "error_code": "unknown_request_id", "request_id": request_id,
+                    "reason": "No refusal or diagnosis is recorded under this request id",
+                })
+            return {"request_id": request_id, "records": records}
 
         @app.post("/control/reset", tags=tags, dependencies=[claim])
         @app.post("/clear/errors", tags=tags, dependencies=[claim])
