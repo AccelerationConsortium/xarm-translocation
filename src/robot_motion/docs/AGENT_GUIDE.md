@@ -50,6 +50,11 @@ and allowed_actions is empty. With control enabled, /control/claim,
 without its token, 412 when a precondition fails, 422 when a request exceeds
 the commissioned limits, and /control/stop needs identity only.
 allowed_actions then lists exactly what a POST will honor.
+Before or after a Cartesian move, `POST /control/diagnose/pose` (the
+`freehand/linear` body, no claim) checks the target against the controller
+without moving and says whether a refusal is confirmed, a query that failed,
+or undetermined. `GET /control/diagnostics/{request_id}` reads back any
+refusal or diagnosis by id (ARM_MOTION.md).
 `activity` is work in flight, not a connected session. While this service's
 control script is the program `/status` reports, `activity` stays `idle` and
 `equipment_status` stays `ready` until an arm move (`control_session.busy` /

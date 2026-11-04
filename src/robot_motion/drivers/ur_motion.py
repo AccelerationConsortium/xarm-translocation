@@ -19,13 +19,16 @@ from __future__ import annotations
 import math
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
+from . import ur_checks
 from .lle_rtde import tcp_to_mm_deg, vector6
+from .ur_checks import INDETERMINATE, PASSED, REJECTED
 
 Number = Annotated[float, Field(strict=True, allow_inf_nan=False)]
 Six = tuple[Number, Number, Number, Number, Number, Number]
@@ -43,7 +46,7 @@ POSE_REJECTION_CAUSES = {
     ),
     "controller_joint_limits": "the joints of its IK solution are outside the controller's joint limits",
     "no_ik_solution": "the controller finds no inverse kinematics solution for it",
-    "unknown": "the controller gave no further reason",
+    "unknown": "which limit could not be confirmed (see ik_check and joint_limit_check)",
 }
 # How often teach mode rechecks the claim, the session and the controller.
 MANUAL_CHECK_INTERVAL_S = 0.1
@@ -402,6 +405,19 @@ class MotionExecutor:
         self.active = None
         self._lock.release()
 
+    @contextmanager
+    def queries_only(self):
+        """Hold the move slot while controller queries that move nothing run
+        (pose diagnosis), so no move starts meanwhile and a STOP never waits
+        behind one of them. Yields False, holding nothing, if a move runs."""
+        if not self._lock.acquire(blocking=False):
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            self._lock.release()
+
     @property
     def seen(self):
         return self._seen
@@ -628,9 +644,11 @@ class MotionExecutor:
                 status=422, joints=outside,
             )
         radians = [math.radians(q) for q in target]
-        if self.control.isJointsWithinSafetyLimits(radians) is not True:
-            raise MotionRefused(
-                "outside_controller_limits", "The controller's safety limits reject this joint target", status=422
+        record = self._confirm("isJointsWithinSafetyLimits", [radians], [[math.radians(q) for q in q0]], "current joints")
+        if record is not None:
+            raise self._controller_refusal(
+                record, "outside_controller_limits", "The controller's safety limits reject this joint target",
+                target_joints_deg=list(target), specific_limit=ur_checks.BOOLEAN_ONLY,
             )
         travel = max(abs(b - a) for a, b in zip(q0, target))
         count = min(MAX_PATH_SAMPLES, max(1, math.ceil(travel / lim.path_check_step_deg)))
@@ -657,17 +675,22 @@ class MotionExecutor:
                 "target_outside_workspace", f"Target is outside the workspace box on {''.join(axes)}",
                 status=422, tcp_mm=[round(v, 1) for v in point], axes=axes,
             )
-        if self.control.isPoseWithinSafetyLimits(list(target)) is not True:
-            diagnosis = self._pose_rejection(q0, p0, target)
-            raise MotionRefused(
-                "outside_controller_limits",
-                "The controller's safety limits reject this pose; " + POSE_REJECTION_CAUSES[diagnosis["likely_cause"]],
-                status=422,
-                **diagnosis,
-            )
         q_start = [math.radians(q) for q in q0]
-        if self.control.getInverseKinematicsHasSolution(list(target), q_start) is not True:
-            raise MotionRefused("unreachable", "No inverse kinematics solution for this pose", status=422)
+        record = self._confirm("isPoseWithinSafetyLimits", [list(target)], [list(p0)], "current TCP pose")
+        if record is not None:
+            rejected = record["result"] == REJECTED
+            facts = self._pose_rejection(q0, p0, target) if rejected else self._pose_facts(p0, target)
+            raise self._controller_refusal(
+                record, "outside_controller_limits",
+                "The controller's safety limits reject this pose; "
+                + POSE_REJECTION_CAUSES[facts.get("likely_cause", "unknown")],
+                **facts,
+            )
+        record = self._confirm(
+            "getInverseKinematicsHasSolution", [list(target), q_start], [list(p0), q_start], "current TCP pose"
+        )
+        if record is not None:
+            raise self._controller_refusal(record, "unreachable", "No inverse kinematics solution for this pose")
         length = math.dist(p0[:3], target[:3]) * 1000
         turn = orientation_error_deg(p0[3:], target[3:])
         count = min(
@@ -682,10 +705,13 @@ class MotionExecutor:
         for i, pose in enumerate(interpolate_poses(p0, target, count)[1:], start=1):
             # URScript's inverse kinematics raises (ending the control script)
             # when there is no solution, so ask first.
-            if self.control.getInverseKinematicsHasSolution(pose, previous) is not True:
-                raise MotionRefused(
-                    "unreachable", "No inverse kinematics solution along this line",
-                    status=422, fraction=round(i / count, 3),
+            record = self._confirm(
+                "getInverseKinematicsHasSolution", [pose, previous], [list(p0), q_start], "current TCP pose"
+            )
+            if record is not None:
+                raise self._controller_refusal(
+                    record, "unreachable", "No inverse kinematics solution along this line",
+                    fraction=round(i / count, 3),
                 )
             q = vector6(self.control.getInverseKinematics(pose, previous))
             degrees = [math.degrees(v) for v in q]
@@ -727,44 +753,92 @@ class MotionExecutor:
         target_q = tuple(math.degrees(v) for v in previous)
         return Plan(action, "linear", q0, target_q, list(p0), list(target), speed, 1.5 * duration + 3.0, count + 1)
 
-    def _pose_rejection(self, q0, p0, target):
-        """What can be said about a pose isPoseWithinSafetyLimits refused.
+    def _confirm(self, query, args, probe_args, probe_of):
+        """None when the controller answers True; otherwise the classified
+        record (ur_checks), so a False becomes a limit refusal only when the
+        controller confirms it. The fast path is the same single query."""
+        answer = getattr(self.control, query)(*args)
+        if answer is True:
+            return None
+        return ur_checks.recheck(self.control, query, args, probe_args, probe_of, answer)
 
-        ur_rtde answers only true or false. The controller's inverse
-        kinematics near the current joints, and its joint-limit check at that
-        solution, tell a joint limit apart from a pose rule (a safety plane,
-        tool orientation or TCP limit), which the pendant's safety settings
-        then name. These are the planner's own queries; nothing moves.
-        """
-        diagnosis = {
-            "controller_check": "isPoseWithinSafetyLimits",
+    def _controller_refusal(self, record, error, reason, **extra):
+        """MotionRefused for a controller check that did not pass. Every
+        outcome refuses; only a confirmed rejection is named a limit (422)."""
+        if record["result"] == REJECTED:
+            return MotionRefused(error, reason, status=422, controller_check=record, **extra)
+        extra.pop("likely_cause", None)
+        hint = "POST /control/diagnose/pose with the same target to check again without moving"
+        if record["result"] == INDETERMINATE:
+            return MotionRefused(
+                "controller_check_indeterminate",
+                f"{record['query']} answered false but the controller did not confirm it "
+                f"({record['reason']}); refused without claiming a limit was hit",
+                status=502, controller_check=record, hint=hint, **extra,
+            )
+        return MotionRefused(
+            "controller_query_failed",
+            f"{record['query']} did not complete ({record.get('reason')}); the move is refused",
+            status=502, controller_check=record, hint=hint, **extra,
+        )
+
+    def _pose_facts(self, p0, target):
+        return {
             "start_tcp_mm_rpy_deg": [round(v, 3) for v in tcp_to_mm_deg(p0)],
             "target_tcp_mm_rpy_deg": [round(v, 3) for v in tcp_to_mm_deg(target)],
             "target_pose_m_rotvec": [round(v, 6) for v in target],
             "translation_mm": round(math.dist(p0[:3], target[:3]) * 1000, 3),
             # The shortest rotation between the two, whatever the RPY wrap.
             "orientation_change_deg": round(orientation_error_deg(p0[3:], target[3:]), 3),
+        }
+
+    def _pose_rejection(self, q0, p0, target):
+        """What can be said about a pose isPoseWithinSafetyLimits confirmed
+        refusing.
+
+        The controller names no limit. Its inverse kinematics near the current
+        joints, and its joint-limit check at that solution, tell a joint limit
+        apart from a pose rule (a safety plane, tool orientation or TCP
+        limit), and each is classified like the refusal itself: a cause is
+        named only from confirmed answers. Planner queries only; nothing moves.
+        """
+        facts = {
+            **self._pose_facts(p0, target),
             "likely_cause": "unknown",
+            "specific_limit": ur_checks.BOOLEAN_ONLY,
         }
         q_start = [math.radians(q) for q in q0]
+        # Asked first: URScript's IK ends the script when there is none.
+        ik = ur_checks.check(
+            self.control, "getInverseKinematicsHasSolution", [list(target), q_start], [list(p0), q_start],
+            "current TCP pose",
+        )
+        facts["ik_check"] = ik
+        if ik["result"] == REJECTED:
+            facts["likely_cause"] = "no_ik_solution"
+            return facts
+        if ik["result"] != PASSED:
+            return facts
+        solved = ur_checks.ask(self.control, "getInverseKinematics", list(target), q_start)
         try:
-            # Asked first: URScript's IK ends the script when there is none.
-            if self.control.getInverseKinematicsHasSolution(list(target), q_start) is not True:
-                diagnosis["likely_cause"] = "no_ik_solution"
-                return diagnosis
-            q = vector6(self.control.getInverseKinematics(list(target), q_start))
-            joints_ok = self.control.isJointsWithinSafetyLimits(list(q)) is True
-        except Exception as exc:  # noqa: BLE001 - the refusal stands either way
-            diagnosis["diagnostic_error"] = str(exc)
-            return diagnosis
+            if not solved["completed"]:
+                raise ValueError(solved["error"])
+            q = vector6(solved["answer"])
+        except (TypeError, ValueError) as exc:
+            facts["diagnostic_error"] = f"getInverseKinematics: {exc}"
+            return facts
         ik_deg = [round(math.degrees(v), 3) for v in q]
-        diagnosis["ik_joints_deg"] = ik_deg
-        diagnosis["ik_joints_within_controller_limits"] = joints_ok
+        facts["ik_joints_deg"] = ik_deg
+        joints = ur_checks.check(self.control, "isJointsWithinSafetyLimits", [list(q)], [q_start], "current joints")
+        facts["joint_limit_check"] = joints
+        facts["ik_joints_within_controller_limits"] = {PASSED: True, REJECTED: False}.get(joints["result"])
         outside = self._outside_envelope(ik_deg)
         if outside:
-            diagnosis["ik_joints_outside_envelope"] = outside
-        diagnosis["likely_cause"] = "controller_pose_rule" if joints_ok else "controller_joint_limits"
-        return diagnosis
+            facts["ik_joints_outside_envelope"] = outside
+        facts["likely_cause"] = {PASSED: "controller_pose_rule", REJECTED: "controller_joint_limits"}.get(
+            joints["result"], "unknown"
+        )
+        return facts
 
     # ── execution ───────────────────────────────────────────────────
     def _stop(self, kind):

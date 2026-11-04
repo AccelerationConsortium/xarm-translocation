@@ -35,6 +35,9 @@ class URRTDEObserver:
     def read_telemetry(self):
         return self.arm.read()
 
+    def read_versions(self):
+        return self.dashboard.read_versions()
+
     def read(self):
         # Retain established safety and program-state interpretation. A missing
         # telemetry stream is not a robot fault or evidence that motion is safe.

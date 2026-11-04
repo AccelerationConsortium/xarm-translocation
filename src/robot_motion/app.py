@@ -258,6 +258,19 @@ def create_app(
                 **({"door_reader": balance_door_reader} if balance_door_reader else {}),
             )
         control.install(app)
+        versions = {}
+
+        def controller_versions():
+            # Read once from the Dashboard server; a failure is retried next time.
+            if "value" not in versions:
+                read = getattr(observer, "read_versions", None)
+                if read is None:
+                    return None
+                versions["value"] = read()
+            return versions["value"]
+
+        control.controller_versions = controller_versions
+    app.state.control = control
     if routine_settings is not None and getattr(control, "routines", None) is None:
         raise ValueError("routines_file needs control enabled with control.motion")
 
