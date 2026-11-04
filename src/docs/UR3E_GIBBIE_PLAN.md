@@ -166,6 +166,109 @@ secrets and the control tile (ac-organic-lab PRs #69 and #70; a live
 INIT / STOP / disconnect from the tile at 04:20-04:21 UTC reached the
 device as the operator), and `gibbie_ur_arm` retired from the dashboard.
 
+## Vial routines on the motion graph (2026-10-28, offline only)
+
+The Gibbie workflow's `URController.vial_2_balance` / `balance_2_vial`
+(`sdl2_solid_dose`, read on the PC) as robot-motion routines
+(`robot_motion/routines.py`, AGENT_GUIDE "Graph moves and routines"):
+
+- `deploy/ur3e_gibbie/graph.json`: the eight taught positions those two
+  methods use, copied from the workflow's
+  `settings/robot/ur3_1006_locations_converted.json` (same mm and extrinsic
+  xyz-degree convention, same controller TCP), and only the 14 transitions
+  they run. The graph's shortest paths reproduce both methods move for move.
+- `deploy/ur3e_gibbie/routines.json`: home `safe_rack`; the 4×6 rack from
+  `vial_stock_JL` at 20 mm pitch (A..D along -x, 1..6 along -y, as the
+  workflow's resource handler builds it); pick 55 mm, place 35 mm below the
+  slot pose; vial grip raw 207 / 242 (the workflow's 0.81 / 0.95); the
+  balance door `door_right` (XPR RightOuter, the one the workflow opens) read
+  from `gibbie_balance`'s `/status`.
+
+To enable: copy both files into `.state` beside the config and add
+`"graph_file": "graph.json", "routines_file": "routines.json"`.
+
+Deliberate differences from the workflow, for review:
+
+- `home_prep_bal → safe_bal` is a joint move in both directions; the
+  workflow uses moveJ in `vial_2_balance` but moveL in `balance_2_vial`, and a
+  graph has one edge per direction.
+- After releasing a vial in the rack the arm lifts straight up out of the
+  slot before going to `vial_stock_prep`; the workflow moves there directly
+  from the release height.
+- Speeds are the motion block's defaults (a quarter of the 10 deg/s and
+  50 mm/s placeholders), well below the workflow's 30 deg/s and 50–100 mm/s.
+- Grip force is the gripper's commissioned default (10 %, cap 20 %); the
+  workflow grips at 50 %. Whether 10 % holds a vial is untested.
+
+Two more routines (2026-11-03, offline only) take a vial off the balance
+somewhere other than the rack: `balance_to_node {target}` picks it from the
+pan and carries it, still gripped, to any taught graph node, and
+`node_to_rack {slot}` puts a held vial away from whichever node the arm is
+at. `balance_to_rack` is now literally the pick followed by `node_to_rack`
+from `pick_up_vial`, so its moves are unchanged. A target needs a taught
+node and edges in `graph.json`; none is taught for this yet.
+
+Not yet run on the arm. First live run: with the user at the arm and the
+Gibbie workflow idle, `dry_run` each routine, then `graph.move` along each
+leg at the default speeds before a full routine.
+
+## Stage 4 commissioning record (2026-10-29, user at the arm)
+
+Same tools and gates as the UR5e (`UR5E_TRAJECTORY_PLAN.md` sections 6-8),
+on `robot-motion-ur3e` at `d99c051`, 125 Hz, servoJ lookahead 0.03 s /
+gain 1000 (the UR5e's tuned defaults; not retuned here).
+
+**0a, no motion** (`tools/ur_servo_timing_probe.py`, service up, session
+closed): RTDE receive 477 Hz, packet gaps p50 2.09 ms, max 7.97 ms (the
+UR5e's max was 2.67 ms; still inside a 125 Hz period).
+
+| Rate | Late p50 | p99 | max | Late > 1 period |
+|---|---|---|---|---|
+| 125 Hz | 0.37 ms | 1.06 ms | 1.79 ms | 0 |
+| 250 Hz | 0.51 ms | 1.09 ms | 3.10 ms | 0 |
+| 500 Hz | 0.10 ms | 1.02 ms | 2.77 ms | 1 |
+
+**0b, on the arm** (`tools/ur_servo_probe.py`, session disconnected in the
+panel). The first dry run refused before any motion: J6 stood at 531.3°,
+outside the motion block's ±360° (the schema caps every joint at ±363°, so
+the bound cannot simply be widened). Every graph node has J6 near 180°, so
+the wrist had picked up a turn; the user unwound it by hand to 189.7°.
+Wiggle J1 ±5°, J6 ±10°, min-jerk, peak 8 deg/s, 9.4 s.
+
+| Run | Result | Lag | Tracking rms / max | Late ticks |
+|---|---|---|---|---|
+| full | completed | 46 ms | 0.027° / 0.137° | 0 |
+| cancel at 50 % | cancelled on the path, 0.011° from the last target | 42 ms | 0.028° / 0.113° | 0 |
+| STOP at 50 % | stopped; control script and watchdog up 0.5 s and 2 s after | 46 ms | 0.027° / 0.145° | 0 |
+
+Peak force change 3.1 N. **Stage 0b passed.** `control.trajectory`
+then enabled (`{"enabled": true}`, defaults; `watchdog_hz` 2 is below the
+4.5 Hz the placeholder's braking allows); backup
+`.state/robot-motion.local.json.bak-20261029-pre-trajectory`.
+
+**Stage 3, through the edge** (`tools/ur_trajectory_http_check.py` with
+`ROUTE = "/ur3e"` and this arm's status URL, emailed sign-in, every call
+through the edge's `/ur3e` route):
+
+| Run | Result | Lag | Tracking rms / max | Late ticks |
+|---|---|---|---|---|
+| full | completed, 0.003° from the target | 46 ms | 0.028° / 0.136° | 1 of 1176 (2.1 ms) |
+| cancel at 50 % | cancelled on the path, then moveJ back | 46 ms | 0.028° / 0.116° | 0 |
+| STOP at 50 % | stopped; session open, watchdog OK, moves latched until Clear errors | 42 ms | 0.026° / 0.106° | 0 |
+
+Clear errors and the moveJ back answered 200; claim released, signed out.
+**Stage 3 passed**: the UR3e matches the UR5e's numbers (40-42 ms, about
+0.027-0.030° rms).
+
+**Same day, not part of the stages:**
+- Agents' `X-Api-Key` accepted (`auth_url`, verified by ac_auth for
+  `ur3e_gibbie`); before, every lab-skills SDK call was 401.
+- `force_guard_n` 30 → 50 N (user request; it bounds the change in TCP
+  force during a move). Backup `.bak-20261029-pre-force-50`.
+- F/T zeroed with the gripper empty and the arm still: 29.0 N at rest
+  (almost all +X, drift) → 0.2 N. The only earlier zero was 2026-10-12.
+  Payload on the pendant 0.82 kg, CoG (-6, 2, 65) mm.
+
 ## Open with the user
 
 - Who may hold the arm when: the interlock contract with the Gibbie
@@ -173,9 +276,9 @@ device as the operator), and `gibbie_ur_arm` retired from the dashboard.
   while a program is PLAYING or `gibbie_workflow` is busy).
 - The real limits for the motion block (the placeholder is 10 deg/s,
   50 mm/s, ±800 mm, ±360°), and the manual-mode test.
-- Stage 4 (joint trajectories): the UR5e's stages 0a/0b/3 on this arm,
-  then `control.trajectory.enabled` and the `trajectory.*` skills for
-  `ur3e_gibbie`.
+- J6 sat a full turn off the graph (531° against ~180°) before Stage 4;
+  find what wound it, or the routines will meet it again. It is at 189.7°
+  now, about 10° off the nodes.
 - Housekeeping: `robot-motion-ur3e` in the Gibbie PC's host-ops whitelist
   and probe ports; the LocalSystem service account (DEVICE_PC_SETUP §5)
   now that control is on, as on pc-05.

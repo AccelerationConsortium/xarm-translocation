@@ -182,13 +182,14 @@ class Rig:
             self.config, control_factory=control_factory, receiver_factory=receiver_factory
         )
 
-    def client(self, secret=SECRET):
+    def client(self, secret=SECRET, key_verifier=None):
         return TestClient(
             create_app(
                 self.config,
                 observer=self.observer,
                 control_session_factory=self.session,
                 edge_secret=secret,
+                key_verifier=key_verifier,
             )
         )
 
@@ -275,6 +276,86 @@ def test_identity_is_edge_verified_and_authorized_centrally():
         assert response.status_code == 503
         assert response.json()["detail"]["error"] == "edge_identity_not_configured"
         assert client.post("/control/stop", headers=HEADERS).status_code == 503
+
+
+class KeyAuth:
+    """ac_auth's verdicts for the fixture keys, and every key it was asked about."""
+
+    AGENT = "agent:someone@example.invalid"
+
+    def __init__(self, failure=None):
+        self.asked = []
+        self.failure = failure
+
+    def __call__(self, key):
+        from robot_motion.edge import KeyForbidden
+
+        self.asked.append(key)
+        if self.failure is not None:
+            raise self.failure
+        if key == "forbidden-key":
+            raise KeyForbidden("fixture")
+        if key == "agent-key":
+            return {"email": self.AGENT, "role": "automation"}
+        return None
+
+
+def test_agent_key_is_verified_centrally_and_owns_its_claim():
+    """An agent calls the device directly with its X-Api-Key (the SDK's route).
+
+    ac_auth decides; the claim is stamped with the key's principal, and the
+    same key drives the claim-gated routes with its token.
+    """
+    auth = KeyAuth()
+    rig = Rig(settings())
+    with rig.client(key_verifier=auth) as client:
+        wait_observed(client)
+        body = {"owner": "ignored", "session_id": "agent-session", "ttl_s": 30}
+        response = client.post("/control/claim", json=body, headers={"X-Api-Key": "agent-key"})
+        assert response.status_code == 200, response.text
+        assert client.get("/status").json()["details"]["claimed_by"]["owner"] == KeyAuth.AGENT
+        token = response.json()["claim_token"]
+        held = {"X-Api-Key": "agent-key", "X-Claim-Token": token}
+        assert client.post("/control/heartbeat", headers=held).status_code < 300
+        assert client.post("/control/stop", headers={"X-Api-Key": "agent-key"}).status_code < 300
+        assert client.post("/control/release", headers=held).status_code < 300
+        assert client.get("/status").json()["details"]["claimed_by"] is None
+
+
+def test_agent_key_refusals_fail_closed():
+    rig = Rig(settings())
+    body = {"owner": "x", "session_id": "s", "ttl_s": 30}
+    with rig.client(key_verifier=KeyAuth()) as client:
+        unknown = client.post("/control/claim", json=body, headers={"X-Api-Key": "unknown-key"})
+        assert unknown.status_code == 401
+        assert "X-Api-Key" in unknown.json()["detail"]["hint"]
+        forbidden = client.post("/control/claim", json=body, headers={"X-Api-Key": "forbidden-key"})
+        assert forbidden.status_code == 403
+        assert forbidden.json()["detail"]["error"] == "no_role"
+        assert client.post("/control/stop", headers={"X-Api-Key": "unknown-key"}).status_code == 401
+    from robot_motion.edge import AuthUnavailable
+
+    with rig.client(key_verifier=KeyAuth(failure=AuthUnavailable("fixture down"))) as client:
+        down = client.post("/control/claim", json=body, headers={"X-Api-Key": "agent-key"})
+        assert down.status_code == 503
+        assert down.json()["detail"]["error"] == "auth_unavailable"
+
+
+def test_edge_identity_wins_and_keys_are_ignored_without_a_verifier():
+    rig = Rig(settings())
+    body = {"owner": "x", "session_id": "s", "ttl_s": 30}
+    auth = KeyAuth()
+    with rig.client(key_verifier=auth) as client:
+        response = client.post("/control/claim", json=body, headers={**HEADERS, "X-Api-Key": "agent-key"})
+        assert response.status_code == 200
+        assert client.get("/status").json()["details"]["claimed_by"]["owner"] == OPERATOR
+        assert auth.asked == []
+    with rig.client() as client:
+        assert client.post("/control/claim", json=body, headers={"X-Api-Key": "agent-key"}).status_code == 401
+    # A key alone serves when no edge secret is configured; nothing does without either.
+    with rig.client(secret=None, key_verifier=KeyAuth()) as client:
+        assert client.post("/control/claim", json=body, headers={"X-Api-Key": "agent-key"}).status_code == 200
+        assert client.post("/control/stop", headers=HEADERS).status_code == 401
 
 
 def test_claim_lifecycle_with_hard_enforcement():
@@ -723,3 +804,94 @@ def test_feedback_reader_stamps_only_new_packets_and_names_modes():
     assert mode_name(SAFETY_MODES, True) == "UNKNOWN"
     with pytest.raises(ConnectionError):
         ControlFeedback(Static(world), frequency_hz=125).read(wait_s=0)
+
+
+def test_an_unclaimed_idle_session_is_closed_after_the_timeout(tmp_path):
+    import json
+
+    audit = tmp_path / "control-audit.jsonl"
+    rig = Rig(settings(control={"joint_step": LIMITS, "audit_file": str(audit), "idle_disconnect_s": 600}))
+    with rig.client() as client:
+        wait_observed(client)
+        control = client.app.state.control
+        assert client.post("/connect", headers=HEADERS).status_code == 200
+        session = client.get("/status").json()["details"]["control_session"]
+        assert session["connected_by"] == OPERATOR and session["idle_disconnect_s"] == 600
+        # The first check starts the clock; nothing closes before the timeout.
+        assert control.reap_idle(now=1000.0) is False
+        assert control.idle_disconnect_in_s(now=1300.0) == 300.0
+        assert control.reap_idle(now=1599.0) is False
+        assert client.get("/status").json()["details"]["control_session"]["open"] is True
+        assert control.reap_idle(now=1600.0) is True
+        status = client.get("/status").json()
+        assert status["details"]["control_session"]["open"] is False
+        assert status["details"]["control_session"]["connected_by"] is None
+        assert "connect" in status["allowed_actions"]
+        # Closed like /disconnect: the script ended, both interfaces released.
+        assert rig.control.script_stops == 1
+        assert rig.control.disconnections == 1 and rig.receiver.disconnections == 1
+        assert control.reap_idle(now=9999.0) is False
+    events = [json.loads(line) for line in audit.read_text(encoding="utf-8").splitlines()]
+    assert [e["kind"] for e in events] == ["connect", "idle_disconnect"]
+    assert events[1]["operator"] is None
+    assert events[1]["connected_by"] == OPERATOR
+    assert events[1]["idle_s"] == 600
+    assert rig.control.moves == []
+
+
+def test_a_held_claim_or_running_move_keeps_the_session_open():
+    rig = Rig(settings(control={"joint_step": LIMITS, "idle_disconnect_s": 600}))
+    with rig.client() as client:
+        control = client.app.state.control
+        held = claim(client)
+        assert client.post("/connect", headers=held).status_code == 200
+        # Claimed: open however long it sits.
+        assert control.reap_idle(now=0.0) is False
+        assert control.reap_idle(now=10_000.0) is False
+        assert control.idle_disconnect_in_s() is None
+        assert client.post("/control/release", headers=held).status_code == 204
+
+        # Released: the clock starts at the next check, not at the connect.
+        assert control.reap_idle(now=20_000.0) is False
+        # A move in flight (it holds the executor's lock) restarts the clock.
+        with control.executor._lock:
+            assert control.reap_idle(now=20_700.0) is False
+        assert control.reap_idle(now=20_800.0) is False
+        assert control.reap_idle(now=21_399.0) is False
+        assert control.reap_idle(now=21_400.0) is True
+        assert client.get("/status").json()["details"]["control_session"]["open"] is False
+
+
+def test_idle_disconnect_can_be_turned_off_but_not_set_absurdly_short():
+    rig = Rig(settings(control={"joint_step": LIMITS, "idle_disconnect_s": None}))
+    with rig.client() as client:
+        wait_observed(client)
+        control = client.app.state.control
+        assert client.post("/connect", headers=HEADERS).status_code == 200
+        assert control.reap_idle(now=0.0) is False
+        assert control.reap_idle(now=1e9) is False
+        session = client.get("/status").json()["details"]["control_session"]
+        assert session["open"] is True
+        assert session["idle_disconnect_s"] is None and session["idle_disconnect_in_s"] is None
+        assert client.post("/disconnect", headers=HEADERS).status_code == 200
+    # On by default; a timeout under a minute would close sessions mid-thought.
+    assert settings().control.idle_disconnect_s == 1800
+    with pytest.raises(ValidationError):
+        settings(control={"joint_step": LIMITS, "idle_disconnect_s": 5})
+
+
+def test_the_service_runs_the_idle_check_in_the_background(monkeypatch):
+    from robot_motion.control import URControl
+
+    calls = []
+    monkeypatch.setattr(URControl, "idle_check_s", 0.01)
+    monkeypatch.setattr(URControl, "reap_idle", lambda self, now=None: calls.append(now) or False)
+    rig = Rig(settings())
+    with rig.client():
+        deadline = time.monotonic() + 5
+        while len(calls) < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+    assert len(calls) >= 3
+    settled = len(calls)
+    time.sleep(0.05)
+    assert len(calls) == settled  # stopped with the service

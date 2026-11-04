@@ -302,7 +302,9 @@ Two kinds of read, and the difference matters:
 
 - **Transient** — `GET /realsense/{id}/snapshot.jpg`, `depth.png`,
   `stream.mjpg`, `depth?x=&y=`, `intrinsics`. Nothing survives the response.
-  Use these to look.
+  Use these to look. `calibration` is the stored device calibration (every
+  stream's intrinsics, all extrinsics, baseline, IMU); it never starts the
+  camera and is constant per device.
 - **Durable** — `POST /control/realsense/{id}/capture`. Writes one aligned
   frameset to disk as `color.jpg` + `depth.png` + `meta.json` and returns a
   `capture_id`. Use this when the frame is evidence.

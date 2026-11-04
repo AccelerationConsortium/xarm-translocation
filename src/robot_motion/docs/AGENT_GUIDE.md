@@ -50,6 +50,18 @@ and allowed_actions is empty. With control enabled, /control/claim,
 without its token, 412 when a precondition fails, 422 when a request exceeds
 the commissioned limits, and /control/stop needs identity only.
 allowed_actions then lists exactly what a POST will honor.
+An open arm session holds the controller: nobody else can Connect until it
+closes. Disconnect when done, not only release the claim. A session left open
+with no claim held and nothing running (no move, trajectory or gripper motion,
+teach mode off) is closed after `control.idle_disconnect_s` (default 1800 s;
+`null` turns it off), audited as `idle_disconnect` with `connected_by`.
+`control_session.connected_by` and `idle_disconnect_in_s` show who opened the
+session and the countdown; taking the claim or starting work resets it.
+Before or after a Cartesian move, `POST /control/diagnose/pose` (the
+`freehand/linear` body, no claim) checks the target against the controller
+without moving and says whether a refusal is confirmed, a query that failed,
+or undetermined. `GET /control/diagnostics/{request_id}` reads back any
+refusal or diagnosis by id (ARM_MOTION.md).
 `activity` is work in flight, not a connected session. While this service's
 control script is the program `/status` reports, `activity` stays `idle` and
 `equipment_status` stays `ready` until an arm move (`control_session.busy` /
@@ -78,9 +90,13 @@ driver=ur, an explicit model, and robot_host. control_enabled defaults to false
 and is rejected unless a complete control block (joint_step or motion
 limits, or a gripper) accompanies it on an RTDE-observed robot;
 the edge secret comes from ROBOT_MOTION_EDGE_SHARED_SECRET in the service
-environment, never from the config file. Optional control settings:
-watchdog_hz (controller-side watchdog rate, default 10) and audit_file
-(JSON-lines control event trail, relative to the config file). Enabling control is a local config
+environment, never from the config file. `auth_url` (top level, the ac_auth
+origin, e.g. `http://100.64.254.6:8009`) lets agents present their own
+X-Api-Key, verified there for this `equipment_id`. Optional control settings:
+watchdog_hz (controller-side watchdog rate, default 10), audit_file
+(JSON-lines control event trail, relative to the config file) and
+idle_disconnect_s (close an unclaimed, idle arm session after this long;
+default 1800, 60 to 86400, null to keep sessions open). Enabling control is a local config
 change plus a restart in an authorized window; no request can switch it on.
 Do not point a second controller at a robot owned by another workflow.
 ur_transport defaults to dashboard; rtde adds receive-only telemetry and
@@ -103,7 +119,47 @@ It does NOT validate reachability, collisions, physical limits, TCP calibration,
 payload, gripper state, rail clearance, or physical execution authority.
 Never transfer coordinates from one physical robot to another.
 Graphs submitted in the browser are not persisted or sent to hardware.
-UR hardware control still requires implementation and commissioning.
+
+### Graph moves and routines (`graph_file`, `routines_file`)
+
+With motion control on and a `graph_file` configured, `POST /graph/move
+{target}` walks the configured graph from the node the arm is at (every joint
+within `node_tolerance_deg`, default 1°) to `target`: a joint edge is a moveJ
+to the target node's joints, a linear edge a moveL to its TCP pose. Each edge
+is an ordinary arm move, under the same claim, envelope, speed caps, force
+guard and STOP latch as a panel move. Only taught edges are used, so a graph
+should contain only the transitions the bench has actually run. Joints are
+matched by shortest angular distance; a joint a whole number of turns from
+the taught angle (the UR3e's wrist 3 turns without limit) is refused with
+412 `joint_turn_offset` naming the joint and the turns, because a moveJ to
+the taught angle would spin it the whole way round — unwind it first.
+
+A `routines_file` adds bench routines (the Gibbie vial rack and XPR balance):
+`POST /routines/vial/rack_to_balance {slot}` and
+`POST /routines/vial/balance_to_rack {slot}`; `GET /routines` lists the slots.
+Each refuses with 412, before anything moves, unless the arm is at the home
+node, the gripper is empty and the balance service's door component reads
+`open` (read from its `/status`; the routine never commands the balance).
+Open the door through the balance service first. `dry_run: true` on any of
+these returns the planned steps without moving.
+
+To take a vial off the balance somewhere other than the rack,
+`POST /routines/vial/balance_to_node {target}` picks it from the pan and
+carries it along the graph to `target` (any taught node except the pick node
+itself), where the arm stops still holding it; it has the same three
+preconditions. `POST /routines/vial/node_to_rack {slot}` then puts the held
+vial in `slot` from whichever graph node the arm is at, and returns home. It
+needs the arm at a node, the gripper reporting a part between its fingers
+(412 `gripper_empty` otherwise) and the door open, since the way back may
+pass it.
+
+A routine stops at the first refused or failed step and reports
+`failed_step`, `completed_steps` and `arm_may_have_moved`. A grip that closes
+without stopping on a part is a failure (`no_object_gripped`); the arm stays
+where it gripped. Nothing is rewound or retried: inspect the bench and
+reconcile before the next command. `allowed_actions` advertises `graph.move`
+and the `routine.*` actions when an arm move could run; where the arm is, the
+gripper and the door are checked per request.
 
 ## Shared web UI
 
@@ -153,7 +209,16 @@ service streams it with ur_rtde `servoJ` at 125 Hz (50–250 allowed) on its
 own clock. Measured on the arm: about 40 ms lag, tracking within about
 0.03° rms.
 
-**Route for clients:** never the raw port. Either the lab edge,
+**Route for agents (lab-skills SDK):** the device itself, with the agent's
+`X-Api-Key` on every call, as for the xArm and the OT-2 gateways. With
+`auth_url` configured the device asks ac_auth
+`/auth/verify?equipment=<equipment_id>`: 401 `login_required` for an unknown
+or revoked key, 403 `no_role` when its principal holds no role on this
+equipment, 503 `auth_unavailable` when ac_auth does not answer (fail closed).
+An allowing verdict is reused for 30 s, so a revoked key stops within 30 s.
+Claims are stamped with the key's principal (`agent:<human>`).
+
+**Route for browsers and other clients:** never the raw port. Either the lab edge,
 `http://100.64.254.6/ur5e/…`: the edge checks the sign-in cookie (emailed
 code via `POST /auth/login` and `POST /auth/verify-code` on the edge) and
 adds the operator identity. Or, since 2026-10-11, the dashboard's control
@@ -243,9 +308,25 @@ equipment_status.
   ids. A rejected camera configuration is logged and reported as the
   /realsense/cameras reason; it never stops robot observation. /status gains
   components.realsense_<id> and details.realsense from cached telemetry.
+- Captures (camera_service): the xArm's capture records, kept by the camera
+  service's store. POST /control/realsense/capture ({camera?, label?,
+  node_id?, tags?, protected?}; the skill-facing alias, camera omitted = the
+  sole one) or /control/realsense/<id>/capture grabs one aligned colour +
+  16-bit depth frameset with the arm's pose (`context.arm`: connected,
+  model, node_id from the motion graph, joints, position, gripper_state,
+  activity; the open session's own feedback when there is one, otherwise the
+  cached receive telemetry) and who asked. With control on it needs the
+  login and the claim (423 claim_required) like a move, and it is refused
+  with 409 arm_moving while a move, trajectory or grip is in flight;
+  allowed_actions then lists `realsense.capture`. Without control the edge
+  identity gates it. The capture listings and meta are open reads; the
+  color.jpg and depth.png files need the edge identity. DELETE
+  /control/realsense/<id>/captures/<capture_id> is gated like a capture (the
+  camera service also wants its admin token). No camera_service, no capture
+  routes.
 
-Discovery, /camera/config, /realsense/<id>/status, /depth and /intrinsics are
-open reads. Pixels (snapshot.jpg, depth.png, stream.mjpg), start/stop and PTZ
+Discovery, /camera/config, /realsense/<id>/status, /depth, /intrinsics and
+/calibration are open reads. Pixels (snapshot.jpg, depth.png, stream.mjpg), start/stop and PTZ
 need the edge identity (ROBOT_MOTION_EDGE_SHARED_SECRET): 401 without it, 503
 when the service has no secret.
 
@@ -261,7 +342,9 @@ when the service has no secret.
 - shared-ui tagged routes: absent-feature answers for the page's load-time reads
 - cameras tagged routes: /cameras and /realsense/cameras discovery,
   /camera/config, /camera/ptz, /camera/preset, /camera/follow (409), and
-  /realsense/<id>/{status,start,stop,snapshot.jpg,depth.png,stream.mjpg,depth,intrinsics}
+  /realsense/<id>/{status,start,stop,snapshot.jpg,depth.png,stream.mjpg,depth,intrinsics,calibration};
+  with a camera service, POST /control/realsense[/<id>]/capture and
+  /realsense[/<id>]/captures[/<capture_id>[/<file>]]
 - control tagged routes (only with control_enabled): /control/claim, heartbeat,
   release; /connect, /disconnect; /control/stop (/move/stop); joint_step mode:
   /control/joint_step
@@ -272,8 +355,9 @@ when the service has no secret.
 - /llms.txt: documentation index
 
 The read-only routes have no authentication because they mutate nothing. The
-control routes trust only the dashboard edge's shared-secret identity headers
-and refuse entirely when that secret is unset. Serve the process only on the
+control routes trust the dashboard edge's shared-secret identity headers and,
+with `auth_url` set, an agent X-Api-Key that ac_auth vouches for on this
+equipment; with neither configured they refuse entirely. Serve the process only on the
 loopback or explicitly firewalled Tailnet interface; never expose it publicly.
 Commissioning arm motion on the physical robot remains outstanding; see the
 checklist in ARM_MOTION.md.

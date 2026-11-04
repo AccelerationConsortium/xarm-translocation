@@ -208,19 +208,18 @@ class CameraService:
             return httpx.Response(200, json={"distance_m": 0.5, "x": int(request.url.params["x"])})
         if path == "/v1/cameras/d435i/start":
             return httpx.Response(200, json={"streaming": True})
+        if path == "/v1/cameras/d435i/calibration":
+            return httpx.Response(200, json={"stereo_baseline": {"baseline_m": 0.05},
+                                             "refresh": request.url.params.get("refresh")})
         return httpx.Response(404)
 
 
 @pytest.fixture
 def stereo():
     upstream = CameraService()
-    service = RemoteService({"url": "http://camera.invalid", "token": "service-token", "cameras": ["d435i"]})
-    service.client.close()
-    service.client = httpx.Client(
-        base_url="http://camera.invalid",
-        headers={"Authorization": "Bearer service-token"},
-        transport=httpx.MockTransport(upstream),
-    )
+    # The transport reaches the per-stream clients as well as the shared one.
+    service = RemoteService({"url": "http://camera.invalid", "token": "service-token", "cameras": ["d435i"]},
+                            transport=httpx.MockTransport(upstream))
     camera = RemoteCamera(
         "d435i", {"label": "UR5e depth camera", "short_label": "D435i", "mount": {"location": "bench"}}, service
     )
@@ -259,6 +258,12 @@ def test_realsense_routes_follow_the_xarm_contract(stereo):
         ]:
             assert client.request(method, path).status_code == 401, path
         assert client.get("/realsense/d435i/depth?x=3&y=4").json()["distance_m"] == 0.5
+        # Stored calibration is an open read relayed with its refresh flag.
+        assert entry["urls"]["calibration"] == "/realsense/d435i/calibration"
+        assert "calibration" in client.get("/cameras").json()["cameras"][0]["capabilities"]
+        assert client.get("/realsense/d435i/calibration").json() == {
+            "stereo_baseline": {"baseline_m": 0.05}, "refresh": "false"}
+        assert client.get("/realsense/d435i/calibration?refresh=true").json()["refresh"] == "true"
 
         snapshot = client.get("/realsense/d435i/snapshot.jpg", headers=OPERATOR)
         assert snapshot.content == b"\xff\xd8jpeg"
@@ -294,3 +299,128 @@ def test_camera_service_misconfiguration_keeps_the_robot_service_up(tmp_path):
         listing = client.get("/realsense/cameras").json()
         assert listing["cameras"] == []
         assert "rejected" in listing["reason"]
+
+
+# ── capture records (the xArm's /control/realsense/capture) ─────────
+class CaptureService(CameraService):
+    """The camera service's store: POST writes a record, the reads return it."""
+
+    def __init__(self):
+        super().__init__()
+        self.records = {}
+
+    def __call__(self, request):
+        path = request.url.path
+        base = "/v1/cameras/d435i/captures"
+        if path == base and request.method == "POST":
+            self.requests.append(request)
+            body = json.loads(request.content)
+            capture_id = f"cap{len(self.records) + 1}"
+            meta = {**body["context"], "label": body["label"], "tags": body["tags"], "camera_id": "d435i",
+                    "captured_at": f"2026-11-03T00:00:0{len(self.records)}Z",
+                    "files": {"color.jpg": {}, "depth.png": {}}}
+            self.records[capture_id] = meta
+            return httpx.Response(200, json={"capture_id": capture_id, "camera_id": "d435i", "meta": meta,
+                                             "urls": {"meta": f"{base}/{capture_id}"}})
+        if path == base:
+            self.requests.append(request)
+            items = [dict(m, capture_id=k) for k, m in self.records.items()]
+            return httpx.Response(200, json={"camera_id": "d435i", "captures": items, "count": len(items)})
+        if path.startswith(base + "/"):
+            self.requests.append(request)
+            capture_id, *rest = path[len(base) + 1:].split("/")
+            if capture_id not in self.records:
+                return httpx.Response(404, json={"detail": "capture_not_found"})
+            if rest:
+                return httpx.Response(200, content=b"\xff\xd8capture")
+            return httpx.Response(200, json={"capture_id": capture_id, "meta": self.records[capture_id]})
+        return super().__call__(request)
+
+
+@pytest.fixture
+def stored():
+    from core.remote_realsense import RemoteStore
+
+    upstream = CaptureService()
+    service = RemoteService({"url": "http://camera.invalid", "token": "service-token", "cameras": ["d435i"]},
+                            transport=httpx.MockTransport(upstream))
+    camera = RemoteCamera("d435i", {"label": "UR3e depth camera"}, service)
+    return upstream, (service, {"d435i": camera}, RemoteStore(service))
+
+
+def posted(upstream):
+    return [json.loads(r.content) for r in upstream.requests
+            if r.method == "POST" and r.url.path == "/v1/cameras/d435i/captures"]
+
+
+def test_captures_without_control_need_the_edge_identity_and_relay_to_the_store(stored):
+    upstream, triple = stored
+    with TestClient(create_app(Settings(), edge_secret=SECRET, stereo_cameras=triple)) as client:
+        sampled(client, triple[0])
+        assert "captures" in client.get("/cameras").json()["cameras"][0]["capabilities"]
+        assert client.post("/control/realsense/capture", json={}).status_code == 401
+        taken = client.post("/control/realsense/capture", json={"label": "pan-check", "tags": ["vial"]},
+                            headers=OPERATOR)
+        assert taken.status_code == 200, taken.text
+        body = taken.json()
+        assert body["capture_id"] == "cap1"
+        assert body["urls"] == {"meta": "/realsense/d435i/captures/cap1",
+                                "color": "/realsense/d435i/captures/cap1/color.jpg",
+                                "depth": "/realsense/d435i/captures/cap1/depth.png"}
+        (sent,) = posted(upstream)
+        assert sent["label"] == "pan-check" and sent["tags"] == ["vial"]
+        assert sent["context"]["requested_by"] == "op@example.invalid"
+        assert sent["context"]["arm"]["connected"] is False
+
+        # Metadata is an open read; the image bytes are a frame like any other.
+        assert client.get("/realsense/captures").json()["count"] == 1
+        assert client.get("/realsense/d435i/captures").json()["captures"][0]["capture_id"] == "cap1"
+        assert client.get("/realsense/d435i/captures/cap1").json()["meta"]["label"] == "pan-check"
+        assert client.get("/realsense/d435i/captures/nope").json()["detail"]["error"] == "capture_not_found"
+        assert client.get("/realsense/d435i/captures/cap1/color.jpg").status_code == 401
+        image = client.get("/realsense/d435i/captures/cap1/color.jpg", headers=OPERATOR)
+        assert image.content == b"\xff\xd8capture" and image.headers["content-type"] == "image/jpeg"
+        assert client.get("/realsense/d435i/captures/cap1/meta.json", headers=OPERATOR).status_code == 404
+        assert client.post("/control/realsense/nope/capture", headers=OPERATOR).status_code == 404
+        # No control, nothing to advertise: the catalog skill claims first.
+        assert "realsense.capture" not in client.get("/status").json()["allowed_actions"]
+
+
+def test_no_camera_service_means_no_capture_routes():
+    with TestClient(create_app(Settings(), edge_secret=SECRET)) as client:
+        paths = client.get("/openapi.json").json()["paths"]
+        assert not any("captures" in p or p.startswith("/control") for p in paths)
+
+
+def test_with_control_a_capture_is_claim_gated_stamped_with_the_pose_and_withheld_while_moving(stored):
+    from tests_robot_motion.test_motion import HEADERS
+    from tests_robot_motion.test_motion import SECRET as ARM_SECRET
+    from tests_robot_motion.test_motion import Rig, connected, dispatched, in_background, wait_for
+
+    upstream, triple = stored
+    rig = Rig()
+    rig.world.ticks_per_move = 5000  # about 20 s at the fake's packet rate
+    app = create_app(rig.config, observer=rig.observer, control_session_factory=rig.session,
+                     edge_secret=ARM_SECRET, stereo_cameras=triple)
+    with TestClient(app) as client:
+        held = connected(client)
+        assert "realsense.capture" in client.get("/status").json()["allowed_actions"]
+        refused = client.post("/control/realsense/capture", json={}, headers=HEADERS)
+        assert refused.status_code == 423 and refused.json()["detail"]["error"] == "claim_required"
+        taken = client.post("/control/realsense/capture", json={"node_id": "safe_bal"}, headers=held)
+        assert taken.status_code == 200, taken.text
+        (sent,) = posted(upstream)
+        arm = sent["context"]["arm"]
+        assert arm["connected"] is True and arm["model"] == rig.config.model
+        assert arm["node_id"] == "safe_bal" and len(arm["joints"]) == 6 and len(arm["position"]) == 6
+        assert sent["context"]["requested_by"] == HEADERS["X-Auth-User"]
+
+        # A slow joint move is in flight: no capture, and none advertised.
+        thread, _result = in_background(client, "/control/freehand/joints", {"angles": [20, 0, 0, 0, 0, 0]}, held)
+        wait_for(lambda: dispatched(client), what="move dispatch")
+        assert "realsense.capture" not in client.get("/status").json()["allowed_actions"]
+        moving = client.post("/control/realsense/capture", json={}, headers=held)
+        assert moving.status_code == 409 and moving.json()["detail"]["error"] == "arm_moving"
+        assert len(posted(upstream)) == 1
+        assert client.post("/move/stop", headers=HEADERS).status_code == 200
+        thread.join(5)

@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from sdl_lab_contract import (
     ComponentStatus,
@@ -30,6 +30,7 @@ from .drivers import inventory
 from .drivers.ur import URObserver, present_status, work_in_flight
 from .edge import configured_secret, edge_identity
 from .graph import Graph, PreviewRequest
+from .routines import RoutineSettings, Routines
 from .gripper import component_status as gripper_component
 
 log = logging.getLogger(__name__)
@@ -89,6 +90,8 @@ def create_app(
     stereo_cameras=None,
     camera_transport=None,
     gripper=None,
+    balance_door_reader=None,
+    key_verifier=None,
 ):
     settings = settings or Settings()
     observation = None
@@ -104,6 +107,13 @@ def create_app(
         )
         if settings.model and graph.robot_model != settings.model:
             raise ValueError("Configured graph belongs to a different robot model")
+    routine_settings = None
+    if settings.routines_file:
+        if graph is None:
+            raise ValueError("routines_file needs a graph_file")
+        routine_settings = RoutineSettings.model_validate_json(
+            Path(settings.routines_file).read_text(encoding="utf-8-sig")
+        )
 
     if observer is None and settings.observe:
         if settings.ur_transport == "rtde":
@@ -284,11 +294,24 @@ def create_app(
 
         gripper = RobotiqGripper(settings.gripper, settings.robot_host)
 
+    async def reap_idle_sessions():
+        # Closes an arm session left open, unclaimed and idle (control.py).
+        while True:
+            await asyncio.sleep(control.idle_check_s)
+            try:
+                await asyncio.to_thread(control.reap_idle)
+            except Exception:
+                log.exception("Idle arm session check failed")
+
     @asynccontextmanager
     async def lifespan(_app):
         task = asyncio.create_task(poll()) if settings.observe else None
-        telemetry_task = (
-            asyncio.create_task(poll_telemetry()) if fast_telemetry else None
+        telemetry_task = asyncio.create_task(poll_telemetry()) if fast_telemetry else None
+        reaper = (
+            asyncio.create_task(reap_idle_sessions())
+            if control is not None and control.arm_limits is not None
+            and control.config.idle_disconnect_s is not None
+            else None
         )
         # Camera telemetry is polled on its own thread; /status only reads it.
         cameras.start()
@@ -297,6 +320,12 @@ def create_app(
         try:
             yield
         finally:
+            if reaper is not None:
+                reaper.cancel()
+                try:
+                    await reaper
+                except asyncio.CancelledError:
+                    pass
             # The arm first: stop any move and close its session while the
             # service manager's shutdown allowance is still running.
             if control is not None:
@@ -354,7 +383,76 @@ def create_app(
             edge_secret=edge_secret,
             observe=current_observation,
             gripper=gripper,
-        ).install(app)
+            key_verifier=key_verifier,
+        )
+        # Graph moves are ordinary arm moves, so they exist only in motion mode.
+        if graph is not None and control.arm_mode == "motion":
+            control.routines = Routines(
+                control, graph, routine_settings,
+                **({"door_reader": balance_door_reader} if balance_door_reader else {}),
+            )
+        control.install(app)
+        versions = {}
+
+        def controller_versions():
+            # Read once from the Dashboard server; a failure is retried next time.
+            if "value" not in versions:
+                read = getattr(observer, "read_versions", None)
+                if read is None:
+                    return None
+                versions["value"] = read()
+            return versions["value"]
+
+        control.controller_versions = controller_versions
+    app.state.control = control
+    if routine_settings is not None and getattr(control, "routines", None) is None:
+        raise ValueError("routines_file needs control enabled with control.motion")
+
+    def arm_moving():
+        """A move, trajectory or grip in flight (refuses a RealSense capture)."""
+        if control is None:
+            return False
+        executor = control.executor
+        trajectory = control.trajectory.summary() if control.trajectory is not None else {}
+        return work_in_flight(
+            arm_busy=bool(getattr(executor, "busy", False)),
+            active_move=getattr(executor, "active", None),
+            trajectory_state=(trajectory.get("session") or {}).get("state"),
+            gripper_busy=bool(gripper is not None and gripper.busy),
+        )
+
+    def capture_arm_context():
+        """The arm as /status has it cached, stamped on a RealSense capture.
+        Never a request to the controller: a capture must not stall on one."""
+        current, stale = current_observation()
+        current = with_telemetry(current, stale)
+        sample = current["details"].get("telemetry") or {}
+        valid = sample.get("valid") is True
+        joints = sample.get("joints_deg") if valid else None
+        position = sample.get("tcp_mm_rpy_deg") if valid else None
+        session = control.session if control is not None else None
+        feedback = getattr(session, "feedback", None) if session is not None and session.is_open else None
+        latest = feedback.latest() if feedback is not None else None
+        if latest is not None:
+            # An open session's own feedback is fresher than the receive poll.
+            from .drivers.ur_motion import tcp_to_mm_deg
+
+            joints, position = list(latest["joints_deg"]), tcp_to_mm_deg(latest["tcp_pose"])
+        node = None
+        if getattr(control, "routines", None) is not None:
+            try:
+                node = control.routines.locate().node
+            except HTTPException:
+                node = None  # no session: where the arm is is unknown, not an error
+        return {
+            "connected": bool(session is not None and session.is_open),
+            "model": settings.model,
+            "node_id": node,
+            "joints": joints,
+            "position": position,
+            "gripper_state": gripper.summary().get("object") if gripper is not None else None,
+            "activity": current.get("activity"),
+        }
 
     @app.get("/", response_model=ProbeResponse)
     def probe():
@@ -475,7 +573,13 @@ def create_app(
                 ),
             },
             last_error=presented.get("last_error"),
-            allowed_actions=control_state["allowed_actions"] if control_state else [],
+            allowed_actions=(
+                [*control_state["allowed_actions"],
+                 # Claim-gated like the xArm's; withheld while anything moves.
+                 *(["realsense.capture"] if cameras.captures_available() and not arm_moving() else [])]
+                if control_state
+                else []
+            ),
             details={
                 **cameras.details(),
                 **presented["details"],
@@ -501,9 +605,9 @@ def create_app(
                     control_state["control_session"] if control_state else None
                 ),
                 # Joint-trajectory session (xArm field name); None without the block.
-                "trajectory": (
-                    control_state.get("trajectory") if control_state else None
-                ),
+                "trajectory": control_state.get("trajectory") if control_state else None,
+                # Graph moves and bench routines; None without a graph.
+                "routines": control_state.get("routines") if control_state else None,
                 # The panel's Manual switch reads this (the xArm's field name).
                 "manual_mode": bool(
                     control_state
@@ -641,7 +745,12 @@ def create_app(
 
     # /camera/* and /realsense/*: real routes, configured by the local
     # lab_camera / camera_service blocks (see cameras.py).
-    cameras.install(app)
+    cameras.install(
+        app,
+        take=[Depends(control.require_login), Depends(control.require_claim)] if control is not None else None,
+        arm_context=capture_arm_context,
+        arm_moving=arm_moving,
+    )
 
     @app.get("/assistant/status", **shared)
     def assistant_status():

@@ -7,6 +7,23 @@ and the project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — `GET /realsense/{id}/calibration` relays the stored device calibration (2026-10-27)
+
+The camera service (`sdl-camera-server` ≥ 0.2.0) reads the calibration table
+of a RealSense without starting its pipeline; the xArm server and robot-motion
+now relay it as an open read, alongside `/intrinsics`:
+
+- intrinsics of every supported video profile per resolution (`depth`,
+  `color`, `infrared_1`, `infrared_2`) with formats and fps; extrinsics
+  between every pair of streams, IMU streams included; the stereo baseline;
+  on a D435i the accelerometer/gyroscope intrinsics (scale and cross-axis,
+  bias, noise and bias variances). Cached by the camera service per serial;
+  `?refresh=true` re-reads it.
+- `calibration` joins the camera `urls` and `capabilities`. An in-process
+  camera without the read answers **501** `realsense_calibration_unsupported`.
+- Requested by Astra for the D405 and D435i. Not the hand-eye calibration
+  planned as `/realsense/calibration` in `REALSENSE_API_PLAN.md`.
+
 ### Changed — drop `closed` from nodes, add `uplc_130` at the UPLC plate pose (2026-10-15)
 
 Motion-graph gripper-state cleanup in `src/settings/motion_graph.yaml`:

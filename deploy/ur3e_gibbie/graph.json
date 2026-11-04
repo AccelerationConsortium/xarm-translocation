@@ -1,0 +1,230 @@
+{
+  "schema_version": "robot-motion/1",
+  "robot_model": "ur3e",
+  "nodes": [
+    {
+      "id": "safe_rack",
+      "joints_deg": [
+        181.18,
+        -114.08,
+        123.7,
+        -9.65,
+        91.14,
+        180.0
+      ],
+      "tcp_mm_rpy_deg": [
+        395.34,
+        133.09,
+        253.16,
+        -90.01,
+        -0.38,
+        -89.92
+      ]
+    },
+    {
+      "id": "vial_stock_prep",
+      "joints_deg": [
+        178.73,
+        -100.13,
+        134.1,
+        -33.89,
+        88.81,
+        180.05
+      ],
+      "tcp_mm_rpy_deg": [
+        423.6,
+        127.82,
+        186.84,
+        -90.02,
+        -0.38,
+        -89.92
+      ]
+    },
+    {
+      "id": "home_prep_bal",
+      "joints_deg": [
+        138.09,
+        -90.05,
+        90.05,
+        -0.0,
+        -0.0,
+        180.13
+      ],
+      "tcp_mm_rpy_deg": [
+        437.76,
+        168.6,
+        307.67,
+        -86.03,
+        32.92,
+        -32.67
+      ]
+    },
+    {
+      "id": "safe_bal",
+      "joints_deg": [
+        144.66,
+        -60.11,
+        88.56,
+        -28.64,
+        -35.96,
+        179.97
+      ],
+      "tcp_mm_rpy_deg": [
+        323.6,
+        215.26,
+        174.06,
+        -90.39,
+        -0.71,
+        0.64
+      ]
+    },
+    {
+      "id": "prep_viap_drop",
+      "joints_deg": [
+        166.88,
+        -60.87,
+        89.85,
+        -29.3,
+        -13.52,
+        179.5
+      ],
+      "tcp_mm_rpy_deg": [
+        324.08,
+        345.35,
+        173.83,
+        -90.39,
+        -0.72,
+        0.64
+      ]
+    },
+    {
+      "id": "drop_vial",
+      "joints_deg": [
+        166.88,
+        -57.1,
+        93.01,
+        -36.34,
+        -13.49,
+        179.61
+      ],
+      "tcp_mm_rpy_deg": [
+        324.1,
+        345.34,
+        143.84,
+        -90.39,
+        -0.72,
+        0.64
+      ]
+    },
+    {
+      "id": "prep_pick_up_vial",
+      "joints_deg": [
+        167.47,
+        -60.08,
+        89.78,
+        -30.05,
+        -12.92,
+        179.53
+      ],
+      "tcp_mm_rpy_deg": [
+        325.06,
+        348.38,
+        169.81,
+        -90.39,
+        -0.71,
+        0.64
+      ]
+    },
+    {
+      "id": "pick_up_vial",
+      "joints_deg": [
+        167.18,
+        -56.35,
+        94.02,
+        -38.13,
+        -13.18,
+        179.65
+      ],
+      "tcp_mm_rpy_deg": [
+        322.58,
+        347.37,
+        136.83,
+        -90.39,
+        -0.71,
+        0.64
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "source": "safe_rack",
+      "target": "vial_stock_prep",
+      "mode": "linear"
+    },
+    {
+      "source": "vial_stock_prep",
+      "target": "safe_rack",
+      "mode": "joint"
+    },
+    {
+      "source": "safe_rack",
+      "target": "home_prep_bal",
+      "mode": "joint"
+    },
+    {
+      "source": "home_prep_bal",
+      "target": "safe_rack",
+      "mode": "joint"
+    },
+    {
+      "source": "home_prep_bal",
+      "target": "safe_bal",
+      "mode": "joint"
+    },
+    {
+      "source": "safe_bal",
+      "target": "home_prep_bal",
+      "mode": "joint"
+    },
+    {
+      "source": "safe_bal",
+      "target": "prep_viap_drop",
+      "mode": "linear"
+    },
+    {
+      "source": "prep_viap_drop",
+      "target": "drop_vial",
+      "mode": "linear"
+    },
+    {
+      "source": "drop_vial",
+      "target": "prep_viap_drop",
+      "mode": "linear"
+    },
+    {
+      "source": "prep_viap_drop",
+      "target": "safe_bal",
+      "mode": "linear"
+    },
+    {
+      "source": "safe_bal",
+      "target": "prep_pick_up_vial",
+      "mode": "linear"
+    },
+    {
+      "source": "prep_pick_up_vial",
+      "target": "pick_up_vial",
+      "mode": "linear"
+    },
+    {
+      "source": "pick_up_vial",
+      "target": "prep_pick_up_vial",
+      "mode": "linear"
+    },
+    {
+      "source": "prep_pick_up_vial",
+      "target": "safe_bal",
+      "mode": "linear"
+    }
+  ]
+}

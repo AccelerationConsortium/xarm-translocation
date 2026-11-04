@@ -115,6 +115,11 @@ class FakeCamera:
         return {"streaming": self.streaming, "depth_scale_m": 0.001, "aligned_to": "color",
                 "streams": {"color": {"fx": 600.0}}}
 
+    def calibration(self, refresh=False):
+        self.calls.append(("calibration", refresh))
+        return {"device": {"serial": "123"}, "stereo_baseline": {"baseline_m": 0.05},
+                "imu": {"present": True}}
+
 
 @pytest.fixture
 def registry():
@@ -169,6 +174,7 @@ def test_cameras_lists_the_single_camera_with_its_urls(client, fake_cam):
         "stream": f"/realsense/{CAM}/stream.mjpg",
         "depth": f"/realsense/{CAM}/depth",
         "intrinsics": f"/realsense/{CAM}/intrinsics",
+        "calibration": f"/realsense/{CAM}/calibration",
         "captures": f"/realsense/{CAM}/captures",
         "capture": f"/control/realsense/{CAM}/capture",
     }
@@ -213,7 +219,7 @@ def test_status_answers_before_connect(client, fake_cam):
     ("post", f"/realsense/{CAM}/start"), ("post", f"/realsense/{CAM}/stop"),
     ("get", f"/realsense/{CAM}/snapshot.jpg"), ("get", f"/realsense/{CAM}/depth.png"),
     ("get", f"/realsense/{CAM}/stream.mjpg"), ("get", f"/realsense/{CAM}/depth?x=1&y=1"),
-    ("get", f"/realsense/{CAM}/intrinsics"),
+    ("get", f"/realsense/{CAM}/intrinsics"), ("get", f"/realsense/{CAM}/calibration"),
 ])
 def test_everything_404s_when_no_camera_is_configured(client, registry, method, path):
     """No cameras at all is a different refusal from an unknown id: the first
@@ -231,6 +237,7 @@ def test_everything_404s_when_no_camera_is_configured(client, registry, method, 
     ("get", "/realsense/nope/snapshot.jpg"), ("get", "/realsense/nope/depth.png"),
     ("get", "/realsense/nope/stream.mjpg"), ("get", "/realsense/nope/depth?x=1&y=1"),
     ("get", "/realsense/nope/intrinsics"), ("get", "/realsense/nope/captures"),
+    ("get", "/realsense/nope/calibration"),
 ])
 def test_unknown_camera_is_404_listing_the_ids_that_exist(client, registry, method, path):
     registry(FakeCamera(camera_id="rs435i"), FakeCamera(camera_id="overhead"))
@@ -397,6 +404,24 @@ def test_intrinsics(client, fake_cam):
     assert r.status_code == 200
     assert r.json()["aligned_to"] == "color"
     assert "start" not in fake_cam.calls
+
+
+def test_calibration_is_an_open_read_that_forwards_refresh(client, fake_cam):
+    r = client.get(f"/realsense/{CAM}/calibration")
+    assert r.status_code == 200
+    assert r.json()["stereo_baseline"]["baseline_m"] == 0.05
+    assert client.get(f"/realsense/{CAM}/calibration?refresh=true").status_code == 200
+    assert fake_cam.calls == [("calibration", False), ("calibration", True)]  # never "start"
+    assert "calibration" in client.get("/cameras").json()["cameras"][0]["capabilities"]
+
+
+def test_calibration_without_a_camera_service_is_501(client, registry):
+    class LocalOnly(FakeCamera):
+        calibration = None  # an in-process driver without the stored-calibration read
+    registry(LocalOnly())
+    r = client.get(f"/realsense/{CAM}/calibration")
+    assert r.status_code == 501
+    assert r.json()["detail"]["error"] == "realsense_calibration_unsupported"
 
 
 # ---------------------------------------------------------------------------

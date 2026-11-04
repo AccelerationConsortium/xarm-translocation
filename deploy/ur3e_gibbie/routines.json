@@ -1,0 +1,31 @@
+{
+  "home_node": "safe_rack",
+  "node_tolerance_deg": 1.0,
+  "vial_rack": {
+    "approach_node": "vial_stock_prep",
+    "a1_tcp_mm_rpy_deg": [
+      483.7,
+      122.41,
+      184.45,
+      -89.88,
+      -0.39,
+      -109.92
+    ],
+    "columns": 4,
+    "rows": 6,
+    "column_pitch_mm": 20,
+    "row_pitch_mm": 20,
+    "pick_depth_mm": 55,
+    "place_depth_mm": 35
+  },
+  "vial_grip": {
+    "open_raw": 207,
+    "close_raw": 242
+  },
+  "balance": {
+    "drop_node": "drop_vial",
+    "pick_node": "pick_up_vial",
+    "status_url": "http://sdl2-pc-04.tail6a1dd7.ts.net:8081/status",
+    "door_component": "door_right"
+  }
+}

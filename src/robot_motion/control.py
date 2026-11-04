@@ -2,12 +2,17 @@
 
 Installed only when Settings.control_enabled is true. Identity is the
 dashboard edge's (X-Auth-User plus X-Edge-Auth matching
-ROBOT_MOTION_EDGE_SHARED_SECRET); without a configured secret every control
-route refuses, so a directly reachable service never trusts client headers.
+ROBOT_MOTION_EDGE_SHARED_SECRET) or, with auth_url configured, an agent's
+X-Api-Key as verified by ac_auth for this equipment (edge.py); with neither
+configured every control route refuses, so a directly reachable service never
+trusts client headers.
 Hard claims (core.claims) gate every arm move and the gripper commands
 (gripper.py). /connect and /disconnect follow the xArm order (Connect, then
 Take Control): any listed operator may call them while nobody holds control,
 but never against someone else's claim. /control/stop needs identity only.
+A session left open with no claim and nothing running is closed after
+control.idle_disconnect_s (reap_idle), so a forgotten Connect does not lock
+the arm for everyone else.
 
 The arm runs in one of two modes, chosen by the control block: joint_step
 (single tiny steps, the first commissioning primitive) or motion (joint and
@@ -26,8 +31,11 @@ import logging
 import threading
 import time
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import Depends, Header, HTTPException, Request, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sdl_lab_contract import ClaimRejection, ClaimRequest, ClaimResponse
 from core.claims import ClaimConflict, ClaimManager, InvalidClaimToken
@@ -53,7 +61,17 @@ from .drivers.ur_motion import (
     MotionRefused,
 )
 from .config import MODELS
-from .edge import SECRET_ENV, configured_secret, edge_identity
+from .drivers.ur_diagnosis import diagnose_pose
+from .records import RequestRecords
+from .edge import (
+    API_KEY_HEADER,
+    SECRET_ENV,
+    ApiKeyVerifier,
+    AuthUnavailable,
+    KeyForbidden,
+    configured_secret,
+    edge_identity,
+)
 
 log = logging.getLogger(__name__)
 STOP_NOTICE = (
@@ -69,7 +87,11 @@ REGISTERS_IN_USE = "RTDE input registers are already in use"
 
 
 class URControl:
-    def __init__(self, settings, *, session_factory=None, edge_secret=None, observe=None, gripper=None):
+    # Seconds between idle-session checks (the timeout is idle_disconnect_s).
+    idle_check_s = 15
+
+    def __init__(self, settings, *, session_factory=None, edge_secret=None, observe=None, gripper=None,
+                 key_verifier=None):
         self.settings = settings
         self.config = settings.control
         # joint_step or motion limits, whichever the config names (never both).
@@ -89,25 +111,63 @@ class URControl:
         self._observe = observe or (lambda: (None, True))
         self.claims = ClaimManager(enforce=True)
         self.secret = configured_secret(edge_secret)
+        # Agents' X-Api-Key, verified centrally for this equipment (edge.py).
+        self.key_verifier = key_verifier or (
+            ApiKeyVerifier(settings.auth_url, settings.equipment_id) if settings.auth_url else None
+        )
         self._session_factory = session_factory or (lambda: ControlSession(settings))
         self._lock = threading.Lock()
         self.session = None
         self.executor = None
         self.tcp_offset = None
         self.last_event = None
+        # Who opened the current session, and since when it has sat idle
+        # (monotonic s, None while claimed or busy): reap_idle's inputs.
+        self.connected_by = None
+        self._idle_since = None
         # Streamed joint trajectories (trajectory/routes.py): motion mode only.
         self.trajectory = None
         if self.arm_mode == "motion" and self.config.trajectory is not None:
             from .trajectory.routes import URTrajectory
 
             self.trajectory = URTrajectory(self)
+        # Graph moves and bench routines (routines.py), set by the app when a
+        # graph is configured; installed with the other control routes.
+        self.routines = None
+        # Refusals and pose diagnoses by request id (GET /control/diagnostics).
+        self.records = RequestRecords(self.config.audit_file)
+        # The controller's software version (the app reads it from the
+        # Dashboard server once); None when unknown.
+        self.controller_versions = lambda: None
 
     # ── identity and gates ──────────────────────────────────────────
     def identity(self, request):
-        return edge_identity(request, self.secret)
+        """The edge's identity, else an agent key's as vouched for by ac_auth."""
+        identity = edge_identity(request, self.secret)
+        if identity is not None or self.key_verifier is None:
+            return identity
+        key = (request.headers.get(API_KEY_HEADER) or "").strip()
+        if not key:
+            return None
+        try:
+            return self.key_verifier(key)
+        except KeyForbidden:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "no_role",
+                    "hint": f"this key's principal holds no role on {self.settings.equipment_id} in the auth roster",
+                },
+            ) from None
+        except AuthUnavailable as exc:
+            log.warning("API key not verified, auth service unavailable: %s", exc)
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "auth_unavailable", "hint": "the auth service did not answer; control refused"},
+            ) from None
 
     def require_login(self, request: Request):
-        if not self.secret:
+        if not self.secret and self.key_verifier is None:
             raise HTTPException(
                 status_code=503,
                 detail={
@@ -121,11 +181,14 @@ class URControl:
                 status_code=401,
                 detail={
                     "error": "login_required",
-                    "hint": "control requests must arrive through the authenticated dashboard edge",
+                    "hint": (
+                        "control requests must arrive through the authenticated dashboard edge"
+                        + (" or carry an agent's X-Api-Key" if self.key_verifier else "")
+                    ),
                 },
             )
-        # No local operator list: the edge holding the secret has already
-        # decided this identity may control this equipment (central roster).
+        # No local operator list: the edge holding the secret, or ac_auth for
+        # a key, has already decided this identity may control this equipment.
         request.state.identity = identity
         return identity
 
@@ -321,6 +384,88 @@ class URControl:
         refusal = executor.state_block(feedback.latest())
         return (refusal.status, refusal.body()) if refusal is not None else None
 
+    # ── idle sessions ───────────────────────────────────────────────
+    def _idle_now(self):
+        """True while a session is open that nobody is using: no claim held,
+        no move, trajectory or gripper motion, teach mode off."""
+        if not self.session_open or self.claims.claimed_by() is not None:
+            return False
+        executor = self.executor
+        if getattr(executor, "busy", False) or getattr(executor, "manual", False):
+            return False
+        if self.trajectory is not None and self.trajectory.running():
+            return False
+        return not (self.gripper_control is not None and self.gripper_control.gripper.busy)
+
+    def idle_disconnect_in_s(self, now=None):
+        """Seconds until reap_idle closes the session, or None if it will not."""
+        limit = self.config.idle_disconnect_s
+        if limit is None or self._idle_since is None or not self._idle_now():
+            return None
+        now = time.monotonic() if now is None else now
+        return max(0.0, round(limit - (now - self._idle_since), 1))
+
+    def reap_idle(self, now=None):
+        """Close the session once it has been idle for idle_disconnect_s.
+
+        Taking the claim or starting any work restarts the clock, so a session
+        someone is using stays open however long it runs; only one everybody
+        has walked away from is closed. Returns True when it closed one.
+        """
+        limit = self.config.idle_disconnect_s
+        if limit is None:
+            return False
+        now = time.monotonic() if now is None else now
+        if not self._idle_now():
+            self._idle_since = None
+            return False
+        if self._idle_since is None:
+            self._idle_since = now
+            return False
+        idle_s = now - self._idle_since
+        if idle_s < limit:
+            return False
+        connected_by = self.connected_by
+        detached = self._detach_session(still=self._idle_now)
+        if detached is None:  # claimed or busy since the check above
+            self._idle_since = None
+            return False
+        error = self._close_detached(*detached)
+        log.warning("UR arm session idle for %.0f s (connected by %s); closed", idle_s, connected_by)
+        self.event("idle_disconnect", None, idle_s=round(idle_s), connected_by=connected_by, error=error)
+        return True
+
+    def _detach_session(self, still=None):
+        """Take the session out of service: (session, executor), or None
+        while a move runs (closing mid-move would end the control script
+        under the arm) or when `still` no longer holds under the lock."""
+        with self._lock:
+            if still is not None and not still():
+                return None
+            executor = self.executor
+            retire = getattr(executor, "retire", None)
+            if retire is not None and not retire():  # holds the move lock if free
+                return None
+            session, self.session, self.executor = self.session, None, None
+            self.tcp_offset = None
+            self.connected_by = None
+            self._idle_since = None
+        return session, executor
+
+    def _close_detached(self, session, executor):
+        """Close a detached session; the close error, if any."""
+        # Teach mode off before the script goes (closing ends it too).
+        end_manual = getattr(executor, "end_manual", None)
+        if end_manual is not None:
+            end_manual("Disconnected")
+        if session is None:
+            return None
+        try:
+            session.close()
+        except Exception as exc:
+            return str(exc)
+        return None
+
     def _still(self, sample):
         limit = self.arm_limits.stationary_speed_deg_s
         return all(abs(v) <= limit for v in sample["velocities_deg_s"])
@@ -353,11 +498,87 @@ class URControl:
             return 412, {"error": "robot_moving", "reason": "The arm is moving; wait until it is still"}
         return None
 
-    def _refuse(self, identity, action, blocked):
+    def _refuse(self, identity, action, blocked, request_id=None):
         status, body = blocked
         kind = "connect_refused" if action == "connect" else "arm_refused"
-        self.event(kind, identity, action=action, reason=body.get("error"))
+        body = {**body, "error_code": body.get("error"), "action": action}
+        if request_id is not None:
+            body["request_id"] = request_id
+        self.event(kind, identity, action=action, reason=body.get("error"), request_id=request_id, status=status)
+        self._keep(request_id, kind, status, body)
         raise HTTPException(status_code=status, detail=body)
+
+    def _keep(self, request_id, kind, status, body):
+        """Record a refusal under its request id, stamped like its audit line."""
+        if request_id is not None:
+            event = self.last_event or {}
+            self.records.put(request_id, {
+                **body, "kind": kind, "status": status, "at": event.get("at"), "operator": event.get("operator"),
+            })
+
+    def versions(self):
+        """Service, SDK and controller versions for a diagnosis."""
+        from importlib import metadata
+
+        from . import __version__
+
+        try:
+            sdk = metadata.version("ur_rtde")
+        except metadata.PackageNotFoundError:
+            sdk = None
+        try:
+            controller = self.controller_versions()
+        except Exception as exc:  # noqa: BLE001 - reported, not fatal
+            controller = {"error": str(exc)}
+        return {"service": __version__, "ur_rtde": sdk, "controller": controller, "robot_model": self.settings.model}
+
+    def diagnose_pose(self, identity, body):
+        """Check a target pose on the open session without moving (ur_diagnosis.py).
+
+        Never connects, resets, moves or grips; with no session, or while the
+        arm is busy or in manual mode, the controller checks are not_checked.
+        """
+        request_id = str(body.request_id) if body.request_id is not None else str(uuid4())
+        session, executor = self.session, self.executor
+        if session is None or not session.is_open or executor is None:
+            report = diagnose_pose(request=body, limits=self.arm_limits)
+            control = None
+        else:
+            control = session.control
+            # The move slot is held for the queries (a trajectory holds it too).
+            with executor.queries_only() as free:
+                blocked = (
+                    "motion_in_progress: no queries while the arm is commanded" if not free
+                    else "manual_mode: turn manual mode off first" if executor.manual
+                    else None
+                )
+                report = diagnose_pose(
+                    request=body, limits=self.arm_limits, control=control, latest=session.feedback.latest,
+                    blocked=blocked,
+                )
+        current, _ = self._observe()
+        telemetry = ((current or {}).get("details") or {}).get("telemetry") or {}
+        record = {
+            "kind": "pose_diagnosis",
+            "request_id": request_id,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "operator": identity["email"] if identity else None,
+            **report,
+            "tcp_config": {
+                "tcp_offset_mm_rpy_deg": self.tcp_offset if control is not None else None,
+                "fk_tcp_offset_m_rotvec": getattr(control, "tcp_offset", None),
+                "kinematics_error": getattr(control, "kinematics_error", None),
+                "payload": telemetry.get("payload"),
+            },
+            "versions": self.versions(),
+            "commissioning_id": self.arm_limits.commissioning_id,
+            "speed_ignored": body.speed,
+            "moved": False,
+            "notice": "Diagnosis only: no connect, reset, move or gripper command was sent",
+        }
+        self.event("pose_diagnosis", identity, request_id=request_id, verdict=record["verdict"], record=record)
+        self.records.put(request_id, record)
+        return record
 
     def event(self, kind, identity, **extra):
         self.last_event = {
@@ -401,6 +622,10 @@ class URControl:
             allowed += self.trajectory.advertised_actions(move_block)
         if self.gripper_control is not None:
             allowed += self.gripper_control.allowed_actions()
+        if self.routines is not None:
+            # Gated like the moves they are made of; where the arm starts, the
+            # gripper and the balance door are checked per request.
+            allowed += self.routines.advertised_actions(move_block)
         return {
             "claimed_by": self.claims.claimed_by(),
             "control_session": {
@@ -418,10 +643,14 @@ class URControl:
                 "limits": self.config.motion.summary() if self.config.motion else None,
                 "tcp_offset_mm_rpy_deg": self.tcp_offset if session_open else None,
                 "kinematics_error": getattr(session.control, "kinematics_error", None) if session_open else None,
+                "connected_by": self.connected_by if session_open else None,
+                "idle_disconnect_s": self.config.idle_disconnect_s,
+                "idle_disconnect_in_s": self.idle_disconnect_in_s(),
                 "last_event": self.last_event,
             },
             "allowed_actions": allowed,
             "trajectory": self.trajectory.summary() if self.trajectory is not None else None,
+            "routines": self.routines.summary() if self.routines is not None else None,
         }
 
     def shutdown(self):
@@ -461,6 +690,31 @@ class URControl:
         login = Depends(self.require_login)
         claim = Depends(self.require_claim)
         claim_if_held = Depends(self.require_claim_if_held)
+
+        @app.exception_handler(RequestValidationError)
+        async def invalid_request(request: Request, exc: RequestValidationError):
+            """A body that does not match the schema. FastAPI's own detail list
+            is kept as it was, with a stable error_code, the fields at fault
+            and the request id beside it; a rejected POST is audited."""
+            errors = jsonable_encoder(exc.errors())
+            sent = exc.body if isinstance(exc.body, dict) else {}
+            request_id = sent.get("request_id") if isinstance(sent.get("request_id"), str) else None
+            fields = sorted({".".join(str(part) for part in error.get("loc", ())[1:]) or "body" for error in errors})
+            content = {
+                "detail": errors,
+                "error_code": "invalid_request",
+                "reason": "The request does not match the API schema: " + ", ".join(fields),
+                "fields": fields,
+                "request_id": request_id,
+            }
+            if request.method == "POST":
+                self.event(
+                    "request_invalid", edge_identity(request, self.secret), path=request.url.path,
+                    request_id=request_id, fields=fields,
+                    errors=[{"loc": error.get("loc"), "msg": error.get("msg"), "type": error.get("type")} for error in errors],
+                )
+                self._keep(request_id, "request_invalid", 422, {**content, "path": request.url.path})
+            return JSONResponse(status_code=422, content=content)
 
         @app.post("/control/claim", responses={409: {"model": ClaimRejection}}, tags=["control"])
         def acquire_claim(request: ClaimRequest, identity: dict = login):
@@ -513,6 +767,8 @@ class URControl:
             self.trajectory.install(app, login, claim)
         if self.gripper_control is not None:
             self.gripper_control.install(app, login, claim)
+        if self.routines is not None:
+            self.routines.install(app, login, claim)
 
         @app.post("/control/stop", tags=["control"])
         @app.post("/move/stop", tags=["control"])
@@ -599,6 +855,8 @@ class URControl:
                 # /control/reset).
                 self.executor = self._new_executor(session)
                 self.tcp_offset = None
+                self.connected_by = identity["email"]
+                self._idle_since = None
                 if self.arm_mode == "motion":
                     try:
                         self.tcp_offset = [round(v, 3) for v in tcp_to_mm_deg(session.control.getTCPOffset())]
@@ -615,28 +873,14 @@ class URControl:
 
         @app.post("/disconnect", tags=["control"], dependencies=[claim_if_held])
         def disconnect(identity: dict = login):
-            with self._lock:
-                # Closing mid-move would end the control script under the
-                # arm; STOP first. Without a session this is a harmless no-op.
-                executor = self.executor
-                retire = getattr(executor, "retire", None)
-                if retire is not None and not retire():  # holds the move lock if free
-                    self._refuse(identity, "disconnect", (409, {
-                        "error": "motion_in_progress",
-                        "reason": "An arm move is running; STOP it first",
-                    }))
-                session, self.session, self.executor = self.session, None, None
-                self.tcp_offset = None
-            # Teach mode off before the script goes (closing ends it too).
-            end_manual = getattr(executor, "end_manual", None)
-            if end_manual is not None:
-                end_manual("Disconnected")
-            error = None
-            if session is not None:
-                try:
-                    session.close()
-                except Exception as exc:
-                    error = str(exc)
+            # STOP first if a move runs. Without a session this is a harmless no-op.
+            detached = self._detach_session()
+            if detached is None:
+                self._refuse(identity, "disconnect", (409, {
+                    "error": "motion_in_progress",
+                    "reason": "An arm move is running; STOP it first",
+                }))
+            error = self._close_detached(*detached)
             self.event("disconnect", identity, error=error)
             return {"connected": False, "close_error": error, "message": "Arm session closed"}
 
@@ -684,41 +928,61 @@ class URControl:
             }
 
     # ── arm motion (ur_motion.py) ───────────────────────────────────
+    def _motion_refused(self, identity, action, status, body, request_id, request):
+        """Raise a move's refusal: the stable error_code and reason, the
+        request id, what was asked and, for a 422, the limits it was held to.
+        The audit line carries the same body, so it can be found by request id."""
+        detail = {**body, "error_code": body["error"], "action": action, "request_id": request_id, "request": request}
+        if status == 422:
+            detail["limits"] = self.arm_limits.summary()
+        self.event(
+            "arm_refused", identity, action=action, reason=body["error"], request_id=request_id, status=status,
+            detail={key: value for key, value in detail.items() if key not in ("limits", "request")},
+        )
+        self._keep(request_id, "arm_refused", status, detail)
+        raise HTTPException(status_code=status, detail=detail)
+
     async def _run_motion(self, identity, action, body, token):
+        # The caller's id, else one made here, names this request in the
+        # response and every audit line about it, refused or not.
+        request_id = str(body.request_id) if body.request_id is not None else str(uuid4())
         blocked = await asyncio.to_thread(self.arm_block, action)
         if blocked is not None:
-            self._refuse(identity, action, blocked)
+            self._refuse(identity, action, blocked, request_id=request_id)
         limits = self.arm_limits
         joint = action in JOINT_ACTIONS
         unit = "deg/s" if joint else "mm/s"
         default = limits.joint_speed_default if joint else limits.linear_speed_default
         cap = limits.max_joint_speed_deg_s if joint else limits.max_linear_speed_mm_s
         speed = body.speed if body.speed is not None else default
+        request = {**body.model_dump(mode="json", exclude_none=True), "speed": speed, "request_id": request_id}
         if speed > cap:
-            self.event("arm_refused", identity, action=action, reason="above_commissioned_limit")
-            raise HTTPException(
-                status_code=422,
-                detail={
-                    "error": "above_commissioned_limit",
-                    "reason": f"Speed {speed:g} {unit} exceeds the commissioned {cap:g} {unit}",
-                    "requested": speed,
-                    "limit": cap,
-                    "units": unit,
-                },
-            )
+            self._motion_refused(identity, action, 422, {
+                "error": "above_commissioned_limit",
+                "reason": f"Speed {speed:g} {unit} exceeds the commissioned {cap:g} {unit}",
+                "requested": speed,
+                "limit": cap,
+                "units": unit,
+            }, request_id, request)
         executor = self.executor
-        self.event(action, identity, **{**body.model_dump(mode="json", exclude_none=True), "speed": speed})
+        self.event(action, identity, **request)
         try:
-            result = await asyncio.to_thread(executor.execute, action, body, claim_token=token, speed=speed)
+            result = await asyncio.to_thread(
+                executor.execute, action, body, claim_token=token, speed=speed, request_id=request_id
+            )
         except MotionRefused as exc:
-            self.event("arm_refused", identity, action=action, reason=exc.error)
-            raise HTTPException(status_code=exc.status, detail=exc.body())
+            self._motion_refused(identity, action, exc.status, exc.body(), request_id, request)
         except MotionFailed as exc:
-            self.event("arm_failed", identity, action=action, reason=str(exc), stop_error=exc.stop_error)
+            self.event(
+                "arm_failed", identity, action=action, reason=str(exc), stop_error=exc.stop_error,
+                request_id=request_id,
+            )
             return JSONResponse(
                 status_code=500,
                 content={
                     "error": "arm_move_failed",
+                    "error_code": "arm_move_failed",
+                    "request_id": request_id,
                     "reason": str(exc),
                     "stop_attempted": exc.stop_attempted,
                     "stop_confirmed": exc.stop_confirmed,
@@ -731,6 +995,7 @@ class URControl:
         self.event(
             f"{action}_done",
             identity,
+            request_id=request_id,
             moved=result["moved"],
             measured_joints_deg=[round(q, 3) for q in result["measured_joints_deg"]],
             measured_tcp_mm_rpy_deg=[round(v, 2) for v in result["measured_tcp_mm_rpy_deg"]],
@@ -770,6 +1035,25 @@ class URControl:
         ):
             """moveL to an absolute TCP pose (mm and roll/pitch/yaw degrees; speed mm/s)."""
             return await self._run_motion(identity, "arm.move_linear", body, x_claim_token)
+
+        @app.post("/control/diagnose/pose", tags=tags)
+        def diagnose(body: LinearMove, identity: dict = login):
+            """Check a target pose (the /control/freehand/linear body) against
+            the controller on the open session, without moving: no claim is
+            needed, and nothing connects, resets, moves or grips. The result
+            is kept under its request_id."""
+            return self.diagnose_pose(identity, body)
+
+        @app.get("/control/diagnostics/{request_id}", tags=tags)
+        def diagnostics(request_id: str, identity: dict = login):
+            """Every refusal and diagnosis recorded for a request id, oldest first."""
+            records = self.records.get(request_id)
+            if not records:
+                raise HTTPException(status_code=404, detail={
+                    "error": "unknown_request_id", "error_code": "unknown_request_id", "request_id": request_id,
+                    "reason": "No refusal or diagnosis is recorded under this request id",
+                })
+            return {"request_id": request_id, "records": records}
 
         @app.post("/control/reset", tags=tags, dependencies=[claim])
         @app.post("/clear/errors", tags=tags, dependencies=[claim])

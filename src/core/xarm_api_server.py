@@ -52,6 +52,7 @@ try:
     from .camera_tracker import CameraTracker
     from . import realsense_camera, realsense_captures
     from .realsense_camera import RealSenseError, RealSenseNotStreaming, RealSenseUnavailable
+    from .remote_realsense import StreamParts
     from .sash_interlock import SashInterlock, SashInterlockError
     from . import kinematics
     from . import assistant_actions
@@ -87,6 +88,7 @@ except ImportError:
     from core.camera_tracker import CameraTracker
     from core import realsense_camera, realsense_captures
     from core.realsense_camera import RealSenseError, RealSenseNotStreaming, RealSenseUnavailable
+    from core.remote_realsense import StreamParts
     from core.sash_interlock import SashInterlock, SashInterlockError
     from core import kinematics
     from core import assistant_actions
@@ -4003,6 +4005,7 @@ def _camera_urls(camera_id: str) -> Dict[str, str]:
         "stream": f"{base}/stream.mjpg",
         "depth": f"{base}/depth",
         "intrinsics": f"{base}/intrinsics",
+        "calibration": f"{base}/calibration",
         "captures": f"{base}/captures",
         "capture": f"/control/realsense/{camera_id}/capture",
     }
@@ -4056,7 +4059,7 @@ async def all_cameras():
     rs = await realsense_cameras()
     usb = {"cameras": [], "available": False, "reason": "USB cameras are owned by the standalone camera service"}
     cameras = [dict(camera, kind="realsense",
-                    capabilities=["color", "depth", "intrinsics", "snapshot", "mjpeg"])
+                    capabilities=["color", "depth", "intrinsics", "calibration", "snapshot", "mjpeg"])
                for camera in rs["cameras"]]
     return {"cameras": cameras + usb["cameras"],
             "sources": {"realsense": {"reason": rs["reason"]},
@@ -4162,13 +4165,19 @@ async def realsense_stream(camera_id: str, stream: Optional[str] = None, fps: fl
 
     async def body():
         # The generator blocks on the capture thread's condition variable;
-        # pull each part on a worker so the event loop stays free.
-        it = camera.mjpeg_frames(kind, max_fps=fps)
-        while True:
-            chunk = await asyncio.to_thread(next, it, None)
-            if chunk is None:
-                return
-            yield chunk
+        # pull each part on a worker so the event loop stays free. A viewer
+        # leaving cancels this generator: close the camera stream then rather
+        # than leaving it to the garbage collector (close_soon, not an await,
+        # since awaiting in a cancelled task's finally is itself cancelled).
+        parts = StreamParts(camera.mjpeg_frames(kind, max_fps=fps))
+        try:
+            while True:
+                chunk = await asyncio.to_thread(parts.next)
+                if chunk is None:
+                    return
+                yield chunk
+        finally:
+            parts.close_soon()
 
     return StreamingResponse(body(), media_type=camera.mjpeg_content_type(),
                              headers={"Cache-Control": "no-store"})
@@ -4192,6 +4201,30 @@ async def realsense_intrinsics(camera_id: str):
     """Pinhole intrinsics per stream + depth scale. Populated while streaming."""
     camera = _realsense(camera_id)
     return await asyncio.to_thread(camera.intrinsics)
+
+
+@app.get("/realsense/{camera_id}/calibration")
+async def realsense_calibration(camera_id: str, refresh: bool = False):
+    """The calibration stored on the device, read without starting the pipeline.
+
+    Intrinsics of every supported video profile per resolution (``depth``,
+    ``color``, ``infrared_1``, ``infrared_2``), extrinsics between every pair
+    of streams, the stereo baseline and, on a D435i, accelerometer/gyroscope
+    intrinsics plus IMU-camera extrinsics. The camera service caches it per
+    device; ``refresh=true`` re-reads after ``rs-imu-calibration`` or a
+    firmware update. Distinct from the hand-eye ``/realsense/calibration``
+    planned in REALSENSE_API_PLAN.md. **501** when the camera is served by
+    an in-process driver without this read."""
+    camera = _realsense(camera_id)
+    read = getattr(camera, "calibration", None)
+    if read is None:
+        raise HTTPException(status_code=501, detail={
+            "error": "realsense_calibration_unsupported",
+            "reason": "stored calibration is served through the standalone camera service only"})
+    try:
+        return await asyncio.to_thread(read, refresh=refresh)
+    except Exception as exc:  # noqa: BLE001
+        raise _realsense_http_error(exc)
 
 
 # -----------------------------------------------------------------------------

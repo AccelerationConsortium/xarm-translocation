@@ -175,6 +175,10 @@ class Control:
         self.joints_ok = True
         self.pose_ok = True
         self.has_solution = True
+        self.probe_ok = True
+        self.queries = []
+        self.raising = {}  # query name -> error message it raises
+        self.drop_link = set()  # queries after which the control script is gone
         self.on_plan = None  # hook called during planning
         self.program_running = True
         self.zeroed = 0
@@ -239,16 +243,32 @@ class Control:
         self.ik_calls += 1
         return self.ik(pose, qnear)
 
+    # The safety queries answer for a target as the test sets; about the
+    # arm's own current state (the refusal probe, ur_checks.py) the answer is
+    # True unless probe_ok is False, as a controller with safety NORMAL gives.
+    def _current(self, values, current):
+        return all(abs(a - b) < 1e-9 for a, b in zip(values, current))
+
+    def _answer(self, query, ok, values, current):
+        self.queries.append(query)
+        if query in self.raising:
+            raise RuntimeError(self.raising[query])
+        if query in self.drop_link:
+            self.program_running = False
+        if self._current(values, current):
+            return self.probe_ok
+        return ok
+
     def getInverseKinematicsHasSolution(self, pose, qnear):
-        return self.has_solution
+        return self._answer("getInverseKinematicsHasSolution", self.has_solution, pose, fk(self.world.q))
 
     def isPoseWithinSafetyLimits(self, pose):
-        return self.pose_ok
+        return self._answer("isPoseWithinSafetyLimits", self.pose_ok, pose, fk(self.world.q))
 
     def isJointsWithinSafetyLimits(self, q):
         if self.on_plan:
             self.on_plan()
-        return self.joints_ok
+        return self._answer("isJointsWithinSafetyLimits", self.joints_ok, q, self.world.q)
 
     def isProgramRunning(self):
         return self.program_running
@@ -1171,3 +1191,158 @@ def test_trajectories_need_a_watchdog_slower_than_braking():
     with pytest.raises(ValidationError, match="watchdog_hz must be below 2.25"):
         settings(control=control)
     assert settings(control={**control, "watchdog_hz": 2}).control.trajectory.enabled
+
+
+# ── refusal detail and the ±180° yaw wrap ────────────────────────────
+# Request 5938c00b-ba5a-4de3-a5ad-5258281bc7ce (UR5e, 2026-11-04 04:00:35 UTC):
+# after a lift to LIFTED, a 2 mm/s alignment moveL to ALIGNED, yaw -178.33 to
+# +179.52 (a 2.15 degree turn), answered 422 outside_controller_limits with
+# no saved body. These replay it against the fake controller.
+REPORTED_ID = "5938c00b-ba5a-4de3-a5ad-5258281bc7ce"
+LIFTED = (677.6900820356688, 34.768340533071914, 107.06009289921069,
+          -179.9201164679141, 0.1592508177831653, -178.3314482777377)
+ALIGNED = {"x": 682.8587261689419, "y": 25.98889661443582, "z": 107.08601019423472,
+           "roll": -179.92611578689443, "pitch": 0.16208635012274328, "yaw": 179.5208541867548, "speed": 2.0}
+WIDE = {"joint_lower_deg": [-200.0] * 6, "joint_upper_deg": [200.0] * 6,
+        "workspace": {"x_mm": [150, 900], "y_mm": [-300, 300], "z_mm": [50, 450]}}
+
+
+def audited_rig(tmp_path, motion=WIDE):
+    config = settings(motion)
+    audit = tmp_path / "audit.jsonl"
+    config = config.model_copy(update={"control": config.control.model_copy(update={"audit_file": str(audit)})})
+    return Rig(config), audit
+
+
+def audit_lines(audit):
+    import json
+
+    return [json.loads(line) for line in audit.read_text().splitlines()]
+
+
+def place_at(rig, tcp_mm_rpy_deg):
+    from robot_motion.drivers.ur_motion import rpy_to_rotvec
+
+    pose = [v / 1000 for v in tcp_mm_rpy_deg[:3]] + rpy_to_rotvec(tcp_mm_rpy_deg[3:])
+    rig.world.q = ik(pose)
+
+
+@pytest.mark.parametrize("joints_ok, has_solution, cause", [
+    (True, True, "controller_pose_rule"),
+    (False, True, "controller_joint_limits"),
+    (True, False, "no_ik_solution"),
+])
+def test_a_controller_pose_refusal_names_its_cause_request_and_limits(tmp_path, joints_ok, has_solution, cause):
+    rig, audit = audited_rig(tmp_path)
+    place_at(rig, LIFTED)
+    rig.control.pose_ok = False
+    rig.control.joints_ok = joints_ok
+    rig.control.has_solution = has_solution
+    with rig.client() as client:
+        held = connected(client)
+        refused = client.post("/control/freehand/linear", json={**ALIGNED, "request_id": REPORTED_ID}, headers=held)
+    assert refused.status_code == 422
+    detail = refused.json()["detail"]
+    assert detail["error_code"] == detail["error"] == "outside_controller_limits"
+    assert detail["request_id"] == REPORTED_ID and detail["action"] == "arm.move_linear"
+    # Confirmed: false for the target, true for the arm's own pose on the same link.
+    assert detail["controller_check"]["query"] == "isPoseWithinSafetyLimits"
+    assert detail["controller_check"]["result"] == "rejected"
+    assert detail["controller_check"]["probe"] == {
+        "of": "current TCP pose", "completed": True, "answer": True, "error": None,
+    }
+    assert detail["specific_limit"]["known"] is False
+    assert detail["likely_cause"] == cause
+    assert detail["reason"].startswith("The controller's safety limits reject this pose; ")
+    # The request as received, the turn it asks for and the limits it met.
+    assert detail["request"]["yaw"] == ALIGNED["yaw"] and detail["request"]["speed"] == 2.0
+    assert detail["orientation_change_deg"] == pytest.approx(2.148, abs=0.002)
+    assert detail["translation_mm"] == pytest.approx(10.19, abs=0.01)
+    assert detail["target_tcp_mm_rpy_deg"][5] == pytest.approx(179.521, abs=0.001)
+    assert detail["start_tcp_mm_rpy_deg"][5] == pytest.approx(-178.331, abs=0.001)
+    assert detail["limits"]["max_linear_speed_mm_s"] == MOTION["max_linear_speed_mm_s"]
+    assert detail["limits"]["workspace_mm"]["x"] == [150, 900]
+    if has_solution:
+        assert detail["ik_joints_within_controller_limits"] is joints_ok
+        assert len(detail["ik_joints_deg"]) == 6
+    else:
+        assert "ik_joints_deg" not in detail
+    assert rig.control.moves == []
+    # Found again by request id in the audit trail, with the same cause.
+    events = [e for e in audit_lines(audit) if e.get("request_id") == REPORTED_ID]
+    assert [e["kind"] for e in events] == ["arm.move_linear", "arm_refused"]
+    assert events[1]["reason"] == "outside_controller_limits" and events[1]["status"] == 422
+    assert events[1]["detail"]["likely_cause"] == cause
+
+
+def test_the_reported_move_across_the_yaw_wrap_turns_the_short_way(tmp_path):
+    from robot_motion.drivers.ur_motion import orientation_error_deg, rpy_to_rotvec
+
+    rig, audit = audited_rig(tmp_path)
+    place_at(rig, LIFTED)
+    start = rpy_to_rotvec(LIFTED[3:])
+    target = rpy_to_rotvec((ALIGNED["roll"], ALIGNED["pitch"], ALIGNED["yaw"]))
+    planned = []
+    rig.control.ik = lambda pose, qnear: planned.append(list(pose)) or ik(pose)
+    with rig.client() as client:
+        held = connected(client)
+        moved = client.post("/control/freehand/linear", json=ALIGNED, headers=held)
+    assert moved.status_code == 200, moved.text
+    body = moved.json()
+    # A wrapped yaw read as a 357.85 degree turn would sweep the toy wrist
+    # (orientation is joints 4-6) through a configuration change instead.
+    assert body["measured_tcp_mm_rpy_deg"][5] == pytest.approx(179.521, abs=0.01)
+    assert body["path_samples_checked"] == 3  # 10.2 mm and 2.15 degrees, 10 mm / 2 degree steps
+    for pose in planned:
+        assert orientation_error_deg(start, pose[3:]) <= 2.149
+        assert orientation_error_deg(pose[3:], target) <= 2.149
+    sent = rig.control.moves[-1]
+    assert sent[0] == "moveL" and orientation_error_deg(sent[1][3:], target) < 1e-6
+    # No id in the request: one is made, and names the response and audit lines.
+    kinds = {e["kind"]: e.get("request_id") for e in audit_lines(audit)}
+    assert kinds["arm.move_linear"] == kinds["arm.move_linear_done"] == body["request_id"]
+
+
+def test_rpy_and_slerp_treat_plus_and_minus_180_as_neighbours():
+    from robot_motion.drivers.ur_motion import interpolate_poses, orientation_error_deg, rpy_to_rotvec
+
+    start = rpy_to_rotvec(LIFTED[3:])
+    target = rpy_to_rotvec((ALIGNED["roll"], ALIGNED["pitch"], ALIGNED["yaw"]))
+    assert orientation_error_deg(start, target) == pytest.approx(2.148, abs=0.002)
+    # +179.52 and -180.48 are one yaw.
+    unwrapped = rpy_to_rotvec((ALIGNED["roll"], ALIGNED["pitch"], ALIGNED["yaw"] - 360))
+    assert orientation_error_deg(target, unwrapped) < 1e-9
+    # The same start written the long way round the axis (angle 2*pi - theta,
+    # axis reversed), as a controller near 180 degrees may report it.
+    theta = math.sqrt(sum(v * v for v in start))
+    long_way = [-v * (2 * math.pi - theta) / theta for v in start]
+    assert orientation_error_deg(start, long_way) < 1e-9
+    for first in (start, long_way):
+        poses = interpolate_poses([0.6, 0.0, 0.1, *first], [0.61, 0.0, 0.1, *target], 4)
+        remaining = [orientation_error_deg(p[3:], target) for p in poses]
+        assert remaining[0] == pytest.approx(2.148, abs=0.002) and remaining[-1] < 1e-6
+        assert all(a > b for a, b in zip(remaining, remaining[1:]))  # straight to it, the short way
+
+
+def test_a_body_that_fails_the_schema_says_which_fields_and_is_audited(tmp_path):
+    rig, audit = audited_rig(tmp_path)
+    with rig.client() as client:
+        held = connected(client)
+        bad = {**ALIGNED, "yaw": "179.5", "request_id": REPORTED_ID}
+        del bad["z"]
+        refused = client.post("/control/freehand/linear", json=bad, headers=held)
+        # A state refusal carries an id too, made here when the client sent none.
+        client.post("/control/stop", headers=HEADERS)
+        latched = client.post("/control/freehand/relative", json={"dx": 1}, headers=held)
+    assert refused.status_code == 422
+    body = refused.json()
+    assert body["error_code"] == "invalid_request" and body["request_id"] == REPORTED_ID
+    assert body["fields"] == ["yaw", "z"]
+    assert isinstance(body["detail"], list)  # FastAPI's own list, as before
+    invalid = [e for e in audit_lines(audit) if e["kind"] == "request_invalid"]
+    assert invalid[0]["request_id"] == REPORTED_ID and invalid[0]["fields"] == ["yaw", "z"]
+    assert invalid[0]["operator"] == OPERATOR
+    assert latched.status_code == 412
+    detail = latched.json()["detail"]
+    assert detail["error_code"] == "motion_latched" and detail["action"] == "arm.jog_linear"
+    assert len(detail["request_id"]) == 36

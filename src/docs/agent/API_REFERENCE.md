@@ -328,6 +328,7 @@ path by concatenation.
         "stream": "/realsense/rs435i/stream.mjpg",
         "depth": "/realsense/rs435i/depth",
         "intrinsics": "/realsense/rs435i/intrinsics",
+        "calibration": "/realsense/rs435i/calibration",
         "captures": "/realsense/rs435i/captures",
         "capture": "/control/realsense/rs435i/capture"
       }
@@ -362,6 +363,7 @@ All nested under the camera id. `{id}` below is a camera id, not a capture id.
 |---|---|---|---|
 | GET | `/realsense/{id}/status` | open | device list, pipeline state, stream profiles; answers before `/connect` |
 | GET | `/realsense/{id}/intrinsics` | open | pinhole intrinsics per stream plus depth scale; populated while streaming |
+| GET | `/realsense/{id}/calibration?refresh=` | open | stored device calibration, no pipeline start: per-resolution intrinsics for depth, color and both infrared streams; extrinsics between every stream pair (IMU included); stereo baseline; D435i accel/gyro intrinsics. Cached by the camera service until `refresh=true`. Not the hand-eye calibration |
 | GET | `/realsense/{id}/depth?x=&y=&window=` | open | metres plus a camera-frame 3-D point. `window` is an odd median patch, default 5. **409** when the pipeline is stopped — this read never starts it |
 | POST | `/realsense/{id}/start` | login | **503** when the extra or hardware is missing |
 | POST | `/realsense/{id}/stop` | login | |
