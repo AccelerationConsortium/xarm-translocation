@@ -61,7 +61,20 @@ Before or after a Cartesian move, `POST /control/diagnose/pose` (the
 `freehand/linear` body, no claim) checks the target against the controller
 without moving and says whether a refusal is confirmed, a query that failed,
 or undetermined. `GET /control/diagnostics/{request_id}` reads back any
-refusal or diagnosis by id (ARM_MOTION.md).
+diagnosis, or a move as received and its outcome (done, refused or failed),
+by id (ARM_MOTION.md).
+A Cartesian target within the completion tolerance
+(`control_session.limits.completion`, default 0.5 mm) is never sent: it
+answers 200 `moved: false`, `dispatched: false`,
+`no_op_reason: within_completion_tolerance`. Never count that as a probe or
+a contact. For submillimetre probes, send `"precision": "<name>"` with a
+profile from `limits.precision_profiles`; when that is `{}`, none is
+commissioned and the request answers 422 `precision_unavailable`. Every move
+answer gives `start_tcp_mm_rpy_deg`, `measured_tcp_mm_rpy_deg`,
+`displacement_mm` and `completion`. Send a `request_id`: after a timeout,
+read `GET /control/diagnostics/{request_id}` instead of resending (a received
+move with no outcome is still running or was cut off), and a resent id that
+already ran answers 422 `request_replayed`.
 `activity` is work in flight, not a connected session. While this service's
 control script is the program `/status` reports, `activity` stays `idle` and
 `equipment_status` stays `ready` until an arm move (`control_session.busy` /
