@@ -124,7 +124,54 @@ twice.
 
 ### Responses
 
-- **200:** `{ok, action, message, moved, measured_joints_deg,
+Every move carries a `request_id`: the caller's, else one the service makes.
+It is in the response, refused or not, and in every audit line about the
+request (`arm.move_linear`, `arm_refused` or `arm.move_linear_done`), so one
+can be traced by id in `control.audit_file`.
+
+A refusal's `detail` always holds:
+- `error_code`: the stable name below. `error` is the same value, kept for
+  older clients.
+- `reason`: a readable sentence.
+- `action` and `request_id`.
+- `request`: what was asked, with the speed in force. Only on 409/412 from
+  `allowed_actions`' own check is this left out.
+- `limits`: on a 422, the commissioned limits it was held to (`/status`
+  `limits`).
+
+The fields of each check stay beside these, for example `fraction`, `joints`,
+`tcp_mm` or `jump_deg`.
+
+A body that does not match the schema answers 422 with FastAPI's `detail`
+list unchanged, plus `error_code: invalid_request`, `fields` (the fields at
+fault), `reason` and `request_id` (when the body named one). It is audited as
+`request_invalid`.
+
+`outside_controller_limits` on a Cartesian move means the controller's
+`isPoseWithinSafetyLimits` answered false. ur_rtde gives no reason beyond
+that, so the service asks the controller two more questions, and nothing
+moves while it does:
+- the inverse-kinematics solution near the current joints (`ik_joints_deg`);
+- whether those joints pass its joint limits
+  (`ik_joints_within_controller_limits`).
+
+The answers give `likely_cause`:
+- `controller_pose_rule`: the joints pass, so a pose rule refused it. That
+  is a safety plane, a tool-orientation limit or a TCP limit, and the
+  pendant's safety settings say which.
+- `controller_joint_limits`: the joints of the IK solution fail the
+  controller's joint limits.
+- `no_ik_solution`: the controller finds no IK solution.
+- `unknown`: the follow-up queries failed (see `diagnostic_error`).
+
+The body also gives `start_tcp_mm_rpy_deg`, `target_tcp_mm_rpy_deg`,
+`target_pose_m_rotvec` (exactly what was checked), `translation_mm` and
+`orientation_change_deg`. The orientation change is the shortest rotation,
+so +179.5° and -178.3° yaw are about 2.1° apart, not 357.9°. Interpolation is
+a slerp between rotations, so a ±180° yaw wrap, or a rotation vector written
+the long way round, takes the short way.
+
+- **200:** `{ok, action, message, request_id, moved, measured_joints_deg,
   measured_tcp_mm_rpy_deg, peak_force_change_n, elapsed_s, ...}`.
   `moved: false` means the arm was already at the target.
 - **409:** no session, or a move is already running. Commands are never
@@ -152,8 +199,9 @@ twice.
   - `path_configuration_change`
   - `joint_speed_exceeded`
   - `unreachable`
-  - `outside_controller_limits`
+  - `outside_controller_limits`: with `likely_cause` (see above)
   - `request_replayed`
+  - `invalid_request`: the body fails the schema
 - **502:** `planning_failed`: a controller kinematics query failed during
   planning. Nothing was sent.
 - **500:** the move was sent and failed. A stop was sent; the body carries
