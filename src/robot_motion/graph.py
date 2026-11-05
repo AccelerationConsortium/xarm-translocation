@@ -19,11 +19,14 @@ Number = Annotated[float, Field(allow_inf_nan=False)]
 
 class GripperState(BaseModel):
     """A named gripper position: the raw Robotiq position (0 open .. 255)
-    and whether reaching it means holding a part."""
+    and how reaching it is checked."""
 
     model_config = ConfigDict(extra="forbid")
     raw: int = Field(ge=0, le=255)
     expect_object: bool = False
+    # A grip state that holds a part without the fingers having to stop on
+    # it (a target stroke): the badge and "holding" read it as a grasp.
+    grasp: bool = False
 
 
 class Node(BaseModel):

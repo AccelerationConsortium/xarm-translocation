@@ -220,6 +220,15 @@ The vial grip force is the workflow's: `grip_force_pct: 50` in
 `vial_open` raw 207 and `vial_closed` raw 242 and allows them only at
 `pick_up_vial` and `drop_vial`; dose-head states are left out for now.
 
+**2026-11-05, later: the vial grip is a 2 mm stroke at 20 %.** At 50 % the
+workflow's close (raw 242, 0.95 of 255, past where the fingers meet at 228)
+clamped through the vial into the pan and overloaded the balance; the
+fingers stopped at 227 with no object sensed, and the user's stroke tests at
+raw 215-225 never touched anything: the fingertips cage the vial. So
+`vial_closed` and the routines' close are raw 223 (about 2 mm on pc-04's
+calibration), `close_check: "stroke"` (reaching 223 or stopping on the vial
+are both a grip), `grip_force_pct: 20`, and `max_force_pct` back to 20.
+
 ## Stage 4 commissioning record (2026-10-29, user at the arm)
 
 Same tools and gates as the UR5e (`UR5E_TRAJECTORY_PLAN.md` sections 6-8),

@@ -20,7 +20,8 @@
   },
   "vial_grip": {
     "open_raw": 207,
-    "close_raw": 242
+    "close_raw": 223,
+    "close_check": "stroke"
   },
   "balance": {
     "drop_node": "drop_vial",
@@ -28,5 +29,5 @@
     "status_url": "http://sdl2-pc-04.tail6a1dd7.ts.net:8081/status",
     "door_component": "door_right"
   },
-  "grip_force_pct": 50
+  "grip_force_pct": 20
 }

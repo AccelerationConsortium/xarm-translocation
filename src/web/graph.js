@@ -196,7 +196,7 @@
             Object.keys(graph.gripper_catalog).forEach(function (name) {
                 var spec = graph.gripper_catalog[name] || {};
                 out.gripper_state_catalog[name] = {
-                    stroke: spec.raw, intent: spec.expect_object ? 'grasp' : 'position',
+                    stroke: spec.raw, intent: (spec.expect_object || spec.grasp) ? 'grasp' : 'position',
                 };
             });
             out.nodes = graph.nodes.map(function (n) {

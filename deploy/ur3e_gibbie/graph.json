@@ -254,8 +254,8 @@
       "raw": 207
     },
     "vial_closed": {
-      "raw": 242,
-      "expect_object": true
+      "raw": 223,
+      "grasp": true
     }
   }
 }
