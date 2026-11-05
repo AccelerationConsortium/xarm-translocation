@@ -83,6 +83,7 @@ class FakeGripper:
         self.moves = []
         self.busy = False
         self.requested = None
+        self.forces = []
 
     pct_to_raw = staticmethod(RobotiqGripper.pct_to_raw)
 
@@ -105,6 +106,7 @@ class FakeGripper:
 
     def move(self, position_raw, speed_raw, force_raw):
         self.moves.append(position_raw)
+        self.forces.append(force_raw)
         self.requested = position_raw
         closing = position_raw >= CLOSE
         self.holding = closing and self.part
@@ -731,3 +733,28 @@ def test_the_gibbie_gripper_states_match_the_workflow():
     assert catalog["vial_closed"].expect_object and not catalog["vial_open"].expect_object
     settable = {n.id: n.gripper_states for n in graph.nodes if n.gripper_states}
     assert settable == {"pick_up_vial": ["vial_open", "vial_closed"], "drop_vial": ["vial_open", "vial_closed"]}
+
+
+def test_a_grip_force_above_the_gripper_cap_fails_the_load(tmp_path):
+    # FakeGripper's cap is 20 %.
+    with pytest.raises(ValueError, match="grip_force_pct 30 is above the gripper's commissioned 20"):
+        Bench(tmp_path, routines={**ROUTINES, "grip_force_pct": 30}).client()
+
+
+def test_vial_grips_use_the_force_set_in_the_routines(tmp_path):
+    bench = Bench(tmp_path, routines={**ROUTINES, "grip_force_pct": 20}, graph=gripping_graph())
+    with bench.client() as client:
+        held = connected(client)
+        done = client.post("/routines/vial/balance_to_node", json={"target": "hub"}, headers=held)
+        assert done.status_code == 200, done.text
+        # Graph Drive's gripper route grips the same way.
+        client.post("/graph/move", json={"target": "pick"}, headers=held)
+        assert client.post("/control/graph/gripper", json={"state": "vial_open"}, headers=held).status_code == 200
+    assert bench.gripper.moves == [OPEN, CLOSE, OPEN]
+    assert bench.gripper.forces == [RobotiqGripper.pct_to_raw(20)] * 3
+
+
+def test_the_gibbie_vial_grip_force_is_the_workflows():
+    routines = RoutineSettings.model_validate_json((DEPLOY / "routines.json").read_text())
+    # robot_control_URArm.py grips at force 0.5 of the gripper's range.
+    assert routines.grip_force_pct == 50

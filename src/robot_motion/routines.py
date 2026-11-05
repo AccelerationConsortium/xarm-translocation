@@ -223,6 +223,13 @@ class Routines:
             settings.check_against(graph)
             if control.gripper_control is None:
                 raise ValueError("Routines that grip need a configured gripper")
+            caps = control.gripper_control.settings
+            for name, value, cap in (
+                ("grip_force_pct", settings.grip_force_pct, caps.max_force_pct),
+                ("grip_speed_pct", settings.grip_speed_pct, caps.max_speed_pct),
+            ):
+                if value is not None and value > cap:
+                    raise ValueError(f"routines {name} {value:g} is above the gripper's commissioned {cap:g}")
         limits = control.arm_limits
         for e in graph.edges:
             if e.speed is None:
