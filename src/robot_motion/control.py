@@ -651,6 +651,8 @@ class URControl:
             "allowed_actions": allowed,
             "trajectory": self.trajectory.summary() if self.trajectory is not None else None,
             "routines": self.routines.summary() if self.routines is not None else None,
+            # The shared panel's Graph Drive block; None without a graph.
+            "motion_graph": self.routines.motion_graph_status() if self.routines is not None else None,
         }
 
     def shutdown(self):

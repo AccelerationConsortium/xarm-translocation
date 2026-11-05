@@ -38,6 +38,8 @@ Six = tuple[Number, Number, Number, Number, Number, Number]
 Raw = Annotated[int, Field(ge=0, le=255)]
 
 GRAPH_ACTIONS = ("graph.move",)
+# The panel's Recover: a moveJ onto the nearest node, only this close.
+RECOVER_MAX_DEG = 15.0
 ROUTINE_ACTIONS = (
     "routine.vial_rack_to_balance",
     "routine.vial_balance_to_rack",
@@ -165,6 +167,28 @@ class VialToNode(BaseModel):
     dry_run: bool = False
 
 
+# The shared panel's Graph Drive requests (the xArm's /control/graph/* names).
+class PanelGraphMove(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    node_id: Identifier
+    # Upper bound for every edge on the way (deg/s joint, mm/s linear); it
+    # can only slow a move. None: each edge's own speed.
+    speed: Number | None = Field(default=None, gt=0)
+
+
+class PanelGraphMode(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    mode: str = Field(min_length=1, max_length=32)
+
+
+class PanelRecover(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    node_id: Identifier
+    # Accepted for panel parity; neither widens the recover bound.
+    force: bool = False
+    gripper_state: str | None = Field(default=None, max_length=64)
+
+
 def _detail(exc):
     return exc.detail if isinstance(exc.detail, dict) else {"reason": exc.detail}
 
@@ -181,17 +205,35 @@ async def read_door(port: BalancePort):
 
 
 class Routines:
-    def __init__(self, control, graph: Graph, settings: RoutineSettings | None, *, door_reader=read_door):
+    def __init__(
+        self, control, graph: Graph, settings: RoutineSettings | None, *, door_reader=read_door,
+        observed_joints=None,
+    ):
         if settings is not None:
             settings.check_against(graph)
             if control.gripper_control is None:
                 raise ValueError("Routines that grip need a configured gripper")
+        limits = control.arm_limits
+        for e in graph.edges:
+            if e.speed is None:
+                continue
+            cap, unit = (
+                (limits.max_joint_speed_deg_s, "deg/s") if e.mode == "joint" else (limits.max_linear_speed_mm_s, "mm/s")
+            )
+            if e.speed > cap:
+                raise ValueError(
+                    f"Graph edge {e.source} -> {e.target}: speed {e.speed:g} {unit} is above the "
+                    f"motion block's {cap:g} {unit}"
+                )
         self.control = control
         self.graph = graph
         self.settings = settings
         self.nodes = {n.id: n for n in graph.nodes}
-        self.modes = {(e.source, e.target): e.mode for e in graph.edges}
+        self.edges = {(e.source, e.target): e for e in graph.edges}
+        self.modes = {pair: e.mode for pair, e in self.edges.items()}
         self.read_door = door_reader
+        # Joints from the observation poll (no arm session needed), or None.
+        self.observed_joints = observed_joints
         self._running = None  # name of the routine in progress
 
     # ── where the arm is ────────────────────────────────────────────
@@ -204,18 +246,37 @@ class Routines:
         the whole way round. Such a node counts as *nearest*, not *at*, and
         the turns are reported so the operator can unwind the joint first.
         """
-        session = self.control.session
-        feedback = getattr(session, "feedback", None) if session is not None else None
-        sample = feedback.latest() if feedback is not None else None
-        if sample is None:
+        joints = self._session_joints()
+        if joints is None:
             raise HTTPException(
                 status_code=409,
                 detail={"error": "no_control_session", "reason": "No arm session; Connect first"},
             )
+        return self._locate(joints)
+
+    def _session_joints(self):
+        session = self.control.session
+        feedback = getattr(session, "feedback", None) if session is not None else None
+        sample = feedback.latest() if feedback is not None else None
+        return list(sample["joints_deg"]) if sample is not None else None
+
+    def observed_location(self) -> Location | None:
+        """Where the arm is from the freshest joints there are: the session's
+        feedback, else the observation poll. None when neither has a reading.
+        For display (/status, /graph/nearest); moves use locate()."""
+        joints = self._session_joints()
+        if joints is None and self.observed_joints is not None:
+            try:
+                joints = self.observed_joints()
+            except Exception:
+                joints = None
+        return self._locate(joints) if joints else None
+
+    def _locate(self, joints) -> Location:
         tolerance = self.settings.node_tolerance_deg if self.settings else 1.0
         best = None
         for node in self.graph.nodes:
-            raw = [a - b for a, b in zip(sample["joints_deg"], node.joints_deg)]
+            raw = [a - b for a, b in zip(joints, node.joints_deg)]
             folded = max(_fold_deg(d) for d in raw)
             if best is None or folded < best[1]:
                 best = (node, folded, raw)
@@ -251,7 +312,10 @@ class Routines:
             raise self._not_at(where, f"The arm must start at {required!r}", required=required)
 
     # ── step plans ──────────────────────────────────────────────────
-    def path_steps(self, source, target):
+    def path_steps(self, source, target, speed_cap=None):
+        """One step per edge from `source` to `target`, each at its edge's
+        speed (None: the motion block's default). `speed_cap` can only slow
+        them: deg/s on joint edges, mm/s on linear ones."""
         if target not in self.nodes:
             raise HTTPException(status_code=422, detail={"error": "unknown_node", "node": target})
         if source == target:
@@ -259,11 +323,34 @@ class Routines:
         path = [source, *self.graph.path(source, target)]
         steps = []
         for a, b in zip(path, path[1:]):
-            if self.modes[(a, b)] == "joint":
-                steps.append({"kind": "joint", "to": b, "angles": list(self.nodes[b].joints_deg)})
+            edge = self.edges[(a, b)]
+            if edge.mode == "joint":
+                step = {"kind": "joint", "to": b, "angles": list(self.nodes[b].joints_deg)}
             else:
-                steps.append({"kind": "linear", "to": b, "pose": list(self.nodes[b].tcp_mm_rpy_deg)})
+                step = {"kind": "linear", "to": b, "pose": list(self.nodes[b].tcp_mm_rpy_deg)}
+            speed = self._edge_speed(edge, speed_cap)
+            if speed is not None:
+                step["speed"] = speed
+            steps.append(step)
         return steps
+
+    def _edge_speed(self, edge, cap):
+        if cap is None:
+            return edge.speed
+        limits = self.control.arm_limits
+        default = limits.joint_speed_default if edge.mode == "joint" else limits.linear_speed_default
+        return min(edge.speed if edge.speed is not None else default, cap)
+
+    def travel_targets(self, source):
+        """Every node a graph move from `source` can reach."""
+        seen, todo = {source}, [source]
+        while todo:
+            here = todo.pop()
+            for a, b in self.edges:
+                if a == here and b not in seen:
+                    seen.add(b)
+                    todo.append(b)
+        return [n for n in self.nodes if n in seen and n != source]
 
     def _grip(self, raw, label, expect_object):
         return {"kind": "gripper", "to": label, "raw": raw, "expect_object": expect_object}
@@ -327,11 +414,11 @@ class Routines:
     # ── execution ───────────────────────────────────────────────────
     async def _step(self, identity, token, step):
         if step["kind"] == "joint":
-            body = JointMove(angles=tuple(float(v) for v in step["angles"]))
+            body = JointMove(angles=tuple(float(v) for v in step["angles"]), speed=step.get("speed"))
             return await self.control._run_motion(identity, "arm.move_joints", body, token)
         if step["kind"] == "linear":
             x, y, z, roll, pitch, yaw = (float(v) for v in step["pose"])
-            body = LinearMove(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw)
+            body = LinearMove(x=x, y=y, z=z, roll=roll, pitch=pitch, yaw=yaw, speed=step.get("speed"))
             return await self.control._run_motion(identity, "arm.move_linear", body, token)
         speed = self.settings.grip_speed_pct if self.settings else None
         force = self.settings.grip_force_pct if self.settings else None
@@ -496,6 +583,145 @@ class Routines:
             "vial_rack_slots": s.vial_rack.slots() if s else [],
         }
 
+    def motion_graph_status(self):
+        """details.motion_graph, the block the shared panel's Graph Drive reads
+        (the xArm's field names). There is no graph mode to set here: graph
+        moves always follow taught edges and freehand moves are not
+        graph-gated, which is the panel's "off". The gripper is not tracked
+        as graph state."""
+        where = self.observed_location()
+        current = where.node if where else None
+        return {
+            "graph_mode": "off",
+            "current_node": current,
+            "nearest_node": where.nearest if where else None,
+            "nearest_deviation_deg": round(where.deviation_deg, 3) if where else None,
+            "turns": where.turns if where else {},
+            "reachable_nodes": [b for a, b in self.edges if a == current] if current else [],
+            "travel_targets": self.travel_targets(current) if current else [],
+            "gripper_state": None,
+            "allowed_gripper_targets": [],
+            "mode_override": None,
+            "running": self._running,
+        }
+
+    def _install_panel(self, app, login, claim, tags):
+        """The shared panel's Graph Drive routes (the xArm's names), on top of
+        the same walk as /graph/move."""
+
+        def at_node():
+            where = self.locate()
+            if where.node is None:
+                raise self._not_at(where, "The arm is not at a graph node; use Recover or move it onto one")
+            return where.node
+
+        def plan(source, target, speed):
+            try:
+                return self.path_steps(source, target, speed_cap=speed)
+            except GraphError as exc:
+                raise HTTPException(status_code=422, detail={"error": "no_path", "reason": str(exc)})
+
+        @app.post("/control/graph/move_to", tags=tags, dependencies=[claim])
+        async def panel_move_to(
+            body: PanelGraphMove, identity: dict = login, x_claim_token: str | None = Header(default=None)
+        ):
+            """One taught edge from the node the arm is at to `node_id`."""
+            node = at_node()
+            if (node, body.node_id) not in self.edges:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "not_adjacent",
+                        "reason": f"No taught edge from {node!r} to {body.node_id!r}; use Travel for a multi-edge path",
+                        "from": node,
+                        "reachable_nodes": [b for a, b in self.edges if a == node],
+                    },
+                )
+            steps = plan(node, body.node_id, body.speed)
+            result = await self.run(identity, x_claim_token, "graph.move", steps, source=node, target=body.node_id)
+            return _with(result, path=[node, body.node_id])
+
+        @app.post("/control/graph/travel_to", tags=tags, dependencies=[claim])
+        async def panel_travel_to(
+            body: PanelGraphMove, identity: dict = login, x_claim_token: str | None = Header(default=None)
+        ):
+            """The shortest taught path from the node the arm is at to `node_id`."""
+            node = at_node()
+            steps = plan(node, body.node_id, body.speed)
+            result = await self.run(identity, x_claim_token, "graph.move", steps, source=node, target=body.node_id)
+            return _with(result, path=[node, *(s["to"] for s in steps)])
+
+        @app.post("/control/graph/mode", tags=tags, dependencies=[claim])
+        def panel_graph_mode(body: PanelGraphMode):
+            """Nothing to set: graph moves always follow taught edges, and
+            freehand moves are not graph-gated on this service."""
+            return {
+                "ok": True,
+                "graph_mode": "off",
+                "requested": body.mode,
+                "changed": False,
+                "message": "This arm has no graph mode: graph moves always follow taught edges; "
+                "freehand moves are not graph-gated",
+            }
+
+        @app.get("/graph/nearest", tags=tags)
+        def panel_nearest():
+            """The node nearest the arm's joints. Read-only."""
+            where = self.observed_location()
+            base = {
+                "rail_residual_mm": None,
+                "recover_max_deg": RECOVER_MAX_DEG,
+                "gripper_state": "not tracked",
+                "allowed_gripper_states": [],
+                "gripper_stroke": None,
+            }
+            if where is None:
+                return {**base, "suggested_node": None, "arm_residual_deg": None, "within_tolerance": False,
+                        "recoverable": False, "reason": "No joint reading"}
+            return {
+                **base,
+                "suggested_node": where.nearest,
+                "arm_residual_deg": round(where.deviation_deg, 3),
+                "within_tolerance": where.node is not None,
+                "turns": where.turns,
+                "recoverable": not where.turns and where.deviation_deg <= RECOVER_MAX_DEG,
+            }
+
+        @app.post("/control/graph/recover_to", tags=tags, dependencies=[claim])
+        async def panel_recover_to(
+            body: PanelRecover, identity: dict = login, x_claim_token: str | None = Header(default=None)
+        ):
+            """A moveJ onto the nearest node at the default speed, only when no
+            joint is a whole turn off it and every joint is within
+            RECOVER_MAX_DEG. `force` does not widen that."""
+            where = self.locate()
+            if body.node_id != where.nearest:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"error": "not_nearest", "reason": f"The nearest node is {where.nearest!r}",
+                            "nearest": where.nearest},
+                )
+            if where.turns:
+                raise self._not_at(where, "")
+            if where.node == body.node_id:
+                return {"ok": True, "recovered_to": body.node_id, "moved": False, "message": "Already at the node"}
+            if where.deviation_deg > RECOVER_MAX_DEG:
+                raise HTTPException(
+                    status_code=412,
+                    detail={
+                        "error": "too_far_to_recover",
+                        "reason": f"A joint is {where.deviation_deg:.1f} deg from {body.node_id!r}; "
+                        f"Recover moves only within {RECOVER_MAX_DEG:g} deg",
+                        "nearest": body.node_id,
+                        "nearest_deviation_deg": round(where.deviation_deg, 3),
+                        "recover_max_deg": RECOVER_MAX_DEG,
+                        "hint": "Guide the arm closer by hand (Manual mode) or jog it, then Recover",
+                    },
+                )
+            steps = [{"kind": "joint", "to": body.node_id, "angles": list(self.nodes[body.node_id].joints_deg)}]
+            result = await self.run(identity, x_claim_token, "graph.recover", steps, target=body.node_id)
+            return _with(result, recovered_to=body.node_id, moved=True)
+
     def install(self, app, login, claim):
         tags = ["routines"]
 
@@ -514,6 +740,8 @@ class Routines:
             if body.dry_run:
                 return {"ok": True, "dry_run": True, "from": node, "target": body.target, "plan": steps}
             return await self.run(identity, x_claim_token, "graph.move", steps, source=node, target=body.target)
+
+        self._install_panel(app, login, claim, tags)
 
         if self.settings is None:
             return
@@ -560,6 +788,11 @@ class Routines:
         async def node_to_rack(body: VialTask, identity: dict = login, x_claim_token: str | None = Header(default=None)):
             """From the graph node the arm is at, holding a vial, put it in `slot`, back at home."""
             return await self._node_to_rack(identity, x_claim_token, body)
+
+
+def _with(result, **extra):
+    """Add fields to a successful run() answer; a failure passes through."""
+    return {**result, **extra} if isinstance(result, dict) else result
 
 
 def _json(response: JSONResponse):
