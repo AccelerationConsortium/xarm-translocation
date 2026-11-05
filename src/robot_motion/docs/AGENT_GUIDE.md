@@ -168,7 +168,11 @@ joint is within 15° and none is a whole turn off; `force` does not widen
 that. A graph may name gripper positions in `gripper_catalog` (`{name: {raw,
 expect_object}}`) and list per node the `gripper_states` that may be set
 there. `POST /control/graph/gripper {state}` sets one at the node the arm is
-at (422 `gripper_change_not_allowed` elsewhere); a state with
+at (422 `gripper_change_not_allowed` elsewhere). A node with
+`gripper_release: false` (on the Gibbie UR3e: `safe_rack` and `safe_bal`,
+where only `vial_open` is settable, to narrow the fingers before an approach)
+refuses a state that would let go of a held part with 422
+`gripper_release_not_allowed`: release a vial at a node that allows it (the pan's `drop_vial` or `pick_up_vial`) or with a rack routine. A state with
 `expect_object` fails with `no_object_gripped` if the fingers close on
 nothing; a state with `grasp` is a target stroke that holds a part whether
 or not the fingers touch it (no check). In `routines_file`, `vial_grip`

@@ -19,7 +19,11 @@
         -90.01,
         -0.38,
         -89.92
-      ]
+      ],
+      "gripper_states": [
+        "vial_open"
+      ],
+      "gripper_release": false
     },
     {
       "id": "vial_stock_prep",
@@ -76,7 +80,11 @@
         -90.39,
         -0.71,
         0.64
-      ]
+      ],
+      "gripper_states": [
+        "vial_open"
+      ],
+      "gripper_release": false
     },
     {
       "id": "prep_viap_drop",

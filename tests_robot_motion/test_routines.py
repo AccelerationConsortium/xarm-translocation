@@ -722,6 +722,40 @@ def test_closing_on_no_vial_at_a_node_is_a_failure(tmp_path):
         assert unknown.status_code == 422 and unknown.json()["detail"]["error"] == "gripper_change_not_allowed"
 
 
+def test_a_safe_node_opens_an_empty_gripper_but_never_drops_a_vial(tmp_path):
+    graph = gripping_graph()
+    for n in graph["nodes"]:
+        if n["id"] == "hub":
+            n["gripper_states"], n["gripper_release"] = ["vial_open"], False
+    bench = Bench(tmp_path, graph=graph)
+    with bench.client() as client:
+        held = connected(client)
+
+        def allowed():
+            return client.get("/status").json()["details"]["motion_graph"]["allowed_gripper_targets"]
+
+        def grip(state):
+            return client.post("/control/graph/gripper", json={"state": state}, headers=held)
+
+        assert client.post("/graph/move", json={"target": "hub"}, headers=held).status_code == 200
+        assert allowed() == ["vial_open"]
+        assert grip("vial_open").status_code == 200 and bench.gripper.moves == [OPEN]
+
+        client.post("/graph/move", json={"target": "pick"}, headers=held)
+        assert grip("vial_closed").status_code == 200 and bench.gripper.holding
+        client.post("/graph/move", json={"target": "hub"}, headers=held)
+        assert allowed() == []
+        refused = grip("vial_open")
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["detail"]["error"] == "gripper_release_not_allowed"
+        assert refused.json()["detail"]["allowed_gripper_states"] == []
+        assert bench.gripper.moves == [OPEN, CLOSE] and bench.gripper.holding
+
+        # Where the graph allows a release, it still opens.
+        client.post("/graph/move", json={"target": "pan"}, headers=held)
+        assert grip("vial_open").status_code == 200 and not bench.gripper.holding
+
+
 def test_a_node_state_missing_from_the_catalog_fails_the_load(tmp_path):
     graph = gripping_graph()
     graph["nodes"][0]["gripper_states"] = ["dose_closed"]
@@ -745,7 +779,12 @@ def test_the_gibbie_vial_grip_is_a_4mm_stroke_at_20_percent():
     # pc-04's calibration (open_raw 3, closed_raw 228 over 85 mm): about 4 mm.
     assert (228 - 217) / (228 - 3) * 85 == pytest.approx(4.0, abs=0.2)
     settable = {n.id: n.gripper_states for n in graph.nodes if n.gripper_states}
-    assert settable == {"pick_up_vial": ["vial_open", "vial_closed"], "drop_vial": ["vial_open", "vial_closed"]}
+    assert settable == {
+        "pick_up_vial": ["vial_open", "vial_closed"], "drop_vial": ["vial_open", "vial_closed"],
+        # Narrow the fingers before an approach (user, 2026-11-05); never a drop there.
+        "safe_rack": ["vial_open"], "safe_bal": ["vial_open"],
+    }
+    assert {n.id for n in graph.nodes if not n.gripper_release} == {"safe_rack", "safe_bal"}
 
 
 def test_a_grip_force_above_the_gripper_cap_fails_the_load(tmp_path):
