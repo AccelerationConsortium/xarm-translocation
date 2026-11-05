@@ -175,6 +175,30 @@
         return members.map(function (m) { return m.id; }).sort()[0];
     }
 
+    // GET /graph has two shapes. The xArm server answers with the graph itself,
+    // edges written {from, to}. robot-motion (the UR arms) wraps it,
+    // {graph: {nodes, edges: [{source, target, mode}]}, notice}, and answers
+    // {graph: null} when no graph is configured. Everything below reads the
+    // xArm shape, so convert here.
+    function normalizeGraph(body) {
+        var graph = body;
+        if (body && Object.prototype.hasOwnProperty.call(body, 'graph') && !Array.isArray(body.nodes)) {
+            graph = body.graph;
+        }
+        if (!graph || !Array.isArray(graph.nodes)) throw new Error('no_graph');
+        var out = {};
+        Object.keys(graph).forEach(function (k) { out[k] = graph[k]; });
+        out.edges = (graph.edges || []).map(function (e) {
+            if (e.from != null && e.to != null) return e;
+            var edge = {};
+            Object.keys(e).forEach(function (k) { edge[k] = e[k]; });
+            edge.from = e.source;
+            edge.to = e.target;
+            return edge;
+        });
+        return out;
+    }
+
     function buildElements(data) {
         var elements = [];
         // The catalog drives leaf badges; capture it before nodeData runs.
@@ -1210,7 +1234,7 @@
                 throw new Error('HTTP ' + resp.status);
             }
             return resp.json();
-        });
+        }).then(normalizeGraph);
     }
 
     function initialLoad() {
@@ -1307,6 +1331,7 @@
             cy.scratch('workspaceWidth', cy.width());
         },
         fetchGraph: fetchGraph,
+        normalizeGraph: normalizeGraph,
         applyLiveState: applyLiveState,
         resetLayout: resetLayout,
         apiBase: API_BASE,
