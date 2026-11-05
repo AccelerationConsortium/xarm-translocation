@@ -188,6 +188,25 @@
         if (!graph || !Array.isArray(graph.nodes)) throw new Error('no_graph');
         var out = {};
         Object.keys(graph).forEach(function (k) { out[k] = graph[k]; });
+        // robot-motion's gripper catalog {name: {raw, expect_object}} and
+        // per-node gripper_states (states settable there) as the xArm's
+        // gripper_state_catalog and gripper_transitions, for the badges and ⇄.
+        if (graph.gripper_catalog && !graph.gripper_state_catalog) {
+            out.gripper_state_catalog = {};
+            Object.keys(graph.gripper_catalog).forEach(function (name) {
+                var spec = graph.gripper_catalog[name] || {};
+                out.gripper_state_catalog[name] = {
+                    stroke: spec.raw, intent: spec.expect_object ? 'grasp' : 'position',
+                };
+            });
+            out.nodes = graph.nodes.map(function (n) {
+                if (!n.gripper_states || !n.gripper_states.length || n.gripper_transitions) return n;
+                var node = {};
+                Object.keys(n).forEach(function (k) { node[k] = n[k]; });
+                node.gripper_transitions = n.gripper_states.slice();
+                return node;
+            });
+        }
         out.edges = (graph.edges || []).map(function (e) {
             if (e.from != null && e.to != null) return e;
             var edge = {};

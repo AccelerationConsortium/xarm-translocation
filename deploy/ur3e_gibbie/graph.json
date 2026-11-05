@@ -114,6 +114,10 @@
         -90.39,
         -0.72,
         0.64
+      ],
+      "gripper_states": [
+        "vial_open",
+        "vial_closed"
       ]
     },
     {
@@ -152,6 +156,10 @@
         -90.39,
         -0.71,
         0.64
+      ],
+      "gripper_states": [
+        "vial_open",
+        "vial_closed"
       ]
     }
   ],
@@ -240,5 +248,14 @@
       "mode": "linear",
       "speed": 10
     }
-  ]
+  ],
+  "gripper_catalog": {
+    "vial_open": {
+      "raw": 207
+    },
+    "vial_closed": {
+      "raw": 242,
+      "expect_object": true
+    }
+  }
 }
