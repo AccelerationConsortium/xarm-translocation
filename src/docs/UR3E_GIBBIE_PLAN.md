@@ -212,6 +212,14 @@ Not yet run on the arm. First live run: with the user at the arm and the
 Gibbie workflow idle, `dry_run` each routine, then `graph.move` along each
 leg at the default speeds before a full routine.
 
+**2026-11-05, gripper force and graph gripper states (user's decisions).**
+The vial grip force is the workflow's: `grip_force_pct: 50` in
+`routines.json` (the workflow's `gripper_dist` moves at force 0.5), and the
+2F-85's commissioned `max_force_pct` on pc-04 goes from 20 to 50 to allow it
+(the panel's own Open/Close keep `default_force_pct` 10). The graph names
+`vial_open` raw 207 and `vial_closed` raw 242 and allows them only at
+`pick_up_vial` and `drop_vial`; dose-head states are left out for now.
+
 ## Stage 4 commissioning record (2026-10-29, user at the arm)
 
 Same tools and gates as the UR5e (`UR5E_TRAJECTORY_PLAN.md` sections 6-8),

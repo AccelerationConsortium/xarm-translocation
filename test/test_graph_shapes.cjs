@@ -45,3 +45,18 @@ test('no configured graph reads as no_graph', () => {
     assert.throws(() => normalizeGraph(null), /no_graph/);
     assert.throws(() => normalizeGraph({ detail: 'nope' }), /no_graph/);
 });
+
+test('the UR gripper catalog becomes the panel catalog and node transitions', () => {
+    const graph = {
+        nodes: [{ id: 'pick', joints_deg: [0], gripper_states: ['vial_open', 'vial_closed'] }, { id: 'home', joints_deg: [0] }],
+        edges: [],
+        gripper_catalog: { vial_open: { raw: 207 }, vial_closed: { raw: 242, expect_object: true } },
+    };
+    const data = normalizeGraph({ graph });
+    assert.deepEqual(JSON.parse(JSON.stringify(data.gripper_state_catalog)), {
+        vial_open: { stroke: 207, intent: 'position' }, vial_closed: { stroke: 242, intent: 'grasp' },
+    });
+    assert.deepEqual(JSON.parse(JSON.stringify(data.nodes[0].gripper_transitions)), ['vial_open', 'vial_closed']);
+    assert.equal(data.nodes[1].gripper_transitions, undefined);
+    assert.equal(graph.nodes[0].gripper_transitions, undefined, 'the input is not modified');
+});

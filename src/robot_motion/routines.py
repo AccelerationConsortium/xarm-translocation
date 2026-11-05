@@ -37,7 +37,7 @@ Number = Annotated[float, Field(allow_inf_nan=False)]
 Six = tuple[Number, Number, Number, Number, Number, Number]
 Raw = Annotated[int, Field(ge=0, le=255)]
 
-GRAPH_ACTIONS = ("graph.move",)
+GRAPH_ACTIONS = ("graph.move", "graph.gripper")
 # The panel's Recover: a moveJ onto the nearest node, only this close.
 RECOVER_MAX_DEG = 15.0
 ROUTINE_ACTIONS = (
@@ -186,6 +186,11 @@ class PanelGraphMode(BaseModel):
     mode: str = Field(min_length=1, max_length=32)
 
 
+class PanelGripper(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    state: Identifier
+
+
 class PanelRecover(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     node_id: Identifier
@@ -218,6 +223,13 @@ class Routines:
             settings.check_against(graph)
             if control.gripper_control is None:
                 raise ValueError("Routines that grip need a configured gripper")
+            caps = control.gripper_control.settings
+            for name, value, cap in (
+                ("grip_force_pct", settings.grip_force_pct, caps.max_force_pct),
+                ("grip_speed_pct", settings.grip_speed_pct, caps.max_speed_pct),
+            ):
+                if value is not None and value > cap:
+                    raise ValueError(f"routines {name} {value:g} is above the gripper's commissioned {cap:g}")
         limits = control.arm_limits
         for e in graph.edges:
             if e.speed is None:
@@ -607,6 +619,22 @@ class Routines:
             "vial_rack_slots": s.vial_rack.slots() if s else [],
         }
 
+    def gripper_state(self):
+        """The catalog state the gripper was last sent to (its requested
+        position register), or None: not activated, or a position no state
+        names."""
+        gripper_control = self.control.gripper_control
+        if gripper_control is None or not self.graph.gripper_catalog:
+            return None
+        summary = gripper_control.gripper.summary()
+        if not summary.get("activated"):
+            return None
+        requested = summary.get("requested_raw")
+        for name, spec in self.graph.gripper_catalog.items():
+            if spec.raw == requested:
+                return name
+        return None
+
     def motion_graph_status(self):
         """details.motion_graph, the block the shared panel's Graph Drive reads
         (the xArm's field names). There is no graph mode to set here: graph
@@ -615,6 +643,8 @@ class Routines:
         as graph state."""
         where = self.observed_location()
         current = where.node if where else None
+        state = self.gripper_state()
+        allowed = [g for g in self.nodes[current].gripper_states if g != state] if current else []
         return {
             "graph_mode": "off",
             "current_node": current,
@@ -623,8 +653,9 @@ class Routines:
             "turns": where.turns if where else {},
             "reachable_nodes": [b for a, b in self.edges if a == current] if current else [],
             "travel_targets": self.travel_targets(current) if current else [],
-            "gripper_state": None,
-            "allowed_gripper_targets": [],
+            "gripper_state": state,
+            "allowed_gripper_targets": allowed,
+            "gripper_catalog": {n: g.model_dump() for n, g in self.graph.gripper_catalog.items()},
             "mode_override": None,
             "running": self._running,
         }
@@ -674,6 +705,32 @@ class Routines:
             steps = plan(node, body.node_id, body.speed)
             result = await self.run(identity, x_claim_token, "graph.move", steps, source=node, target=body.node_id)
             return _with(result, path=[node, *(s["to"] for s in steps)])
+
+        @app.post("/control/graph/gripper", tags=tags, dependencies=[claim])
+        async def panel_gripper(
+            body: PanelGripper, identity: dict = login, x_claim_token: str | None = Header(default=None)
+        ):
+            """Set the gripper to a catalog state, only at a node that allows it.
+            A state that expects a part fails (no_object_gripped) when the
+            fingers close on nothing."""
+            if self.control.gripper_control is None:
+                raise HTTPException(status_code=409, detail={"error": "no_gripper"})
+            node = at_node()
+            allowed = self.nodes[node].gripper_states
+            if body.state not in allowed:
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "gripper_change_not_allowed",
+                        "reason": f"{body.state!r} may not be set at {node!r}",
+                        "node": node,
+                        "allowed_gripper_states": allowed,
+                    },
+                )
+            spec = self.graph.gripper_catalog[body.state]
+            step = self._grip(spec.raw, body.state, spec.expect_object)
+            result = await self.run(identity, x_claim_token, "graph.gripper", [step], node=node, state=body.state)
+            return _with(result, gripper_state=body.state)
 
         @app.post("/control/graph/mode", tags=tags, dependencies=[claim])
         def panel_graph_mode(body: PanelGraphMode):

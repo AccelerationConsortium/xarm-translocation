@@ -27,5 +27,6 @@
     "pick_node": "pick_up_vial",
     "status_url": "http://sdl2-pc-04.tail6a1dd7.ts.net:8081/status",
     "door_component": "door_right"
-  }
+  },
+  "grip_force_pct": 50
 }

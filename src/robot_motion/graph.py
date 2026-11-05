@@ -17,6 +17,15 @@ Identifier = Annotated[str, Field(pattern=r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")]
 Number = Annotated[float, Field(allow_inf_nan=False)]
 
 
+class GripperState(BaseModel):
+    """A named gripper position: the raw Robotiq position (0 open .. 255)
+    and whether reaching it means holding a part."""
+
+    model_config = ConfigDict(extra="forbid")
+    raw: int = Field(ge=0, le=255)
+    expect_object: bool = False
+
+
 class Node(BaseModel):
     model_config = ConfigDict(extra="forbid")
     id: Identifier
@@ -24,6 +33,9 @@ class Node(BaseModel):
     tcp_mm_rpy_deg: list[Number] | None = Field(
         default=None, min_length=6, max_length=6
     )
+    # Catalog states the gripper may be set to at this node (Graph Drive's
+    # gripper row); empty: no gripper change here.
+    gripper_states: list[Identifier] = Field(default_factory=list, max_length=16)
 
 
 class Edge(BaseModel):
@@ -42,6 +54,7 @@ class Graph(BaseModel):
     robot_model: Literal["xarm5", "ur3e", "ur5e", "ur5_cb3", "mg400"]
     nodes: list[Node] = Field(default_factory=list, max_length=250)
     edges: list[Edge] = Field(default_factory=list, max_length=1000)
+    gripper_catalog: dict[Identifier, GripperState] = Field(default_factory=dict, max_length=32)
 
     @model_validator(mode="after")
     def valid_topology(self):
@@ -54,6 +67,9 @@ class Graph(BaseModel):
                 raise ValueError(
                     f"{self.robot_model} requires exactly {expected} joint angles"
                 )
+            unknown = sorted(set(node.gripper_states) - set(self.gripper_catalog))
+            if unknown:
+                raise ValueError(f"Node {node.id}: gripper states not in gripper_catalog: {unknown}")
         pairs = set()
         for edge in self.edges:
             if edge.source not in nodes or edge.target not in nodes:

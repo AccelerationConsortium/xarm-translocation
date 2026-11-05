@@ -165,7 +165,15 @@ with a `reason`), and always lists the `closest` nodes by worst joint with
 arm by hand. `POST /control/graph/recover_to {node_id}` is a moveJ
 onto it at the default speed, refused (412 `too_far_to_recover`) unless every
 joint is within 15° and none is a whole turn off; `force` does not widen
-that. There is no graph mode to set: `graph_mode` reads `off` because
+that. A graph may name gripper positions in `gripper_catalog` (`{name: {raw,
+expect_object}}`) and list per node the `gripper_states` that may be set
+there. `POST /control/graph/gripper {state}` sets one at the node the arm is
+at (422 `gripper_change_not_allowed` elsewhere); a state with
+`expect_object` fails with `no_object_gripped` if the fingers close on
+nothing. `motion_graph.gripper_state` is the catalog state the gripper was
+last sent to, and `allowed_gripper_targets` the others settable at the
+current node. The routines keep their own grips (rack slots are not nodes).
+There is no graph mode to set: `graph_mode` reads `off` because
 freehand moves are not graph-gated, and `POST /control/graph/mode` changes
 nothing.
 
