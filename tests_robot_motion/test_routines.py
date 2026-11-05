@@ -609,6 +609,9 @@ def test_recover_moves_onto_the_nearest_node_only_when_close(tmp_path):
         nearest = client.get("/graph/nearest").json()
         assert nearest["suggested_node"] == "home" and nearest["within_tolerance"] is False
         assert nearest["recoverable"] is True and nearest["recover_max_deg"] == 15
+        assert nearest["reason"] is None
+        assert nearest["closest"][0]["node"] == "home"
+        assert nearest["closest"][0]["move_by_deg"] == pytest.approx([3, 0, 0, 0, 0, 0], abs=0.2)
 
         wrong = client.post("/control/graph/recover_to", json={"node_id": "hub"}, headers=held)
         assert wrong.status_code == 422 and wrong.json()["detail"]["error"] == "not_nearest"
@@ -622,7 +625,14 @@ def test_recover_moves_onto_the_nearest_node_only_when_close(tmp_path):
 
         client.post("/control/freehand/joints", json={"angles": [-20, 0, 0, 0, 0, 0]}, headers=held)
         wait_for(lambda: client.get("/graph/nearest").json()["arm_residual_deg"] > 19, what="the arm far off home")
-        assert client.get("/graph/nearest").json()["recoverable"] is False
+        far_off = client.get("/graph/nearest").json()
+        # Nothing within reach: no node is named, but the least far are
+        # listed with the move per joint that would bring the arm onto them.
+        assert far_off["recoverable"] is False and far_off["suggested_node"] is None
+        assert "No node within 15 deg" in far_off["reason"] and "'home'" in far_off["reason"]
+        assert [c["node"] for c in far_off["closest"]] == ["home", "hub", "pan_above"]  # 20, 20, 20 deg
+        assert far_off["closest"][0]["move_by_deg"] == pytest.approx([20, 0, 0, 0, 0, 0], abs=0.2)
+        assert far_off["closest"][0]["worst_joint_deg"] == pytest.approx(20, abs=0.2)
         sent = len(bench.rig.control.moves)
         far = client.post("/control/graph/recover_to", json={"node_id": "home", "force": True}, headers=held)
         assert far.status_code == 412, far.text
@@ -636,7 +646,11 @@ def test_recover_refuses_a_joint_a_whole_turn_off(tmp_path):
         held = connected(client)
         bench.rig.world.q[5] += 2 * math.pi
         wait_for(lambda: client.get("/graph/nearest").json().get("turns") == {"j6": 1}, what="the extra turn")
-        assert client.get("/graph/nearest").json()["recoverable"] is False
+        nearest = client.get("/graph/nearest").json()
+        assert nearest["recoverable"] is False and nearest["suggested_node"] is None
+        assert "j6 +1 turn" in nearest["reason"]
+        # Folded, the pose is home: the ranking says so.
+        assert nearest["closest"][0]["node"] == "home" and nearest["closest"][0]["worst_joint_deg"] == pytest.approx(0, abs=0.01)
         refused = client.post("/control/graph/recover_to", json={"node_id": "home"}, headers=held)
         assert refused.status_code == 412 and refused.json()["detail"]["error"] == "joint_turn_offset"
         assert bench.rig.control.moves == []
