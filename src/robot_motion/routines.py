@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import string
-from typing import Annotated, NamedTuple
+from typing import Annotated, Literal, NamedTuple
 
 import httpx
 from fastapi import Header, HTTPException
@@ -102,11 +102,16 @@ class VialRack(BaseModel):
 
 class Grip(BaseModel):
     """Raw Robotiq positions for one part: fingers apart, and the close
-    command (beyond the part, so the fingers stop on it)."""
+    command. `close_check` says what a close must do: "object" (close_raw is
+    beyond the part, so the fingers must stop on it) or "stroke" (close_raw
+    is a target stroke: the fingers stop there or on the part, at no more
+    than the grip force, and either is a grip; the Gibbie fingertips cage a
+    vial, so its gripper may never sense one)."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
     open_raw: Raw
     close_raw: Raw
+    close_check: Literal["object", "stroke"] = "object"
 
     @model_validator(mode="after")
     def ordered(self):
@@ -391,6 +396,11 @@ class Routines:
     def _grip(self, raw, label, expect_object):
         return {"kind": "gripper", "to": label, "raw": raw, "expect_object": expect_object}
 
+    def _close(self, grip):
+        """The close step for `grip`: a part must stop the fingers only
+        when close_check is "object"."""
+        return self._grip(grip.close_raw, "vial_close", grip.close_check == "object")
+
     def rack_to_balance_steps(self, slot):
         s = self.settings
         rack, grip, port = s.vial_rack, s.vial_grip, s.balance
@@ -401,7 +411,7 @@ class Routines:
             *self.path_steps(s.home_node, rack.approach_node),
             {"kind": "linear", "to": f"slot_{slot}", "pose": above},
             {"kind": "linear", "to": f"slot_{slot}_grip", "pose": down},
-            self._grip(grip.close_raw, "vial_close", True),
+            self._close(grip),
             {"kind": "linear", "to": f"slot_{slot}", "pose": above},
             {"kind": "linear", "to": rack.approach_node, "pose": list(self.nodes[rack.approach_node].tcp_mm_rpy_deg)},
             *self.path_steps(rack.approach_node, port.drop_node),
@@ -415,7 +425,7 @@ class Routines:
         return [
             self._grip(s.vial_grip.open_raw, "vial_open", False),
             *self.path_steps(s.home_node, s.balance.pick_node),
-            self._grip(s.vial_grip.close_raw, "vial_close", True),
+            self._close(s.vial_grip),
         ]
 
     def balance_to_rack_steps(self, slot):
@@ -515,17 +525,25 @@ class Routines:
         return {"ok": True, "routine": name, "steps": [s["to"] for s in steps], **logged}
 
     # ── preconditions ───────────────────────────────────────────────
+    def _holding(self, summary):
+        """Whether the gripper holds a vial: stopped on contact, or (a
+        stroke grip, which may never touch it) last sent to the grip stroke."""
+        if summary.get("object") in ("contact_closing", "contact_opening"):
+            return True
+        grip = self.settings.vial_grip
+        return grip.close_check == "stroke" and summary.get("requested_raw") == grip.close_raw
+
     def _gripper_empty(self):
-        holding = self.control.gripper_control.gripper.summary().get("object")
-        if holding in ("contact_closing", "contact_opening"):
+        if self._holding(self.control.gripper_control.gripper.summary()):
             raise HTTPException(
                 status_code=412,
                 detail={"error": "gripper_holding", "reason": "The gripper reports a part between its fingers"},
             )
 
     def _gripper_holding(self):
-        holding = self.control.gripper_control.gripper.summary().get("object")
-        if holding != "contact_closing":
+        summary = self.control.gripper_control.gripper.summary()
+        holding = summary.get("object")
+        if not self._holding(summary):
             raise HTTPException(
                 status_code=412,
                 detail={

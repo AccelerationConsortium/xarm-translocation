@@ -84,6 +84,7 @@ class FakeGripper:
         self.busy = False
         self.requested = None
         self.forces = []
+        self.touch_below = None  # a raw the vial stops the fingers at (stroke grips)
 
     pct_to_raw = staticmethod(RobotiqGripper.pct_to_raw)
 
@@ -108,6 +109,10 @@ class FakeGripper:
         self.moves.append(position_raw)
         self.forces.append(force_raw)
         self.requested = position_raw
+        if self.touch_below is not None and position_raw >= self.touch_below and self.part:
+            self.holding = True
+            return {"position_raw": self.touch_below - 5, "requested_raw": position_raw, "opening_mm": 2.0,
+                    "object": "contact_closing", "object_detected": True, "elapsed_s": 0.01}
         closing = position_raw >= CLOSE
         self.holding = closing and self.part
         return {
@@ -449,7 +454,8 @@ def test_the_gibbie_files_reproduce_the_workflows_paths():
     rack = routines.vial_rack
     assert len(rack.slots()) == 24 and rack.slot_pose("A1") == list(rack.a1_tcp_mm_rpy_deg)
     assert rack.slot_pose("D6")[:2] == pytest.approx([483.7 - 60, 122.41 - 100])
-    assert (routines.vial_grip.open_raw, routines.vial_grip.close_raw) == (207, 242)
+    # The workflow's open (0.81 of 255); the close is the 2 mm stroke grip.
+    assert (routines.vial_grip.open_raw, routines.vial_grip.close_raw) == (207, 223)
 
 
 def test_a_joint_a_whole_turn_off_the_node_is_refused_with_the_turns_named(tmp_path):
@@ -679,7 +685,7 @@ def test_the_gripper_changes_only_where_the_graph_allows(tmp_path):
         graph = client.get("/status").json()["details"]["motion_graph"]
         assert graph["current_node"] == "home" and graph["allowed_gripper_targets"] == []
         assert graph["gripper_state"] is None
-        assert graph["gripper_catalog"]["vial_closed"] == {"raw": CLOSE, "expect_object": True}
+        assert graph["gripper_catalog"]["vial_closed"] == {"raw": CLOSE, "expect_object": True, "grasp": False}
         refused = client.post("/control/graph/gripper", json={"state": "vial_open"}, headers=held)
         assert refused.status_code == 422, refused.text
         assert refused.json()["detail"]["error"] == "gripper_change_not_allowed"
@@ -723,14 +729,20 @@ def test_a_node_state_missing_from_the_catalog_fails_the_load(tmp_path):
         Bench(tmp_path, graph=graph).client()
 
 
-def test_the_gibbie_gripper_states_match_the_workflow():
+def test_the_gibbie_vial_grip_is_a_2mm_stroke_at_20_percent():
+    """The workflow closed to raw 242 (0.95 of 255), past where the fingers
+    meet (228): at 50 % that clamp went through the vial into the pan and
+    overloaded the balance (2026-11-05). The fingertips cage the vial, so the
+    grip is now a 2 mm stroke at no more than 20 %."""
     graph = Graph.model_validate_json((DEPLOY / "graph.json").read_text())
     routines = RoutineSettings.model_validate_json((DEPLOY / "routines.json").read_text())
     catalog = graph.gripper_catalog
-    # The workflow's vial grip, 0.81 / 0.95 of 255, as the routines use it.
-    assert (catalog["vial_open"].raw, catalog["vial_closed"].raw) == (
-        routines.vial_grip.open_raw, routines.vial_grip.close_raw) == (207, 242)
-    assert catalog["vial_closed"].expect_object and not catalog["vial_open"].expect_object
+    assert catalog["vial_open"].raw == routines.vial_grip.open_raw == 207
+    assert catalog["vial_closed"].raw == routines.vial_grip.close_raw == 223
+    assert catalog["vial_closed"].grasp and not catalog["vial_closed"].expect_object
+    assert routines.vial_grip.close_check == "stroke" and routines.grip_force_pct == 20
+    # pc-04's calibration (open_raw 3, closed_raw 228 over 85 mm): about 2 mm.
+    assert (228 - 223) / (228 - 3) * 85 == pytest.approx(2.0, abs=0.15)
     settable = {n.id: n.gripper_states for n in graph.nodes if n.gripper_states}
     assert settable == {"pick_up_vial": ["vial_open", "vial_closed"], "drop_vial": ["vial_open", "vial_closed"]}
 
@@ -754,7 +766,34 @@ def test_vial_grips_use_the_force_set_in_the_routines(tmp_path):
     assert bench.gripper.forces == [RobotiqGripper.pct_to_raw(20)] * 3
 
 
-def test_the_gibbie_vial_grip_force_is_the_workflows():
-    routines = RoutineSettings.model_validate_json((DEPLOY / "routines.json").read_text())
-    # robot_control_URArm.py grips at force 0.5 of the gripper's range.
-    assert routines.grip_force_pct == 50
+
+
+# ── stroke grips (the fingertips cage the vial) ──────────────────────
+STROKE = 223
+STROKE_ROUTINES = {**ROUTINES, "vial_grip": {"open_raw": OPEN, "close_raw": STROKE, "close_check": "stroke"}}
+
+
+@pytest.mark.parametrize("touches", [False, True], ids=["fingers_reach_the_stroke", "fingers_stop_on_the_vial"])
+def test_a_stroke_grip_is_a_grip_whether_or_not_the_fingers_touch(tmp_path, touches):
+    bench = Bench(tmp_path, routines=STROKE_ROUTINES)
+    bench.gripper.touch_below = STROKE if touches else None
+    with bench.client() as client:
+        held = connected(client)
+        done = client.post("/routines/vial/balance_to_node", json={"target": "hub"}, headers=held)
+        assert done.status_code == 200, done.text
+        assert bench.gripper.moves == [OPEN, STROKE]
+        # Held at a node, the stroke grip counts as holding: home routines
+        # refuse, node_to_rack accepts.
+        sent = len(bench.rig.control.moves)
+        put_away = client.post("/routines/vial/node_to_rack", json={"slot": "A1"}, headers=held)
+        assert put_away.status_code == 200, put_away.text
+        assert bench.gripper.moves == [OPEN, STROKE, OPEN] and len(bench.rig.control.moves) > sent
+
+
+def test_a_stroke_grip_at_home_blocks_the_home_routines(tmp_path):
+    bench = Bench(tmp_path, routines=STROKE_ROUTINES)
+    with bench.client() as client:
+        held = connected(client)
+        assert client.post("/routines/vial/balance_to_node", json={"target": "home"}, headers=held).status_code == 200
+        refused = client.post("/routines/vial/rack_to_balance", json={"slot": "A1"}, headers=held)
+        assert refused.status_code == 412 and refused.json()["detail"]["error"] == "gripper_holding"

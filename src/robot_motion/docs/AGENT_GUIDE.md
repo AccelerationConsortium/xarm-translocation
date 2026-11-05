@@ -170,7 +170,12 @@ expect_object}}`) and list per node the `gripper_states` that may be set
 there. `POST /control/graph/gripper {state}` sets one at the node the arm is
 at (422 `gripper_change_not_allowed` elsewhere); a state with
 `expect_object` fails with `no_object_gripped` if the fingers close on
-nothing. `motion_graph.gripper_state` is the catalog state the gripper was
+nothing; a state with `grasp` is a target stroke that holds a part whether
+or not the fingers touch it (no check). In `routines_file`, `vial_grip`
+`close_check: "stroke"` makes the routines' close the same kind of grip: the
+fingers stop at `close_raw` or on the vial, at no more than `grip_force_pct`,
+and either is a grip; "holding" then means the gripper was last sent to
+`close_raw`. `motion_graph.gripper_state` is the catalog state the gripper was
 last sent to, and `allowed_gripper_targets` the others settable at the
 current node. The routines keep their own grips (rack slots are not nodes).
 There is no graph mode to set: `graph_mode` reads `off` because
