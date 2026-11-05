@@ -20,7 +20,7 @@
   },
   "vial_grip": {
     "open_raw": 207,
-    "close_raw": 223,
+    "close_raw": 217,
     "close_check": "stroke"
   },
   "balance": {
