@@ -31,6 +31,9 @@ class Edge(BaseModel):
     source: Identifier
     target: Identifier
     mode: Literal["joint", "linear"] = "joint"
+    # deg/s on a joint edge, mm/s on a linear edge; None: the motion block's
+    # default speed. Checked against the motion block's caps when loaded.
+    speed: Number | None = Field(default=None, gt=0)
 
 
 class Graph(BaseModel):

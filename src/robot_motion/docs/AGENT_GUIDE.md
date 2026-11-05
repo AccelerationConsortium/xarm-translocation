@@ -147,6 +147,25 @@ the taught angle (the UR3e's wrist 3 turns without limit) is refused with
 412 `joint_turn_offset` naming the joint and the turns, because a moveJ to
 the taught angle would spin it the whole way round — unwind it first.
 
+An edge may carry `speed` (deg/s on a joint edge, mm/s on a linear edge); an
+edge without one runs at the motion block's default. A graph whose edge speed
+is above the motion block's cap does not load. The same speeds apply to the
+routines' graph legs; their rack moves run at the default.
+
+The shared panel's Graph Drive uses the same walk. `details.motion_graph` in
+`/status` gives `current_node` (from the session's feedback, or the polled
+joints without a session), `reachable_nodes` (one taught edge away) and
+`travel_targets` (any node a graph move can reach). `POST
+/control/graph/move_to {node_id}` takes one taught edge (422 `not_adjacent`
+otherwise); `POST /control/graph/travel_to {node_id, speed?}` takes the
+shortest taught path, and `speed` can only slow each edge. `GET /graph/nearest`
+names the nearest node; `POST /control/graph/recover_to {node_id}` is a moveJ
+onto it at the default speed, refused (412 `too_far_to_recover`) unless every
+joint is within 15° and none is a whole turn off; `force` does not widen
+that. There is no graph mode to set: `graph_mode` reads `off` because
+freehand moves are not graph-gated, and `POST /control/graph/mode` changes
+nothing.
+
 A `routines_file` adds bench routines (the Gibbie vial rack and XPR balance):
 `POST /routines/vial/rack_to_balance {slot}` and
 `POST /routines/vial/balance_to_rack {slot}`; `GET /routines` lists the slots.

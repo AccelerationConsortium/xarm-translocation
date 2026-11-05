@@ -474,3 +474,169 @@ def test_a_joint_a_whole_turn_off_the_node_is_refused_with_the_turns_named(tmp_p
         bench.rig.world.q[5] -= 2 * math.pi
         wait_for(lambda: probe().status_code == 200, what="the feedback to see the joint unwound")
         assert probe().json()["from"] == "home"
+
+
+# ── edge speeds ──────────────────────────────────────────────────────
+def speeded(**speeds):
+    """GRAPH with speeds on some edges, keyed "a>b"."""
+    graph = json.loads(json.dumps(GRAPH))
+    for e in graph["edges"]:
+        key = f"{e['source']}>{e['target']}"
+        if key in speeds:
+            e["speed"] = speeds[key]
+    return graph
+
+
+def commanded_speeds(bench):
+    """deg/s for moveJ, mm/s for moveL, in order."""
+    return [
+        round(math.degrees(speed), 3) if kind == "moveJ" else round(speed * 1000, 3)
+        for kind, _target, speed, *_ in bench.rig.control.moves
+    ]
+
+
+def test_each_edge_runs_at_its_own_speed_and_others_at_the_default(tmp_path):
+    bench = Bench(tmp_path, graph=speeded(**{"home>hub": 8, "hub>pan_above": 30}))
+    with bench.client() as client:
+        held = connected(client)
+        plan = client.post("/graph/move", json={"target": "pan", "dry_run": True}, headers=held).json()["plan"]
+        assert [s.get("speed") for s in plan] == [8, 30, None]
+        assert client.post("/graph/move", json={"target": "pan"}, headers=held).status_code == 200
+        # MOTION's defaults are a quarter of its caps: 5 deg/s, 25 mm/s.
+        assert commanded_speeds(bench) == [8.0, 30.0, 25.0]
+
+
+def test_an_edge_faster_than_the_motion_block_is_refused_at_load(tmp_path):
+    with pytest.raises(ValueError, match=r"home -> hub: speed 21 deg/s is above the motion block's 20 deg/s"):
+        Bench(tmp_path, graph=speeded(**{"home>hub": 21})).client()
+    with pytest.raises(ValueError, match="above the motion block's 100 mm/s"):
+        Bench(tmp_path, graph=speeded(**{"hub>pan_above": 101})).client()
+
+
+def test_the_gibbie_edges_carry_the_chosen_speeds():
+    graph = Graph.model_validate_json((DEPLOY / "graph.json").read_text())
+    final = {("prep_viap_drop", "drop_vial"), ("drop_vial", "prep_viap_drop"),
+             ("prep_pick_up_vial", "pick_up_vial"), ("pick_up_vial", "prep_pick_up_vial")}
+    for e in graph.edges:
+        want = 5 if e.mode == "joint" or (e.source, e.target) in final else 10
+        assert e.speed == want, (e.source, e.target)
+    # Inside the UR3e's placeholder motion block (10 deg/s, 50 mm/s).
+    assert max(e.speed for e in graph.edges if e.mode == "joint") <= 10
+    assert max(e.speed for e in graph.edges if e.mode == "linear") <= 50
+
+
+# ── the shared panel's Graph Drive ───────────────────────────────────
+def test_status_reports_the_node_and_where_the_graph_goes_without_a_session(tmp_path):
+    bench = Bench(tmp_path)
+    observer, read = bench.rig.observer, bench.rig.observer.read
+
+    def with_joints():
+        # The live poll's joints; the fixture observer has none of its own.
+        observed = read()
+        observed["details"]["current_joints"] = [math.degrees(q) for q in bench.rig.world.q]
+        return observed
+
+    observer.read = with_joints
+    with bench.client() as client:
+        wait_for(lambda: (client.get("/status").json()["details"].get("motion_graph") or {}).get("current_node"),
+                 what="the observed node")
+        graph = client.get("/status").json()["details"]["motion_graph"]
+        assert graph["current_node"] == "home" and graph["graph_mode"] == "off"
+        assert graph["reachable_nodes"] == ["approach", "hub"]
+        assert graph["travel_targets"] == ["approach", "hub", "pan_above", "pan", "pick_above", "pick"]
+        assert graph["allowed_gripper_targets"] == [] and graph["mode_override"] is None
+
+        held = connected(client)
+        client.post("/control/freehand/joints", json={"angles": [3, 3, 3, 0, 0, 0]}, headers=held)
+        wait_for(lambda: client.get("/status").json()["details"]["motion_graph"]["current_node"] is None,
+                 what="the arm off the graph")
+        graph = client.get("/status").json()["details"]["motion_graph"]
+        assert graph["reachable_nodes"] == [] and graph["travel_targets"] == []
+        assert graph["nearest_node"] in {"home", "approach"}
+
+
+def test_move_to_takes_one_taught_edge_only(tmp_path):
+    bench = Bench(tmp_path, graph=speeded(**{"home>hub": 8}))
+    with bench.client() as client:
+        held = connected(client)
+        refused = client.post("/control/graph/move_to", json={"node_id": "pan"}, headers=held)
+        assert refused.status_code == 422, refused.text
+        assert refused.json()["detail"]["error"] == "not_adjacent"
+        assert refused.json()["detail"]["reachable_nodes"] == ["approach", "hub"]
+        assert bench.rig.control.moves == []
+        moved = client.post("/control/graph/move_to", json={"node_id": "hub"}, headers=held)
+        assert moved.status_code == 200, moved.text
+        assert moved.json()["path"] == ["home", "hub"]
+        assert bench.targets() == [("J", joints("hub"))] and commanded_speeds(bench) == [8.0]
+
+
+def test_travel_to_walks_the_path_and_a_speed_can_only_slow_it(tmp_path):
+    bench = Bench(tmp_path, graph=speeded(**{"home>hub": 8, "hub>pan_above": 30}))
+    with bench.client() as client:
+        held = connected(client)
+        mode = client.post("/control/graph/mode", json={"mode": "strict"}, headers=held)
+        assert mode.status_code == 200 and mode.json()["graph_mode"] == "off"
+        done = client.post("/control/graph/travel_to", json={"node_id": "pan", "speed": 6}, headers=held)
+        assert done.status_code == 200, done.text
+        assert done.json()["path"] == ["home", "hub", "pan_above", "pan"]
+        assert bench.targets() == [("J", joints("hub")), ("L", mm("pan_above")), ("L", mm("pan"))]
+        assert commanded_speeds(bench) == [6.0, 6.0, 6.0]
+        back = client.post("/control/graph/travel_to", json={"node_id": "home", "speed": 50}, headers=held)
+        assert back.status_code == 200 and back.json()["path"] == ["pan", "pan_above", "hub", "home"]
+        # A cap above the edge's speed (or the default) changes nothing.
+        assert commanded_speeds(bench)[3:] == [25.0, 25.0, 5.0]
+
+
+def test_graph_drive_needs_a_claim(tmp_path):
+    bench = Bench(tmp_path)
+    with bench.client() as client:
+        wait_for(lambda: client.get("/status").json()["details"].get("robotmode"))
+        for path, body in (
+            ("/control/graph/move_to", {"node_id": "hub"}),
+            ("/control/graph/travel_to", {"node_id": "pan"}),
+            ("/control/graph/recover_to", {"node_id": "home"}),
+            ("/control/graph/mode", {"mode": "strict"}),
+        ):
+            assert client.post(path, json=body, headers=HEADERS).status_code == 423, path
+
+
+def test_recover_moves_onto_the_nearest_node_only_when_close(tmp_path):
+    bench = Bench(tmp_path)
+    with bench.client() as client:
+        held = connected(client)
+        client.post("/control/freehand/joints", json={"angles": [-3, 0, 0, 0, 0, 0]}, headers=held)
+        wait_for(lambda: client.get("/graph/nearest").json()["arm_residual_deg"] > 2, what="the arm off home")
+        nearest = client.get("/graph/nearest").json()
+        assert nearest["suggested_node"] == "home" and nearest["within_tolerance"] is False
+        assert nearest["recoverable"] is True and nearest["recover_max_deg"] == 15
+
+        wrong = client.post("/control/graph/recover_to", json={"node_id": "hub"}, headers=held)
+        assert wrong.status_code == 422 and wrong.json()["detail"]["error"] == "not_nearest"
+        sent = len(bench.rig.control.moves)
+        done = client.post("/control/graph/recover_to", json={"node_id": "home", "force": True}, headers=held)
+        assert done.status_code == 200, done.text
+        assert done.json()["recovered_to"] == "home" and done.json()["moved"] is True
+        assert bench.targets()[sent:] == [("J", joints("home"))]
+        again = client.post("/control/graph/recover_to", json={"node_id": "home"}, headers=held)
+        assert again.status_code == 200 and again.json()["moved"] is False
+
+        client.post("/control/freehand/joints", json={"angles": [-20, 0, 0, 0, 0, 0]}, headers=held)
+        wait_for(lambda: client.get("/graph/nearest").json()["arm_residual_deg"] > 19, what="the arm far off home")
+        assert client.get("/graph/nearest").json()["recoverable"] is False
+        sent = len(bench.rig.control.moves)
+        far = client.post("/control/graph/recover_to", json={"node_id": "home", "force": True}, headers=held)
+        assert far.status_code == 412, far.text
+        assert far.json()["detail"]["error"] == "too_far_to_recover"
+        assert len(bench.rig.control.moves) == sent
+
+
+def test_recover_refuses_a_joint_a_whole_turn_off(tmp_path):
+    bench = Bench(tmp_path)
+    with bench.client() as client:
+        held = connected(client)
+        bench.rig.world.q[5] += 2 * math.pi
+        wait_for(lambda: client.get("/graph/nearest").json().get("turns") == {"j6": 1}, what="the extra turn")
+        assert client.get("/graph/nearest").json()["recoverable"] is False
+        refused = client.post("/control/graph/recover_to", json={"node_id": "home"}, headers=held)
+        assert refused.status_code == 412 and refused.json()["detail"]["error"] == "joint_turn_offset"
+        assert bench.rig.control.moves == []

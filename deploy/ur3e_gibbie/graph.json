@@ -159,72 +159,86 @@
     {
       "source": "safe_rack",
       "target": "vial_stock_prep",
-      "mode": "linear"
+      "mode": "linear",
+      "speed": 10
     },
     {
       "source": "vial_stock_prep",
       "target": "safe_rack",
-      "mode": "joint"
+      "mode": "joint",
+      "speed": 5
     },
     {
       "source": "safe_rack",
       "target": "home_prep_bal",
-      "mode": "joint"
+      "mode": "joint",
+      "speed": 5
     },
     {
       "source": "home_prep_bal",
       "target": "safe_rack",
-      "mode": "joint"
+      "mode": "joint",
+      "speed": 5
     },
     {
       "source": "home_prep_bal",
       "target": "safe_bal",
-      "mode": "joint"
+      "mode": "joint",
+      "speed": 5
     },
     {
       "source": "safe_bal",
       "target": "home_prep_bal",
-      "mode": "joint"
+      "mode": "joint",
+      "speed": 5
     },
     {
       "source": "safe_bal",
       "target": "prep_viap_drop",
-      "mode": "linear"
+      "mode": "linear",
+      "speed": 10
     },
     {
       "source": "prep_viap_drop",
       "target": "drop_vial",
-      "mode": "linear"
+      "mode": "linear",
+      "speed": 5
     },
     {
       "source": "drop_vial",
       "target": "prep_viap_drop",
-      "mode": "linear"
+      "mode": "linear",
+      "speed": 5
     },
     {
       "source": "prep_viap_drop",
       "target": "safe_bal",
-      "mode": "linear"
+      "mode": "linear",
+      "speed": 10
     },
     {
       "source": "safe_bal",
       "target": "prep_pick_up_vial",
-      "mode": "linear"
+      "mode": "linear",
+      "speed": 10
     },
     {
       "source": "prep_pick_up_vial",
       "target": "pick_up_vial",
-      "mode": "linear"
+      "mode": "linear",
+      "speed": 5
     },
     {
       "source": "pick_up_vial",
       "target": "prep_pick_up_vial",
-      "mode": "linear"
+      "mode": "linear",
+      "speed": 5
     },
     {
       "source": "prep_pick_up_vial",
       "target": "safe_bal",
-      "mode": "linear"
+      "mode": "linear",
+      "speed": 10
     }
   ]
 }

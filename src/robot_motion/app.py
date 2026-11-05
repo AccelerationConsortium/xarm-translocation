@@ -387,8 +387,19 @@ def create_app(
         )
         # Graph moves are ordinary arm moves, so they exist only in motion mode.
         if graph is not None and control.arm_mode == "motion":
+
+            def observed_joints():
+                """The polled joints, so Graph Drive shows the node without a session."""
+                current, stale = current_observation()
+                details = with_telemetry(current, stale)["details"]
+                sample = details.get("telemetry") or {}
+                if sample.get("valid") is True:
+                    return sample.get("joints_deg")
+                return None if stale else details.get("current_joints")
+
             control.routines = Routines(
                 control, graph, routine_settings,
+                observed_joints=observed_joints,
                 **({"door_reader": balance_door_reader} if balance_door_reader else {}),
             )
         control.install(app)
@@ -608,6 +619,9 @@ def create_app(
                 "trajectory": control_state.get("trajectory") if control_state else None,
                 # Graph moves and bench routines; None without a graph.
                 "routines": control_state.get("routines") if control_state else None,
+                # Current node, reachable and travel targets for the panel's
+                # Graph Drive (the xArm's field name); None without a graph.
+                "motion_graph": control_state.get("motion_graph") if control_state else None,
                 # The panel's Manual switch reads this (the xArm's field name).
                 "manual_mode": bool(
                     control_state
