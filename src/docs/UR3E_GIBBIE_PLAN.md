@@ -228,6 +228,8 @@ raw 215-225 never touched anything: the fingertips cage the vial. So
 `vial_closed` and the routines' close are raw 223 (about 2 mm on pc-04's
 calibration), `close_check: "stroke"` (reaching 223 or stopping on the vial
 are both a grip), `grip_force_pct: 20`, and `max_force_pct` back to 20.
+Then, at the user's request, a 4 mm stroke: raw 217 (about 4.2 mm) for
+`vial_closed` and the routines' close.
 
 ## Stage 4 commissioning record (2026-10-29, user at the arm)
 

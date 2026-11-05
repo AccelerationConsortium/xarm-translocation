@@ -454,8 +454,8 @@ def test_the_gibbie_files_reproduce_the_workflows_paths():
     rack = routines.vial_rack
     assert len(rack.slots()) == 24 and rack.slot_pose("A1") == list(rack.a1_tcp_mm_rpy_deg)
     assert rack.slot_pose("D6")[:2] == pytest.approx([483.7 - 60, 122.41 - 100])
-    # The workflow's open (0.81 of 255); the close is the 2 mm stroke grip.
-    assert (routines.vial_grip.open_raw, routines.vial_grip.close_raw) == (207, 223)
+    # The workflow's open (0.81 of 255); the close is the 4 mm stroke grip.
+    assert (routines.vial_grip.open_raw, routines.vial_grip.close_raw) == (207, 217)
 
 
 def test_a_joint_a_whole_turn_off_the_node_is_refused_with_the_turns_named(tmp_path):
@@ -729,20 +729,21 @@ def test_a_node_state_missing_from_the_catalog_fails_the_load(tmp_path):
         Bench(tmp_path, graph=graph).client()
 
 
-def test_the_gibbie_vial_grip_is_a_2mm_stroke_at_20_percent():
+def test_the_gibbie_vial_grip_is_a_4mm_stroke_at_20_percent():
     """The workflow closed to raw 242 (0.95 of 255), past where the fingers
     meet (228): at 50 % that clamp went through the vial into the pan and
     overloaded the balance (2026-11-05). The fingertips cage the vial, so the
-    grip is now a 2 mm stroke at no more than 20 %."""
+    grip is a stroke at no more than 20 %: 2 mm first, then 4 mm (user,
+    2026-11-05)."""
     graph = Graph.model_validate_json((DEPLOY / "graph.json").read_text())
     routines = RoutineSettings.model_validate_json((DEPLOY / "routines.json").read_text())
     catalog = graph.gripper_catalog
     assert catalog["vial_open"].raw == routines.vial_grip.open_raw == 207
-    assert catalog["vial_closed"].raw == routines.vial_grip.close_raw == 223
+    assert catalog["vial_closed"].raw == routines.vial_grip.close_raw == 217
     assert catalog["vial_closed"].grasp and not catalog["vial_closed"].expect_object
     assert routines.vial_grip.close_check == "stroke" and routines.grip_force_pct == 20
-    # pc-04's calibration (open_raw 3, closed_raw 228 over 85 mm): about 2 mm.
-    assert (228 - 223) / (228 - 3) * 85 == pytest.approx(2.0, abs=0.15)
+    # pc-04's calibration (open_raw 3, closed_raw 228 over 85 mm): about 4 mm.
+    assert (228 - 217) / (228 - 3) * 85 == pytest.approx(4.0, abs=0.2)
     settable = {n.id: n.gripper_states for n in graph.nodes if n.gripper_states}
     assert settable == {"pick_up_vial": ["vial_open", "vial_closed"], "drop_vial": ["vial_open", "vial_closed"]}
 
