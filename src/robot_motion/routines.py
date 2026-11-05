@@ -48,6 +48,11 @@ ROUTINE_ACTIONS = (
 )
 
 
+def _signed_fold_deg(delta: float) -> float:
+    """The shortest signed angle for a joint difference, in [-180, 180)."""
+    return (delta + 180.0) % 360.0 - 180.0
+
+
 def _fold_deg(delta: float) -> float:
     """Shortest angular distance for a joint difference, in [0, 180]."""
     delta = abs(delta) % 360.0
@@ -260,17 +265,36 @@ class Routines:
         sample = feedback.latest() if feedback is not None else None
         return list(sample["joints_deg"]) if sample is not None else None
 
-    def observed_location(self) -> Location | None:
-        """Where the arm is from the freshest joints there are: the session's
-        feedback, else the observation poll. None when neither has a reading.
-        For display (/status, /graph/nearest); moves use locate()."""
+    def _display_joints(self):
+        """The freshest joints there are: the session's feedback, else the
+        observation poll; None when neither has a reading."""
         joints = self._session_joints()
         if joints is None and self.observed_joints is not None:
             try:
                 joints = self.observed_joints()
             except Exception:
                 joints = None
+        return list(joints) if joints else None
+
+    def observed_location(self) -> Location | None:
+        """Where the arm is from _display_joints(). For display (/status,
+        /graph/nearest); moves use locate()."""
+        joints = self._display_joints()
         return self._locate(joints) if joints else None
+
+    def closest_nodes(self, joints, count=3):
+        """The nodes with the smallest worst-joint deviation, each with the
+        signed move per joint (node minus arm, shortest way, whole turns
+        folded out) that would bring the arm onto it."""
+        ranked = []
+        for node in self.graph.nodes:
+            move = [_signed_fold_deg(b - a) for a, b in zip(joints, node.joints_deg)]
+            ranked.append((max(abs(m) for m in move), node.id, move))
+        ranked.sort(key=lambda r: r[0])
+        return [
+            {"node": nid, "worst_joint_deg": round(worst, 2), "move_by_deg": [round(m, 1) for m in move]}
+            for worst, nid, move in ranked[:count]
+        ]
 
     def _locate(self, joints) -> Location:
         tolerance = self.settings.node_tolerance_deg if self.settings else 1.0
@@ -675,17 +699,33 @@ class Routines:
                 "allowed_gripper_states": [],
                 "gripper_stroke": None,
             }
-            if where is None:
+            joints = self._display_joints()
+            if joints is None:
                 return {**base, "suggested_node": None, "arm_residual_deg": None, "within_tolerance": False,
-                        "recoverable": False, "reason": "No joint reading"}
-            return {
+                        "recoverable": False, "reason": "No joint reading", "closest": []}
+            where = self._locate(joints)
+            recoverable = not where.turns and where.deviation_deg <= RECOVER_MAX_DEG
+            answer = {
                 **base,
-                "suggested_node": where.nearest,
                 "arm_residual_deg": round(where.deviation_deg, 3),
                 "within_tolerance": where.node is not None,
                 "turns": where.turns,
-                "recoverable": not where.turns and where.deviation_deg <= RECOVER_MAX_DEG,
+                "recoverable": recoverable,
+                # The worst-joint ranking for guiding the arm by hand; with
+                # nothing in reach the first entry is only the least far.
+                "closest": self.closest_nodes(joints),
             }
+            if recoverable:
+                return {**answer, "suggested_node": where.nearest, "reason": None}
+            if where.turns:
+                joints_off = ", ".join(f"{j} {n:+d} turn{'s' if abs(n) != 1 else ''}" for j, n in where.turns.items())
+                reason = f"At {where.nearest!r} except {joints_off}; unwind by hand first"
+            else:
+                reason = (
+                    f"No node within {RECOVER_MAX_DEG:g} deg (the least far, {where.nearest!r}, has a joint "
+                    f"{where.deviation_deg:.0f} deg off); guide the arm onto a node by hand, then Recover"
+                )
+            return {**answer, "suggested_node": None, "reason": reason}
 
         @app.post("/control/graph/recover_to", tags=tags, dependencies=[claim])
         async def panel_recover_to(

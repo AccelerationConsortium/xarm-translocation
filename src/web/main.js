@@ -1525,7 +1525,8 @@ document.addEventListener('DOMContentLoaded', () => {
         panel.hidden = false;
         if (!nearest || !nearest.suggested_node) {
             suggestedEl.textContent = '(no match)';
-            residualsEl.textContent = '';
+            // robot-motion says why (e.g. no node within its recover bound).
+            residualsEl.textContent = (nearest && nearest.reason) || '';
             acceptBtn.disabled = true;
             forceCheckbox.checked = false;
             return;

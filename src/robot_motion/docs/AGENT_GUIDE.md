@@ -159,7 +159,10 @@ joints without a session), `reachable_nodes` (one taught edge away) and
 /control/graph/move_to {node_id}` takes one taught edge (422 `not_adjacent`
 otherwise); `POST /control/graph/travel_to {node_id, speed?}` takes the
 shortest taught path, and `speed` can only slow each edge. `GET /graph/nearest`
-names the nearest node; `POST /control/graph/recover_to {node_id}` is a moveJ
+names a `suggested_node` only when Recover could reach it (otherwise null,
+with a `reason`), and always lists the `closest` nodes by worst joint with
+`move_by_deg`, the signed shortest move per joint onto each, for guiding the
+arm by hand. `POST /control/graph/recover_to {node_id}` is a moveJ
 onto it at the default speed, refused (412 `too_far_to_recover`) unless every
 joint is within 15° and none is a whole turn off; `force` does not widen
 that. There is no graph mode to set: `graph_mode` reads `off` because
