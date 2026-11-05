@@ -529,7 +529,9 @@ def test_the_gibbie_edges_carry_the_chosen_speeds():
     final = {("prep_viap_drop", "drop_vial"), ("drop_vial", "prep_viap_drop"),
              ("prep_pick_up_vial", "pick_up_vial"), ("pick_up_vial", "prep_pick_up_vial")}
     for e in graph.edges:
-        want = 5 if e.mode == "joint" or (e.source, e.target) in final else 10
+        # User's speeds: joints 5 deg/s, pan approaches 5 mm/s, transit 15 mm/s
+        # (10 until 2026-11-05).
+        want = 5 if e.mode == "joint" or (e.source, e.target) in final else 15
         assert e.speed == want, (e.source, e.target)
     # Inside the UR3e's placeholder motion block (10 deg/s, 50 mm/s).
     assert max(e.speed for e in graph.edges if e.mode == "joint") <= 10
@@ -798,3 +800,65 @@ def test_a_stroke_grip_at_home_blocks_the_home_routines(tmp_path):
         assert client.post("/routines/vial/balance_to_node", json={"target": "home"}, headers=held).status_code == 200
         refused = client.post("/routines/vial/rack_to_balance", json={"slot": "A1"}, headers=held)
         assert refused.status_code == 412 and refused.json()["detail"]["error"] == "gripper_holding"
+
+
+# ── rack speeds, catalog names, /control routes ──────────────────────
+RACK_SPEEDS = {**ROUTINES, "vial_rack": {**ROUTINES["vial_rack"], "transit_speed_mm_s": 30, "slot_speed_mm_s": 6}}
+
+
+def test_rack_moves_run_at_the_rack_speeds(tmp_path):
+    bench = Bench(tmp_path, routines=RACK_SPEEDS)
+    with bench.client() as client:
+        held = connected(client)
+        plan = client.post("/routines/vial/rack_to_balance", json={"slot": "A1", "dry_run": True}, headers=held)
+        steps = [(s["to"], s.get("speed")) for s in plan.json()["plan"][1:7] if s["kind"] != "gripper"]
+        # The graph edge home -> approach has no speed (default); then the rack.
+        assert steps == [("approach", None), ("slot_A1", 30), ("slot_A1_grip", 6), ("slot_A1", 6), ("approach", 30)]
+        done = client.post("/routines/vial/rack_to_balance", json={"slot": "A1"}, headers=held)
+        assert done.status_code == 200, done.text
+        # approach (graph edge, default 25), above A1 30, down 6, up 6, back to approach 30, ...
+        assert commanded_speeds(bench)[:5] == [25.0, 30.0, 6.0, 6.0, 30.0]
+
+
+def test_a_rack_speed_above_the_motion_block_fails_the_load(tmp_path):
+    routines = {**ROUTINES, "vial_rack": {**ROUTINES["vial_rack"], "slot_speed_mm_s": 101}}
+    with pytest.raises(ValueError, match="vial_rack slot_speed_mm_s 101 mm/s is above the motion block's 100 mm/s"):
+        Bench(tmp_path, routines=routines).client()
+
+
+def test_the_gibbie_rack_speeds():
+    routines = RoutineSettings.model_validate_json((DEPLOY / "routines.json").read_text())
+    assert (routines.vial_rack.transit_speed_mm_s, routines.vial_rack.slot_speed_mm_s) == (15, 5)
+
+
+def test_allowed_actions_carry_the_catalog_names(tmp_path):
+    bench = Bench(tmp_path)
+    with bench.client() as client:
+        connected(client)
+        actions = set(client.get("/status").json()["allowed_actions"])
+        assert {"graph.move_to", "graph.travel_to", "graph.gripper", "graph.recover_to", "graph.move"} <= actions
+        assert {
+            "routine.vial_rack_to_balance", "routine.vial_balance_to_rack",
+            "routine.vial_balance_to_node", "routine.vial_node_to_rack",
+        } <= actions
+
+
+def test_the_routines_and_graph_move_answer_under_control(tmp_path):
+    """The dashboard's passthrough forwards only /control/*, so the catalog
+    skills call the /control aliases."""
+    bench = Bench(tmp_path)
+    with bench.client() as client:
+        held = connected(client)
+        for path, body in (
+            ("/control/routines/vial/rack_to_balance", {"slot": "A1", "dry_run": True}),
+            ("/control/routines/vial/balance_to_rack", {"slot": "A1", "dry_run": True}),
+            ("/control/routines/vial/balance_to_node", {"target": "hub", "dry_run": True}),
+            ("/control/graph/move", {"target": "pan", "dry_run": True}),
+        ):
+            answer = client.post(path, json=body, headers=held)
+            assert answer.status_code == 200 and answer.json()["dry_run"] is True, (path, answer.text)
+        assert bench.rig.control.moves == []
+        refused = client.post("/control/routines/vial/node_to_rack", json={"slot": "A1"}, headers=held)
+        assert refused.status_code == 412 and refused.json()["detail"]["error"] == "gripper_empty"
+        assert client.get("/routines").json()["routines"]["vial_balance_to_node"].startswith(
+            "POST /control/routines/vial/balance_to_node")
