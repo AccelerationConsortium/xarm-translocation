@@ -39,6 +39,10 @@ class Node(BaseModel):
     # Catalog states the gripper may be set to at this node (Graph Drive's
     # gripper row); empty: no gripper change here.
     gripper_states: list[Identifier] = Field(default_factory=list, max_length=16)
+    # False: no state that lets go of a held part (one with neither grasp nor
+    # expect_object) may be set here while the gripper holds one, e.g. a safe
+    # waypoint in mid-air where opening would drop the vial.
+    gripper_release: bool = True
 
 
 class Edge(BaseModel):

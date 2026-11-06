@@ -653,6 +653,31 @@ class Routines:
                 return name
         return None
 
+    def _drops_part(self, node_id, state):
+        """Whether setting `state` at `node_id` would let go of a held part
+        where the node forbids it: the gripper holds one (stopped on contact,
+        a routine's grip, or a grasp / expect_object catalog state) and
+        `state` is neither."""
+        if self.nodes[node_id].gripper_release:
+            return False
+        target = self.graph.gripper_catalog[state]
+        if target.grasp or target.expect_object:
+            return False
+        summary = self.control.gripper_control.gripper.summary()
+        if self.settings is not None and self._holding(summary):
+            return True
+        if summary.get("object") in ("contact_closing", "contact_opening"):
+            return True
+        current = self.graph.gripper_catalog.get(self.gripper_state() or "")
+        return bool(current and (current.grasp or current.expect_object))
+
+    def _settable(self, node_id, current_state):
+        """The catalog states Graph Drive may set at `node_id` now."""
+        return [
+            g for g in self.nodes[node_id].gripper_states
+            if g != current_state and not self._drops_part(node_id, g)
+        ]
+
     def motion_graph_status(self):
         """details.motion_graph, the block the shared panel's Graph Drive reads
         (the xArm's field names). There is no graph mode to set here: graph
@@ -662,7 +687,7 @@ class Routines:
         where = self.observed_location()
         current = where.node if where else None
         state = self.gripper_state()
-        allowed = [g for g in self.nodes[current].gripper_states if g != state] if current else []
+        allowed = self._settable(current, state) if current and self.control.gripper_control else []
         return {
             "graph_mode": "off",
             "current_node": current,
@@ -743,6 +768,17 @@ class Routines:
                         "reason": f"{body.state!r} may not be set at {node!r}",
                         "node": node,
                         "allowed_gripper_states": allowed,
+                    },
+                )
+            if self._drops_part(node, body.state):
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": "gripper_release_not_allowed",
+                        "reason": f"The gripper holds a part; {body.state!r} would drop it at {node!r}. "
+                        "Release it at a node that allows it, or with a rack routine",
+                        "node": node,
+                        "allowed_gripper_states": self._settable(node, self.gripper_state()),
                     },
                 )
             spec = self.graph.gripper_catalog[body.state]
