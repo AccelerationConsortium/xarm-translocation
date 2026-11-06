@@ -85,6 +85,7 @@ class FakeGripper:
         self.requested = None
         self.forces = []
         self.touch_below = None  # a raw the vial stops the fingers at (stroke grips)
+        self.position = 3  # where the fingers are (raw), as the Robotiq reports POS
 
     pct_to_raw = staticmethod(RobotiqGripper.pct_to_raw)
 
@@ -103,6 +104,7 @@ class FakeGripper:
             "busy": False, "state": "active", "activated": True, "fault_code": 0, "fault": None,
             "object": "contact_closing" if self.holding else "at_requested_position",
             "requested_raw": self.requested,
+            "position_raw": self.position,
         }
 
     def move(self, position_raw, speed_raw, force_raw):
@@ -111,10 +113,12 @@ class FakeGripper:
         self.requested = position_raw
         if self.touch_below is not None and position_raw >= self.touch_below and self.part:
             self.holding = True
+            self.position = self.touch_below - 5
             return {"position_raw": self.touch_below - 5, "requested_raw": position_raw, "opening_mm": 2.0,
                     "object": "contact_closing", "object_detected": True, "elapsed_s": 0.01}
         closing = position_raw >= CLOSE
         self.holding = closing and self.part
+        self.position = 200 if self.holding else position_raw
         return {
             "position_raw": 200 if self.holding else position_raw,
             "requested_raw": position_raw,

@@ -596,6 +596,7 @@ def create_app(
                 **presented["details"],
                 **measured(presented["details"]),
                 **({"gripper": gripper.summary()} if gripper is not None else {}),
+                "gripper_held": (control_state or {}).get("gripper_held"),
                 "monitoring_only": control is None,
                 "control_enabled": control is not None,
                 "control_implementation": (

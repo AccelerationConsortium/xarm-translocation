@@ -144,13 +144,17 @@ class URControl:
     def identity(self, request):
         """The edge's identity, else an agent key's as vouched for by ac_auth."""
         identity = edge_identity(request, self.secret)
-        if identity is not None or self.key_verifier is None:
-            return identity
+        if identity is not None:
+            # "via" says how it was vouched for; a person is only ever "edge".
+            return {**identity, "via": "edge"}
+        if self.key_verifier is None:
+            return None
         key = (request.headers.get(API_KEY_HEADER) or "").strip()
         if not key:
             return None
         try:
-            return self.key_verifier(key)
+            verified = self.key_verifier(key)
+            return {**verified, "via": "api_key"} if verified is not None else None
         except KeyForbidden:
             raise HTTPException(
                 status_code=403,
@@ -597,6 +601,15 @@ class URControl:
                 log.exception("UR control audit append failed")
 
     # ── state for /status ───────────────────────────────────────────
+    def arm_busy_reason(self):
+        """Why the arm is not still and free right now, or None."""
+        if getattr(self.executor, "busy", False):
+            return "An arm move is running"
+        running = getattr(self.routines, "_running", None) if self.routines is not None else None
+        if running:
+            return f"Routine {running} is running"
+        return None
+
     def state(self):
         session = self.session
         session_open = session is not None and session.is_open
@@ -653,6 +666,12 @@ class URControl:
             "routines": self.routines.summary() if self.routines is not None else None,
             # The shared panel's Graph Drive block; None without a graph.
             "motion_graph": self.routines.motion_graph_status() if self.routines is not None else None,
+            # The held-part record (held.py); None without a guarded graph.
+            "gripper_held": (
+                self.gripper_control.held.summary()
+                if self.gripper_control is not None and self.gripper_control.held is not None
+                else None
+            ),
         }
 
     def shutdown(self):

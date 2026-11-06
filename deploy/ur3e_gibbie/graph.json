@@ -265,5 +265,6 @@
       "raw": 217,
       "grasp": true
     }
-  }
+  },
+  "held_part_guard": true
 }

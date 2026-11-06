@@ -2721,6 +2721,25 @@ document.addEventListener('DOMContentLoaded', () => {
     enableGripperBtn.addEventListener('click', () => {
         apiRequest('/component/enable', 'POST', { component: 'gripper' });
     });
+
+    // Held-part guard (robot-motion held.py): while the device counts a part
+    // as held it refuses to open the fingers away from a release node. A
+    // person who has looked can say the gripper is empty; agents cannot.
+    const confirmEmptyBtn = document.getElementById('confirm-empty-btn');
+    if (confirmEmptyBtn) {
+        document.addEventListener('xarm:status', (event) => {
+            const held = (((event.detail || {}).details) || {}).gripper_held;
+            confirmEmptyBtn.hidden = !(held && held.held);
+            confirmEmptyBtn.title = held && held.held ? `Held since ${held.since} (${held.source})` : '';
+        });
+        confirmEmptyBtn.addEventListener('click', () => {
+            if (!window.confirm('Confirm that you have looked and the gripper holds nothing. '
+                + 'The arm will then allow opening the fingers anywhere.')) {
+                return;
+            }
+            apiRequest('/gripper/confirm_empty', 'POST', { note: 'panel' });
+        });
+    }
     
     // Blank/invalid fields use the same conservative default shown on reload.
     // Units come from each control: rail/TCP mm/s, joints degrees/s.
