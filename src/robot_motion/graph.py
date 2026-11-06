@@ -62,6 +62,9 @@ class Graph(BaseModel):
     nodes: list[Node] = Field(default_factory=list, max_length=250)
     edges: list[Edge] = Field(default_factory=list, max_length=1000)
     gripper_catalog: dict[Identifier, GripperState] = Field(default_factory=dict, max_length=32)
+    # True: one held-part record (held.py) guards every gripper command on
+    # this arm, freehand included; see gripper.py.
+    held_part_guard: bool = False
 
     @model_validator(mode="after")
     def valid_topology(self):

@@ -9,9 +9,17 @@ gripper_block(), which also decides allowed_actions, so the two never
 disagree (STATUS_SPEC section 6.2).
 
 Paths are the ones the shared panel already calls for the xArm's gripper:
-/gripper/open, /gripper/close, /control/freehand/gripper/stroke (alias
-/gripper/move/stroke), /control/freehand/gripper/force (alias /gripper/force)
-and /component/enable {"component": "gripper"}.
+/gripper/open, /gripper/close (aliases /control/freehand/gripper/open and
+/close, which the dashboard passthrough can reach), /control/freehand/gripper/stroke
+(alias /gripper/move/stroke), /control/freehand/gripper/force (alias
+/gripper/force) and /component/enable {"component": "gripper"}.
+
+With a held-part guard (held.py; graphs with held_part_guard: true) every
+command goes through one check before anything is sent: while a part is held,
+a command that would widen the fingers (open, a wider stroke, activation's
+sweep) is refused with 422 gripper_release_not_allowed unless the arm is at a
+node that allows a release, or it is a routine's own put-down. Narrowing is
+always allowed. POST /gripper/confirm_empty, for a person only, clears it.
 """
 
 from __future__ import annotations
@@ -25,6 +33,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sdl_lab_contract import ComponentStatus
 
 from .drivers.robotiq import GripperBusy, GripperFailed, GripperRefused
+from .held import CONTACT
 
 MOVE_ACTIONS = ("gripper.open", "gripper.close", "gripper.move")
 
@@ -46,6 +55,11 @@ class GripperStroke(GripperMotion):
 class GripperForce(BaseModel):
     model_config = ConfigDict(extra="forbid")
     force: float = Field(ge=0, le=100, allow_inf_nan=False)
+
+
+class ConfirmEmpty(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    note: str | None = Field(default=None, max_length=200)
 
 
 class ComponentRequest(BaseModel):
@@ -92,6 +106,13 @@ class GripperControl:
         self.settings = gripper.settings
         # Session force for moves that do not name one (the panel's force box).
         self.force_pct = self.settings.default_force_pct
+        # Set by Routines for a graph with held_part_guard: the HeldPart
+        # record, the raw position at or past which a close counts as taking
+        # a part (None: only contact counts), and a callable naming whether
+        # the arm is at a node that allows a release.
+        self.held = None
+        self.hold_raw = None
+        self.release_here = lambda: False
 
     # ── the single precondition helper ──────────────────────────────
     def gripper_block(self, action):
@@ -128,7 +149,42 @@ class GripperControl:
         actions = [a for a in (*MOVE_ACTIONS, "gripper.activate") if self.gripper_block(a) is None]
         if "gripper.activate" in actions and self.gripper.summary().get("activated"):
             actions.remove("gripper.activate")
+        if self._release_blocked():
+            # Both would widen the fingers; gripper.move stays (it may narrow).
+            actions = [a for a in actions if a not in ("gripper.open", "gripper.activate")]
         return actions
+
+    # ── the held-part guard ─────────────────────────────────────────
+    def _release_blocked(self):
+        """Whether letting go is refused right now: a part is held and the arm
+        is not at a node that allows a release."""
+        return self.held is not None and self.held.held and not self.release_here()
+
+    def _refuse_release(self, identity, action, position_raw):
+        state = self.held.summary()
+        self.control.event("gripper_refused", identity, action=action, reason="gripper_release_not_allowed",
+                           position_raw=position_raw)
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "gripper_release_not_allowed",
+                "reason": "The gripper holds a part; this would open the fingers and drop it here. "
+                "Release it at a node that allows it, or with a rack routine. If the gripper is "
+                "empty, a person confirms that with POST /gripper/confirm_empty",
+                "action": action,
+                "gripper_held": state,
+            },
+        )
+
+    def _record(self, source, identity, position_raw, widens, result):
+        """Update the held record after a command that reached the gripper."""
+        if self.held is None:
+            return
+        if result.get("object") in CONTACT or (self.hold_raw is not None and position_raw >= self.hold_raw):
+            self.held.set(source, identity, result.get("position_raw", position_raw))
+        elif widens or source == "routine":
+            # A routine's opens are its put-downs (or a no-op while empty).
+            self.held.clear(source, identity, result.get("position_raw", position_raw))
 
     # ── helpers ─────────────────────────────────────────────────────
     def _refuse(self, identity, action, body):
@@ -153,7 +209,7 @@ class GripperControl:
             )
         return speed, force
 
-    async def _run(self, identity, action, call, **logged):
+    async def _run(self, identity, action, call, *, record=None, **logged):
         block = self.gripper_block(action)
         if block is not None:
             self._refuse(identity, action, block)
@@ -180,15 +236,25 @@ class GripperControl:
                 },
             )
         self.control.event(f"{action}_done", identity, **{k: v for k, v in result.items() if k != "requested_raw"})
+        if record is not None:
+            record(result)
         return {"ok": True, "action": action, **result}
 
-    def _move(self, identity, action, position_raw, speed, force):
+    def _move(self, identity, action, position_raw, speed, force, *, source="freehand"):
+        """Send one position. `source` is who asks: "freehand", "graph" (its
+        own node check already ran) or "routine" (a routine's put-down may
+        widen while holding: its preconditions put it at the pan or a slot)."""
         speed, force = self._limits(identity, action, speed, force)
         g = self.gripper
+        current = g.summary().get("position_raw")
+        widens = current is None or position_raw < current
+        if widens and source != "routine" and self._release_blocked():
+            self._refuse_release(identity, action, position_raw)
         return self._run(
             identity,
             action,
             lambda: g.move(position_raw, g.pct_to_raw(speed), g.pct_to_raw(force)),
+            record=lambda result: self._record(source, identity, position_raw, widens, result),
             position_raw=position_raw,
             speed_pct=speed,
             force_pct=force,
@@ -204,11 +270,13 @@ class GripperControl:
             """Cached read; no claim."""
             return g.summary()
 
+        @app.post("/control/freehand/gripper/open", tags=tags, dependencies=[claim])
         @app.post("/gripper/open", tags=tags, dependencies=[claim])
         async def gripper_open(body: GripperMotion | None = None, identity: dict = login):
             body = body or GripperMotion()
             return await self._move(identity, "gripper.open", s.open_raw, body.speed, body.force)
 
+        @app.post("/control/freehand/gripper/close", tags=tags, dependencies=[claim])
         @app.post("/gripper/close", tags=tags, dependencies=[claim])
         async def gripper_close(body: GripperMotion | None = None, identity: dict = login):
             body = body or GripperMotion()
@@ -247,6 +315,39 @@ class GripperControl:
                     status_code=404,
                     detail={"error": "unknown_component", "components": ["gripper"]},
                 )
+            if self._release_blocked():
+                # Activation sweeps the fingers through their full stroke.
+                self._refuse_release(identity, "gripper.activate", None)
             return await self._run(identity, "gripper.activate", g.activate)
+
+        @app.post("/gripper/confirm_empty", tags=tags, dependencies=[claim])
+        def confirm_empty(body: ConfirmEmpty | None = None, identity: dict = login):
+            """A person at the bench says the gripper holds nothing. Moves no
+            hardware. Not under /control, so the dashboard passthrough (and
+            with it any plan run) cannot reach it, and refused for an agent
+            key: only someone who looked may say it."""
+            if self.held is None:
+                raise HTTPException(status_code=404, detail={"error": "no_held_part_guard"})
+            if identity.get("via") != "edge" or str(identity.get("email", "")).startswith("agent:"):
+                self.control.event("gripper_refused", identity, action="gripper.confirm_empty",
+                                   reason="person_required")
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "error": "person_required",
+                        "reason": "Only a person signed in through the edge (the arm's panel) may "
+                        "confirm the gripper is empty; agents cannot",
+                    },
+                )
+            busy = self.control.arm_busy_reason()
+            if g.busy or busy:
+                raise HTTPException(status_code=409, detail={"error": "arm_busy", "reason": busy or "Gripper is moving"})
+            raw = g.summary().get("position_raw")
+            before = self.held.summary()
+            self.held.clear("attestation", identity, raw)
+            self.control.event("gripper.confirm_empty", identity, position_raw=raw,
+                               was=before.get("source") if before.get("held") else None,
+                               note=(body.note if body else None))
+            return {"ok": True, "gripper_held": self.held.summary()}
 
         return self

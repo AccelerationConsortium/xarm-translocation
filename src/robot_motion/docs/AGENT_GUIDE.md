@@ -188,6 +188,33 @@ There is no graph mode to set: `graph_mode` reads `off` because
 freehand moves are not graph-gated, and `POST /control/graph/mode` changes
 nothing.
 
+A graph with `held_part_guard: true` (the Gibbie UR3e) keeps one held-part
+record for routines, Graph Drive and freehand gripper commands alike, shown as
+`details.gripper_held` (`{held, source, since, set_by, cleared_by, cleared_at,
+raw, reason}`, `source` one of routine, graph, freehand, attestation,
+unknown). A command sets it when it could have taken a part: a close to the
+routines' grip stroke or further, a grasp catalog state, or the fingers
+stopping on contact. While it is set, any command that would widen the fingers
+(`gripper.open`, a wider stroke, a releasing graph state, or activation, whose
+calibration sweep opens them) is refused before anything is sent, with 422
+`gripper_release_not_allowed`, unless the arm is at a node that lists a
+releasing state and does not set `gripper_release: false` (on the Gibbie:
+`drop_vial` and `pick_up_vial`); narrowing is always allowed, and there is no
+flag that skips the check. A release there, or a rack routine's put-down,
+clears it. `allowed_actions` leaves out `gripper.open` and `gripper.activate`
+while a release would be refused, and `allowed_gripper_targets` agrees. With
+nothing held, freehand gripper commands work anywhere, on or off the graph.
+The record is kept in `gripper-held.json` beside the audit file; with no
+readable file (first start, or a damaged one) the gripper counts as holding
+(`source: unknown`). Only a person clears it otherwise: `POST
+/gripper/confirm_empty` (claim held, arm still, nothing running; body `{note?}`)
+answers 403 `person_required` to an agent key or any `agent:` principal, sits
+outside `/control/*` so the dashboard passthrough cannot reach it, moves no
+hardware and writes a `gripper.confirm_empty` audit event with the gripper's
+position. The arm's panel offers it as "Gripper is empty (I checked)". The
+freehand open and close are also served at `/control/freehand/gripper/open`
+and `/close`.
+
 A `routines_file` adds bench routines (the Gibbie vial rack and XPR balance):
 `POST /control/routines/vial/rack_to_balance {slot}` and
 `POST /control/routines/vial/balance_to_rack {slot}`; `GET /routines` lists the slots.

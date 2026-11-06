@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import string
+from pathlib import Path
 from typing import Annotated, Literal, NamedTuple
 
 import httpx
@@ -32,6 +33,7 @@ from core.motion_graph import GraphError
 
 from .drivers.ur_motion import JointMove, LinearMove
 from .graph import Graph, Identifier
+from .held import HeldPart
 
 Number = Annotated[float, Field(allow_inf_nan=False)]
 Six = tuple[Number, Number, Number, Number, Number, Number]
@@ -273,6 +275,8 @@ class Routines:
         # Joints from the observation poll (no arm session needed), or None.
         self.observed_joints = observed_joints
         self._running = None  # name of the routine in progress
+        if graph.held_part_guard:
+            self._install_held_guard(control, graph, settings)
 
     # ── where the arm is ────────────────────────────────────────────
     def locate(self) -> Location:
@@ -409,6 +413,29 @@ class Routines:
                     todo.append(b)
         return [n for n in self.nodes if n in seen and n != source]
 
+    def _install_held_guard(self, control, graph, settings):
+        gc = control.gripper_control
+        if gc is None:
+            raise ValueError("held_part_guard needs a configured gripper")
+        audit = control.config.audit_file
+        gc.held = HeldPart(Path(audit).with_name("gripper-held.json") if audit else None)
+        if settings is not None:
+            gc.hold_raw = settings.vial_grip.close_raw
+        else:
+            grips = [g.raw for g in graph.gripper_catalog.values() if g.grasp or g.expect_object]
+            gc.hold_raw = min(grips) if grips else None
+        gc.release_here = self._release_here
+
+    def _release_here(self):
+        """Whether the arm is at a node where a held part may be let go: one
+        that lists a releasing catalog state and does not forbid release."""
+        where = self.observed_location()
+        node = self.nodes.get(where.node) if where and where.node else None
+        if node is None or not node.gripper_release:
+            return False
+        catalog = self.graph.gripper_catalog
+        return any(not (catalog[g].grasp or catalog[g].expect_object) for g in node.gripper_states)
+
     def _grip(self, raw, label, expect_object):
         return {"kind": "gripper", "to": label, "raw": raw, "expect_object": expect_object}
 
@@ -494,7 +521,9 @@ class Routines:
             return await self.control._run_motion(identity, "arm.move_linear", body, token)
         speed = self.settings.grip_speed_pct if self.settings else None
         force = self.settings.grip_force_pct if self.settings else None
-        return await self.control.gripper_control._move(identity, "gripper.move", step["raw"], speed, force)
+        return await self.control.gripper_control._move(
+            identity, "gripper.move", step["raw"], speed, force, source=step.get("source", "routine")
+        )
 
     async def run(self, identity, token, name, steps, **logged):
         """Run steps in order; stop at the first refusal or failure."""
@@ -552,8 +581,12 @@ class Routines:
 
     # ── preconditions ───────────────────────────────────────────────
     def _holding(self, summary):
-        """Whether the gripper holds a vial: stopped on contact, or (a
-        stroke grip, which may never touch it) last sent to the grip stroke."""
+        """Whether the gripper holds a vial: the held-part record where the
+        graph keeps one; otherwise stopped on contact, or (a stroke grip,
+        which may never touch it) last sent to the grip stroke."""
+        held = self.control.gripper_control.held
+        if held is not None:
+            return held.held
         if summary.get("object") in ("contact_closing", "contact_opening"):
             return True
         grip = self.settings.vial_grip
@@ -561,9 +594,13 @@ class Routines:
 
     def _gripper_empty(self):
         if self._holding(self.control.gripper_control.gripper.summary()):
+            held = self.control.gripper_control.held
             raise HTTPException(
                 status_code=412,
-                detail={"error": "gripper_holding", "reason": "The gripper reports a part between its fingers"},
+                detail={
+                    "error": "gripper_holding", "reason": "The gripper reports a part between its fingers",
+                    **({"gripper_held": held.summary()} if held is not None else {}),
+                },
             )
 
     def _gripper_holding(self):
@@ -689,6 +726,9 @@ class Routines:
         target = self.graph.gripper_catalog[state]
         if target.grasp or target.expect_object:
             return False
+        held = self.control.gripper_control.held
+        if held is not None:
+            return held.held
         summary = self.control.gripper_control.gripper.summary()
         if self.settings is not None and self._holding(summary):
             return True
@@ -808,7 +848,7 @@ class Routines:
                     },
                 )
             spec = self.graph.gripper_catalog[body.state]
-            step = self._grip(spec.raw, body.state, spec.expect_object)
+            step = {**self._grip(spec.raw, body.state, spec.expect_object), "source": "graph"}
             result = await self.run(identity, x_claim_token, "graph.gripper", [step], node=node, state=body.state)
             return _with(result, gripper_state=body.state)
 
