@@ -231,6 +231,15 @@ are both a grip), `grip_force_pct: 20`, and `max_force_pct` back to 20.
 Then, at the user's request, a 4 mm stroke: raw 217 (about 4.2 mm) for
 `vial_closed` and the routines' close.
 
+**2026-11-06: uncapped vials, full close.** The 4 mm stroke cages a capped
+vial without touching it; an uncapped one is held by its body. At the user's
+request, `vial_closed` and the routines' close are now a full close, raw 228
+(where pc-04's fingers meet, never past it), still `close_check: "stroke"` and
+`grip_force_pct: 20`, so the fingers stop on the vial or at 228 and either is a
+grip. Not yet measured at the arm where an uncapped vial stops them; a grip
+that requires contact (`close_check: "object"`) would also catch a missing
+vial, once that is measured.
+
 **2026-11-05, evening: transit speed and catalog skills.** Linear moves
 between approach points go from 10 to 15 mm/s (graph edges, and the rack moves
 above the rack via `vial_rack.transit_speed_mm_s`); the final approaches into
