@@ -463,6 +463,8 @@ document.addEventListener('DOMContentLoaded', () => {
             simulated: details.simulated === true,
             connection_details: details.connection_details || null,
             model_name: details.model_name || null,   // "xArm5" etc.; absent for non-xArm backends
+            // robot-motion's held-part record (held.py); null elsewhere.
+            gripper_held: details.gripper_held || null,
             system_status: {
                 last_error: lastError ? lastError.message : 'None',
             },
@@ -2728,7 +2730,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const confirmEmptyBtn = document.getElementById('confirm-empty-btn');
     if (confirmEmptyBtn) {
         document.addEventListener('xarm:status', (event) => {
-            const held = (((event.detail || {}).details) || {}).gripper_held;
+            // xarm:status carries the UI shape (envelopeToUiShape), not the envelope.
+            const held = (event.detail || {}).gripper_held;
             confirmEmptyBtn.hidden = !(held && held.held);
             confirmEmptyBtn.title = held && held.held ? `Held since ${held.since} (${held.source})` : '';
         });
