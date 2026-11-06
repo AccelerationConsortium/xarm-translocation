@@ -176,7 +176,7 @@
       "source": "safe_rack",
       "target": "vial_stock_prep",
       "mode": "linear",
-      "speed": 10
+      "speed": 15
     },
     {
       "source": "vial_stock_prep",
@@ -212,7 +212,7 @@
       "source": "safe_bal",
       "target": "prep_viap_drop",
       "mode": "linear",
-      "speed": 10
+      "speed": 15
     },
     {
       "source": "prep_viap_drop",
@@ -230,13 +230,13 @@
       "source": "prep_viap_drop",
       "target": "safe_bal",
       "mode": "linear",
-      "speed": 10
+      "speed": 15
     },
     {
       "source": "safe_bal",
       "target": "prep_pick_up_vial",
       "mode": "linear",
-      "speed": 10
+      "speed": 15
     },
     {
       "source": "prep_pick_up_vial",
@@ -254,7 +254,7 @@
       "source": "prep_pick_up_vial",
       "target": "safe_bal",
       "mode": "linear",
-      "speed": 10
+      "speed": 15
     }
   ],
   "gripper_catalog": {

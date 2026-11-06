@@ -150,7 +150,9 @@ the taught angle would spin it the whole way round — unwind it first.
 An edge may carry `speed` (deg/s on a joint edge, mm/s on a linear edge); an
 edge without one runs at the motion block's default. A graph whose edge speed
 is above the motion block's cap does not load. The same speeds apply to the
-routines' graph legs; their rack moves run at the default.
+routines' graph legs. Their rack moves use `vial_rack.transit_speed_mm_s`
+(approach node to above a slot and back) and `slot_speed_mm_s` (straight
+down into and up out of a slot), the motion block's default when unset.
 
 The shared panel's Graph Drive uses the same walk. `details.motion_graph` in
 `/status` gives `current_node` (from the session's feedback, or the polled
@@ -187,8 +189,16 @@ freehand moves are not graph-gated, and `POST /control/graph/mode` changes
 nothing.
 
 A `routines_file` adds bench routines (the Gibbie vial rack and XPR balance):
-`POST /routines/vial/rack_to_balance {slot}` and
-`POST /routines/vial/balance_to_rack {slot}`; `GET /routines` lists the slots.
+`POST /control/routines/vial/rack_to_balance {slot}` and
+`POST /control/routines/vial/balance_to_rack {slot}`; `GET /routines` lists the slots.
+Every routine (and `POST /control/graph/move`) also answers without the
+`/control` prefix; the prefixed path is the one the dashboard's control
+passthrough forwards and the lab-skills catalog calls. Agents run them as the
+catalog skills `routine.vial_rack_to_balance`, `routine.vial_balance_to_rack`,
+`routine.vial_balance_to_node` and `routine.vial_node_to_rack` (ur3e_gibbie),
+in a validated, human-approved plan; `allowed_actions` lists those names and
+the catalog's `graph.move_to`, `graph.travel_to`, `graph.gripper` and
+`graph.recover_to`.
 Each refuses with 412, before anything moves, unless the arm is at the home
 node, the gripper is empty and the balance service's door component reads
 `open` (read from its `/status`; the routine never commands the balance).

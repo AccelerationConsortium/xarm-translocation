@@ -231,6 +231,14 @@ are both a grip), `grip_force_pct: 20`, and `max_force_pct` back to 20.
 Then, at the user's request, a 4 mm stroke: raw 217 (about 4.2 mm) for
 `vial_closed` and the routines' close.
 
+**2026-11-05, evening: transit speed and catalog skills.** Linear moves
+between approach points go from 10 to 15 mm/s (graph edges, and the rack moves
+above the rack via `vial_rack.transit_speed_mm_s`); the final approaches into
+and out of the pan and a rack slot stay 5 mm/s (`slot_speed_mm_s`); joint
+edges stay 5 deg/s. The routines answer under `/control/routines/vial/*` for
+the dashboard passthrough, and `allowed_actions` carries the lab-skills names,
+so ac-organic-lab's `routine.vial_*` skills can run them in an approved plan.
+
 ## Stage 4 commissioning record (2026-10-29, user at the arm)
 
 Same tools and gates as the UR5e (`UR5E_TRAJECTORY_PLAN.md` sections 6-8),

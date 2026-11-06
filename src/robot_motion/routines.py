@@ -37,7 +37,10 @@ Number = Annotated[float, Field(allow_inf_nan=False)]
 Six = tuple[Number, Number, Number, Number, Number, Number]
 Raw = Annotated[int, Field(ge=0, le=255)]
 
-GRAPH_ACTIONS = ("graph.move", "graph.gripper")
+# The lab-skills catalog names (graph.move_to, graph.travel_to, graph.gripper,
+# graph.recover_to) as well as this service's own graph.move: the SDK offers a
+# skill only when its name is in allowed_actions.
+GRAPH_ACTIONS = ("graph.move", "graph.move_to", "graph.travel_to", "graph.gripper", "graph.recover_to")
 # The panel's Recover: a moveJ onto the nearest node, only this close.
 RECOVER_MAX_DEG = 15.0
 ROUTINE_ACTIONS = (
@@ -82,6 +85,10 @@ class VialRack(BaseModel):
     # Straight down from the slot pose to grip a vial, and to release one.
     pick_depth_mm: Number = Field(gt=0, le=150)
     place_depth_mm: Number = Field(gt=0, le=150)
+    # mm/s for the moves above the rack (approach node <-> above a slot) and
+    # straight down into / up out of a slot; None: the motion block's default.
+    transit_speed_mm_s: Number | None = Field(default=None, gt=0)
+    slot_speed_mm_s: Number | None = Field(default=None, gt=0)
 
     def slot_pose(self, slot):
         letters = string.ascii_uppercase[: self.columns]
@@ -236,6 +243,15 @@ class Routines:
                 if value is not None and value > cap:
                     raise ValueError(f"routines {name} {value:g} is above the gripper's commissioned {cap:g}")
         limits = control.arm_limits
+        if settings is not None:
+            rack = settings.vial_rack
+            for name in ("transit_speed_mm_s", "slot_speed_mm_s"):
+                value = getattr(rack, name)
+                if value is not None and value > limits.max_linear_speed_mm_s:
+                    raise ValueError(
+                        f"vial_rack {name} {value:g} mm/s is above the motion block's "
+                        f"{limits.max_linear_speed_mm_s:g} mm/s"
+                    )
         for e in graph.edges:
             if e.speed is None:
                 continue
@@ -401,19 +417,27 @@ class Routines:
         when close_check is "object"."""
         return self._grip(grip.close_raw, "vial_close", grip.close_check == "object")
 
+    def _rack_move(self, to, pose, speed):
+        step = {"kind": "linear", "to": to, "pose": list(pose)}
+        if speed is not None:
+            step["speed"] = speed
+        return step
+
     def rack_to_balance_steps(self, slot):
         s = self.settings
         rack, grip, port = s.vial_rack, s.vial_grip, s.balance
         above = rack.slot_pose(slot)
         down = [*above[:2], above[2] - rack.pick_depth_mm, *above[3:]]
+        transit, inside = rack.transit_speed_mm_s, rack.slot_speed_mm_s
+        approach = self.nodes[rack.approach_node].tcp_mm_rpy_deg
         return [
             self._grip(grip.open_raw, "vial_open", False),
             *self.path_steps(s.home_node, rack.approach_node),
-            {"kind": "linear", "to": f"slot_{slot}", "pose": above},
-            {"kind": "linear", "to": f"slot_{slot}_grip", "pose": down},
+            self._rack_move(f"slot_{slot}", above, transit),
+            self._rack_move(f"slot_{slot}_grip", down, inside),
             self._close(grip),
-            {"kind": "linear", "to": f"slot_{slot}", "pose": above},
-            {"kind": "linear", "to": rack.approach_node, "pose": list(self.nodes[rack.approach_node].tcp_mm_rpy_deg)},
+            self._rack_move(f"slot_{slot}", above, inside),
+            self._rack_move(rack.approach_node, approach, transit),
             *self.path_steps(rack.approach_node, port.drop_node),
             self._grip(grip.open_raw, "vial_open", False),
             *self.path_steps(port.drop_node, s.home_node),
@@ -446,14 +470,16 @@ class Routines:
         rack, grip = s.vial_rack, s.vial_grip
         above = rack.slot_pose(slot)
         down = [*above[:2], above[2] - rack.place_depth_mm, *above[3:]]
+        transit, inside = rack.transit_speed_mm_s, rack.slot_speed_mm_s
+        approach = self.nodes[rack.approach_node].tcp_mm_rpy_deg
         return [
             *self.path_steps(source, rack.approach_node),
-            {"kind": "linear", "to": f"slot_{slot}", "pose": above},
-            {"kind": "linear", "to": f"slot_{slot}_place", "pose": down},
+            self._rack_move(f"slot_{slot}", above, transit),
+            self._rack_move(f"slot_{slot}_place", down, inside),
             self._grip(grip.open_raw, "vial_open", False),
             # Straight up out of the slot before moving sideways.
-            {"kind": "linear", "to": f"slot_{slot}", "pose": above},
-            {"kind": "linear", "to": rack.approach_node, "pose": list(self.nodes[rack.approach_node].tcp_mm_rpy_deg)},
+            self._rack_move(f"slot_{slot}", above, inside),
+            self._rack_move(rack.approach_node, approach, transit),
             *self.path_steps(rack.approach_node, s.home_node),
         ]
 
@@ -876,6 +902,7 @@ class Routines:
     def install(self, app, login, claim):
         tags = ["routines"]
 
+        @app.post("/control/graph/move", tags=tags, dependencies=[claim])
         @app.post("/graph/move", tags=tags, dependencies=[claim])
         async def graph_move(body: GraphMove, identity: dict = login, x_claim_token: str | None = Header(default=None)):
             """Walk the motion graph from the node the arm is at to `target`,
@@ -903,10 +930,10 @@ class Routines:
             return {
                 **self.summary(),
                 "routines": {
-                    "vial_rack_to_balance": "POST /routines/vial/rack_to_balance {slot}",
-                    "vial_balance_to_rack": "POST /routines/vial/balance_to_rack {slot}",
-                    "vial_balance_to_node": "POST /routines/vial/balance_to_node {target}",
-                    "vial_node_to_rack": "POST /routines/vial/node_to_rack {slot}",
+                    "vial_rack_to_balance": "POST /control/routines/vial/rack_to_balance {slot}",
+                    "vial_balance_to_rack": "POST /control/routines/vial/balance_to_rack {slot}",
+                    "vial_balance_to_node": "POST /control/routines/vial/balance_to_node {target}",
+                    "vial_node_to_rack": "POST /control/routines/vial/node_to_rack {slot}",
                 },
                 "preconditions": [
                     f"arm session open and the arm at {self.settings.home_node!r}, gripper empty "
@@ -915,6 +942,7 @@ class Routines:
                 ],
             }
 
+        @app.post("/control/routines/vial/rack_to_balance", tags=tags, dependencies=[claim])
         @app.post("/routines/vial/rack_to_balance", tags=tags, dependencies=[claim])
         async def rack_to_balance(body: VialTask, identity: dict = login, x_claim_token: str | None = Header(default=None)):
             """Take the vial in `slot` and leave it on the balance pan, back at home."""
@@ -922,6 +950,7 @@ class Routines:
                 identity, x_claim_token, "routine.vial_rack_to_balance", self.rack_to_balance_steps, body
             )
 
+        @app.post("/control/routines/vial/balance_to_rack", tags=tags, dependencies=[claim])
         @app.post("/routines/vial/balance_to_rack", tags=tags, dependencies=[claim])
         async def balance_to_rack(body: VialTask, identity: dict = login, x_claim_token: str | None = Header(default=None)):
             """Take the vial off the balance pan and put it in `slot`, back at home."""
@@ -929,12 +958,14 @@ class Routines:
                 identity, x_claim_token, "routine.vial_balance_to_rack", self.balance_to_rack_steps, body
             )
 
+        @app.post("/control/routines/vial/balance_to_node", tags=tags, dependencies=[claim])
         @app.post("/routines/vial/balance_to_node", tags=tags, dependencies=[claim])
         async def balance_to_node(body: VialToNode, identity: dict = login, x_claim_token: str | None = Header(default=None)):
             """Take the vial off the balance pan and carry it to graph node `target`.
             The arm stops there still holding it; /routines/vial/node_to_rack puts it away."""
             return await self._balance_to_node(identity, x_claim_token, body)
 
+        @app.post("/control/routines/vial/node_to_rack", tags=tags, dependencies=[claim])
         @app.post("/routines/vial/node_to_rack", tags=tags, dependencies=[claim])
         async def node_to_rack(body: VialTask, identity: dict = login, x_claim_token: str | None = Header(default=None)):
             """From the graph node the arm is at, holding a vial, put it in `slot`, back at home."""

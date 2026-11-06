@@ -16,7 +16,9 @@
     "column_pitch_mm": 20,
     "row_pitch_mm": 20,
     "pick_depth_mm": 55,
-    "place_depth_mm": 35
+    "place_depth_mm": 35,
+    "transit_speed_mm_s": 15,
+    "slot_speed_mm_s": 5
   },
   "vial_grip": {
     "open_raw": 207,
