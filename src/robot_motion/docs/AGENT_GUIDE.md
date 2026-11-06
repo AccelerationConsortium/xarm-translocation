@@ -188,7 +188,9 @@ There is no graph mode to set: `graph_mode` reads `off` because
 freehand moves are not graph-gated, and `POST /control/graph/mode` changes
 nothing.
 
-A graph with `held_part_guard: true` (the Gibbie UR3e) keeps one held-part
+A graph with `held_part_guard: true` (the Gibbie UR3e, whose fingertips hold
+a vial in a cage of four screws: the pads meet with a vial inside, so the
+gripper never feels one and a close never reports contact) keeps one held-part
 record for routines, Graph Drive and freehand gripper commands alike, shown as
 `details.gripper_held` (`{held, source, since, set_by, cleared_by, cleared_at,
 raw, reason}`, `source` one of routine, graph, freehand, attestation,
