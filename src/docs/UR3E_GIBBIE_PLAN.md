@@ -296,13 +296,46 @@ Clear errors and the moveJ back answered 200; claim released, signed out.
   (almost all +X, drift) → 0.2 N. The only earlier zero was 2026-10-12.
   Payload on the pendant 0.82 kg, CoG (-6, 2, 65) mm.
 
+## Taught-box limits (2026-11-06, lab manager's decision)
+
+Commissioning id `UR3E-GIBBIE-2026-11-06-TAUGHT-BOX` replaces the open
+placeholder's envelope and box, so agent moves (Allan's and Jiaru's agents
+hold operator on `ur3e_gibbie` through `sample_prep`) stay on the bench:
+
+| | min | max |
+|---|---|---|
+| workspace x | 270 mm | 540 mm |
+| workspace y | -30 mm | 400 mm |
+| workspace z | 100 mm | 400 mm |
+| J1 / J2 / J3 | 90 / -160 / 40° | 230 / -10 / 180° |
+| J4 / J5 / J6 | -85 / -85 / 130° | 45 / 140 / 230° |
+
+Derived from what the arm is taught to do: every graph node, every joint
+edge's swept TCP (sampled through a UR3e DH model with the 195 mm tool,
+within 2.4 mm of the taught TCPs), every rack slot at its pick and place
+depth, and a 10 mm lift above `safe_rack`. That swept span is x 323-484,
+y 22-348, z 129-310 mm; the box adds about 50 mm on x and y, a 30 mm floor
+below the deepest rack pick and 90 mm of headroom, and the envelope adds 45°
+beyond each joint's taught range. Nothing taught comes closer than 29 mm to
+a face. Speeds, accelerations, decelerations and the 50 N force guard are
+unchanged; the probe precision profile is kept.
+
+What it costs: 40 of the 133 moves in the audit before it would now be
+refused, all made by the user while commissioning or re-orienting the wrist
+(up to z 529 mm, J4 near 180°, J6 near 4°). A move is refused, before
+anything moves, while the arm's current joints or TCP are outside, so such a
+pose is now recovered in Manual mode or with the pendant. The box bounds the
+TCP point only; it is not a collision model of the balance enclosure or the
+rack. Previous config: `.state\robot-motion.local.json.bak-20261106-pre-taught-box`.
+
 ## Open with the user
 
 - Who may hold the arm when: the interlock contract with the Gibbie
   workflow's owner, and then the device-side guard (refuse `/connect`
   while a program is PLAYING or `gibbie_workflow` is busy).
-- The real limits for the motion block (the placeholder is 10 deg/s,
-  50 mm/s, ±800 mm, ±360°), and the manual-mode test.
+- The real limits for the motion block: the joint envelope and the
+  workspace box are done (2026-11-06, below); the speed caps are still the
+  placeholder's 10 deg/s and 50 mm/s, and the manual-mode test is open.
 - J6 sat a full turn off the graph (531° against ~180°) before Stage 4;
   find what wound it, or the routines will meet it again. It is at 189.7°
   now, about 10° off the nodes.
