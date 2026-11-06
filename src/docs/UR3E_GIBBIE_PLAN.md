@@ -46,6 +46,33 @@ polls coexist with either. The `gibbie_workflow` tile shows a run as
 `busy`; at recon its last run had failed (Flex over-pressure) and the arm
 was idle.
 
+## The Gibbie vial gripper: a four-screw cage (read this first)
+
+The Gibbie UR3e's Robotiq 2F-85 does not grip a vial between its finger pads.
+Its fingertips carry four screws that close around the vial like a cage: the
+vial rides between the screws, and the pads meet (raw 228 on pc-04's
+calibration: open 3, closed 228 over 85 mm) with a vial still inside. This is
+unique to this arm; the UR5e's 2F-140 and the xArm grip by pad contact, so none
+of the settings below carry over to them. What follows from it:
+
+- The gripper cannot sense a vial. With one caged, a close still ends
+  `at_requested_position`, never `contact_closing`, so whether a vial is held is
+  confirmed by eye, by `realsense.capture`, or by the balance's mass change.
+- The grip is a stroke, not a contact check: `close_check: "stroke"`, and
+  `vial_closed` / the routines' close are a full close, raw 228 (since
+  2026-11-06; raw 223, then 217, before that). Never command past 228: the
+  workflow's own close, `0.95` (raw 242) at `0.5` force, pressed into the pan
+  and overloaded the balance on 2026-11-05. Grip force stays at or below 20 %.
+- "Holding" is inferred from what was commanded, which is why this arm's graph
+  turns on the held-part guard (`held_part_guard: true`, `robot_motion/held.py`):
+  a close to raw 228 or further counts as holding, nothing that would widen the
+  cage is sent while held except at a release node or as a routine's put-down,
+  and a vial taken out by hand needs a person's "Gripper is empty (I checked)".
+- Capped and uncapped vials both ride in the cage. Verified with an uncapped
+  vial on 2026-11-06 at 23:42 UTC: the agent's `routine.vial_balance_to_node`
+  lifted it off the pan (the balance read 4.76 g less) and carried it to
+  `safe_rack` at the full close, with no contact reported.
+
 ## Stages
 
 **Stage 1, observer (deployed 2026-10-12, see below).** A second
@@ -231,14 +258,13 @@ are both a grip), `grip_force_pct: 20`, and `max_force_pct` back to 20.
 Then, at the user's request, a 4 mm stroke: raw 217 (about 4.2 mm) for
 `vial_closed` and the routines' close.
 
-**2026-11-06: uncapped vials, full close.** The 4 mm stroke cages a capped
-vial without touching it; an uncapped one is held by its body. At the user's
-request, `vial_closed` and the routines' close are now a full close, raw 228
-(where pc-04's fingers meet, never past it), still `close_check: "stroke"` and
-`grip_force_pct: 20`, so the fingers stop on the vial or at 228 and either is a
-grip. Not yet measured at the arm where an uncapped vial stops them; a grip
-that requires contact (`close_check: "object"`) would also catch a missing
-vial, once that is measured.
+**2026-11-06: uncapped vials, full close.** At the user's request,
+`vial_closed` and the routines' close are now a full close, raw 228 (where
+pc-04's fingers meet, never past it), still `close_check: "stroke"` and
+`grip_force_pct: 20`. Measured the same night: the four-screw cage holds an
+uncapped vial without the pads touching it (no `contact_closing`; see "The
+Gibbie vial gripper" above), so a contact check (`close_check: "object"`) can
+never be used on this arm.
 
 **2026-11-05, evening: transit speed and catalog skills.** Linear moves
 between approach points go from 10 to 15 mm/s (graph edges, and the rack moves
