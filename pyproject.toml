@@ -8,11 +8,11 @@ version = "0.4.0a1"
 authors = [
   { name="Yang Cao", email="cyrilcaoyang@gmail.com" },
 ]
-description = "Graph-based laboratory robot application with a bundled UI and optional xArm, UR, and planned MG400 drivers"
+description = "Motion-graph control for laboratory robot arms: web panel and REST API for UFactory xArm5 and Universal Robots UR5e, UR3e and UR5 CB3, with Dobot MG400 planned"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
-keywords = ["robotics", "xarm", "ufactory", "gripper", "linear-track", "force-torque", "automation", "pyxarm"]
+keywords = ["robotics", "robot-arm", "motion-graph", "lab-automation", "xarm", "ufactory", "universal-robots", "ur5e", "ur3e", "ur-rtde", "mg400", "gripper", "linear-track", "force-torque", "automation", "pyxarm"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

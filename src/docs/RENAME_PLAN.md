@@ -1,64 +1,60 @@
-# Renaming the repo to Armiad — plan and checklist
+# Renaming the repo to robot-motion — plan and checklist
 
-Status: **planned** (name chosen 2026-10-08, not yet done). `ur-robot`
-(package `robot-motion`) was merged into `main` on 2026-10-08 (f638bce);
-do the rename at the next release. Nothing in this document has been
-applied yet.
+Status: **decided, not yet done.** On 2026-10-28 the name became
+`robot-motion`, replacing Armiad (chosen 2026-10-08, dropped because it
+sounded strange). Nothing in the checklist below has been applied yet.
 
 ---
 
-## 1. Why rename, and why Armiad
+## 1. Why rename, and why robot-motion
 
-`xarm-translocation` no longer describes the repo. The `ur-robot` branch
-drives a UR5e as well as the xArm, MG400 is planned, and the shared panel
-is already titled "Robot Motion". The name should not carry a robot brand.
+`xarm-translocation` no longer describes the repo. It drives the UFactory
+xArm5 and the Universal Robots UR5e, UR3e and UR5 CB3, with Dobot MG400
+planned, and the name should not carry one robot's brand.
 
-**Armiad** = *arm* + *Ariad(ne)*. In the myth, Ariadne gave Theseus a ball
-of thread to find his way through the Labyrinth. The motion graph is that
-thread: teach the arm its poses and paths once, and it always finds its
-way between stations along routes that were checked.
+`robot-motion` is the name already in use almost everywhere: the Python
+package, the `robot-motion` command, the shared panel's "Robot Motion"
+title, and the checkout folder on the three UR device PCs. Renaming the
+repo makes it one name everywhere.
 
-README opening line:
+GitHub About description (applied 2026-10-28, before the rename):
 
-> Armiad: like Ariadne's thread, for robot arms. Teach the paths once,
-> and the arm always finds its way.
+> Motion-graph control for laboratory robot arms: web panel and REST API
+> for UFactory xArm5 and Universal Robots UR5e, UR3e and UR5 CB3, with
+> Dobot MG400 planned
 
-GitHub About description:
-
-> Teach a robot arm its poses once, link them into a motion graph, then
-> send it anywhere with one click. Web panel and REST API for xArm and UR
-> arms.
-
-Topics: `motion-graph`, `robot-arm`, `lab-automation`, `self-driving-lab`,
-`xarm`, `universal-robots`.
-
-### Availability (checked 2026-10-08)
-
-`armiad` is free in the AccelerationConsortium GitHub organisation and on
-PyPI, and no notable GitHub project uses it. Check again before renaming.
+Topics (applied 2026-10-28): `robot-arm`, `motion-graph`,
+`lab-automation`, `self-driving-lab`, `xarm`, `universal-robots`.
 
 ### Names considered and dropped
 
 | Name | Why not |
 |---|---|
-| `robot-motion` | Free, and matches the package, but plain. Kept as the fallback. |
-| `motion-graph`, `movegraph` | Free. Descriptive, but less memorable. |
+| `armiad` | Chosen 2026-10-08 (*arm* + *Ariadne*), dropped 2026-10-28: it sounded strange. |
+| `motion-graph`, `movegraph` | Descriptive, but differ from the package name. |
 | `ariadne` | Taken on PyPI by a popular GraphQL library; `import ariadne` would clash. |
-| `ariad` | Free, but has no arm or robot reference. |
-| `armadne`, `ariabot`, `armthread` | Free. Harder to say, or a weaker echo of the myth. |
+| `ariad`, `armadne`, `ariabot`, `armthread`, `clew` | No arm reference, hard to say, or too obscure. |
 | `talos`, `golem`, `atlas`, `janus`, `theseus` | Taken or crowded (Talos Linux, Boston Dynamics Atlas, JanusGraph, Meta's Theseus). |
-| `clew` | The actual word for Ariadne's ball of thread, but too obscure. |
 
----
+Check that `robot-motion` is still free in the AccelerationConsortium
+organisation before renaming.
 
-## 2. Decisions still open
+### What the rename does not change
 
-1. **Python package and CLI name.** Either keep `robot-motion` (no change
-   on device PCs or in `lab_skills`) or rename it to `armiad` as well, so
-   it is one name everywhere. `armiad` is free on PyPI.
-2. **Service names on device PCs** (`xarm`, `robot-motion-prototype`). The
-   recommendation is to leave them: a service rename means re-registering
-   NSSM, and is not needed for the repo rename.
+- **The lab equipment id `xarm_translocation`** (underscore) in
+  `ac-organic-lab`'s `equipment.yaml`, `locations.yaml` and status
+  adapters. It names the xArm in the dashboard, claims, location aliases
+  and records, not the repo. Leave it.
+- **Deployments.** Device PCs run their checked-out branch and get updates
+  by git bundle, so no running service reads the repo URL. Folders, NSSM
+  services and `.env` / `.state` paths stay where they are.
+
+## 2. Decisions
+
+1. **Python package and CLI name:** already `robot-motion`; no change.
+2. **Service names on device PCs** (`xarm`, `robot-motion-prototype`,
+   `robot-motion-ur3e`, `robot-motion-ur5cb3`): leave them. A service
+   rename means re-registering NSSM, and the repo rename does not need it.
 
 ---
 
@@ -66,17 +62,16 @@ PyPI, and no notable GitHub project uses it. Check again before renaming.
 
 ### 3.1 GitHub
 
-- [ ] Settings → Repository name → `armiad`. GitHub redirects the old
+- [ ] Settings → Repository name → `robot-motion`. GitHub redirects the old
       web, clone and issue URLs. **Never create a new repo named
       `xarm-translocation` afterwards**: that breaks the redirect.
-- [ ] Set the About description and topics from section 1.
+- [x] Set the About description and topics from section 1 (2026-10-28).
 
 ### 3.2 In this repo
 
 - [ ] `pyproject.toml` `[project.urls]`: point all four links at
-      `https://github.com/AccelerationConsortium/armiad` (they use
+      `https://github.com/AccelerationConsortium/robot-motion` (they use
       `xarm-translocation` since the merge).
-- [ ] README title and opening paragraph, with the tagline from section 1.
 - [ ] Docstrings that name the repo: `src/core/models.py`,
       `test/__init__.py`, `test/conftest.py`.
 - [ ] `src/core/assistant_llm.py` mentions the
@@ -87,17 +82,20 @@ PyPI, and no notable GitHub project uses it. Check again before renaming.
 ### 3.3 Clones and remotes
 
 - [ ] This Linux machine: `git remote set-url origin
-      https://github.com/AccelerationConsortium/armiad.git` in
+      https://github.com/AccelerationConsortium/robot-motion.git` in
       `~/caoyang/xarm-translocation`. The `~/caoyang/robot-motion`
       worktree shares that `.git`, so one change covers both.
-- [ ] Device PCs: the same `set-url` in each checkout (sdl2-pc-03 for the
-      xArm on `debug-xarm5`, sdl2-pc-05 for the UR5e on `debug-ur5e`).
-      Branch names don't change.
+- [ ] Device PCs: the same `set-url` in each checkout, if it has a
+      remote at all (they have no git credentials and update by bundle):
+      sdl2-pc-03 (xArm5, `debug-xarm5`), sdl2-pc-05 (UR5e, `debug-ur5e`),
+      sdl2-pc-04 (UR3e, `debug-ur3e`) and sdl2-pc-00-lle (UR5 CB3,
+      `debug-ur5cb3`). Branch names don't change.
 
 ### 3.4 Device PC folders (leave them unless there is a reason)
 
 The checkouts live at `C:\Users\sdl2\Projects\xarm-translocation` (xArm)
-and `C:\Users\sdl2\Projects\robot-motion` (UR5e). NSSM services point at
+and `C:\Users\sdl2\Projects\robot-motion` (the three UR PCs, which
+already carry the new name). NSSM services point at
 these folders and `.env` / `.state` live inside them, so the repo rename
 does **not** require moving them. If a folder is renamed later, do it as
 a separate scheduled change: Disconnect the arm first, stop the service,
@@ -108,7 +106,8 @@ move the folder, re-point the NSSM `AppDirectory` and paths, then start.
 Found by grep on 2026-10-08. Update live docs and code; leave dated
 historical records as they are.
 
-- `ac-organic-lab`: `locations.yaml`,
+- `ac-organic-lab`: comments and docstrings only, never the
+  `xarm_translocation` equipment id (section 1). `locations.yaml`,
   `skills/src/lab_skills/typed_clients/robot_arm.py`,
   `skills/src/lab_skills/status_adapters/legacy.py`,
   `skills/tests/test_status_adapters.py`, and docs `AUTH_DESIGN.md`,
