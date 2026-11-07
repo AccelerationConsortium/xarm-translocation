@@ -2945,7 +2945,15 @@ async def start_trajectory(session_id: str, request: Request):
         start_joints = await asyncio.to_thread(c.get_current_joints)
         limits = mgr.validation_limits(session, c.joint_limits, c.max_joint_speed)
         backend = make_backend(settings.backend, c.arm, settings.command_timeout_s)
-        monitor = RealtimeJointMonitor(c.host, int(c.num_joints)) if settings.realtime_report else None
+        monitor = None
+        if settings.realtime_report:
+            # Cached configuration only: no sensor reads, enable/zero, or mode
+            # changes. Capture the tare before streaming; it stays fixed for
+            # this session and is embedded in the telemetry/log.
+            ft_enabled = c.is_component_enabled('force_torque')
+            ft_config = c.get_force_torque_config() if ft_enabled else None
+            monitor = RealtimeJointMonitor(c.host, int(c.num_joints),
+                                           ft_enabled=ft_enabled, ft_configuration=ft_config)
         status = await asyncio.to_thread(
             mgr.start, session_id, key, limits=limits, start_joints=start_joints, backend=backend,
             watch=watch, on_finish=release, monitor=monitor, on_measured=on_measured,
@@ -3023,8 +3031,9 @@ async def get_trajectory_limits():
 @app.get("/control/freehand/trajectory/{session_id}", dependencies=[Depends(require_login)])
 async def get_trajectory_session(session_id: str):
     """Session status: state, progress (``executed.t_exec``), the wall time
-    of t = 0 (``started_at_utc``) and the latest measured joints, for
-    one-way sync. Poll at 10-20 Hz at most."""
+    of t = 0 (``started_at_utc``), latest measured joints, and passive
+    ``force_torque`` telemetry (check ``valid``, ``age_s`` and ``reason``).
+    Reads only cached reports; poll at 10-20 Hz at most."""
     c = get_controller()
     session = _trajectory_session(get_trajectory_manager(c), session_id)
     status = session.status()

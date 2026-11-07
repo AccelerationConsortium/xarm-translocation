@@ -120,6 +120,71 @@ other (Cartesian) moves are limited to:
 The UR5e's other moves (jog, relative, linear) use the same motion block:
 50 mm/s and 250 mm/s² (placeholder) for linear moves.
 
+## xArm force/torque telemetry during a trajectory
+
+With `realtime_report: true` (the default), the existing port-30003 reader
+also captures the compensated/filtered six-axis F/T fields in extended
+reports. The sensor must already be enabled before starting. This adds no
+sensor queries or enable/zero/mode commands to the ServoJ loop and does not
+add a force guard or change motion targets.
+
+Read `force_torque` from `GET /control/freehand/trajectory/{session_id}`,
+or `details.trajectory.session.force_torque` from `GET /status`. The latter
+is available through the imported lab SDK, without a new client method:
+
+```python
+status = await lab.get("xarm_translocation").status()
+session = (status.details.get("trajectory") or {}).get("session")
+# expected_session_id comes from your trajectory.create response.
+ft = (session.get("force_torque")
+      if session and session["session_id"] == expected_session_id else None)
+if ft and ft["valid"]:
+    fx, fy, fz, tx, ty, tz = ft["sample"]["wrench"]
+    age_s = ft["age_s"]
+```
+
+- `sample.wrench` is `[Fx, Fy, Fz, Tx, Ty, Tz]`, in N and N*m. The service
+  tare captured at session start is applied if completed; the embedded
+  `configuration` includes that fixed tare, its `service_config_revision`,
+  source channel and the existing geometry/compensation metadata. No frame
+  transform is performed; unknown geometry stays unknown.
+- `sample.received_s` uses the same host `perf_counter` clock as the joint
+  reports and command log. `service_received_at` is UTC receipt time.
+  `sensor_sampled_at` is null: this protocol has no sensor acquisition
+  timestamp. Reports can be batched and repeated F/T values do not establish
+  independent sensor samples, even though the report stream is nominally 100 Hz.
+- `valid` requires a finite sample, an active report stream, no subsequent
+  invalid/missing F/T fields, and report age at most `stale_after_s` (0.5 s).
+  This age threshold is for telemetry, not a safety response guarantee.
+  Repeated API reads never refresh sample time. Check `valid` and `reason`;
+  an old sample remains visible after a disconnect, bad frame or run end.
+- During normal finalization, the report stream closes before the session
+  publishes its terminal state. A completed trajectory clock can therefore
+  briefly accompany `state: running` and `reason: report_stream_stopped`.
+  Keep that sample invalid and wait for the terminal result; this transition
+  alone does not indicate a fault during playback. Missing or stale reports
+  before the trajectory clock reaches its end remain telemetry failures.
+- Disabled sensors and older frames without F/T fields yield no sample,
+  not fabricated zeros. A disabled report monitor yields `force_torque: null`.
+  Sensor enabled state is captured at start, not verified anew in each frame.
+- The finished `/log` includes `force_torque` with parallel `sequence`,
+  `received_s`, `received_unix_s` and `wrench` arrays plus configuration and
+  invalid/drop counts. A bounded buffer retains the latest 65,536 reports;
+  overflow increments `dropped_samples`. Serialization happens after streaming.
+
+The separate `GET /force-torque/data` acquisition endpoint remains blocked
+during trajectories. `/status.metrics.force_magnitude` remains the older
+acquisition cache; use the trajectory field above for report telemetry.
+Supervised hardware smoke checks exercised stationary holds and a small J1
+out-and-back trajectory at 100 Hz with this telemetry enabled. They establish
+operation for that tested range, not absolute F/T calibration, arbitrary
+paths, higher rates, or force-controlled contact. Offline tests alone do not
+establish live-arm timing or compensation accuracy.
+
+Protocol reference: [UFACTORY port-30003 report layout](https://docs.supportarticle.ufactory.cc/support_articles/developer/firmware/data-description-of-tcp-port.html)
+(F/T bytes 88–135, one-based), also parsed by the official SDK's
+`__handle_report_real` in `xarm/x3/base.py`.
+
 ## Endpoints
 
 All are under `/control/freehand/trajectory`.

@@ -569,6 +569,12 @@ curl -X POST "http://127.0.0.1:6001/force-torque/calibrate" -H "Content-Type: ap
 
 #### `GET /force-torque/data`
 
+This acquisition endpoint is refused while a trajectory runs. For passive
+six-axis readings during ServoJ, use the trajectory status `force_torque`
+field or `/status.details.trajectory.session.force_torque`; see
+[trajectory F/T telemetry](TRAJECTORY_API.md#xarm-forcetorque-telemetry-during-a-trajectory).
+Always check its `valid` flag and sample age.
+
 Reads `get_ft_sensor_data(is_raw=False)` exactly once and returns one complete
 snapshot. Both norms and both directions are computed from its `wrench`, after
 applying the service tare, if completed. No raw channel or coordinate conversion

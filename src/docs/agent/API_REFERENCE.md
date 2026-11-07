@@ -220,9 +220,51 @@ All under `/control/freehand/trajectory`. Login on every call; the claim
 | `POST {rate_hz?, start_tolerance_deg?}` | 201 session status with `session_id`. 412 `trajectory_disabled`, `claim_enforcement_off`; 409 `graph_mode_strict`, `session_open`; 423 claim |
 | `PUT` or `POST /{id}/chunks/{seq} {points, final}` | 200 `{accepted, duplicate, seq, report, session}`. Identical re-send: `duplicate: true`. 409 `chunk_conflict`, `chunk_out_of_order` (`expected_seq`), `session_closed`, `session_running`; 422 with the report; 423 `session_owner_mismatch` |
 | `POST /{id}/start` | 200 status (`state: running`). 412 `arm_not_ready` (also any latched controller warning; clear it with `POST /control/clear_errors`), `arm_not_idle`, `manual_mode`; 409 `motion_in_progress`, `stopped_during_start`, `trajectory_incomplete`, `graph_mode_override_expiring`; 422 start too far from the first point |
-| `GET /{id}` | `state` (`created`, `starting`, `running`, `stopping`, `completed`, `cancelled`, `stopped`, `failed`, `expired`), `reason`, `executed {t_exec, duration_s, fraction}`, `started_at_utc`, `measured {joints_deg, age_ms}`, `servo` timing, `final`, `log_available` |
+| `GET /{id}` | `state` (`created`, `starting`, `running`, `stopping`, `completed`, `cancelled`, `stopped`, `failed`, `expired`), `reason`, `executed {t_exec, duration_s, fraction}`, `started_at_utc`, `measured {joints_deg, age_ms}`, passive `force_torque` telemetry, `servo` timing, `final`, `log_available` |
 | `POST /{id}/cancel` | Constrained stop along the path; before start it just closes |
-| `GET /{id}/log` | After the run: every tick and measured pose. 409 `log_not_ready`, `trajectory_running` |
+| `GET /{id}/log` | After the run: every tick, measured pose, and retained F/T report with configuration. Wait for `log_available`. 409 `log_not_ready`, `trajectory_running` |
+
+### ServoJ force torque telemetry
+
+The existing `GET /status` exposes
+`details.trajectory.session.force_torque` (open read). The login-gated
+`GET /control/freehand/trajectory/{id}` exposes the same telemetry as
+`force_torque`. Both use cached port-30003 reports; neither queries the
+sensor or adds traffic to the ServoJ command connection. Match the session
+ID when reading the latest-session view in `/status`.
+
+Consume only `valid` samples. `sample.wrench` orders the three forces then
+three torques, `[Fx, Fy, Fz, Tx, Ty, Tz]`, in N and N·m. `sample.sequence`
+identifies a received report; `received_s` uses the server's monotonic
+clock, and `service_received_at` is its UTC receipt time.
+`sensor_sampled_at` is null. Client polling does not refresh sample age.
+Repeated controller values do not prove independent sensor acquisitions.
+
+`configuration` freezes the start-time sensor-enabled flag, source,
+`service_config_revision`, service tare, and available geometry/compensation
+metadata. The source is the compensated/filtered real-time report channel;
+completed service tare is applied. No raw-channel selection or frame
+transform occurs. Null/unknown metadata is not a calibration claim.
+
+The stream must be active with a finite sample no older than 0.5 s for
+`valid` to be true. Disabled sensors yield no sample, not zeros; a disabled
+report monitor yields null telemetry. Invalid reports retain the last good
+sample but mark it invalid. Normal finalization can close the report stream
+before the session becomes terminal: a completed trajectory clock plus
+`report_stream_stopped` is a reason to await completion, not by itself a
+playback fault. Never use the invalid wrench or automatically retry motion.
+
+The finished log contains parallel `sequence`, `received_s`,
+`received_unix_s`, and `wrench` arrays under `force_torque`, plus the frozen
+configuration and `invalid_reports` / `dropped_samples` counters. Storage
+retains the latest 65,536 F/T reports; overflow increments the drop counter.
+The terminal snapshot is invalid because the stream has ended; the arrays
+remain the historical record. Joint and F/T receipt times share one clock.
+
+This is monitoring, not force-limited motion. `/force-torque/data` remains
+blocked during a trajectory, and `metrics.force_magnitude` is the separate
+acquisition cache. Follow the [agent guide](../agent-docs#read-forcetorque-during-servoj)
+for the authenticated SDK example, payload prerequisites and completion handling.
 
 ## BioGripper Gen2: raw stroke and force
 
@@ -500,7 +542,7 @@ lab data server, mirroring the source layout.
 
 ### Force/torque read semantics
 
-`GET /force-torque/data` returns one SDK acquisition as `wrench`, with flat
+Outside trajectory playback, `GET /force-torque/data` returns one SDK acquisition as `wrench`, with flat
 `force_magnitude`, `torque_magnitude`, `force_direction`, `torque_direction`,
 `sample_id`, `config_revision`, `sensor_sampled_at: null`, `service_received_at`,
 and `service_tare_applied`. Fetch `/force-torque/config?revision=...` for units,
@@ -510,4 +552,6 @@ geometry/compensation validation. `/force-torque/status` only returns cached
 
 The `calibrated`, `total_magnitude`, nested magnitude/direction and old `data`
 fields have been removed, without aliases. No raw selection or frame transform
-is supported. See [the detailed contract](../PYXARM_API.md#get-force-torquedata).
+is supported. During ServoJ this acquisition route returns 409
+`trajectory_running`; use the [passive report telemetry](#servoj-force-torque-telemetry)
+instead.

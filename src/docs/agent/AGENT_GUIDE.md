@@ -224,8 +224,10 @@ digital twin's plan); use the graph or freehand moves for single targets.
    not completed.
 5. Poll `GET /control/freehand/trajectory/{id}` at 10–20 Hz at most:
    `state`, `executed.t_exec` (play a twin at this time; no shared clock
-   needed) and `measured.joints_deg` (the real arm). After a terminal
-   state, `GET …/{id}/log` has every command and measured pose.
+   needed), `measured.joints_deg` (the real arm), and `force_torque`
+   (passive wrist F/T; check `valid`). After a terminal state, wait for
+   `log_available: true`; `GET …/{id}/log` has commands, measured poses,
+   and the recorded F/T reports.
 
 Gates: graph mode OFF or ADVISORY (STRICT refuses with 409
 `graph_mode_strict`), the claim, the arm ready and still, manual mode off,
@@ -235,6 +237,92 @@ claim that created it; if the claim lapses the run slows to a stop.
 halts at once (then Clear errors). While a run is active the other arm and
 setup routes answer 409 `trajectory_running`, so do not poll `/positions`.
 The full client guide is `src/docs/TRAJECTORY_API.md` in the repository.
+
+### Read force/torque during ServoJ
+
+The xArm service supports passive six-axis F/T telemetry while ServoJ runs.
+Supervised hardware checks covered stationary holds and a small J1
+out-and-back trajectory at **100 Hz**. This establishes telemetry operation
+in that tested range; it does not validate arbitrary paths, higher rates,
+absolute force calibration, or force-controlled contact. The feature adds
+no force limit or automatic collision response.
+
+Use your own approved agent identity and existing `lab-skills` connection.
+Read-only polling does not require taking the moving session's claim.
+Starting or changing a trajectory still requires your own valid claim,
+the normal approved workflow, and all device gates. Never borrow another
+agent's key or claim. Present an approved API key through
+`Lab.connect(..., headers={"X-Api-Key": key})`; keep the key out of source,
+logs, prompts, and run records. A 401/403 is an authentication/authorization
+failure to report, not a reason to switch identities.
+
+The sensor must already be enabled when the session starts. Before motion,
+the operator must configure the complete installed payload, including the
+sensor's mass and centre of mass, and the appropriate tool offsets. Service
+tare removes an offset from readings; it does not correct the controller's
+payload model or prove compensation is calibrated. Do not enable, tare,
+zero, or query the sensor's acquisition endpoint during playback.
+
+The imported lab SDK exposes the readings without a new client method:
+
+```python
+async def read_servoj_ft(lab, expected_session_id):
+    status = await lab.get("xarm_translocation").status()
+    session = (status.details.get("trajectory") or {}).get("session")
+    if not session or session["session_id"] != expected_session_id:
+        return None  # no matching session; never reuse a previous run's sample
+    ft = session.get("force_torque")
+    if not ft or not ft["valid"] or ft["sample"] is None:
+        return None  # unavailable/stopped/stale is not a zero wrench
+    fx, fy, fz, tx, ty, tz = ft["sample"]["wrench"]
+    return {
+        "force_N": [fx, fy, fz],
+        "torque_Nm": [tx, ty, tz],
+        "sequence": ft["sample"]["sequence"],
+        "age_s": ft["age_s"],
+        "configuration": ft["configuration"],
+    }
+```
+
+Poll at 10 Hz or less for ordinary monitoring (20 Hz is the API ceiling).
+The report stream is captured on the device PC independently of client
+polling. Repeated reads may return the same sequence; they are not new
+measurements. The dashboard's aggregated status has its own polling delay;
+use the SDK's direct equipment status for live monitoring and the finished
+session log for the full recorded stream.
+
+`sample.wrench` is `[Fx, Fy, Fz, Tx, Ty, Tz]` in N and N·m. These are the
+controller's compensated/filtered report fields with the service tare
+captured at session start applied when available. Inspect `configuration`
+for that frozen tare, configuration revision, source, and geometry.
+No coordinate transform is applied; unknown sensor frame, torque reference,
+or compensation metadata stays unknown. Receipt time is a host timestamp,
+not a sensor acquisition timestamp (`sensor_sampled_at` is null).
+
+Only consume samples with `valid: true`. Reports older than 0.5 s are stale;
+this telemetry threshold is not a safety-stop guarantee. With the sensor
+disabled at start there is no sample, and with the report monitor disabled
+the entire `force_torque` field is null. `/force-torque/data` is refused
+with 409 `trajectory_running` during playback; the old status metric
+`metrics.force_magnitude` is an acquisition cache, not this report stream.
+
+**Handle completion separately from telemetry validity.** During normal
+cleanup the stream can close before the session publishes a terminal state.
+If `executed.t_exec` has reached `executed.duration_s`, a brief
+`state: running` with F/T `reason: report_stream_stopped` is expected.
+Keep the wrench invalid and wait a bounded time for the terminal result;
+do not send STOP solely because of this end transition. Early stream loss,
+staleness, controller faults, or unexpected motion still require the
+workflow's fault handling. Do not automatically clear, re-enable, or replay.
+
+After completion, cancellation, or failure, wait for `log_available` and
+retrieve `GET /control/freehand/trajectory/{id}/log` through the SDK's
+`command(..., method="GET")`. It includes the F/T report sequences, receipt
+times and wrenches, frozen configuration, and invalid/drop counts. A final
+snapshot with `valid: false` is expected after stream shutdown; it does not
+invalidate the recorded historical samples. See the
+[F/T API reference](agent-docs/api-reference#servoj-force-torque-telemetry)
+for endpoint and retention details.
 
 ## The depth cameras
 

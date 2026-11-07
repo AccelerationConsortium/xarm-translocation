@@ -62,4 +62,7 @@ log_dir: logs/trajectory
 
 # Record the arm's reported joints from the 100 Hz real-time report
 # (port 30003, read-only) alongside what was sent.
+# Extended reports also supply passive F/T telemetry when the sensor is
+# already enabled. Status includes sample age/validity; no sensor queries,
+# enabling, taring, force guard, or motion changes are performed.
 realtime_report: true

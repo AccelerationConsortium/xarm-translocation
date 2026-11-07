@@ -170,6 +170,88 @@ def test_complete_flow_holds_and_releases_the_motion_slot(client, headers, mock_
     assert api.get_trajectory_manager(mock_controller).summary()["session"]["state"] == "completed"
 
 
+@pytest.mark.parametrize("scenario", ["normal", "controller_error", "invalid_ft", "sensor_disabled"])
+def test_ft_report_available_during_motion_and_saved_without_sensor_commands(
+        monkeypatch, client, headers, mock_controller, backend, settings, scenario):
+    from robot_motion.trajectory.force_torque import ForceTorqueTelemetry
+    from test.test_trajectory_force_torque import report
+
+    settings.realtime_report = True
+    mock_controller.is_component_enabled.return_value = scenario != "sensor_disabled"
+    mock_controller.get_force_torque_config.return_value = {
+        "revision": "config:1", "service_tare": {"completed": False, "offset": [0] * 6}}
+
+    class Monitor:
+        latest = None
+        samples = []
+        dropped = 0
+        error = None
+
+        def __init__(self, host, n, *, ft_enabled, ft_configuration):
+            self.force_torque = ForceTorqueTelemetry(
+                enabled=ft_enabled, configuration=ft_configuration)
+
+        def start(self):
+            self.force_torque.start()
+            frame = report((float("nan"), 2, 3, 4, 5, 6)) if scenario == "invalid_ft" else report()
+            self.force_torque.receive(frame, time.perf_counter(), time.time())
+
+        def stop(self):
+            self.force_torque.stop()
+
+    monkeypatch.setattr(api, "RealtimeJointMonitor", Monitor)
+    if scenario == "controller_error":
+        original_send = backend.send
+
+        def send(*args):
+            code = original_send(*args)
+            if len(backend.sent) == 5:
+                backend.error_code = 31
+            return code
+
+        backend.send = send
+    backend.gate_at = 0
+    sid = upload(client, headers)
+    try:
+        response = client.post(f"/control/freehand/trajectory/{sid}/start", headers=headers)
+        assert response.status_code == 200, response.text
+        assert backend.reached_gate.wait(2)
+        body = client.get(f"/control/freehand/trajectory/{sid}").json()
+        ft = body["force_torque"]
+        has_sample = scenario in ("normal", "controller_error")
+        assert ft["valid"] == has_sample
+        if has_sample:
+            assert ft["sample"]["wrench"][:3] == [1, 2, 3]
+        else:
+            assert ft["sample"] is None
+        # The lab SDK reads the same summary through GET /status.
+        summary = api.get_trajectory_manager(mock_controller).summary()
+        assert summary["session"]["force_torque"]["sample"] == ft["sample"]
+        assert client.get("/force-torque/data").status_code == 409
+    finally:
+        backend.gate.set()
+    body = wait_state(client, sid, {"completed", "failed", "stopped"})
+    assert body["state"] == ("failed" if scenario == "controller_error" else "completed")
+    if scenario == "controller_error":
+        assert "error code 31" in body["reason"]
+        assert "estop" in backend.calls and "finish" not in backend.calls
+        assert len(backend.sent) == 5
+    assert not body["force_torque"]["valid"]
+    log = client.get(f"/control/freehand/trajectory/{sid}/log").json()
+    if has_sample:
+        assert log["force_torque"]["wrench"][0][:3] == [1, 2, 3]
+    else:
+        assert log["force_torque"]["wrench"] == []
+    if scenario == "sensor_disabled":
+        mock_controller.get_force_torque_config.assert_not_called()
+    else:
+        assert log["force_torque"]["configuration"]["service_config_revision"] == "config:1"
+    mock_controller.get_force_torque_data.assert_not_called()
+    mock_controller.arm.get_ft_sensor_data.assert_not_called()
+    mock_controller.arm.ft_sensor_enable.assert_not_called()
+    mock_controller.arm.ft_sensor_set_zero.assert_not_called()
+
+
 def test_duplicate_and_conflicting_chunks_over_http(client, headers):
     resp = client.post("/control/freehand/trajectory", json={}, headers=headers)
     sid = resp.json()["session_id"]

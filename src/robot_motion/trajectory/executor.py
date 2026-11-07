@@ -60,6 +60,7 @@ from .joint_trajectory import (
     DEFAULT_MAX_JOINT_ACC_DEG_S2, JointLimits, JointPoint, JointTrajectory, lead_in,
     stop_deceleration, validate_joint_trajectory,
 )
+from .force_torque import ForceTorqueTelemetry
 
 logger = logging.getLogger(__name__)
 
@@ -354,9 +355,12 @@ class RealtimeJointMonitor:
     in radians (as parsed by the SDK). Frames with non-finite or absurd
     angles are dropped. On this cell frames arrive in bursts about every
     50 ms, so a sample's receive time can lag its measurement by that much.
+    Extended frames also feed passive F/T telemetry when the sensor was
+    enabled at start. Missing/invalid F/T fields do not discard joint data.
     """
 
-    def __init__(self, host: str, num_joints: int, port: int = 30003, keep: int = 200000):
+    def __init__(self, host: str, num_joints: int, port: int = 30003, keep: int = 200000,
+                 *, ft_enabled: bool = False, ft_configuration: Optional[dict] = None):
         self.host, self.port, self.num_joints = host, port, num_joints
         self._keep = keep
         self._stop = threading.Event()
@@ -366,13 +370,17 @@ class RealtimeJointMonitor:
         self.samples: List[tuple] = []
         self.dropped = 0
         self.error: Optional[str] = None
+        self.force_torque = ForceTorqueTelemetry(
+            enabled=ft_enabled, configuration=ft_configuration, keep=min(keep, 65536))
 
     def start(self) -> None:
+        self.force_torque.start()
         self._thread = threading.Thread(target=self._run, name="xarm-trajectory-monitor", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        self.force_torque.stop()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
 
@@ -404,14 +412,18 @@ class RealtimeJointMonitor:
                         joints = [math.degrees(r) for r in radians[: self.num_joints]]
                         if not all(math.isfinite(v) and abs(v) < 1000.0 for v in joints):
                             self.dropped += 1
+                            self.force_torque.reject("invalid_joint_report")
                             continue
                         sample = (time.perf_counter(), joints, state, mode)
+                        self.force_torque.receive(frame, sample[0], time.time())
                         with self._lock:
                             self.latest = sample
                             if len(self.samples) < self._keep:
                                 self.samples.append(sample)
         except OSError as exc:
             self.error = str(exc)
+        finally:
+            self.force_torque.stop(self.error)
 
 
 # ── Sessions ─────────────────────────────────────────────────────────
@@ -453,6 +465,7 @@ class TrajectorySession:
     measured: Optional[Dict[str, Any]] = None
     log_path: Optional[str] = None
     record: Optional[Dict[str, Any]] = None
+    force_torque: Optional[ForceTorqueTelemetry] = field(default=None, repr=False)
 
     def event(self, kind: str, **data: Any) -> None:
         self.events.append({"at": _utc(time.time()), "event": kind, **data})
@@ -489,6 +502,7 @@ class TrajectorySession:
             "started_at_utc": _utc(self.started_at),
             "ended_at_utc": _utc(self.ended_at),
             "measured": self.measured,
+            "force_torque": self.force_torque.snapshot() if self.force_torque else None,
             "servo": self.stats.get("servo"),
             "tracking": self.stats.get("tracking"),
             "final": self.final,
@@ -627,6 +641,7 @@ class TrajectoryManager:
                 "t_exec": round(session.t_exec, 3),
                 "duration_s": session.duration_s,
                 "started_at_utc": _utc(session.started_at),
+                "force_torque": session.force_torque.snapshot() if session.force_torque else None,
             },
         }
 
@@ -823,6 +838,7 @@ class TrajectoryManager:
                 session.event("cancel")
                 raise TrajectoryError(409, "session_cancelled", "The session was cancelled during start")
             session.state = RUNNING
+            session.force_torque = getattr(monitor, "force_torque", None)
             session.duration_s = round(trajectory.duration, 6)
             session.event("start")
             self._thread = threading.Thread(
@@ -892,6 +908,8 @@ class TrajectoryManager:
                 monitor.start()
             except Exception as exc:  # noqa: BLE001 - records only
                 logger.warning(f"[trajectory] real-time monitor did not start: {exc}")
+                if session.force_torque is not None:
+                    session.force_torque.stop("report_monitor_start_failed")
                 monitor = None
         try:
             if stopped():
@@ -1232,6 +1250,7 @@ class TrajectoryManager:
                 "commanded_deg": [list(col) for col in ticks.q],
             },
             "reported": None,
+            "force_torque": session.force_torque.record() if session.force_torque else None,
             "clock": "perf_counter seconds; sent_s and reported.received_s share it",
         }
         if monitor is not None:
