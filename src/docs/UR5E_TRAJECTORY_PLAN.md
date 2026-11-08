@@ -57,7 +57,8 @@ stage 0a supports it.
   `UR5E-ARM-2026-10-08-OPEN-PLACEHOLDER`: joints ±360°, **10 deg/s, 30
   deg/s²**, stop deceleration 90 deg/s². Validation and `GET /limits` must
   report those. Real limits, which you deferred, are needed before
-  trajectories are useful at speed.
+  trajectories are useful at speed. *(2026-11-08: the caps are now the
+  code's ceilings, 60 deg/s and 180 deg/s²; see TRAJECTORY_API.md.)*
 - **Six joints,** J1..J6 base to wrist. The joint-count checks already use
   `num_joints`.
 - **The RTDE watchdog** (`setWatchdog`, C207A0 on timeout) already guards

@@ -335,8 +335,8 @@ on) so a receive-only service never offers them.
 
 1. **Read the limits first:** `GET /control/freehand/trajectory/limits`:
    joint ranges, `max_joint_speed_deg_s`, `max_joint_acc_deg_s2` (the
-   commissioned motion block; today the placeholder, 10 deg/s and 30
-   deg/s²), the TCP `workspace_mm` box, `force_guard_n`, rates, point
+   commissioned motion block; since 2026-11-08 the code's ceilings on both
+   UR arms, 60 deg/s and 180 deg/s²), the TCP `workspace_mm` box, `force_guard_n`, rates, point
    limits, the start tolerance and the rules. Do not guess them.
 2. **Plan within them:** points `{"t", "joints_deg" (J1..J6),
    "velocities_deg_s"?, "accelerations_deg_s2"?}`; `t` from 0, strictly
