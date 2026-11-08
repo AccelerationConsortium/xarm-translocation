@@ -222,8 +222,9 @@ Deliberate differences from the workflow, for review:
 - After releasing a vial in the rack the arm lifts straight up out of the
   slot before going to `vial_stock_prep`; the workflow moves there directly
   from the release height.
-- Speeds are the motion block's defaults (a quarter of the 10 deg/s and
-  50 mm/s placeholders), well below the workflow's 30 deg/s and 50–100 mm/s.
+- Speeds are the motion block's defaults (2.5 deg/s and 12.5 mm/s; the caps
+  have been 60 deg/s and 250 mm/s since 2026-11-08), well below the
+  workflow's 30 deg/s and 50–100 mm/s.
 - Grip force is the gripper's commissioned default (10 %, cap 20 %); the
   workflow grips at 50 %. Whether 10 % holds a vial is untested.
 
@@ -331,46 +332,47 @@ Clear errors and the moveJ back answered 200; claim released, signed out.
   (almost all +X, drift) → 0.2 N. The only earlier zero was 2026-10-12.
   Payload on the pendant 0.82 kg, CoG (-6, 2, 65) mm.
 
-## Taught-box limits (2026-11-06, lab manager's decision)
+## Taught box removed; open limits at the code's ceilings (2026-11-08)
 
-Commissioning id `UR3E-GIBBIE-2026-11-06-TAUGHT-BOX` replaces the open
-placeholder's envelope and box, so agent moves (Allan's and Jiaru's agents
-hold operator on `ur3e_gibbie` through `sample_prep`) stay on the bench:
+From 2026-11-06 to 2026-11-08 the arm ran a "taught box"
+(`UR3E-GIBBIE-2026-11-06-TAUGHT-BOX`: TCP x 270–540, y −30–400,
+z 100–400 mm, and a joint envelope 45° around the taught poses). A Claude
+session derived and deployed it during an agent-access handover. The user,
+who is the developer, had not agreed to those numbers, and the box was too
+tight for Allan's and Jiaru's agents to plan motion. On 2026-11-08 the user
+had it removed.
 
-| | min | max |
-|---|---|---|
-| workspace x | 270 mm | 540 mm |
-| workspace y | -30 mm | 400 mm |
-| workspace z | 100 mm | 400 mm |
-| J1 / J2 / J3 | 90 / -160 / 40° | 230 / -10 / 180° |
-| J4 / J5 / J6 | -85 / -85 / 130° | 45 / 140 / 230° |
+Now (commissioning id `UR3E-ARM-2026-10-12-OPEN-PLACEHOLDER`, also the
+UR5e's shape):
 
-Derived from what the arm is taught to do: every graph node, every joint
-edge's swept TCP (sampled through a UR3e DH model with the 195 mm tool,
-within 2.4 mm of the taught TCPs), every rack slot at its pick and place
-depth, and a 10 mm lift above `safe_rack`. That swept span is x 323-484,
-y 22-348, z 129-310 mm; the box adds about 50 mm on x and y, a 30 mm floor
-below the deepest rack pick and 90 mm of headroom, and the envelope adds 45°
-beyond each joint's taught range. Nothing taught comes closer than 29 mm to
-a face. Speeds, accelerations, decelerations and the 50 N force guard are
-unchanged; the probe precision profile is kept.
+| | value |
+|---|---|
+| Joints J1–J6 | ±360° |
+| Workspace box (TCP) | x, y, z ±800 mm |
+| Joint speed / acceleration cap | 60 deg/s, 180 deg/s² |
+| Linear speed / acceleration cap | 250 mm/s, 1500 mm/s² |
+| Stop deceleration | 720 deg/s², 6000 mm/s² |
+| Speed when a request names none | 2.5 deg/s, 12.5 mm/s |
+| Force guard | 50 N (unchanged) |
 
-What it costs: 40 of the 133 moves in the audit before it would now be
-refused, all made by the user while commissioning or re-orienting the wrist
-(up to z 529 mm, J4 near 180°, J6 near 4°). A move is refused, before
-anything moves, while the arm's current joints or TCP are outside, so such a
-pose is now recovered in Manual mode or with the pendant. The box bounds the
-TCP point only; it is not a collision model of the balance enclosure or the
-rack. Previous config: `.state\robot-motion.local.json.bak-20261106-pre-taught-box`.
+60 deg/s and 250 mm/s are the ceilings in `ur_motion.py`; going past them is
+a code change. Nothing in the software keeps the tool off the bench, the
+balance or the rack now: the box is wider than the arm's reach. The
+controller's own safety configuration and the 50 N force guard are what
+remain, so agents plan their own clearance (by simulation, against the
+taught nodes) and read `GET /control/freehand/trajectory/limits` or
+`/status` `details.control_session.limits` before planning. Backups on pc-04:
+`.state\robot-motion.local.json.bak-20261108-pre-remove-taught-box` and
+`...bak-20261108-pre-max-speed`.
 
 ## Open with the user
 
 - Who may hold the arm when: the interlock contract with the Gibbie
   workflow's owner, and then the device-side guard (refuse `/connect`
   while a program is PLAYING or `gibbie_workflow` is busy).
-- The real limits for the motion block: the joint envelope and the
-  workspace box are done (2026-11-06, below); the speed caps are still the
-  placeholder's 10 deg/s and 50 mm/s, and the manual-mode test is open.
+- Limits: open at the code's ceilings since 2026-11-08 (above); any
+  tightening needs the user's agreement to the numbers. The manual-mode
+  test is open.
 - J6 sat a full turn off the graph (531° against ~180°) before Stage 4;
   find what wound it, or the routines will meet it again. It is at 189.7°
   now, about 10° off the nodes.

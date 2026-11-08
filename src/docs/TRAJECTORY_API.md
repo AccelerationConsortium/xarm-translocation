@@ -45,7 +45,8 @@ The same contract runs on the UR5e (tested on the arm 2026-10-11: servoJ at
 - **Limits** come from the UR's commissioned motion block (read them at
   `GET /ur5e/control/freehand/trajectory/limits`): joint ranges, speed,
   acceleration and a TCP workspace box, which the whole path must stay
-  inside. Today they are a placeholder: 10 deg/s, 30 deg/s².
+  inside. Since 2026-11-08: joints ±360°, box ±1100 mm, 60 deg/s,
+  180 deg/s² (the code's ceilings).
 - **Before start:** an operator must Connect the arm in the panel, and the
   pendant speed slider must be at 100 %. `POST /validate` needs the arm
   connected (it uses the measured pose and the controller's kinematics).
@@ -90,8 +91,8 @@ just at the points.
 | J4 | −97 to +180° | −360 to +360° (placeholder) |
 | J5 | −360 to +360° | −360 to +360° (placeholder) |
 | J6 | — (5 joints) | −360 to +360° (placeholder) |
-| Joint speed | 180°/s × the safety-level factor: LOW 1.0, MEDIUM 0.5, HIGH 0.25, EMERGENCY 0.1. MEDIUM, the default at Connect, gives **90°/s** | **10°/s** (placeholder), no safety-level factor |
-| Joint acceleration | 500 deg/s² | 30 deg/s² (placeholder) |
+| Joint speed | 180°/s × the safety-level factor: LOW 1.0, MEDIUM 0.5, HIGH 0.25, EMERGENCY 0.1. MEDIUM, the default at Connect, gives **90°/s** | **60°/s** (the code's ceiling, since 2026-11-08), no safety-level factor |
+| Joint acceleration | 500 deg/s² | 180 deg/s² (the code's ceiling, since 2026-11-08) |
 | TCP workspace box | none for trajectories | x, y, z ±1100 mm (placeholder, so no real box); the whole path must stay inside, checked with the controller's kinematics every 2° of joint motion |
 | Force guard | none | 30 N; a run aborts when the measured TCP force changes by more than that from its value at the start of the run |
 | Duration | at most 600 s | at most 600 s |
@@ -108,8 +109,11 @@ inside the table: J2 −117 to +116°, J3 −219 to +10°. Stay inside those.
 The UR5e motion block is still the open placeholder of 2026-10-08
 (commissioning id `UR5E-ARM-2026-10-08-OPEN-PLACEHOLDER`): it was chosen to
 enable motion, not surveyed. The controller's own safety limits apply
-underneath it. When the real envelope, box and speed caps are commissioned,
-`GET /limits` changes and this column should follow.
+underneath it. On 2026-11-08 the user (developer and lab manager) raised its
+speed and acceleration caps to the code's ceilings: 60 deg/s and 180 deg/s²
+for joints, 250 mm/s and 1500 mm/s² for lines, stop decelerations 720 deg/s²
+and 6000 mm/s². A move that names no speed still runs at 2.5 deg/s or
+12.5 mm/s. `GET /limits` is the source of truth; this column follows it.
 
 Trajectories are joint-space only on both arms. For reference, the xArm's
 other (Cartesian) moves are limited to:
@@ -118,7 +122,7 @@ other (Cartesian) moves are limited to:
 - an acceleration cap of 50 000 mm/s².
 
 The UR5e's other moves (jog, relative, linear) use the same motion block:
-50 mm/s and 250 mm/s² (placeholder) for linear moves.
+250 mm/s and 1500 mm/s² for linear moves (since 2026-11-08).
 
 ## Endpoints
 
