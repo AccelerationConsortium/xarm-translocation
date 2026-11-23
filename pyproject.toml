@@ -33,7 +33,7 @@ dependencies = [
     "PyYAML>=6.0",
     "ruamel.yaml>=0.18",
     "fastapi>=0.136.1,<0.137",
-    "starlette>=1.0,<1.1",
+    "starlette>=1.0,<1.4",
     "uvicorn[standard]>=0.46,<0.47",
     "websockets>=16,<17",
     # Lab-assistant chatbox (natural-language motion control) via OpenRouter's
